@@ -8,10 +8,7 @@
 !launch.js
 !node-payload/
 !node-payload/**
+!node-payload-danmu.zip
 
-# ★ 公开壳：以下源包文件**故意不入库**（2026-11-09 剥离）。
-#   · spider.jar / spider-ext.jar：第三方 jar，无上游许可
-#   · node-payload-danmu.zip：danmu_api 载荷（上游 AGPL）
-#   私有全量构建/官方 CI 在 gradle 之前把它们放到本地目录即可，
-#   本文件的白名单不会阻止构建，只阻止它们进 git。
-#   纯壳构建缺这些文件是合法产物：用户在设置页导入源包后恢复能力。
+# ★ 公开壳：spider.jar / spider-ext.jar 仍不入库。
+#   node-payload-danmu.zip 按原仓库对齐，重新入库（tv_plugins 构建需要）。

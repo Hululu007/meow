@@ -158,7 +158,6 @@ server/host/libs/spider.jar
 server/host/libs/spider-ext.jar
 client/apps/tv/app/src/main/assets/spider.jar
 client/apps/tv/app/src/main/assets/spider-ext.jar
-client/apps/tv/app/src/main/assets/node-payload-danmu.zip
 reverse/artifacts/spider.jar
 reverse/artifacts/spider.zip
 reverse/artifacts/classes.dex
