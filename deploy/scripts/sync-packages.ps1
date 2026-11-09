@@ -890,7 +890,7 @@ if (-not $DryRun) {
         if ($LASTEXITCODE -ne 0) { throw "checkout --orphan 失败" }
         # orphan 会保留原 index；先清空，保证分支里只有 packages.json
         & git -C $wt rm -r --cached . 2>&1 | Out-Null
-        & git -C $wt add packages.json 2>&1 | Out-Null
+        & git -C $wt add -f packages.json 2>&1 | Out-Null
         & git -C $wt -c user.email="actions@github.com" -c user.name="github-actions" commit -m "chore(updates): packages.json for $tag" 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "commit 失败" }
         & git -C $wt push --force origin HEAD:updates 2>&1 | Out-Null
@@ -911,3 +911,5 @@ if (-not $DryRun) {
     Write-Host "  https://api.github.com/repos/$Repo/releases/latest" -ForegroundColor Gray
     Write-Host "私有仓需在「访问令牌」填只读 PAT。" -ForegroundColor DarkGray
 }
+
+exit 0
