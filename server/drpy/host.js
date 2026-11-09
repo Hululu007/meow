@@ -532,17 +532,17 @@ function createSandbox(opts) {
   }
   sandbox.pick = pick
   /*
-   * ★ 不再把 requireModule 挂到沙箱全局（2026-10-30 安全审计 C1）。
+   * ★ 必须把 requireModule 挂成沙箱 __req（2026-11-09 修复）。
    *
-   * 原来是 `sandbox.__req = requireModule`，于是**任何**规则脚本
-   * （包括 X-DRPY-Api 头里塞进来的任意源码）都能 `__req('fs')` 读写文件、
-   * `__req('child_process').execSync(...)` 执行命令 —— 实测可直接拿到回显。
+   * 顶层规则脚本经 convertEsm 后，`import x from "assets://..."` 会变成
+   * `__req("assets://...")`；不挂这个全局就会在 vm.runInContext 里报
+   * `__req is not defined`（CI 的 stub-engine 实测）。
    *
-   * 模块内的 `import` 不需要它：evalModule 用
-   * `new Function('module','exports','__req','__filename', code)` 把
-   * `__req` 作为**函数参数**注入，作用域是那个模块自己，不经过沙箱全局。
-   * 删掉这一行不影响任何正常规则，只砍掉了越权入口。
+   * 安全性由 requireModule 自己保证：assets 只读 lib/npm、remote 默认阻断、
+   * 裸模块名走 ALLOWED_BARE_MODULES 白名单。原来的 RCE 是因为白名单之前
+   * 直接 require(spec)；现在挂回去不会恢复那条路径。
    */
+  sandbox.__req = requireModule
   // CatVod 的 JS 宿主会提供若干可变全局，drpy2 引擎直接用。
   // `Object.defineProperty(globalThis,'myValues',{...})` 在只读/不可配置的
   // 全局上会抛 "Cannot redefine property"（实测），所以这里显式给一个
