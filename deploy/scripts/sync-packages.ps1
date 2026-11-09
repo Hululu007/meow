@@ -895,8 +895,14 @@ if (-not $DryRun) {
         if ($LASTEXITCODE -ne 0 -or -not $tree) { throw "write-tree 失败" }
         $commit = (& git -C $repoRoot -c user.email="actions@github.com" -c user.name="github-actions" commit-tree $tree -m "chore(updates): packages.json for $tag").Trim()
         if ($LASTEXITCODE -ne 0 -or -not $commit) { throw "commit-tree 失败" }
+        # PowerShell 会把 git 的 "To https://..." 当作 NativeCommandError；
+        # 这里临时放宽 ErrorAction，真正结果只看 $LASTEXITCODE。
+        $oldEap = $ErrorActionPreference
+        $ErrorActionPreference = 'SilentlyContinue'
         & git -C $repoRoot push --force origin "${commit}:refs/heads/updates" 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "push 失败" }
+        $pushCode = $LASTEXITCODE
+        $ErrorActionPreference = $oldEap
+        if ($pushCode -ne 0) { throw "push 失败（exit=$pushCode）" }
         Write-Host "✅ updates 分支已更新（$tag）" -ForegroundColor Green
     } catch {
         Write-Host "  ! 静态清单推送失败（不影响本次 Release）：$($_.Exception.Message)" -ForegroundColor DarkYellow
