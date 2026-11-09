@@ -1,0 +1,5 @@
+#!/bin/bash
+# 卸载前：先停服务（后面 uninstall_callback 可能删数据目录）。
+set -u
+"$(dirname "$0")/main" stop >/dev/null 2>&1
+exit 0

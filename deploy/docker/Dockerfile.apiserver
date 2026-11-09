@@ -1,0 +1,97 @@
+# 后端镜像：JRE + 编译产物 + spider jar（不含 nginx）
+# 前端在独立容器里，见 Dockerfile.web。
+
+# ---------- 编译 ----------
+FROM eclipse-temurin:17-jdk AS build
+
+WORKDIR /build
+COPY server/host/src ./src
+COPY server/host/libs ./libs
+
+RUN find src -name '*.java' > sources.txt \
+ && mkdir -p classes \
+ && javac -encoding UTF-8 -cp "libs/*" -d classes @sources.txt
+
+# ---------- 运行 ----------
+FROM eclipse-temurin:17-jre
+
+# curl 供 HEALTHCHECK 使用。
+# ffmpeg 供「浏览器放不了的格式」现转 HLS（core/Transcode.java 调它）：
+# Chromium/WebView2 没有 HEVC 解码器，用户 NAS 上的 MKV(H.265) 在 Web/PC 端
+# 必须转码才能播。装进镜像而不是挂宿主，是为了让所有部署方式表现一致——
+# OECT 那种只有 Docker 的盒子上没法另外装。
+#
+# 为什么用 --no-install-recommends：默认会额外拉一堆推荐包。
+# 实测装完约 33MB（libavcodec 12MB + libavfilter 11MB 占大头），
+# 其中 libavdevice/libcdio/libopenal 是 ffmpeg 的硬依赖删不掉，留着也不影响。
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
+
+# ffmpeg 就位后把它告诉后端：Transcode.ffmpegPath() 的查找顺序是
+# 系统属性 > MEOW_FFMPEG > policy.json > PATH。这里走环境变量，
+# 比依赖 PATH 明确，也便于排障时 printenv 确认。
+ENV MEOW_FFMPEG=/usr/bin/ffmpeg
+
+WORKDIR /app
+
+COPY --from=build /build/classes ./classes
+COPY server/host/libs ./libs
+# ★ 公开壳：源码库不再带真实站点配置。
+#   私有全量构建放 config.sites.json 就播种它；公开构建只有
+#   config.sites.example.json（空壳），entrypoint 会自动回退。
+#   放 /app/seed 而不是 /data：/data 是挂载卷，镜像里的内容会被宿主目录盖掉。
+COPY server/host/config.sites*.json ./seed/
+
+# ★ spider jar 的 **dex 形态**：/spider-latest.jar 端点下发的就是它。
+#
+# 为什么不直接下发 libs/spider.jar：那份是 883 个 .class 的 JVM jar，
+# Android 侧 DexClassLoader 只认 ZIP 里的 classes.dex，拿到 class 版一律报
+# 「jar 里没有类 Xxx」。以前镜像里没有 dist/，findDexSpiderJar() 找不到候选
+# 就回落到 class 版，启动日志会打 `(class only — Android CANNOT load)`，
+# Fongmi / TVBox / 我们自己的 TV 壳因此全都跑不了 jar。
+#
+# 目录布局对齐 findDexSpiderJar() 的候选路径（`build/dist/spider-*.jar`）。
+#
+# ★ 文件由 reverse/tooling/build_tv_jar.py 产出、**不入库**（.gitignore 的
+#   `build/` 覆盖了它）。所以 CI 的干净环境里 server/build/dist 根本不存在。
+#
+# 踩过（2026-10-29，CI 连续 5 次全挂在这一行）：
+#   原来这里只有一句 `COPY server/build/dist/spider-*.jar ./build/dist/`，
+#   注释写的是"没有匹配时 Docker 不报错"。前半句对、后半句错 ——
+#   **通配符匹配不到文件不报错，但源目录不存在时 lstat 直接失败**：
+#       ERROR: failed to build: lstat /server/build/dist: no such file or directory
+#   而且 Docker 的 COPY 没有 `if-not-exists` 选项，`RUN mkdir` 也只能建
+#   目标目录、建不出源目录。
+#
+# 解法：仓库里常驻一个 `server/build/dist/.gitkeep`（git 与 docker 的忽略
+#   规则都给它开了口子）。源目录因此**永远存在**，用整目录 COPY 最稳，
+#   通配符都不需要 —— 有 jar 就带进去，没有就只有那个占位文件。
+#
+# 想在镜像里带上 dex jar 的本地发版：先跑
+#   python reverse/tooling/build_tv_jar.py
+# 再 build（dockerignore 已放行 server/build/dist/*.jar）。
+COPY server/build/dist/ ./build/dist/
+
+# ★ 公开壳不带 dex jar（spider.jar 已移出源码库）。
+#   私有全量构建需要 /spider-latest.jar 时，把 dex jar 放进
+#   server/build/dist/ 即可——上面的整目录 COPY 会把它带进镜像。
+#   文件名保持 spider-complete-latest-patched.jar（findDexSpiderJar 的候选名）。
+
+ENV MEOW_DATA=/data \
+    MEOW_PORT=9979 \
+    JAVA_OPTS="-Xms64m -Xmx512m -Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8"
+
+RUN mkdir -p /data
+VOLUME ["/data"]
+
+EXPOSE 9979
+
+# ok 需同时满足：服务存活 + spiderJar 已加载 + 站点表非空
+HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=5 \
+  CMD curl -fsS "http://127.0.0.1:${MEOW_PORT}/api/health" | grep -q '"ok":true' || exit 1
+
+# ApiServer 监听 0.0.0.0，其他容器可经服务名访问。
+# 首次启动把站点配置播种到数据目录；已存在则不覆盖，用户的导入结果优先。
+# 有真实配置用真实配置（私有全量构建），否则回退 example（公开空壳）。
+ENTRYPOINT ["sh", "-c", "[ -f \"$MEOW_DATA/config.sites.json\" ] || { if [ -f /app/seed/config.sites.json ]; then cp /app/seed/config.sites.json \"$MEOW_DATA/config.sites.json\"; else cp /app/seed/config.sites.example.json \"$MEOW_DATA/config.sites.json\"; fi; }; exec java $JAVA_OPTS -cp 'classes:libs/*' ApiServer \"$MEOW_PORT\""]

@@ -1,0 +1,20 @@
+NOTICE
+======
+
+本仓库包含以下第三方代码/协议实现，其版权与许可归原作者所有。
+本文件不改变 LICENSE 中「猫窝 Meow 非商业许可 1.0」对**本项目自有代码**的授权；
+下列第三方部分以其各自许可为准，两者冲突时以第三方许可为准。
+
+1. client/apps/tv/app/src/main/java/com/github/catvod/
+   源自 Fongmi/TV（https://github.com/Fongmi/TV），GPL-3.0。
+   TV 端 APK 作为整体按 GPL-3.0 分发。
+
+2. danmu_api（仅当构建产物包含时）
+   上游 https://github.com/huangxd-/danmu_api。
+   仓库内 LICENSE 文件为 AGPL-3.0（package.json 标注 ISC，以 LICENSE 为准）。
+   公开源码库不包含其代码或载荷；官方二进制如包含，按 AGPL-3.0 提供对应源码。
+
+3. server/host/libs/ 下的依赖 jar 为公开库，各自许可见其 META-INF。
+
+4. 本项目不提供任何内容源。spider jar、站点配置、弹幕数据均由用户自行导入，
+   由用户承担合规责任；仓库只提供加载与播放能力。

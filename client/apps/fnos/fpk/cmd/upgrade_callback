@@ -1,0 +1,8 @@
+#!/bin/bash
+# 升级后：数据目录结构保持不变（app 载荷在 target 被整体替换，var 保留）。
+set -u
+mkdir -p "$TRIM_PKGVAR/data" "$TRIM_PKGVAR/plugins" "$TRIM_PKGVAR/logs" "$TRIM_PKGVAR/run" 2>/dev/null
+# 新载荷的 config/ 是真实目录，先换回符号链接再启动，否则插件会往 APPDEST 里写
+"$(dirname "$0")/plugins_setup" >/dev/null 2>&1
+"$(dirname "$0")/main" start >/dev/null 2>&1
+exit 0

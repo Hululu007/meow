@@ -1,0 +1,184 @@
+# ============ 依赖与构建产物（可重建） ============
+node_modules/
+target/
+dist/
+build/
+*.o
+*.a
+
+# ============ 上游参考（648MB，不入库，只留 README） ============
+research/upstream/
+
+# ============ 逆向产物（可重建，原始素材按需保留） ============
+reverse/decompiled/
+reverse/decompiled-readable/
+reverse/src-readable/
+reverse/tooling/toolbin/
+reverse/artifacts/external/
+
+# Python 工具链产物（reverse/tooling 下有 20+ 个 .py）
+__pycache__/
+*.pyc
+*.pyo
+
+# ============ 发布产物 ============
+# 约定：发版产物放 release/<版本>/（如 release/v0.9.0/），可随时整目录删除重建。
+# 详见 AGENTS.md §0.1「产物与临时文件放哪」。
+release/
+release-*/
+plugins/
+*.zip
+# 例外：spider.zip 是 build_dev_jar.py / replace_class.py 的必需输入
+# （读里面的 assets/push.html，仓库别处没有副本），不能当成发布产物忽略。
+!reverse/artifacts/spider.zip
+
+# ============ 临时文件 ============
+# 中间产物、一次性脚本、抓包、调试截图。不要写到工作区外（换会话就找不到），
+# 需要留存的东西归到对应目录并入库，详见 AGENTS.md §0.1。
+tmp/
+
+# ============ 本机环境记录（含内网地址与密钥路径） ============
+# OECT / NAS / 模拟器等测试环境的连接方式与已知坑。
+# 不入库：里面有内网 IP、SSH 端口与密钥名，换个人或换网络都不适用。
+# 模板见 docs/36（部署）与 deploy/README.md（发版）。
+ENVIRONMENT.md
+
+# ============ 后端编译产物 ============
+# server/.gitignore 已有 host/classes/ 等 server 专属规则；
+# 这里不再重复，避免两处维护。
+
+# ============ 运行时数据 ============
+data/
+.env
+*.log
+
+# ============ 工具与编辑器 ============
+.tmp/
+.idea/
+.vscode/
+.DS_Store
+*.swp
+# ZCode 会话产物（计划文件、会话状态），只对本次会话有意义
+.zcode/
+
+# ============ 调试残留 ============
+.edge-profile/
+.smoke/
+*.pc-*.png
+*.bak
+# 源站抓包快照：无代码引用，一次性产物（server 专属规则见 server/.gitignore）
+dm*.xml
+tx.xml
+lst.json
+ds.json
+
+# Android 模拟器 / 逆向调试产物：体积大（.sysimg 实测 3.5GB）、
+# 文件名以点开头容易在目录列表里被忽略掉，但 git 不会自动忽略它们。
+# 注意 .sysimg/ 只匹配目录，要和 .sysimg*.xml 这类文件分开写。
+.sysimg
+.sysimg/
+.sysimg*.xml
+.emu*
+.cache/
+.r.xml
+
+
+# TV 客户端源码副本 + 构建产物（146MB，由 research/upstream/motao123-webtv 复制而来）
+# 需要重新构建时按 docs 里的步骤再复制一次，不把 146MB 塞进仓库。
+/tv/
+
+# ============ Android / TV ============
+# Gradle 缓存与产物：和 build/ 同理，属于可重建产物
+.gradle/
+local.properties
+*.apk
+*.aab
+# TV 签名材料（本地生成，不入库）
+client/apps/tv/keystore.properties
+client/apps/tv/*.jks
+# ============ 临时/验收产物 ============
+# 按前缀忽略：验收脚本与截图都写成 .xxx 形式，避免误入库
+/.mirror/
+/.imp.json
+/.sites.json
+/.probe.py
+/.pc.log
+/.emu.log
+/.dockerbuild.log
+/.tv*.png
+/.tv*.jpg
+
+# 投影仪/模拟器验收截图：单次排查产物，体积大（每轮 4MB+），不入库。
+# 需要长期对照的放 docs/images/ 或对应模块 README 旁边。
+reverse/artifacts/projector-pages/
+reverse/artifacts/projector-pages2/
+reverse/artifacts/projector-pages3/
+reverse/artifacts/projector-play/
+reverse/artifacts/mumu-detail.jpg
+
+# 并行会话的 git worktree（各自独立分支的工作副本）。
+# 它们由 `git worktree add` 创建、有自己的 .git 文件，**不能当普通目录提交**——
+# 提交进去会把另一个分支的完整工作树塞进本仓库。
+.worktree/
+
+# 清单是**发布产物**（挂 Release 资产），不该在仓库里留一份。
+# 踩过：根目录曾有一份 packages.json 被 git 跟踪，每次 sync-packages 写到
+# 临时目录之外的位置就会变成"改了但没人提交"的僵尸文件；而它一旦被误提交，
+# 又会和 Release 里那份内容分叉，排查时无法判断客户端读的是哪一份。
+/packages.json
+
+# 例外：`server/build/dist/.gitkeep` 必须能进 git（**只放行这一个文件**），
+# 见 Dockerfile.apiserver 的说明——目录不存在会让 `COPY server/build/dist/`
+# 在 CI 上 lstat 报错（踩过 2026-10-29，CI 连续 5 次挂在这行）。
+#
+# ★ 必须写成"逐层放行 + 逐层重新排除"：
+#   根规则排除了 `build/`（目录本身），git 就不再向下看，所以要先放行目录；
+#   但放行整个 dist/ 会把 dex/、dev-build/、goproxy/ 等几十 MB 中间产物
+#   一起带进仓库（实测 `git add -n` 列出 13 项）。所以紧接着再排除内容，
+#   只留 .gitkeep。规则顺序不能调换。
+!/server/build/
+!/server/build/dist/
+server/build/dist/*
+!/server/build/dist/.gitkeep
+
+# fnOS 应用（Rust 构建产物不入库）
+client/apps/fnos/meowd/target/
+
+# 运行时模块的 .so 走 Release 资产（62MB×3，不进 git）。
+# 本地/CI 用 client/apps/tv/runtime-node/fetch-libnode.ps1 拉取。
+client/apps/tv/runtime-node/src/main/jniLibs/
+client/apps/tv/runtime-node/.deps/
+
+# ── 公开壳：第三方源包不入库（2026-11-09）────────────────────────────
+# 仓库只保留加载器；jar / 真实站点配置 / danmu 载荷由用户导入或私有源包提供。
+# 这些文件曾经入库（spider.jar / config.sites.json / node-payload-danmu.zip），
+# 公开前已移出；加忽略规则防止回流。
+server/host/config.sites.json
+server/host/libs/spider.jar
+server/host/libs/spider-ext.jar
+client/apps/tv/app/src/main/assets/spider.jar
+client/apps/tv/app/src/main/assets/spider-ext.jar
+client/apps/tv/app/src/main/assets/node-payload-danmu.zip
+reverse/artifacts/spider.jar
+reverse/artifacts/spider.zip
+reverse/artifacts/classes.dex
+reverse/artifacts/config.json
+
+# ── 公开壳内容边界（2026-11-09）──────────────────────────────────────
+# 内部逆向、真实配置、待办/测试矩阵/归档与私密部署材料不进公开库；
+# 完整版保留在私有库 upchr/meow-private。
+reverse/
+research/
+.github/
+AGENTS.md
+server/README.md
+docs/archive/
+docs/images/
+docs/16-修源与二开.md
+docs/31-待办与下一步.md
+docs/38-使用手册.md
+docs/48-功能矩阵与冒烟.md
+docs/49-TV遥控与焦点导航.md
+docs/50-三个同类项目实现分析与借鉴.md
+smoke/fixtures/feimao-tv-with-jar.json
+smoke/tv-feimao-smoke.py

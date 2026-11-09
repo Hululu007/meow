@@ -1,0 +1,25 @@
+pluginManagement {
+    repositories {
+        // 阿里云镜像排最前：本地网络到 dl.google.com 常被打断，
+        // 而 media3 的 aar 在镜像上是同步的（实测 1.4.1 可拉）。
+        // 保留 google()/mavenCentral() 兜底，换网络环境也不会卡死。
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositories {
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "meow-tv"
+include(":app")
+include(":plugin-api")
+include(":runtime-node")

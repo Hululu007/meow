@@ -1,0 +1,13 @@
+# 构建目标固定成 GNU ABI。
+#
+# 为什么不用 msvc（虽然那是 rustc 的 host 默认）：
+# 本机在 Git Bash 里跑 cargo 时，PATH 中 `O:\tools\Git\usr\bin\link.exe`
+# （GNU coreutils 的 `link`，不是链接器）会覆盖 MSVC 的 link.exe，
+# 报 `link: extra operand '...rcgu.o'` 这种完全指不到病因的错。
+# GNU 目标用 mingw 的 gcc 链接，不受这个 shadow 影响。
+[build]
+target = "x86_64-pc-windows-gnu"
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"

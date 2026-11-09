@@ -1,0 +1,81 @@
+#!/bin/bash
+# 运行控制：start | stop | status
+# status 退出码：0=运行中，3=未运行（官方契约）
+set -u
+
+PIDFILE="$TRIM_PKGVAR/run/meowd.pid"
+LOG="$TRIM_PKGVAR/logs/meowd.log"
+CONF="$TRIM_PKGETC/meow.conf"
+
+[ -f "$CONF" ] && . "$CONF" 2>/dev/null
+
+# 向导值优先（安装/配置时由 fnOS 注入同名环境变量）
+PORT="${wizard_port:-${MEOW_SHELL_PORT:-${TRIM_SERVICE_PORT:-30010}}}"
+API_PORT="${wizard_api_port:-${MEOW_API_PORT:-30011}}"
+BIND="${MEOW_SHELL_BIND:-0.0.0.0}"
+
+running() {
+    [ -f "$PIDFILE" ] || return 1
+    p="$(cat "$PIDFILE" 2>/dev/null)"
+    [ -n "${p:-}" ] || return 1
+    kill -0 "$p" 2>/dev/null
+}
+
+case "${1:-}" in
+start)
+    mkdir -p "$TRIM_PKGVAR/run" "$TRIM_PKGVAR/logs" "$TRIM_PKGVAR/data" 2>/dev/null
+    if running; then
+        exit 0
+    fi
+    rm -f "$PIDFILE"
+
+    # meowd 自己会写 pid 文件并 setsid 脱离本脚本会话
+    nohup "$TRIM_APPDEST/bin/meowd" \
+        --port="$PORT" \
+        --api-port="$API_PORT" \
+        --bind="$BIND" \
+        --api-bind=127.0.0.1 \
+        --data="$TRIM_PKGVAR/data" \
+        >>"$LOG" 2>&1 </dev/null &
+
+    i=0
+    while [ "$i" -lt 30 ]; do
+        [ -f "$PIDFILE" ] && break
+        sleep 0.2
+        i=$((i + 1))
+    done
+
+    # 起不来也不返回 1：应用中心会把非 0 当成安装/启动失败，掩盖真实原因
+    if ! running; then
+        echo "猫窝 Meow 未能启动，请查看应用目录下 var/logs/meowd.log（端口 $PORT）。" \
+            > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null
+    fi
+    exit 0
+    ;;
+stop)
+    if ! running; then
+        rm -f "$PIDFILE"
+        exit 0
+    fi
+    p="$(cat "$PIDFILE")"
+    kill -TERM "$p" 2>/dev/null
+    i=0
+    while [ "$i" -lt 50 ]; do
+        kill -0 "$p" 2>/dev/null || break
+        sleep 0.2
+        i=$((i + 1))
+    done
+    if kill -0 "$p" 2>/dev/null; then
+        kill -KILL "$p" 2>/dev/null
+    fi
+    rm -f "$PIDFILE"
+    exit 0
+    ;;
+status)
+    running && exit 0
+    exit 3
+    ;;
+*)
+    exit 1
+    ;;
+esac

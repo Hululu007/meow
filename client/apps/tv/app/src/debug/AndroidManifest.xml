@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 仅 debug 构建生效的 manifest overlay（Gradle 会把 src/debug 合并进 main）。
+
+     为什么需要它：NativePlayerActivity 在 main 里是 exported=false（安全要求：
+     不让任何外部应用拿它当任意地址播放器）。但自动化冒烟要从 adb 直接拉起
+     播放器验证解码能力，exported=false 会被系统拒绝（实测报
+     "Permission Denial: ... not exported"）。
+
+     这里把 exported 改成 true 并加一个 launcher 入口，**只在 debug 包里存在**。
+     release 包不合并这个文件，保持不可导出。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <activity
+            android:name=".NativePlayerActivity"
+            android:exported="true"
+            tools:replace="android:exported">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

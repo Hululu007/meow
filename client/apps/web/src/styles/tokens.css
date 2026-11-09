@@ -1,0 +1,1425 @@
+@import 'tailwindcss';
+
+/*
+ * 设计 token —— 取自 影视仓 6.1.0 APK（aapt2 实测）
+ * 见 meow/docs/22-web-pc-plan-v1.md
+ */
+@theme {
+  /* 主色 */
+  --color-accent: #03dac5;          /* color_03DAC5 */
+  --color-accent-dim: #02b3a2;
+  --color-primary: #6200ee;         /* color_6200EE */
+  --color-primary-dark: #3700b3;    /* color_3700B3 */
+
+  /* 背景：比影仓 #32364E 更深，更现代 */
+  --color-base: #12141d;
+  --color-surface: #1a1d2b;
+  --color-elevated: #242838;
+  --color-panel: #2e3346;
+  --color-overlay: #0a0b11;
+
+  /* 文字 */
+  --color-ink: #ffffff;
+  --color-ink-2: #b8bdcc;
+  --color-ink-3: #7a8095;
+
+  /* 强调 */
+  --color-hot: #ff0057;             /* color_FF0057 */
+  --color-warn: #ff5f00;
+  --color-gold: #ce7900;            /* title_fouse_n */
+  --color-ok: #6cc354;
+  --color-info: #1890ff;
+
+  /* 播放器 */
+  --color-player: #39c5bb;          /* dkplayer_theme_color */
+
+  /*
+   * 语义「面」与「线」——换主题时会让整站质感跟着走，所以必须 token 化。
+   *
+   * 之前这些位置全是 bg-white/8、border-white/6、bg-black/30 这类硬编码，
+   * 在深色下碰巧好看，但换到暖棕/紫色主题时会一直是「中性白玻璃」，
+   * 与新的强调色不搭，看起来像没换肤。
+   */
+  --color-card: rgb(255 255 255 / 0.055);       /* 卡片、磁贴底 */
+  --color-card-hover: rgb(255 255 255 / 0.085); /* 卡片悬停 */
+  --color-line: rgb(255 255 255 / 0.06);        /* 分隔线、卡片描边 */
+  --color-line-hover: rgb(255 255 255 / 0.12);  /* 描边悬停 */
+  --color-field: rgb(0 0 0 / 0.3);              /* 输入框/文本域底 */
+  --color-on-accent: #0a0b11;                   /* 强调色按钮上的文字 */
+  --color-on-warn: #0a0b11;                     /* 警告色按钮上的文字 */
+  --color-on-hot: #0a0b11;                      /* 热门/危险色上的文字 */
+  /* 有壁纸时顶栏的蒙层色。必须每个主题给常量，不能用 color-mix：
+     实测切主题时 color-mix 会保留上一次算出的值（详见 .app-header 注释） */
+  --color-header-veil: rgb(18 20 29 / 0.76);
+
+  /*
+   * 分组面板（.set-card）底。
+   *
+   * 单独一个 token 是因为深浅两档的**层次方向是相反的**：
+   *   深色：面板比磁贴更淡（3% < 5.5%），保持"底 → 面板 → 磁贴"逐级提亮
+   *   浅色：面板是实心白（#fff），磁贴是灰调（--color-card），逐级压灰
+   * 之前浅色也让面板走 `--color-card` 的 55% 混色，实测只有 2.8% 不透明度，
+   * 卡片和底色几乎无差 —— 这就是"整页糊成一片"的根因。
+   */
+  --color-card-sunken: rgb(255 255 255 / 0.03); /* 分组面板底 */
+
+  /* 圆角 */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}
+
+
+:root {
+  /*
+   * color-scheme 决定**原生控件**的配色：滚动条、<select> 的弹层、
+   * 数字输入框的增减箭头、日期选择器等。这些是浏览器/系统画的，
+   * 不跟我们的 CSS 变量走。
+   *
+   * 踩过（2026-10-30 用户截图）：原来这句写死在 `:root` 里，
+   * light 主题下没覆盖 —— 页面是浅色，但点开 <select> 弹出来的
+   * 还是**深色系统菜单**，看起来像没做完的控件。
+   *
+   * 现在按 data-mode 切换（见下面的 light 覆盖块）。
+   */
+  color-scheme: dark;
+
+  /* ── 顶栏高度 ────────────────────────────────────────────────
+   *
+   * 凡是"占满剩余视口"的容器（AI 独立页）都要减掉它。
+   * 做成变量而不是各页面写死：TV 上顶栏是 4.5rem（见下面
+   * `html[data-tv='1'] .app-header`），Web/PC 是 h-16=4rem，
+   * 写死任一个在另一端都会溢出或留白。
+   *
+   * ★ 不要用 `100dvh`：Chrome 108+ 才有，投影仪（Chrome 66）会整条丢弃，
+   *   容器退回内容高度 —— 实测 AI 独立页面板只有 167px 高，比浮层还小。
+   *   `100vh` 兼容到 Chrome 20+。
+   */
+  --header-h: 4rem;
+
+  /* ── 手机底部标签栏高度 ──────────────────────────────────────
+   * 桌面/电视为 0（不显示）；手机端在下面的 media 块里改成 3.5rem + 安全区。
+   * 页面要在底部留出这么多空白（.has-tabbar），AI 独立页再减掉它，
+   * 否则最后一行会被玻璃栏压住。
+   * 手机 = 栏高 3.5rem + 离底 0.75rem + 中间 AI 球向上顶出的 1.5rem ≈ 6rem。 */
+  --tabbar-h: 0px;
+
+  /* ── 字号刻度（★ 新代码请用这些，不要再写 text-[11px]）──────────
+   *
+   * 为什么要有这一层：模板里散着 343 处硬编码 px（其中 text-[11px] 263 处）。
+   * px 不随屏幕放大 —— 同一套 11px，在 640px 高的 CSS 视口里占 1.7%，
+   * 到 2160px 的 4K 播放器上只剩 0.5%，用户看到的就是"字变小了"。
+   *
+   * 用 rem：根字号由下面 html[data-tv='1'] 的响应式规则统一放大，
+   * 所有引用 token 的地方自动跟着长，不必逐处改。
+   *
+   * 基准是 16px（浏览器默认），所以 0.6875rem = 11px、0.875rem = 14px。
+   * 分成 6 档就够用：再细分的区别在 10-foot UI 上肉眼看不出来，
+   * 只会让"这个标题该用哪档"变成每次都要想的事。
+   */
+  --fs-tiny: 0.625rem;   /* 10px：角标、纯装饰数字 */
+  --fs-mini: 0.6875rem;  /* 11px：辅助说明、次要标签 —— 模板里的绝对主力 */
+  --fs-xs: 0.75rem;      /* 12px：正文小号、表格内容 */
+  --fs-sm: 0.8125rem;    /* 13px：导航项、按钮 */
+  --fs-base: 0.875rem;   /* 14px：正文 */
+  --fs-md: 0.9375rem;    /* 15px：强调正文 */
+  --fs-lg: 1rem;         /* 16px：分区标题 */
+}
+
+/* ══════════════════════════════════════════════════════════════
+   主题覆盖（8 套风格 × 浅/深）
+   ──────────────────────────────────────────────────────────────
+   ★ 为什么用选择器而不是 JS 行内变量：
+     实测 Chromium 在只改根元素行内变量时，已渲染元素的 background-color
+     不会重算（新建的克隆元素对、原元素仍是旧色）。
+     选择器匹配变化会正规地触发样式失效重算，所以这里声明成 CSS，
+     JS 只负责切 html 上的 data-style / data-mode 两个属性。
+   ★ 每块 27 个变量：24 个配色/圆角 + --color-wp-tint（壁纸玻璃）
+     + --color-on-warn / --color-on-hot（语义色上的文字，明暗会翻转）。
+   ★ --color-on-* 必须是能过 4.5:1 的那一档；tests/theme-tokens.test.ts
+     会逐块校验，不要再按"深色主题就写白字"的直觉改。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 猫窝青 ── */
+html[data-style="meow"][data-mode="dark"] {
+  --color-base: #12141d;
+  --color-header-veil: rgb(18 20 29 / 0.76);
+  --color-surface: #1a1d2b;
+  --color-elevated: #242838;
+  --color-panel: #2e3346;
+  --color-accent: #03dac5;
+  --color-accent-dim: #02b3a2;
+  --color-ink: #ffffff;
+  --color-ink-2: #b8bdcc;
+  --color-ink-3: #7a8095;
+  --color-player: #39c5bb;
+  --color-hot: #ff0057;
+  --color-warn: #ff5f00;
+  --color-ok: #6cc354;
+  --color-on-accent: #0a0b11;
+  --color-on-warn: #0a0b11;
+  --color-on-hot: #0a0b11;
+  --color-card: rgb(255 255 255 / 0.055);
+  --color-card-hover: rgb(255 255 255 / 0.085);
+  --color-card-sunken: rgb(255 255 255 / 0.03);
+  --color-line: rgb(255 255 255 / 0.06);
+  --color-line-hover: rgb(255 255 255 / 0.12);
+  --color-field: rgb(0 0 0 / 0.3);
+  --color-wp-tint: 8 10 14;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}
+
+html[data-style="meow"][data-mode="light"] {
+  --color-base: #f4f6fa;
+  --color-header-veil: rgb(244 246 250 / 0.76);
+  --color-surface: #ffffff;
+  --color-elevated: #eef1f7;
+  --color-panel: #e4e9f2;
+  --color-accent: #00a896;
+  --color-accent-dim: #009184;
+  --color-ink: #151821;
+  --color-ink-2: #4a5262;
+  --color-ink-3: #667085;
+  --color-player: #189b91;
+  --color-hot: #c8174a;
+  --color-warn: #b35200;
+  --color-ok: #377d28;
+  --color-on-accent: #062e2a;
+  --color-on-warn: #ffffff;
+  --color-on-hot: #ffffff;
+  --color-card: rgb(20 26 40 / 0.055);
+  --color-card-hover: rgb(20 26 40 / 0.095);
+  --color-card-sunken: #ffffff;
+  --color-line: #d3d9e6;
+  --color-line-hover: #b9c3d5;
+  --color-field: #eef1f7;
+  --color-wp-tint: 255 255 255;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}
+
+/* ── Claude ── */
+html[data-style="claude"][data-mode="dark"] {
+  --color-base: #1f1e1b;
+  --color-header-veil: rgb(31 30 27 / 0.76);
+  --color-surface: #2d2c25;
+  --color-elevated: #38362f;
+  --color-panel: #433f37;
+  --color-accent: #e88a68;
+  --color-accent-dim: #d4785a;
+  --color-ink: #edebe3;
+  --color-ink-2: #a5a29a;
+  --color-ink-3: #9c9a90;
+  --color-player: #e88a68;
+  --color-hot: #d97b72;
+  --color-warn: #d9b25f;
+  --color-ok: #8fae78;
+  --color-on-accent: #1f1e1b;
+  --color-on-warn: #1f1e1b;
+  --color-on-hot: #1f1e1b;
+  --color-card: rgb(255 246 236 / 0.06);
+  --color-card-hover: rgb(255 246 236 / 0.095);
+  --color-card-sunken: rgb(255 246 236 / 0.035);
+  --color-line: rgb(255 246 236 / 0.085);
+  --color-line-hover: rgb(255 246 236 / 0.16);
+  --color-field: rgb(0 0 0 / 0.26);
+  --color-wp-tint: 24 22 19;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+}
+
+html[data-style="claude"][data-mode="light"] {
+  --color-base: #efebe0;
+  --color-header-veil: rgb(239 235 224 / 0.76);
+  --color-surface: #ffffff;
+  --color-elevated: #e9e5d6;
+  --color-panel: #e0dbc9;
+  --color-accent: #a14427;
+  --color-accent-dim: #8a3a20;
+  --color-ink: #1f1e1b;
+  --color-ink-2: #5a574f;
+  --color-ink-3: #6b685e;
+  --color-player: #a14427;
+  --color-hot: #a63f34;
+  --color-warn: #8d5c16;
+  --color-ok: #3f622c;
+  --color-on-accent: #ffffff;
+  --color-on-warn: #ffffff;
+  --color-on-hot: #ffffff;
+  --color-card: rgb(31 30 27 / 0.055);
+  --color-card-hover: rgb(31 30 27 / 0.095);
+  --color-card-sunken: #ffffff;
+  --color-line: #d5cfbc;
+  --color-line-hover: #c0b9a4;
+  --color-field: #f1ede2;
+  --color-wp-tint: 255 250 243;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+}
+
+/* ── Material ── */
+html[data-style="material"][data-mode="dark"] {
+  --color-base: #141218;
+  --color-header-veil: rgb(20 18 24 / 0.76);
+  --color-surface: #211f26;
+  --color-elevated: #2b2930;
+  --color-panel: #36343b;
+  --color-accent: #d0bcff;
+  --color-accent-dim: #b9a4fa;
+  --color-ink: #e6e1e5;
+  --color-ink-2: #c4c5d0;
+  --color-ink-3: #928f9a;
+  --color-player: #4ecdb4;
+  --color-hot: #f2b8b4;
+  --color-warn: #f2b8b4;
+  --color-ok: #4ecdb4;
+  --color-on-accent: #141218;
+  --color-on-warn: #141218;
+  --color-on-hot: #141218;
+  --color-card: rgb(228 220 255 / 0.07);
+  --color-card-hover: rgb(228 220 255 / 0.11);
+  --color-card-sunken: rgb(228 220 255 / 0.04);
+  --color-line: rgb(228 220 255 / 0.1);
+  --color-line-hover: rgb(228 220 255 / 0.18);
+  --color-field: rgb(10 8 16 / 0.4);
+  --color-wp-tint: 18 16 22;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+}
+
+html[data-style="material"][data-mode="light"] {
+  --color-base: #fefbff;
+  --color-header-veil: rgb(254 251 255 / 0.76);
+  --color-surface: #ffffff;
+  --color-elevated: #f5eff7;
+  --color-panel: #ece6f0;
+  --color-accent: #6750a4;
+  --color-accent-dim: #4f378b;
+  --color-ink: #1d1b20;
+  --color-ink-2: #53525c;
+  --color-ink-3: #6b6b75;
+  --color-player: #006a60;
+  --color-hot: #a01f18;
+  --color-warn: #6d4453;
+  --color-ok: #005c53;
+  --color-on-accent: #ffffff;
+  --color-on-warn: #ffffff;
+  --color-on-hot: #ffffff;
+  --color-card: rgb(29 27 32 / 0.055);
+  --color-card-hover: rgb(29 27 32 / 0.095);
+  --color-card-sunken: #ffffff;
+  --color-line: #cac4d0;
+  --color-line-hover: #b0a9b8;
+  --color-field: #f5eff7;
+  --color-wp-tint: 255 253 255;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+}
+
+/* ── Nord ── */
+html[data-style="nord"][data-mode="dark"] {
+  --color-base: #2e3440;
+  --color-header-veil: rgb(46 52 64 / 0.76);
+  --color-surface: #343b4a;
+  --color-elevated: #3b4252;
+  --color-panel: #434c5e;
+  --color-accent: #88c0d0;
+  --color-accent-dim: #6d9fb0;
+  --color-ink: #eceff4;
+  --color-ink-2: #d8dee9;
+  --color-ink-3: #a3aec2;
+  --color-player: #8fbcbb;
+  --color-hot: #bf616a;
+  --color-warn: #d08770;
+  --color-ok: #a3be8c;
+  --color-on-accent: #2e3440;
+  --color-on-warn: #0b0e12;
+  --color-on-hot: #0b0e12;
+  --color-card: rgb(236 239 244 / 0.055);
+  --color-card-hover: rgb(236 239 244 / 0.09);
+  --color-card-sunken: rgb(236 239 244 / 0.03);
+  --color-line: rgb(236 239 244 / 0.08);
+  --color-line-hover: rgb(236 239 244 / 0.16);
+  --color-field: rgb(0 0 0 / 0.25);
+  --color-wp-tint: 30 35 43;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+}
+
+html[data-style="nord"][data-mode="light"] {
+  --color-base: #eceff4;
+  --color-header-veil: rgb(236 239 244 / 0.76);
+  --color-surface: #ffffff;
+  --color-elevated: #e5e9f0;
+  --color-panel: #d8dee9;
+  --color-accent: #4c6f96;
+  --color-accent-dim: #3f5d80;
+  --color-ink: #2e3440;
+  --color-ink-2: #4c566a;
+  --color-ink-3: #5f6b7f;
+  --color-player: #3f7a86;
+  --color-hot: #a63d47;
+  --color-warn: #8a5a2b;
+  --color-ok: #4f7a3a;
+  --color-on-accent: #ffffff;
+  --color-on-warn: #ffffff;
+  --color-on-hot: #ffffff;
+  --color-card: rgb(46 52 64 / 0.055);
+  --color-card-hover: rgb(46 52 64 / 0.095);
+  --color-card-sunken: #ffffff;
+  --color-line: #cfd6e2;
+  --color-line-hover: #b9c3d5;
+  --color-field: #e5e9f0;
+  --color-wp-tint: 250 252 255;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+}
+
+/* ── Tokyo Night ── */
+html[data-style="tokyo"][data-mode="dark"] {
+  --color-base: #1a1b26;
+  --color-header-veil: rgb(26 27 38 / 0.76);
+  --color-surface: #1f2335;
+  --color-elevated: #24283b;
+  --color-panel: #292e42;
+  --color-accent: #7aa2f7;
+  --color-accent-dim: #5f7fd0;
+  --color-ink: #c0caf5;
+  --color-ink-2: #a9b1d6;
+  --color-ink-3: #7f87ad;
+  --color-player: #7dcfff;
+  --color-hot: #f7768e;
+  --color-warn: #e0af68;
+  --color-ok: #9ece6a;
+  --color-on-accent: #15161e;
+  --color-on-warn: #15161e;
+  --color-on-hot: #15161e;
+  --color-card: rgb(192 202 245 / 0.06);
+  --color-card-hover: rgb(192 202 245 / 0.095);
+  --color-card-sunken: rgb(192 202 245 / 0.035);
+  --color-line: rgb(192 202 245 / 0.09);
+  --color-line-hover: rgb(192 202 245 / 0.17);
+  --color-field: rgb(0 0 0 / 0.3);
+  --color-wp-tint: 20 21 32;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}
+
+html[data-style="tokyo"][data-mode="light"] {
+  --color-base: #eef0f7;
+  --color-header-veil: rgb(238 240 247 / 0.76);
+  --color-surface: #ffffff;
+  --color-elevated: #e6e9f4;
+  --color-panel: #dbe0ef;
+  --color-accent: #2e5fbf;
+  --color-accent-dim: #244c9a;
+  --color-ink: #1a1b26;
+  --color-ink-2: #3d4360;
+  --color-ink-3: #5c6480;
+  --color-player: #1f6f8b;
+  --color-hot: #c0395a;
+  --color-warn: #a06a00;
+  --color-ok: #3f7d2c;
+  --color-on-accent: #ffffff;
+  --color-on-warn: #ffffff;
+  --color-on-hot: #ffffff;
+  --color-card: rgb(26 27 38 / 0.055);
+  --color-card-hover: rgb(26 27 38 / 0.095);
+  --color-card-sunken: #ffffff;
+  --color-line: #ccd3e4;
+  --color-line-hover: #b4bdd3;
+  --color-field: #e6e9f4;
+  --color-wp-tint: 253 254 255;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}
+
+/* ── Catppuccin ── */
+html[data-style="catppuccin"][data-mode="dark"] {
+  --color-base: #181825;
+  --color-header-veil: rgb(24 24 37 / 0.76);
+  --color-surface: #1e1e2e;
+  --color-elevated: #313244;
+  --color-panel: #45475a;
+  --color-accent: #cba6f7;
+  --color-accent-dim: #a98bd1;
+  --color-ink: #cdd6f4;
+  --color-ink-2: #bac2de;
+  --color-ink-3: #9399b2;
+  --color-player: #94e2d5;
+  --color-hot: #f38ba8;
+  --color-warn: #fab387;
+  --color-ok: #a6e3a1;
+  --color-on-accent: #1e1e2e;
+  --color-on-warn: #1e1e2e;
+  --color-on-hot: #1e1e2e;
+  --color-card: rgb(205 214 244 / 0.06);
+  --color-card-hover: rgb(205 214 244 / 0.1);
+  --color-card-sunken: rgb(205 214 244 / 0.035);
+  --color-line: rgb(205 214 244 / 0.09);
+  --color-line-hover: rgb(205 214 244 / 0.17);
+  --color-field: rgb(0 0 0 / 0.3);
+  --color-wp-tint: 24 24 37;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+}
+
+html[data-style="catppuccin"][data-mode="light"] {
+  --color-base: #eff1f5;
+  --color-header-veil: rgb(239 241 245 / 0.76);
+  --color-surface: #ffffff;
+  --color-elevated: #e6e9ef;
+  --color-panel: #dce0e8;
+  --color-accent: #8839ef;
+  --color-accent-dim: #6f2bc4;
+  --color-ink: #4c4f69;
+  --color-ink-2: #5c5f77;
+  --color-ink-3: #666a80;
+  --color-player: #179299;
+  --color-hot: #d20f39;
+  --color-warn: #fe640b;
+  --color-ok: #40a02b;
+  --color-on-accent: #ffffff;
+  --color-on-warn: #1e1e2e;
+  --color-on-hot: #ffffff;
+  --color-card: rgb(76 79 105 / 0.055);
+  --color-card-hover: rgb(76 79 105 / 0.095);
+  --color-card-sunken: #ffffff;
+  --color-line: #ccd0da;
+  --color-line-hover: #b5bac8;
+  --color-field: #e6e9ef;
+  --color-wp-tint: 255 255 255;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+}
+
+/* ── OLED ── */
+html[data-style="oled"][data-mode="dark"] {
+  --color-base: #000000;
+  --color-header-veil: rgb(0 0 0 / 0.76);
+  --color-surface: #0a0a0a;
+  --color-elevated: #141414;
+  --color-panel: #1e1e1e;
+  --color-accent: #ffb300;
+  --color-accent-dim: #d99a00;
+  --color-ink: #ffffff;
+  --color-ink-2: #d4d4d4;
+  --color-ink-3: #a3a3a3;
+  --color-player: #ffd166;
+  --color-hot: #ff453a;
+  --color-warn: #ff9f0a;
+  --color-ok: #30d158;
+  --color-on-accent: #000000;
+  --color-on-warn: #000000;
+  --color-on-hot: #000000;
+  --color-card: rgb(255 255 255 / 0.06);
+  --color-card-hover: rgb(255 255 255 / 0.1);
+  --color-card-sunken: rgb(255 255 255 / 0.03);
+  --color-line: rgb(255 255 255 / 0.12);
+  --color-line-hover: rgb(255 255 255 / 0.2);
+  --color-field: rgb(255 255 255 / 0.07);
+  --color-wp-tint: 0 0 0;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+}
+
+html[data-style="oled"][data-mode="light"] {
+  --color-base: #ffffff;
+  --color-header-veil: rgb(255 255 255 / 0.76);
+  --color-surface: #f7f7f7;
+  --color-elevated: #efefef;
+  --color-panel: #e5e5e5;
+  --color-accent: #a34a00;
+  --color-accent-dim: #8a3d00;
+  --color-ink: #000000;
+  --color-ink-2: #333333;
+  --color-ink-3: #595959;
+  --color-player: #a34a00;
+  --color-hot: #b3261e;
+  --color-warn: #8a4b00;
+  --color-ok: #1b6b2f;
+  --color-on-accent: #ffffff;
+  --color-on-warn: #ffffff;
+  --color-on-hot: #ffffff;
+  --color-card: rgb(0 0 0 / 0.055);
+  --color-card-hover: rgb(0 0 0 / 0.095);
+  --color-card-sunken: #ffffff;
+  --color-line: #d4d4d4;
+  --color-line-hover: #b8b8b8;
+  --color-field: #efefef;
+  --color-wp-tint: 255 255 255;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+}
+
+/* ── Everforest ── */
+html[data-style="everforest"][data-mode="dark"] {
+  --color-base: #2b3339;
+  --color-header-veil: rgb(43 51 57 / 0.76);
+  --color-surface: #323c41;
+  --color-elevated: #3a454a;
+  --color-panel: #475258;
+  --color-accent: #a7c080;
+  --color-accent-dim: #8ba368;
+  --color-ink: #d3c6aa;
+  --color-ink-2: #b8b5a0;
+  --color-ink-3: #a5a394;
+  --color-player: #83c092;
+  --color-hot: #e67e80;
+  --color-warn: #dbbc7f;
+  --color-ok: #a7c080;
+  --color-on-accent: #2b3339;
+  --color-on-warn: #2b3339;
+  --color-on-hot: #2b3339;
+  --color-card: rgb(211 198 170 / 0.055);
+  --color-card-hover: rgb(211 198 170 / 0.09);
+  --color-card-sunken: rgb(211 198 170 / 0.03);
+  --color-line: rgb(211 198 170 / 0.08);
+  --color-line-hover: rgb(211 198 170 / 0.16);
+  --color-field: rgb(0 0 0 / 0.25);
+  --color-wp-tint: 40 48 54;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+}
+
+html[data-style="everforest"][data-mode="light"] {
+  --color-base: #fdf6e3;
+  --color-header-veil: rgb(253 246 227 / 0.76);
+  --color-surface: #ffffff;
+  --color-elevated: #f4eeda;
+  --color-panel: #efebd4;
+  --color-accent: #667a00;
+  --color-accent-dim: #556600;
+  --color-ink: #43525a;
+  --color-ink-2: #52626a;
+  --color-ink-3: #5f6e76;
+  --color-player: #3f7a5c;
+  --color-hot: #b34a4a;
+  --color-warn: #8a6a00;
+  --color-ok: #4f7a00;
+  --color-on-accent: #ffffff;
+  --color-on-warn: #ffffff;
+  --color-on-hot: #ffffff;
+  --color-card: rgb(74 90 96 / 0.055);
+  --color-card-hover: rgb(74 90 96 / 0.095);
+  --color-card-sunken: #ffffff;
+  --color-line: #e2dcc6;
+  --color-line-hover: #cdc6ad;
+  --color-field: #f4eeda;
+  --color-wp-tint: 255 252 242;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+}
+
+/* ── color-scheme 跟随明暗模式 ──────────────────────────────────
+ *
+ * 原生控件（<select> 弹层、滚动条、数字输入框箭头、日期选择器）
+ * 由浏览器按这个值画，不跟我们的 CSS 变量走。
+ *
+ * 踩过（2026-10-30 用户截图）：`:root` 里写死 dark，light 主题下
+ * 页面是浅色但点开下拉还是深色系统菜单 —— 每个主题块都要抄一遍
+ * 太容易漏，所以在这里按 data-mode 统一覆盖。
+ */
+/* 数据可视化色板（环图/图例）。不用主题 accent：分类色要能互相区分。 */
+:root {
+  --chart-1: #5b9cf6;
+  --chart-2: #a78bfa;
+  --chart-3: #f472b6;
+  --chart-4: #fbbf24;
+  --chart-5: #34d399;
+  --chart-6: #f87171;
+  --chart-7: #94a3b8;
+}
+html[data-mode='light'] {
+  color-scheme: light;
+  /* 浅色底上的分类色：同一色相压深，避免在白底上发飘 */
+  --chart-1: #2563eb;
+  --chart-2: #7c3aed;
+  --chart-3: #db2777;
+  --chart-4: #b45309;
+  --chart-5: #059669;
+  --chart-6: #dc2626;
+  --chart-7: #64748b;
+}
+html[data-mode='dark'] {
+  color-scheme: dark;
+}
+
+
+/* ══════════════════════════════════════════════════════════════
+   有背景图时的覆盖（html[data-wallpaper][data-wp]）
+   ──────────────────────────────────────────────────────────────
+   背景图会把「半透明玻璃」全部变成「直接看图片」，文字立刻不可读。
+   与其到每个组件里加 if，不如在变量层统一改口径。
+
+   ★ data-wp 是「壁纸可见度」四档（0/1/2/3 = 25%/45%/65%/85%）。
+     为什么不把它写成行内变量（`html { --wp: .35 }`）：
+     实测 Chromium 改根元素自定义属性时，已渲染元素的 background-color
+     不会重算（见 stores/theme.ts 顶部那段）。分档选择器没有这个问题。
+
+   ★ 卡片 alpha 必须跟着可见度走：可见度越高，卡片越透，
+     否则用户在设置里调了半天只看到"数字变了，画面没动"。
+     下限留 0.24 是保证正文始终有底 —— 「能看见壁纸」优先，
+     但不能到"看不清字"的程度。
+   ══════════════════════════════════════════════════════════════ */
+/* 浅色：卡片是白系，输入框要比卡片**更深一档**才有边界。
+   之前这里写 rgb(var(--color-wp-tint) / 0.97)，和卡片同色，输入框看不出来。 */
+html[data-wallpaper='1'][data-mode='light'][data-wp='0'] {
+  --color-card: rgb(var(--color-wp-tint) / 0.94);
+  --color-card-hover: rgb(var(--color-wp-tint) / 0.98);
+  --color-card-sunken: rgb(var(--color-wp-tint) / 0.96);
+  --color-field: rgb(20 26 40 / 0.05);
+  --color-line: rgb(20 26 40 / 0.14);
+  --color-line-hover: rgb(20 26 40 / 0.24);
+}
+html[data-wallpaper='1'][data-mode='light'][data-wp='1'] {
+  --color-card: rgb(var(--color-wp-tint) / 0.82);
+  --color-card-hover: rgb(var(--color-wp-tint) / 0.92);
+  --color-card-sunken: rgb(var(--color-wp-tint) / 0.88);
+  --color-field: rgb(20 26 40 / 0.06);
+  --color-line: rgb(20 26 40 / 0.14);
+  --color-line-hover: rgb(20 26 40 / 0.24);
+}
+html[data-wallpaper='1'][data-mode='light'][data-wp='2'] {
+  --color-card: rgb(var(--color-wp-tint) / 0.68);
+  --color-card-hover: rgb(var(--color-wp-tint) / 0.82);
+  --color-card-sunken: rgb(var(--color-wp-tint) / 0.78);
+  --color-field: rgb(20 26 40 / 0.08);
+  --color-line: rgb(20 26 40 / 0.16);
+  --color-line-hover: rgb(20 26 40 / 0.26);
+}
+html[data-wallpaper='1'][data-mode='light'][data-wp='3'] {
+  --color-card: rgb(var(--color-wp-tint) / 0.52);
+  --color-card-hover: rgb(var(--color-wp-tint) / 0.68);
+  --color-card-sunken: rgb(var(--color-wp-tint) / 0.64);
+  --color-field: rgb(20 26 40 / 0.1);
+  --color-line: rgb(20 26 40 / 0.2);
+  --color-line-hover: rgb(20 26 40 / 0.3);
+}
+
+html[data-wallpaper='1'][data-mode='dark'][data-wp='0'] {
+  --color-card: rgb(var(--color-wp-tint) / 0.9);
+  --color-card-hover: rgb(var(--color-wp-tint) / 0.96);
+  --color-card-sunken: rgb(var(--color-wp-tint) / 0.94);
+  --color-field: rgb(0 0 0 / 0.86);
+}
+html[data-wallpaper='1'][data-mode='dark'][data-wp='1'] {
+  --color-card: rgb(var(--color-wp-tint) / 0.78);
+  --color-card-hover: rgb(var(--color-wp-tint) / 0.86);
+  --color-card-sunken: rgb(var(--color-wp-tint) / 0.84);
+  --color-field: rgb(0 0 0 / 0.76);
+}
+html[data-wallpaper='1'][data-mode='dark'][data-wp='2'] {
+  --color-card: rgb(var(--color-wp-tint) / 0.62);
+  --color-card-hover: rgb(var(--color-wp-tint) / 0.74);
+  --color-card-sunken: rgb(var(--color-wp-tint) / 0.7);
+  --color-field: rgb(0 0 0 / 0.64);
+}
+html[data-wallpaper='1'][data-mode='dark'][data-wp='3'] {
+  --color-card: rgb(var(--color-wp-tint) / 0.44);
+  --color-card-hover: rgb(var(--color-wp-tint) / 0.58);
+  --color-card-sunken: rgb(var(--color-wp-tint) / 0.54);
+  --color-field: rgb(0 0 0 / 0.5);
+}
+
+
+/* ══════════════════════════════════════════════════════════════
+   顶栏
+   ──────────────────────────────────────────────────────────────
+   ★ 之前写死 `bg-base/85`：底色占 85%，壁纸基本被挡光，
+     用户看到的是「一条纯色横杠压在图片上」，等于背景图没铺到顶部。
+     改成「底色按比例混透明」：没壁纸时就是实底色，
+     有壁纸时让出 24% 并保留 backdrop-blur，壁纸能透上来，
+     同时半透明白/黑纱又保证顶栏文字始终有底。
+   ══════════════════════════════════════════════════════════════ */
+@layer components {
+  /* 这里只给底色，模糊交给模板上的 backdrop-blur-xl ——
+     手写 backdrop-filter 会被 minifier 与 -webkit- 前缀合并成一条，
+     产物里只剩前缀版本。 */
+  .app-header {
+    background: var(--color-base);
+  }
+  /*
+   * 有壁纸时顶栏半透明，让图透出来一点。
+   *
+   * ★ 2026-10-31：这里原来写 `color-mix(in oklab, var(--color-base) 76%, transparent)`，
+   *   在"深色→浅色"切主题时**算出了旧值**：实测 data-mode=light、
+   *   --color-base=#f4f6fa，但顶栏 computed 仍是 rgba(18,20,29,0.76)
+   *   （深色底色 76%），于是浅色主题下顶栏是深灰底 + 深色文字 = 选项看不清。
+   *   改成两个按主题分别给的 token：不经过 color-mix 的变量内联，
+   *   属性值直接随 data-mode 变化，不存在"算过一次就缓存"的问题。
+   *   （与 theme.ts 顶部那段"不要用 JS 写行内 CSS 变量换肤"是同一个根因家族。）
+   */
+  html[data-wallpaper='1'] .app-header {
+    background: var(--color-header-veil);
+  }
+}
+
+/*
+ * ── 电视根字号：让所有 rem 跟着屏幕一起长 ────────────────────
+ *
+ * ★ 这是"大屏字幕变小"的总闸。TV 上 CSS 视口并不等于屏幕分辨率：
+ *   实测 MuMu（物理 2560×1440、dpr 2.25）拿到的 CSS 视口只有 1138×640，
+ *   而真 4K 播放器 dpr=1 时是 3840×2160 —— 同一个 11px 字，
+ *   在前者占屏高 1.7%，在后者只占 0.5%，看起来就是"字变小了"。
+ *
+ * ★ 为什么先抬 html 的 font-size 而不是逐处改字号：
+ *   模板里有 343 处硬编码 px（text-[11px] 占 263 处），逐个改既慢又会漏。
+ *   根字号一变，**所有 rem 一起放大**；配合下面的"电视下压 px 类名"，
+ *   两条路合起来才覆盖得住。
+ *
+ * ★ 断点用 min-width 而不是设备类型判断：
+ *   电视、投影仪、大屏一体机都只是"视口很宽的设备"，没有可靠的 UA 特征
+ *   （Android TV 与手机 UA 常常一样）。按宽度给档位，谁大谁受益。
+ *
+ * 16 → 18 → 20 → 24px：
+ *   - 1280px（多数 1080p 电视的 CSS 视口，dpr≈1.5–2）
+ *   - 1920px（4K 设备但在系统里设了 200% 缩放）
+ *   - 2560px（4K dpr=1，最"字小"的那类）
+ */
+html[data-tv='1'] {
+  font-size: 1rem;
+}
+
+/*
+ * TV 上隐藏某控件（遥控器用不到它，留着只会让焦点多走一格）。
+ *
+ * 目前只有播放器音量条：TV 的音量由遥控器独立的音量键交给系统处理，
+ * 页面里再放一根滑块既选不动（得靠焦点+左右，与"左右=进度"冲突），
+ * 也容易被误当成"改了音量但其实只改了 video.volume，与系统音量叠加"。
+ */
+html[data-tv='1'] .tv-hide {
+  display: none !important;
+}
+
+/*
+ * TV 上取消吸附（2026-11-04，修「搜索页左右键进不去左侧源列表」）。
+ *
+ * tv-nav 的 pinned() 把任何 position:sticky 祖先都当成顶栏，套用一维左右规则：
+ * 焦点在右侧内容时它被 skipPinned 跳过，焦点在它里面时左右又只在它内部找。
+ * 结果侧栏在遥控器上两头都不可达 —— TV 上直接让它跟页面一起滚。
+ */
+html[data-tv='1'] .tv-unstick {
+  position: static !important;
+}
+@media (min-width: 1280px) {
+  html[data-tv='1'] {
+    font-size: 1.125rem;
+  }
+}
+@media (min-width: 1920px) {
+  html[data-tv='1'] {
+    font-size: 1.25rem;
+  }
+}
+@media (min-width: 2400px) {
+  html[data-tv='1'] {
+    font-size: 1.5rem;
+  }
+}
+
+/*
+ * ── 电视顶栏放大 ──────────────────────────────────────────────
+ *
+ * ★ 必须写在 `@layer` **外面**。
+ *   Tailwind v4 把工具类放进 utilities 层，而层与层的优先级是固定的
+ *   （utilities > components），跟选择器特异性无关 —— 一开始把这段放进
+ *   `@layer components`，`html[data-tv='1'] .app-header .text-sm` 特异性
+ *   明明更高，实测仍然被 `.text-sm` 盖住（顶栏 14px 纹丝不动）。
+ *   层外声明的规则一律胜过任何 @layer 内的规则，放外面才生效。
+ *
+ * 电视是 10-foot UI：14px 的导航文字在 3 米外基本看不出是字。
+ * 顶栏里的可点元素写的是 `text-sm`(14px) 与少量 `text-[13px]` / `text-xs`，
+ * 直接压这些类名最可靠 —— 它们就是模板里真实写的，不依赖元素层级
+ * （按 `> a` / `> div > button` 选会漏掉「设置」这种嵌在多层的项）。
+ */
+html[data-tv='1'] .app-header {
+  height: 4.5rem;
+  font-size: 1rem;
+}
+/* 顶栏变高，占满剩余视口的页面要跟着减 */
+html[data-tv='1'] {
+  --header-h: 4.5rem;
+}
+html[data-tv='1'] .app-header .text-sm {
+  font-size: 1.0625rem; /* 17px：电视上正文字号的下限 */
+}
+html[data-tv='1'] .app-header .text-\[13px\],
+html[data-tv='1'] .app-header .text-xs {
+  font-size: 0.9375rem;
+}
+/* 图标跟着文字一起长，否则 17px 字配 16px 图标显得头重脚轻 */
+html[data-tv='1'] .app-header svg {
+  width: 1.375rem;
+  height: 1.375rem;
+}
+
+/*
+ * ── 电视上的合成/滚动优化（"WebView 尽量接近原生"）───────────────
+ *
+ * 这些不是"美化"，是直接针对电视硬件弱、且输入只有遥控器（离散跳转）
+ * 这两个前提。每一条都对应一个可观察的症状：
+ *
+ * ① `scroll-behavior: auto`
+ *    前端有几处写了 `scroll-behavior: smooth`（锚点跳转）。在盒子上平滑
+ *    滚动是 JS/CSS 合成动画，60fps 保不住，观感是"卡着挪"。遥控器翻页
+ *    本来就是离散的，不需要动画。
+ *
+ * ② `-webkit-tap-highlight-color: transparent`
+ *    焦点移动时部分固件会画一层蓝色 tap 高亮，跟我们的 focus 环叠加。
+ *
+ * ③ `overscroll-behavior: none`
+ *    列表滚到底时不让内核触发"橡皮筋"，那层效果在电视上是纯粹的掉帧源。
+ *
+ * ④ `text-rendering: optimizeSpeed`
+ *    电视盒子的字形栅格化很慢，默认的 optimizeLegibility 会开连字与
+ *    精细 kerning。中文没有连字，收益为负。
+ *
+ * ⑤ 图片解码提示（见 `img` 规则）
+ *    `decoding: async` 让图片解码离开主线程。海报墙一次铺 24 张图，
+ *    同步解码时首屏会出现"先白后闪"。
+ */
+html[data-tv='1'] {
+  scroll-behavior: auto;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  text-rendering: optimizeSpeed;
+}
+html[data-tv='1'] img {
+  decoding: async;
+}
+/* 电视没有鼠标，"悬停才显示"的动效可以直接关掉（省一次重绘判定） */
+html[data-tv='1'] * {
+  -webkit-user-drag: none;
+}
+
+/*
+ * ── 电视下压硬编码 px 字号（★ 11px 那 263 处的止血措施）────────
+ *
+ * 模板里大量 `text-[11px]` / `text-[10px]` 是给桌面鼠标距离设计的，
+ * 在电视上（3 米外）视觉上只有实际的一半。抬了根字号也救不了它们 ——
+ * px 是绝对单位，不参与 rem 缩放。
+ *
+ * 全部改成 rem 是正解，但 343 处一次改完风险太大（每一处都可能挤破布局）。
+ * 这里先按"类名 → 档位"统一抬一档，模板一行不用动：
+ *
+ *   text-[9px]  → 0.75rem (12px)   角标
+ *   text-[10px] → 0.8125rem (13px) 次要数字
+ *   text-[11px] → 0.875rem (14px)  ★ 主力，也是"字小"的主要来源
+ *   text-[12px] → 0.9375rem (15px)
+ *   text-[13px] → 1rem (16px)
+ *
+ * ★ 必须用属性选择器而不是 `.text-\[11px\]`：
+ *   Tailwind 生成的是转义过的类名，手写反斜杠在不同构建产物里不稳定；
+ *   `[class~="text-[11px]"]` 按"完整类名精确匹配"工作，与其转义形式无关。
+ *
+ * ★ 类名里的方括号要转义成 `\[` `\]`，否则 CSS 解析器把方括号当属性选择器语法。
+ */
+html[data-tv='1'] [class~='text-[9px]'] {
+  font-size: 0.75rem;
+}
+html[data-tv='1'] [class~='text-[10px]'] {
+  font-size: 0.8125rem;
+}
+html[data-tv='1'] [class~='text-[11px]'] {
+  font-size: 0.875rem;
+}
+html[data-tv='1'] [class~='text-[12px]'] {
+  font-size: 0.9375rem;
+}
+html[data-tv='1'] [class~='text-[13px]'] {
+  font-size: 1rem;
+}
+
+/*
+ * 走 @layer components 的那几个类（.set-title / .set-hint）不在上面的
+ * px 类名覆盖范围内 —— 它们本来就是 rem，会跟着根字号放大，
+ * 但 12px/11px 的基准在电视上仍偏小。单独提到 10-foot UI 的下限。
+ */
+html[data-tv='1'] .set-title {
+  font-size: 0.9375rem; /* 15px */
+}
+html[data-tv='1'] .set-hint {
+  font-size: 0.8125rem; /* 13px */
+}
+
+/*
+ * ── 电视上不显示鼠标指针 ──────────────────────────────────────
+ *
+ * 电视只有遥控器，出现箭头鼠标说明是 CSS 的 `cursor: pointer` 被 WebView
+ * 画出来了：Chromium 在没有触摸/鼠标输入时仍会渲染 hover 光标，部分机型
+ * （尤其开了"鼠标模拟"或接了 HDMI-CEC 的设备）会把它显示在屏幕上，
+ * 位置还停在页面默认点，看起来像"屏幕上有个乱飘的鼠标"。
+ *
+ * 全局压成 none：电视是纯方向键操作，指针没有任何信息量。
+ * 放在层外同样是为了压过模板里写的 Tailwind `cursor-pointer`。
+ */
+html[data-tv='1'],
+html[data-tv='1'] * {
+  cursor: none !important;
+}
+
+/*
+ * ── 非电视环境不画 :focus-visible 轮廓 ────────────────────────
+ *
+ * 那圈轮廓是键盘可达性的标准做法，但在鼠标操作的环境里很碍眼：
+ * 鼠标点过的元素也会带一圈（截图里那个青色细框），看起来像"已经选中了
+ * 某个东西"。用户反馈过这个。
+ *
+ * 电视必须保留（遥控器是唯一输入，焦点框就是"现在选到哪"的唯一提示），
+ * 所以只在非电视下清掉。`html[data-tv='1']` 那几个例外规则（.tile、
+ * 导航项等）已经单独加了前缀，这里用 :not 兜住其余所有元素。
+ *
+ * ★ 用 outline-color:transparent 而不是 outline:none：
+ *   保留轮廓占位，避免某些浏览器在 none 时改变布局计算（尤其老内核）。
+ */
+html:not([data-tv='1']) *:focus-visible {
+  outline-color: transparent !important;
+}
+
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-base);
+  color: var(--color-ink);
+  font-family:
+    'Inter', 'PingFang SC', 'Microsoft YaHei', 'Source Han Sans SC', system-ui,
+    -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 细滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-hover) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-line-hover);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 隐藏横向滚动的滚动条（分类 Tab 用） */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/*
+ * 分类胶囊条（首页）：TV 的焦点环改成**内嵌**。
+ *
+ * 踩过（2026-11-06 投影仪实测）：胶囊条是横向滚动容器（overflow-x-auto
+ * + overflow-y-hidden，overflow 会按 padding box 裁切），而 tv-nav 的
+ * 焦点环是**外扩**的（outline-offset:2px + 3px outline + 6px 光晕）——
+ * 首尾两端的胶囊一聚焦，外扩的那圈就被容器裁掉一半，看起来像"边框被裁了"。
+ * 内嵌 box-shadow 画在元素内部，不越过父级裁切区，是滚动容器里唯一稳的画法
+ * （与 [data-tv-scope] 面板里的焦点环同一套理由）。
+ */
+html[data-tv='1'] .cat-chips .meow-tv-focus {
+  /*
+   * ★ 必须保留"白内线 + accent"的双环，不能只画 accent。
+   *   选中的胶囊本身就是**实心 accent**，单色 accent 环和底色同色 → 完全看不见焦点
+   *   （2026-11-04 修过同款问题：用户报「勾选的胶囊和搜索按钮看不出来焦点在哪」）。
+   *   最里面 1px 白线压在同色底上，边界才出得来。
+   */
+  outline: none !important;
+  box-shadow:
+    inset 0 0 0 1px var(--tv-focus-inner, rgba(255, 255, 255, 0.75)),
+    inset 0 0 0 3px var(--color-accent),
+    0 0 10px 1px var(--color-accent) !important;
+}
+
+/*
+ * 分段控件（设置页「追加/替换」「保留/覆盖」这类）：TV 焦点环也走**内嵌**。
+ *
+ * 这类控件是 `flex overflow-hidden rounded-md` 的合体按钮，紧贴容器边缘
+ * （实测到容器边只有 1px）——外扩的 2px 环 + 12px 辉光会被裁掉，
+ * 聚焦时只剩一条边，看起来像"焦点框缺了一半"。
+ * 与 .cat-chips 同一套处理：内嵌白线 + accent，跟随容器圆角。
+ */
+html[data-tv='1'] .seg-group .meow-tv-focus {
+  outline: none !important;
+  box-shadow:
+    inset 0 0 0 1px var(--tv-focus-inner, rgba(255, 255, 255, 0.75)),
+    inset 0 0 0 2px var(--color-accent) !important;
+}
+
+/* 海报卡片 hover 上浮（对应影仓 clipChildren + 焦点放大） */
+.poster-card {
+  transition:
+    transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 0.25s ease;
+  will-change: transform;
+}
+.poster-card:hover {
+  transform: translateY(-6px) scale(1.03);
+  box-shadow:
+    0 18px 40px -12px rgb(0 0 0 / 0.7),
+    0 0 0 1px color-mix(in oklab, var(--color-accent) 35%, transparent);
+}
+
+/* 骨架屏微光 */
+@keyframes shimmer {
+  0% {
+    background-position: -400px 0;
+  }
+  100% {
+    background-position: 400px 0;
+  }
+}
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-elevated) 0%,
+    var(--color-panel) 50%,
+    var(--color-elevated) 100%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
+/* 淡入 */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.fade-up {
+  animation: fade-up 0.35s ease both;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   磁贴（tile）—— 全站唯一定义
+   ──────────────────────────────────────────────────────────────
+   之前 SettingsView / TileSelect / TilePanel 各写了一份完全相同的
+   .tile 样式，任何微调都得改 3 处，漏一处就出现"同一屏两种磁贴"。
+   统一到这里后，组件里只保留布局相关的差异（如 flex 方向）。
+
+   宽度用容器查询而非断点：磁贴会被放进 2 列、4 列、8 列等不同密度
+   的网格里，同一个视口下宽度差异很大，只有按自身宽度自适应才稳定。
+   ══════════════════════════════════════════════════════════════ */
+@layer components {
+  .tile {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    min-height: 3.25rem;
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius-md);
+    background: var(--color-card);
+    border: 1px solid var(--color-line);
+    text-align: left;
+    cursor: pointer;
+    /* 背景/边框用较长缓动，位移用短缓动 —— 悬停时"浮起"要跟手
+       ★ 必须写 background-color 而不是 background 简写：
+         简写会让浏览器持有整条 background 的过渡状态，切换主题（改 --color-card）
+         时属性值变化被过渡逻辑吞掉，元素永远停在初始色 —— 实测踩过：
+         规则改成 !important 都不生效，只有换掉简写才能重算。 */
+    transition:
+      background-color 0.18s ease,
+      border-color 0.18s ease,
+      transform 0.12s cubic-bezier(0.2, 0.8, 0.2, 1),
+      box-shadow 0.18s ease;
+  }
+  .tile:hover {
+    background: var(--color-card-hover);
+    border-color: color-mix(in oklab, var(--color-accent) 35%, transparent);
+    box-shadow: 0 6px 18px -8px color-mix(in oklab, var(--color-accent) 28%, transparent);
+    transform: translateY(-1px);
+  }
+  .tile:active {
+    transform: translateY(0);
+    transition-duration: 0.05s;
+  }
+  /* 焦点态只在电视上给。
+     Web/PC 用鼠标时那圈青色细框与设计语言不一致，而且鼠标点过的元素也会带一圈，
+     看起来像"选中了某个东西"（用户截图反馈过）。
+     电视没有别的输入方式，焦点框是唯一的"现在选到哪"提示，必须留。 */
+  html[data-tv='1'] .tile:focus-visible {
+    outline: 2px solid color-mix(in oklab, var(--color-accent) 65%, transparent);
+    outline-offset: 2px;
+  }
+  .tile:disabled,
+  .tile[aria-disabled='true'] {
+    pointer-events: none;
+    opacity: 0.4;
+  }
+
+  /* ── 设置页的分区卡与标题栏 ──
+     这几个类是设置页 8 个区块的统一样式来源。
+     之前每个 <section> 手写一长串 class，padding/margin 出现了
+     12px 与 12px 16px、mb-2 与 mb-2.5、gap 8px 与 10px 三种混用。
+
+     ★ 底色必须单独用 --color-card-sunken 而不是 --color-card：
+       深色档要"面板比磁贴更淡"，浅色档要"面板实心白、磁贴压灰"，
+       两档层次方向相反，共用一个变量就必然有一档糊掉。
+       浅色此前走 card 的 55% 混色，实测不透明度只有 2.8%，
+       卡片和底色几乎看不出边界 —— 这正是"整页糊成一片"的根因。 */
+  .set-card {
+    border-radius: var(--radius-xl);
+    border: 1px solid var(--color-line);
+    background: var(--color-card-sunken);
+    padding: 0.875rem; /* 14px，比 p-3 略宽，配合 20px 圆角更舒展 */
+  }
+
+  /*
+   * 点左侧导航后，目标分区闪几下 —— 给落点一个明确确认。
+   *
+   * ★ 不用 CSS animation，由 JS 逐个加/removing .is-flashing。
+   *   实测：动画对象注册成功（playState=running、duration 420ms），
+   *   但 currentTime 恒为 0、计算值不推进。原因是
+   *   `prefers-reduced-motion: reduce` 会让动画时间轴不推进
+   *   （本机和很多 Windows 默认就是 reduce）。
+   *   而 @media 里的 `animation: none` 又因为同在 @layer components
+   *   里、与基础规则同特异性，没能可靠覆盖 —— 于是"看着有动画、实际不动"。
+   *   改成纯样式切换后，不管系统怎么设动效都一定有可见反馈。
+   *
+   * 亮的是 outline（不是 border/box-shadow）：
+   *   outline 不占布局、不影响圆角内的内容，且能和主题色一起走。
+   */
+  .set-card.is-flashing {
+    /* ★ 用 .5 之后这里曾经写 color-mix(... , transparent)，实测 outline-color
+       解析出来的 alpha 是 0（看不见）。outline 与 box-shadow 对 color-mix
+       的接受度不一致，这里直接给不透明主题色最稳。 */
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-color: var(--color-accent);
+  }
+  .set-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    min-height: 1.25rem; /* 标题行等高：有无右侧控件都不跳动 */
+  }
+  /* 右侧的说明/操作统一靠右：用 ml-auto 而不是 justify-between ——
+     后者在"标题 + 徽章 + 统计"这类三个子元素的标题行里会把徽章推到中间。 */
+  .set-head > .set-hint,
+  .set-head > .set-actions {
+    margin-left: auto;
+  }
+  .set-title {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--color-ink-2);
+    letter-spacing: 0.01em;
+  }
+  /* 标题右侧的说明/状态统一用这档 */
+  .set-hint {
+    font-size: 0.6875rem;
+    line-height: 1.5;
+    color: var(--color-ink-3);
+  }
+  /* 海报网格：列数由 useCardCols 按可用宽度算并写内联 style，
+     这里只管行距 —— 矮屏（手机横屏）收紧一档，否则一行都装不下。 */
+  .poster-grid {
+    display: grid;
+    column-gap: 1rem;
+    row-gap: 1.75rem;
+  }
+  @media (max-height: 520px) {
+    .poster-grid {
+      row-gap: 1.125rem;
+    }
+  }
+  /* 卡片标题字号统一在这里给：模板里若再写 text-[13px]，
+     Tailwind 的 utilities 层会盖掉下面的电视覆盖。 */
+  .poster-title {
+    font-size: 0.8125rem;
+  }
+  /* 电视是 10-foot UI：标题放大一档，否则 3 米外看不清 */
+  html[data-tv='1'] .poster-title {
+    font-size: 0.875rem;
+  }
+
+  /* 分区内的磁贴网格：全部 2 列起，md 起 4 列，间距 10px */
+  .set-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.625rem;
+  }
+  @media (min-width: 768px) {
+    .set-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+  }
+  /* 磁贴少（如「网络」只有 2 个）时收窄，避免被拉成两个巨型方块 */
+  .set-grid-narrow {
+    max-width: 34rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* 数字输入框：隐藏原生 spinner。
+     ★ 踩过：Chromium 的上下箭头要吃掉 ~17px，`w-14` 里只剩 40px，
+       三位数（200）被右对齐后顶出可视区，看着像"数字显示不全"。
+       TV 遥控器本来也用不到 spinner，统一隐藏；键盘上下键仍然有效。 */
+  .num-field {
+    appearance: textfield;
+    -moz-appearance: textfield;
+  }
+  .num-field::-webkit-outer-spin-button,
+  .num-field::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  /* 设置页的一级分组标题（磁贴格上方的「显示」「来源」等小标签） */
+  .set-sub {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.6875rem;
+    /* ink-2 而不是 ink-3：一轮重构后每个分区有 3-5 个分组，
+       11px + 最浅色在 TV 上远看几乎消失，分组等于没有 */
+    color: var(--color-ink-2);
+  }
+}
+
+/*
+ * ═══ 移动端（< 640px = Tailwind 的 sm 断点）══════════════════════════
+ *
+ * 这里只放"手机专属"的覆盖，统一用 `@media (max-width: 639px)`。
+ * ★ 桌面与电视完全不受影响：TV 的 CSS 视口实测 1138×640（docs/27 §4.1），
+ *   永远落在 >639 这一侧；PC 浏览器同理。
+ *
+ * ★ 为什么不用 Tailwind 的 max-sm: 变体写在这里：
+ *   这两条要读 env(safe-area-inset-top)，class 里写不了 calc+env 的组合，
+ *   而且 .app-header / .set-card 是组件类，覆盖集中在 tokens 更不容易漏。
+ */
+@media (max-width: 639px) {
+  /* 顶栏高度：基础 3.5rem，刘海屏再加安全区 —— 自定义变量与真实高度同一份算式，
+     AI 独立页（减 --header-h）才不会差一截。 */
+  :root {
+    --header-h: calc(3.5rem + env(safe-area-inset-top));
+    --tabbar-h: calc(6rem + env(safe-area-inset-bottom));
+  }
+  /* 底部标签栏是 fixed 的，页面内容要自己让出这 56px */
+  .has-tabbar {
+    padding-bottom: var(--tabbar-h);
+  }
+  /* 有了「首页 / AI / 设置」标签，右下角悬浮球就是重复入口，而且会压住
+     历史/收藏最后一行（小屏上尤其明显）。手机上收起（对话状态在
+     stores/aiChat.ts 是模块级单例，走 /ai 整页不丢上下文）。 */
+  .ai-fab {
+    display: none;
+  }
+  .app-header {
+    height: calc(3.5rem + env(safe-area-inset-top));
+    padding-top: env(safe-area-inset-top);
+  }
+
+  /* 设置页：卡片内边距收一档；标题行的说明/操作独立成行。
+     手机上「连接 已连接 270 源·240 带 ext·250 搜索时跳过」挤一行会互相顶掉。 */
+  .set-card {
+    padding: 0.75rem;
+    border-radius: var(--radius-lg);
+  }
+  .set-title {
+    font-size: 0.8125rem;
+  }
+  .set-head > .set-hint,
+  .set-head > .set-actions {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+
+  /* 长路径必须能断行。实测：缓存目录 C:\Users\... 一行 369px，
+     把 390px 的文档撑到 412px（整页可横向拖动）。 */
+  .set-card code {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  /* 悬浮 AI 按钮避开 iPhone 底部横条 */
+  .ai-fab {
+    bottom: calc(1.5rem + env(safe-area-inset-bottom));
+  }
+
+  /* 磁贴：手机两列时可用宽度只有 ~160px，15px 标题 + 值 + 箭头必被截断
+     （实测「广告分片过滤」正好差 1px 出省略号）。收字号与内边距，
+     保证「标题完整 + 值可见」。 */
+  .tile {
+    min-height: 3rem;
+    padding: 0.625rem 0.75rem;
+    gap: 0.5rem;
+  }
+  .tile > .truncate {
+    font-size: 0.8125rem;
+  }
+
+  /* 分组小标题 + 说明：手机上说明独立成行，别和标题挤一条
+     （「运行时与过滤 drpy 站需要外部 Node；…」挤在一起很难扫） */
+  .set-sub {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.125rem;
+  }
+}
+
+/* 320px（iPhone SE 一代这类）：两列磁贴只剩 ~105px，「广告分片过滤」彻底放不下，
+   改单列。360 及以上仍是两列 —— 别把这档提到 639，否则整页会被拉长一倍。 */
+@media (max-width: 359px) {
+  .set-grid,
+  .set-grid-narrow {
+    grid-template-columns: 1fr;
+  }
+}
+
+/*
+ * 电视焦点环的"内线"颜色（2026-11-06）。
+ *
+ * 内外两层环的设计：最里面一条 1px 内线 + 外面 accent 环 + 辉光。
+ * 内线的作用是**在实心 accent 元素上把边界压出来**（选中胶囊、实心按钮）——
+ * 单靠 accent 环和同色底完全重合，等于没有焦点提示（2026-11-04 踩过）。
+ *
+ * ★ 为什么按 data-mode 换色：深色主题里白线对比最好；浅色主题里白线
+ *   落在浅底/浅 accent 上几乎看不见，反而要用深线。写死白色在浅色下会
+ *   退化成"只有 accent 环"，实心元素上再次不可见。
+ */
+html {
+  --tv-focus-inner: rgba(255, 255, 255, 0.65);
+}
+html[data-mode='light'] {
+  --tv-focus-inner: rgba(0, 0, 0, 0.42);
+}

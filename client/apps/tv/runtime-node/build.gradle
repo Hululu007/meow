@@ -1,0 +1,89 @@
+plugins {
+    id 'com.android.application'
+}
+
+/*
+ * 运行时模块 APK（不是插件 zip）—— 形态照搬 Fongmi：
+ *   1. libnode.so 放 jniLibs，随 APK 一起装到 /data/app/.../lib/<abi>/
+ *      （同时 AGP 会以**不压缩**方式存进 APK，宿主才能用 `apk!/lib/<abi>` 直载）
+ *   2. 本模块自己的 JNI 桥 libmeow_node_bridge.so 链接 libnode.so（DT_NEEDED），
+ *      运行时由宿主 DexClassLoader 的 nativePath 解析
+ *   3. 宿主动态加载本 APK 的 RuntimeEntry 类，按 NodeRuntimeApi 接口调用
+ */
+android {
+    namespace 'com.meow.runtime.node'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.meow.runtime.node"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName(project.findProperty('meowVersionName') ?: "18.20.4")
+
+        ndk {
+            /*
+             * 一个 APK 只装一个 ABI 的 libnode（60MB 量级，三合一没人受得了）。
+             * 由 build-runtime-module.ps1 用 -PmeowAbi=<abi> 逐个出包；
+             * 默认 x86_64，方便在 MuMu 上直接 :runtime-node:assembleDebug。
+             */
+            abiFilters(project.findProperty('meowAbi') ?: 'x86_64')
+        }
+    }
+
+    /*
+     * 不用 CMake：JNI 桥只有一个 .cpp，直接用 NDK 的 clang++ 编进 jniLibs
+     * （见 build-bridge.sh）。原因：AGP 的 externalNativeBuild 会去 dl.google.com
+     * 拉 cmake 3.22.1，本环境 SSL 被掐，装不上；而这一个文件的编译不需要 CMake。
+     */
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    /*
+     * 签名：与 TV 壳共用 client/apps/tv/keystore.properties（不入库）。
+     *
+     * ★ 必须用固定 keystore（踩过）：debug keystore 每台机器/每个 CI runner 各生成
+     *   一份，用 debug 签名发布的模块，用户装过旧版后**永远升不上新版本**
+     *   （INSTALL_FAILED_UPDATE_INCOMPATIBLE）。而卸载模块会把 10MB 载荷一起删掉，
+     *   等于每次升级都要重下一遍。
+     */
+    def ksProps = new File(rootDir, 'keystore.properties')
+    signingConfigs {
+        release {
+            if (ksProps.exists()) {
+                def p = new Properties()
+                ksProps.withInputStream { p.load(it) }
+                storeFile file(p['storeFile'])
+                storePassword p['storePassword']
+                keyAlias p['keyAlias']
+                keyPassword p['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig ksProps.exists() ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    /*
+     * 关键：so **不要** extractNativeLibs。
+     * 宿主要用 `base.apk!/lib/<abi>/libnode.so` 这种 zip 内路径直载，
+     * 一旦被解压，宿主那边的 nativePath 就得改成 nativeLibraryDir，
+     * 而跨 App 读别人的 lib 目录在 SELinux 下不稳。
+     */
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging false
+        }
+    }
+}
+
+dependencies {
+    implementation project(':plugin-api')
+}

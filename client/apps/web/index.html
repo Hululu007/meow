@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#12141D" />
+    <meta name="description" content="猫窝 · 自建影视聚合客户端 — 多源搜索、弹幕播放、WebDAV 同步" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <title>猫窝 · 影视</title>
+    <!--
+      主题防闪烁：必须在模块脚本执行前同步跑。
+
+      Vite 的 <script type="module"> 是 defer 的，等它跑完首帧已经画出来了，
+      会先闪一下默认配色再跳到用户选的组合。这段内联脚本在 DOM 解析期间执行，
+      首帧就是对的。
+
+      只设属性不写变量值 —— 配色变量全部在
+      src/styles/tokens.css 的 `html[data-style][data-mode]` 选择器里，
+      运行时切换也走同一套，保证「首帧」与「切主题后」用的是同一份值。
+
+      data-wallpaper / data-wp 也要在这里设：它们决定「有壁纸时玻璃层转不透」
+      以及透多少，晚一步设的话顶栏和卡片会先按半透明画一帧再跳变。
+    -->
+    <script>
+      ;(function () {
+        try {
+          var raw = localStorage.getItem('meow.prefs')
+          var p = raw ? JSON.parse(raw) || {} : {}
+          var style = p.themeStyle
+          var mode = p.themeMode
+
+          var STYLES = {
+            meow: 1,
+            claude: 1,
+            material: 1,
+            nord: 1,
+            tokyo: 1,
+            catppuccin: 1,
+            oled: 1,
+            everforest: 1,
+          }
+          // 已移除的风格在这里就地迁移，和 prefs.ts 的 getPrefs() 保持一致。
+          // 不迁移的话首帧会先按 meow 画一帧，Vue 起来后才跳 Claude。
+          if (style === 'miuix') style = 'claude'
+          var s = STYLES[style] ? style : 'meow'
+          // 默认深色（与 prefs.ts 的 DEFAULTS.themeMode 一致）。
+          // 只有用户显式选了「跟随系统」才去问系统偏好 ——
+          // 否则首次访问会跟着系统亮色，和默认值对不上，刷新时闪一下。
+          var resolved =
+            mode === 'light' || mode === 'dark'
+              ? mode
+              : mode === 'system' &&
+                  window.matchMedia &&
+                  window.matchMedia('(prefers-color-scheme: dark)').matches === false
+                ? 'light'
+                : 'dark'
+
+          // 可见度 0~1 → 四档；老用户的 wallpaperDim 按 1-d 换算（与 prefs.ts 一致）
+          var op = typeof p.wallpaperOpacity === 'number' ? p.wallpaperOpacity : NaN
+          if (!isFinite(op) && typeof p.wallpaperDim === 'number') op = 1 - p.wallpaperDim
+          if (!isFinite(op)) op = 0.2
+          var wp = op < 0.25 ? '0' : op < 0.5 ? '1' : op < 0.75 ? '2' : '3'
+
+          var root = document.documentElement
+          root.setAttribute('data-style', s)
+          root.setAttribute('data-mode', resolved)
+          root.setAttribute('data-wallpaper', p.wallpaper ? '1' : '0')
+          root.setAttribute('data-wp', wp)
+          root.style.colorScheme = resolved
+
+          // ★ 电视标记必须在首帧脚本里落成属性。
+          //   样式侧用的是 `html[data-tv='1'] .app-header {...}` 这类选择器，
+          //   而 JS 侧 isTvEnv() 读的是 UA（TV 壳会给 UA 追加 MeowTV）。
+          //   过去只有 JS 侧有判定、属性从来没被设过，于是所有电视专属样式
+          //   （顶栏字号、cursor:none、海报标题放大）静默失效 ——
+          //   实测电视上顶栏仍是 64px/14px、鼠标指针也会被画出来。
+          //   放首帧而不是等 Vue 挂载：否则页面会先按手机档渲染再跳一下。
+          if (/MeowTV/i.test(navigator.userAgent)) {
+            root.setAttribute('data-tv', '1')
+            /*
+             * TV 壳里把页面缩放锁死在 1（2026-11-05）。
+             *
+             * 踩过：WebView 旋转后会保留上一次的 page scale —— 竖屏 1.216
+             * （页面被放大、右边出界）、横屏 0.822（页面变小、四周留边），
+             * 用户描述「旋转几次后页面不是 100% 了」。
+             * min/max-scale 都写 1 之后，内核没有可缩放的区间，旋转多少次都
+             * 保持 100%。只对 MeowTV 生效：Web/PC 仍然允许用户双指缩放。
+             */
+            var mv = document.querySelector('meta[name="viewport"]')
+            if (mv) {
+              mv.setAttribute(
+                'content',
+                'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no',
+              )
+            }
+          }
+        } catch (e) {
+          /* 首帧脚本绝不抛错，否则整页白屏 */
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

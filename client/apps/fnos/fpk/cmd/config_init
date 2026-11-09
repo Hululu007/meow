@@ -1,0 +1,9 @@
+#!/bin/bash
+# 配置变更前：把向导值落到 etc/meow.conf（向导环境变量只在本次流程存在）。
+set -u
+mkdir -p "$TRIM_PKGETC" 2>/dev/null
+{
+    echo "MEOW_SHELL_PORT=${wizard_port:-30010}"
+    echo "MEOW_API_PORT=${wizard_api_port:-30011}"
+} > "$TRIM_PKGETC/meow.conf" 2>/dev/null
+exit 0

@@ -1,0 +1,8 @@
+{
+  "safeDns": false,
+  "dnsProvider": "cloudflare",
+  "danmakuApi": "",
+  "cacheQuotaGb": 8,
+  "cacheEvictMode": "lru",
+  "cacheDir": ""
+}

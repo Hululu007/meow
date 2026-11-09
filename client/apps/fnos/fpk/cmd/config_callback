@@ -1,0 +1,6 @@
+#!/bin/bash
+# 配置变更后：重启服务让新端口/配置生效。失败不返回非 0（避免回滚掩盖真实原因）。
+set -u
+"$(dirname "$0")/main" stop >/dev/null 2>&1
+"$(dirname "$0")/main" start >/dev/null 2>&1
+exit 0

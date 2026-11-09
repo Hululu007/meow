@@ -1,0 +1,38 @@
+{
+  "id": "apiserver",
+  "name": "影视后端",
+  "capability": "backend",
+  "required": true,
+  "fatal": false,
+  "version": "1.1.5",
+  "exec": "jre/bin/java",
+  "execFallback": [
+    "java"
+  ],
+  "args": [
+    "-Dfile.encoding=UTF-8",
+    "-cp",
+    "apiserver.jar;dist/spider.jar",
+    "ApiServer",
+    "--port={port}",
+    "--data-dir={dataDir}"
+  ],
+  "cwd": ".",
+  "port": 9979,
+  "portFallback": [
+    9980,
+    9981,
+    9982,
+    9983,
+    9984,
+    9985
+  ],
+  "health": "/api/health",
+  "healthExpect": "\"ok\":true",
+  "healthTimeoutMs": 45000,
+  "healthIntervalMs": 400,
+  "dataDir": "{appData}/data",
+  "distDir": "dist",
+  "autostart": true,
+  "env": {}
+}

@@ -1,0 +1,28 @@
+{
+  "id": "drpy",
+  "name": "drpy 脚本运行时",
+  "capability": "runtime",
+  "required": false,
+  "fatal": false,
+  "version": "0.1.0",
+  "exec": "node",
+  "execFallback": ["../node/node.exe", "../node/node", "node.exe"],
+  "args": ["server.js"],
+  "cwd": ".",
+  "port": 9330,
+  "portFallback": [9331, 9332, 9333, 9334],
+  "health": "/health",
+  "healthExpect": "\"ok\":true",
+  "healthTimeoutMs": 20000,
+  "healthIntervalMs": 500,
+  "autostart": true,
+  "env": {
+    "DRPY_PORT": "{port}",
+    "DRPY_STRIP_REMOTE": "1"
+  },
+  "inject": {
+    "target": "{appData}/data/policy.json",
+    "key": "jsRuntime",
+    "value": "http://127.0.0.1:{port}"
+  }
+}

@@ -1,0 +1,32 @@
+# drpy 运行时：把 .js 源接到 Node 里执行（第四个容器）。
+#
+# 为什么不塞进 apiserver 镜像：apiserver 是 JRE，没有 node；而且 drpy 的
+# 依赖（cheerio/sync-fetch/crypto-js）只服务它自己，混进去会让后端镜像多 15MB。
+FROM node:22-alpine
+
+WORKDIR /app
+
+# 先装依赖以复用层缓存
+COPY server/drpy/package.json server/drpy/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
+
+# worker.js 必须一起带上：server.js 用 `new Worker(path.join(__dirname,'worker.js'))`
+# 起线程池，缺这个文件时每个 worker 都报 CANNOT FIND MODULE → retire 再补位 →
+# 无限重启空转。实测缺它时 idle CPU 376.6%~381.8%（约 3.8 核），/health 却仍是 ok。
+COPY server/drpy/server.js server/drpy/host.js server/drpy/worker.js ./
+# 可选的自托管资产（assets://js/lib/*）；没有就退到 npm 同名包
+COPY server/drpy/lib ./lib
+
+ENV DRPY_PORT=9330
+# 必须绑 0.0.0.0：server.js 默认 127.0.0.1，那样 compose 发布的端口和
+# `apiserver → http://drpy:9330`（跨容器走网桥，不是回环）都连不上。
+ENV DRPY_BIND=0.0.0.0
+# 远程模块默认"剥离不执行"：drpy2.min.js 会纯副作用 import 第三方 CDN 脚本
+ENV DRPY_STRIP_REMOTE=1
+
+EXPOSE 9330
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD node -e "fetch('http://127.0.0.1:9330/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"
+
+CMD ["node", "server.js"]

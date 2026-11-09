@@ -1,0 +1,5 @@
+#!/bin/bash
+# 升级前：停服务，避免新旧版本同时占用端口。
+set -u
+"$(dirname "$0")/main" stop >/dev/null 2>&1
+exit 0

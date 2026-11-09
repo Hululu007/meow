@@ -1,0 +1,127 @@
+# 猫窝 Meow —— 启动编排（用已发布的镜像，不构建）
+#
+#   web        nginx + 静态文件（无 JVM）        30010
+#   apiserver  JVM + spider jar（无 nginx）      30011
+#   danmu_api  官方镜像 logvar/danmu-api         30012
+#
+# 这个文件只负责**运行**，镜像从 Docker Hub 拉取。
+# 要从源码构建，用另一个完整文件：
+#   docker compose -f docker-compose.build.yml up -d --build
+#
+# 常用：
+#   docker compose up -d                         拉镜像并启动
+#   docker compose up -d apiserver danmu_api     只起后端
+#   docker compose up -d web                     只起前端（连远端后端）
+#   docker compose stop web / start web          启停单个
+#
+# 停单个服务用 stop/start，不要用 `docker compose down <服务名>`：
+# down 会删掉共享的 meow 网络，让其他运行中的容器失去网络。
+# 删单个容器用 `docker compose rm -sf <服务名>`。
+#
+# 默认值都写在这里（${VAR:-默认}），根 .env 只做覆盖。
+# 查看当前生效配置：docker compose config
+
+name: meow
+
+services:
+  apiserver:
+    image: ${APISERVER_IMAGE:-chrplus/meow-apiserver:${MEOW_VERSION:-1.1.5}}
+    container_name: meow-apiserver
+    ports:
+      # 默认只绑本机。要给 TV/局域网直连，改 APISERVER_BIND=0.0.0.0。
+      # 注意 /api/proxy/stream 会转发任意 URL，暴露公网等于开放正向代理。
+      - "${APISERVER_BIND:-127.0.0.1}:${APISERVER_PORT:-30011}:9979"
+    volumes:
+      - ../../data:/data
+      # 热换 spider jar 时取消注释（文件必须存在，否则 Docker 会建成空目录）
+      # - ../../server/host/libs/spider.jar:/app/libs/spider.jar:ro
+    environment:
+      MEOW_DATA: /data
+      MEOW_PORT: "9979"
+      # 用 `-` 而非 `:-`：显式写空串（MEOW_DANMAKU_API=）表示"不用聚合服务"，
+      MEOW_JS_RUNTIME: ${MEOW_JS_RUNTIME-http://drpy:9330}
+      # `:-` 会把空串当未设置，置空就失效了。
+      MEOW_DANMAKU_API: ${MEOW_DANMAKU_API-http://danmu_api:9321}
+      # 写操作令牌：保护收藏/进度/片库删除/缓存清理/配置导入等写端点。
+      #   空串 = 关闭鉴权（单机自用默认值）；非空则所有写请求要带 X-Meow-Token。
+      # ★ 后端读取顺序：本变量 → policy.json 的 authToken，两处都空才关闭。
+      # ★ 用 `-` 而非 `:-`，与其他两项同理：显式置空要能表达"关掉"。
+      MEOW_AUTH_TOKEN: ${MEOW_AUTH_TOKEN-}
+      # CORS 来源策略。★★ 默认 `*` = 不限制（内网 / Tailscale / 反代部署开箱可用）。
+      #
+      #   默认不拦的理由：部署形态太多（局域网、Tailscale、ZeroTier、frp、
+      #   Cloudflare Tunnel、公网域名），靠代码猜网段必然漏 —— 实测 Tailscale
+      #   的 100.x 属于 CGNAT(100.64/10)，不属于 RFC1918，于是全站 403。
+      #   网络边界该由部署者声明，不该由代码猜。
+      #
+      #   *            → 任意来源（默认）
+      #   none         → 只放行本机 / TV 壳 / 桌面壳，其余全拦（最严）
+      #   a.com,b.com  → 只放行这些 Origin（公网暴露时写完整 Origin，含协议与端口）
+      MEOW_CORS: ${MEOW_CORS-*}
+      JAVA_OPTS: ${APISERVER_JAVA_OPTS:--Xms64m -Xmx512m -Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8}
+    restart: unless-stopped
+    networks: [meow]
+
+  web:
+    image: ${WEB_IMAGE:-chrplus/meow-web:${MEOW_VERSION:-1.1.5}}
+    container_name: meow-web
+    ports:
+      - "${WEB_PORT:-30010}:8080"
+    environment:
+      # nginx 反代目标。连外部后端时改绝对地址，如 http://192.0.2.10:30011
+      MEOW_APISERVER: ${MEOW_APISERVER:-http://apiserver:9979}
+    restart: unless-stopped
+    networks: [meow]
+
+  # drpy 运行时（.js 源）：apiserver 通过 MEOW_JS_RUNTIME 指向它。
+  # 没有它，配置里 200+ 个 drpy 站会被判"不可用"。
+  drpy:
+    # ★ drpy 是**独立版本线**，不能跟 MEOW_VERSION 走。
+    #
+    #   踩过的坑：原来写 `${MEOW_VERSION:-0.9.x}`，主版本升到 0.9.24 之后
+    #   compose 会去找 `meow-drpy:0.9.24`，而仓库里根本没有这个 tag
+    #   （drpy 只在主版本发版时顺带重打一次）。新机器 `docker compose up`
+    #   直接报 manifest unknown；老机器因为本地已有旧镜像照常能跑，
+    #   所以只在**换机器 / 清镜像**时才暴露，开发机上基本发现不了。
+    #
+    #   现在用 DRPY_VERSION 单独钉。**默认值必须是远端真实存在的 tag**——
+    #   实测远端只有 0.9.23 与 latest，没有 0.1.0（那是插件 manifest 里的
+    #   代码版本，两条线本来就不同，别再混用）。
+    #   升级 drpy 时：改这里 + .env.example，再跑 build-push-docker.ps1。
+    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.23}}
+    container_name: meow-drpy
+    ports:
+      - "${DRPY_PORT:-30013}:9330"
+    environment:
+      DRPY_PORT: "9330"
+      DRPY_STRIP_REMOTE: "1"
+    restart: unless-stopped
+    networks: [meow]
+
+  danmu_api:
+    # 官方镜像，不从本仓库构建（上游源码不在此仓库）。
+    # 版本固定不用 latest，保证可复现。
+    image: ${DANMU_API_IMAGE:-logvar/danmu-api:1.21.6}
+    container_name: meow-danmu-api
+    ports:
+      - "${DANMU_BIND:-127.0.0.1}:${DANMU_API_PORT:-30012}:9321"
+    volumes:
+      # 首次启动会自动生成 config/.env
+      - ../../data/danmu:/app/config
+    environment:
+      DANMU_API_PORT: "9321"
+      # 必须配，否则只有默认 3 个来源
+      SOURCE_ORDER: ${DANMU_SOURCE_ORDER:-douban,360,renren,hanjutv,iqiyi,tencent,youku,bilibili}
+    restart: unless-stopped
+    healthcheck:
+      # 镜像自带 wget，无 curl
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9321/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    networks: [meow]
+
+networks:
+  meow:
+    driver: bridge

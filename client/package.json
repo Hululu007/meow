@@ -1,0 +1,16 @@
+{
+  "name": "meow-player",
+  "private": true,
+  "version": "1.1.5",
+  "license": "SEE LICENSE IN LICENSE",
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "dev": "pnpm --filter @meow/web dev",
+    "build": "pnpm --filter @meow/web build",
+    "preview": "pnpm --filter @meow/web preview",
+    "tauri": "pnpm --filter @meow/desktop tauri"
+  },
+  "devDependencies": {
+    "sharp": "^0.35.5"
+  }
+}

@@ -1,0 +1,59 @@
+[package]
+name = "meow-player"
+version = "1.1.5"
+description = "影视仓 Web/PC 客户端"
+authors = ["meow"]
+license-file = "../../../../LICENSE"
+edition = "2021"
+
+[lib]
+name = "meow_player_lib"
+# 只保留 staticlib + rlib。
+#
+# 原来还有 "cdylib"，但 MinGW 在 dev 构建这个 dll 时报
+#   ld.exe: error: export ordinal too large: 91179
+# 这是 GNU 工具链对超大导出表的已知限制（tauri dev 会同时构建 dll + exe）。
+# 桌面端只需要「静态库 + 可执行文件」，去掉 cdylib 不影响 release 打包，
+# 但让 cargo check / tauri dev 都能正常走通。
+crate-type = ["staticlib", "rlib"]
+
+[features]
+# ★ 没有这个 feature，构建出的 exe 会去加载 devUrl（http://localhost:5173），
+#   装到别的机器上就是 ERR_CONNECTION_REFUSED —— 那台机器上没有 Vite。
+#   `tauri build` 会自动加 `--features custom-protocol`，但直接 `cargo build --release`
+#   不会。实测踩过：exe 里同时存在 "http://localhost:5173" 和 "index.html"，
+#   体积和正常包一样，只有打开才知道是 dev 版行为。
+#   设成 default 后两条构建路径行为一致。
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# tray-icon：托盘图标 + 右键菜单（Tauri 2 的这个能力默认不编译）。
+# 图标复用 app.default_window_icon()，不新增图片资源。
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 插件包完整性校验（下载后比对远端 index.json 里的 SHA256）。
+# 本地 registry 已缓存源码，不引入网络请求栈。
+sha2 = "0.10"
+
+# Windows 专用：Job Object，保证 sidecar 随主进程一起结束。
+#
+# 为什么需要：RunEvent::ExitRequested 只在「正常退出」时触发。
+# 实测用 Stop-Process -Force / 任务管理器结束进程 / 崩溃时，
+# sidecar 的 java.exe 会残留并继续占端口，下次启动靠端口协商顺延，
+# 残留越积越多。Job Object 由内核保证：句柄一关，组内进程全死。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    # 单实例把首实例唤到前台：AllowSetForegroundWindow（见 single_instance.rs）
+    "Win32_UI_WindowsAndMessaging",
+    # 枚举进程（按可执行文件路径清理孤儿 sidecar，见 plugins.rs kill_orphans_in）
+    "Win32_System_Diagnostics_ToolHelp",
+] }

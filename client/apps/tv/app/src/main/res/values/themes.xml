@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 全屏无标题栏：电视上不该出现系统 ActionBar -->
+    <style name="Theme.MeowTv" parent="android:Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>

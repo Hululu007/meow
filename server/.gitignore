@@ -1,0 +1,55 @@
+# server/ 的忽略规则
+#
+# 判据（四个问题，全部答"否"才入库）：
+#   1. 能否从别的文件重新生成？
+#   2. 是否与运行环境 / 机器绑定？
+#   3. 有没有任何代码 / 脚本引用它？
+#   4. 是不是第三方发布物？（这条要单独判断，见 README §五）
+#
+# ★ 与根 .gitignore 的分工：根文件管全仓库通用项（node_modules / target / dist…），
+#   这里只管 server/ 独有的东西，不改写根规则。
+
+# ── 构建产物：全部可重建，不入库 ────────────────────────────
+# classes/ 是 javac 输出。实测仓库里那份是 0.3.2、源码是 0.8.0，
+# 入库会让人直接 start-api.bat 跑到旧版本且不报错。
+host/classes/
+# 插件产物：fat jar + jlink JRE + dist（由 build-plugin.ps1 生成）
+#
+# ★ 写成 `build/*` 而不是 `build/`：后者把**目录本身**排除掉，git 就再也
+#   不下来看子项，下面的 `!` 例外全部失效（实测 check-ignore 仍报被忽略）。
+build/*
+# ★ 例外：dist/ 里要常驻一个占位文件。
+#   Dockerfile.apiserver 用 `COPY server/build/dist/` 整目录拷 dex jar，
+#   而干净检出里该目录不存在会让 COPY 报
+#   `lstat /server/build/dist: no such file or directory`（踩过 2026-10-29，
+#   CI 连续 5 次挂在这行）。详见 server/build/dist/.gitkeep 里的说明。
+!build/dist/
+# 只放行占位文件，其余（jar / dex 目录 / 中间产物）仍不入库
+build/dist/*
+!build/dist/.gitkeep
+# 发布资产：zip + fnpack.json（由 build-release.ps1 生成，上传用，不入库）
+release/
+
+# ── 本地运行状态：与机器绑定，不入库 ────────────────────────
+# policy.json 含本机弹幕地址 / DNS 选择，每台机器不同。
+# 模板用 policy.example.json（入库）。
+host/policy.json
+host/policy.json.bak
+# 运行时可能生成的数据目录
+host/data/
+
+# ── 调试抓包残留：代码零引用，不入库 ────────────────────────
+# 弹幕 XML 与搜索 JSON 快照。实测 f_srch/srch/v2 三者 md5 完全相同
+# （f6f53e09d23f89b52d0147feeee1a07c），同一份内容存了三遍。
+host/*.xml
+host/f_*.json
+host/srch.json
+host/s2.json
+host/v2.json
+
+# ── 临时文件 ────────────────────────────────────────────────
+*.tmp
+# build.bat 每次生成的中间清单（相对 host/、Windows 反斜杠）
+sources.gen.txt
+# ★ host/sources.txt 是**入库**的编译清单（路径相对仓库根，中央门禁
+#   javac @server/host/sources.txt 用它），不要忽略它。

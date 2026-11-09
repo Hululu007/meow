@@ -1,0 +1,77 @@
+# 猫窝 Meow 非商业许可 1.0
+
+版权所有 (c) 2026 猫窝 Meow contributors
+
+## 一、授权
+
+在遵守本许可全部条款的前提下，你被允许：
+
+1. 免费使用、复制、修改本软件；
+2. 在**非商业目的**下分发本软件及其修改版本，但必须：
+   - 保留本许可全文与版权声明；
+   - 在修改版本中注明修改内容。
+
+## 二、限制
+
+1. **禁止任何商业使用**。包括但不限于：销售本软件或其修改版；以本软件提供付费服务；
+   将本软件集成进商业产品或商业服务；在营利性组织的业务中使用。
+2. 禁止移除或修改本许可与版权声明。
+3. 禁止将本软件用于任何违法用途。
+
+## 三、非商业用途
+
+个人学习、研究、自用、爱好项目、非营利组织与非营利性开源交流，均属于非商业用途。
+营利性组织即使只在内部使用，也属于商业用途。
+
+## 四、免责声明
+
+本软件按"现状"提供，不提供任何明示或暗示的担保，包括但不限于适销性、
+特定用途适用性和不侵权担保。作者不对使用本软件产生的任何直接或间接损失负责。
+
+## 五、许可终止
+
+违反本许可任何条款，本许可自动终止。你必须在终止后停止使用并删除所有副本。
+
+---
+
+# Meow Non-Commercial License 1.0
+
+Copyright (c) 2026 Meow contributors
+
+## 1. Grant
+
+Subject to all terms of this license, you are permitted to:
+
+1. use, copy, and modify this software free of charge;
+2. distribute this software and modified versions for **non-commercial purposes only**, provided that you:
+   - retain this license in full and the copyright notice;
+   - state the changes made in modified versions.
+
+## 2. Restrictions
+
+1. **Commercial use is prohibited.** This includes, without limitation: selling this software
+   or modified versions; offering paid services based on this software; integrating this
+   software into a commercial product or service; using it in the business of a for-profit
+   organization.
+2. You may not remove or alter this license or the copyright notice.
+3. You may not use this software for any unlawful purpose.
+
+## 3. Non-Commercial Use
+
+Personal study, research, private use, hobby projects, non-profit organizations, and
+non-commercial open-source exchange are non-commercial uses. Use inside a for-profit
+organization, even internally, is a commercial use.
+
+## 4. Disclaimer
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+## 5. Termination
+
+Any violation of these terms terminates this license automatically. You must stop using
+the software and delete all copies upon termination.

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 的可见范围。
+
+  只暴露 cache 下的 updates/ 一个目录：那里只放一过性的安装包，
+  用完即弃。不要写成 <cache-path path="." /> —— 那会把 WebView 缓存、
+  崩溃日志同目录的东西一起暴露给安装器。
+-->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

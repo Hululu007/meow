@@ -1,0 +1,72 @@
+{
+  "_comment": [
+    "构建单元的唯一真源。release.ps1 与 .github/workflows 都读这个文件。",
+    "加一个构建单元 = 改这一个文件，不要再去改脚本数组、workflow 步骤、文档枚举。",
+    "改完跑 ./deploy/scripts/verify.ps1 自检（会检查：文件存在、语法、清单覆盖、文档引用）。",
+    "订单顺序即执行顺序：apiserver 最慢放最前，danmu 依赖 node 插件目录已存在。"
+  ],
+
+  "chains": {
+    "_comment": "四条发版链路的入口脚本。CI 的 _docker/_tv/_pc_plugins 与本地 release.ps1 都按这里的路径调用。",
+    "pc": {
+      "script": "client/apps/desktop/build-gnu.ps1",
+      "args": ["--bundles", "nsis"],
+      "runner": "windows",
+      "why_windows": "Tauri + GNU 工具链/MinGW，脚本内配 RUSTUP_TOOLCHAIN 与 linker"
+    },
+    "tv": {
+      "script": "client/apps/tv/build-apk.ps1",
+      "runner": "ubuntu",
+      "why_ubuntu": "JDK17 + Android SDK + gradle，脚本在 CI 里不直接用（_tv.yml 直接调 gradle）"
+    },
+    "docker": {
+      "script": "deploy/scripts/build-push-docker.ps1",
+      "runner": "ubuntu",
+      "why_ubuntu": "buildx + QEMU 出 amd64/arm64 双架构"
+    }
+  },
+
+  "plugins": [
+    {
+      "id": "apiserver",
+      "script": "server/build-plugin.ps1",
+      "required": true,
+      "why": "后端插件（fat jar + jlink JRE + spider.jar），缺了 PC/Web 没后端"
+    },
+    {
+      "id": "danmu",
+      "script": "server/build-plugin-danmu.ps1",
+      "required": false,
+      "needs": "",
+      "why": "上游源码不随公开库分发；公开构建跳过，不阻断其它插件"
+    },
+    {
+      "id": "drpy",
+      "script": "server/build-plugin-drpy.ps1",
+      "required": true,
+      "why": "drpy/Node 运行时，200+ 个 .js 源依赖它"
+    },
+    {
+      "id": "tv-node",
+      "script": "client/apps/tv/runtime-node/build-runtime-module.ps1",
+      "required": false,
+      "why": "TV 运行时模块（node/danmu_api）：按 ABI 出 3 个 APK + fnpack；inputs 未变时脚本自己复用"
+    },
+    {
+      "id": "ffmpeg",
+      "script": "server/build-plugin-ffmpeg.ps1",
+      "required": false,
+      "why": "需联网下 Windows 静态版 ffmpeg（约 80MB）；失败不阻断"
+    }
+  ],
+
+  "index": {
+    "script": "server/build-release.ps1",
+    "why": "把 build/plugins/ 打成 zip 并生成 packages.json（含 sha256）"
+  },
+
+  "version": {
+    "script": "deploy/scripts/bump-version.ps1",
+    "why": "版本号 13 处一次改齐（含 TV versionCode 与 compose 兜底）"
+  }
+}

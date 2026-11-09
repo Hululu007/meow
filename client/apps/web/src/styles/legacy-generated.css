@@ -1,0 +1,197 @@
+/* 自动生成，勿手改。生成器：scripts/gen-legacy-css.mjs
+ *
+ * 来源：构建产物里所有用逻辑属性 / gap / aspect-ratio 的类
+ * （对应的 Chrome 版本依次是 87 / 84 / 88）。
+ * 手写清单会漏档位——这份是从产物里抠出来的，产物有的一定覆盖。
+ *
+ * ★ 响应式变体（.sm:px-6）的兜底必须包在**同样的 @media** 里。
+ *   展开到全局会让窄屏上拿到宽屏的间距，方向反着错。
+ */
+
+/* ── 逻辑属性 → 物理属性 ── */
+html[data-legacy-css='1'] .inset-x-0 { left: 0; right: 0; }
+html[data-legacy-css='1'] .inset-x-1 { left: 0.25rem; right: 0.25rem; }
+html[data-legacy-css='1'] .inset-x-2 { left: 0.5rem; right: 0.5rem; }
+html[data-legacy-css='1'] .inset-y-0 { top: 0; bottom: 0; }
+html[data-legacy-css='1'] .-mx-2 { margin-left: -0.5rem; margin-right: -0.5rem; }
+html[data-legacy-css='1'] .-mx-3 { margin-left: -0.75rem; margin-right: -0.75rem; }
+html[data-legacy-css='1'] .-mx-4 { margin-left: -1rem; margin-right: -1rem; }
+html[data-legacy-css='1'] .-mx-6 { margin-left: -1.5rem; margin-right: -1.5rem; }
+html[data-legacy-css='1'] .mx-auto { margin-left: auto; margin-right: auto; }
+html[data-legacy-css='1'] .-my-3 { margin-top: -0.75rem; margin-bottom: -0.75rem; }
+html[data-legacy-css='1'] .my-1 { margin-top: 0.25rem; margin-bottom: 0.25rem; }
+html[data-legacy-css='1'] .px-0\.5 { padding-left: 0.125rem; padding-right: 0.125rem; }
+html[data-legacy-css='1'] .px-1 { padding-left: 0.25rem; padding-right: 0.25rem; }
+html[data-legacy-css='1'] .px-1\.5 { padding-left: 0.375rem; padding-right: 0.375rem; }
+html[data-legacy-css='1'] .px-2 { padding-left: 0.5rem; padding-right: 0.5rem; }
+html[data-legacy-css='1'] .px-2\.5 { padding-left: 0.625rem; padding-right: 0.625rem; }
+html[data-legacy-css='1'] .px-3 { padding-left: 0.75rem; padding-right: 0.75rem; }
+html[data-legacy-css='1'] .px-3\.5 { padding-left: 0.875rem; padding-right: 0.875rem; }
+html[data-legacy-css='1'] .px-4 { padding-left: 1rem; padding-right: 1rem; }
+html[data-legacy-css='1'] .px-5 { padding-left: 1.25rem; padding-right: 1.25rem; }
+html[data-legacy-css='1'] .px-6 { padding-left: 1.5rem; padding-right: 1.5rem; }
+html[data-legacy-css='1'] .px-7 { padding-left: 1.75rem; padding-right: 1.75rem; }
+html[data-legacy-css='1'] .py-0\.5 { padding-top: 0.125rem; padding-bottom: 0.125rem; }
+html[data-legacy-css='1'] .py-1 { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+html[data-legacy-css='1'] .py-1\.5 { padding-top: 0.375rem; padding-bottom: 0.375rem; }
+html[data-legacy-css='1'] .py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+html[data-legacy-css='1'] .py-2\.5 { padding-top: 0.625rem; padding-bottom: 0.625rem; }
+html[data-legacy-css='1'] .py-3 { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+html[data-legacy-css='1'] .py-3\.5 { padding-top: 0.875rem; padding-bottom: 0.875rem; }
+html[data-legacy-css='1'] .py-4 { padding-top: 1rem; padding-bottom: 1rem; }
+html[data-legacy-css='1'] .py-5 { padding-top: 1.25rem; padding-bottom: 1.25rem; }
+html[data-legacy-css='1'] .py-6 { padding-top: 1.5rem; padding-bottom: 1.5rem; }
+html[data-legacy-css='1'] .py-8 { padding-top: 2rem; padding-bottom: 2rem; }
+html[data-legacy-css='1'] .py-10 { padding-top: 2.5rem; padding-bottom: 2.5rem; }
+html[data-legacy-css='1'] .py-20 { padding-top: 5rem; padding-bottom: 5rem; }
+html[data-legacy-css='1'] .py-24 { padding-top: 6rem; padding-bottom: 6rem; }
+html[data-legacy-css='1'] .py-\[7px\] { padding-top: 7px; padding-bottom: 7px; }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:-mx-3 { margin-left: -0.75rem; margin-right: -0.75rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:my-0 { margin-top: 0; margin-bottom: 0; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:px-1 { padding-left: 0.25rem; padding-right: 0.25rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:px-2\.5 { padding-left: 0.625rem; padding-right: 0.625rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:px-3 { padding-left: 0.75rem; padding-right: 0.75rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:px-3\.5 { padding-left: 0.875rem; padding-right: 0.875rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:px-4 { padding-left: 1rem; padding-right: 1rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:py-1 { padding-top: 0.25rem; padding-bottom: 0.25rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:py-1\.5 { padding-top: 0.375rem; padding-bottom: 0.375rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:py-2\.5 { padding-top: 0.625rem; padding-bottom: 0.625rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:py-3 { padding-top: 0.75rem; padding-bottom: 0.75rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:py-4 { padding-top: 1rem; padding-bottom: 1rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:py-5 { padding-top: 1.25rem; padding-bottom: 1.25rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .max-sm\:py-16 { padding-top: 4rem; padding-bottom: 4rem; } }
+@media (min-width:40rem) { html[data-legacy-css='1'] .sm\:inset-x-4 { left: 1rem; right: 1rem; } }
+@media (min-width:40rem) { html[data-legacy-css='1'] .sm\:px-2\.5 { padding-left: 0.625rem; padding-right: 0.625rem; } }
+@media (min-width:40rem) { html[data-legacy-css='1'] .sm\:px-4 { padding-left: 1rem; padding-right: 1rem; } }
+@media (min-width:40rem) { html[data-legacy-css='1'] .sm\:px-5 { padding-left: 1.25rem; padding-right: 1.25rem; } }
+@media (min-width:40rem) { html[data-legacy-css='1'] .sm\:px-6 { padding-left: 1.5rem; padding-right: 1.5rem; } }
+@media (min-width:40rem) { html[data-legacy-css='1'] .sm\:py-4 { padding-top: 1rem; padding-bottom: 1rem; } }
+@media (min-width:48rem) { html[data-legacy-css='1'] .md\:px-2\.5 { padding-left: 0.625rem; padding-right: 0.625rem; } }
+@media (min-width:48rem) { html[data-legacy-css='1'] .md\:py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; } }
+@media (min-width:64rem) { html[data-legacy-css='1'] .lg\:px-1 { padding-left: 0.25rem; padding-right: 0.25rem; } }
+@media (min-width:64rem) { html[data-legacy-css='1'] .lg\:px-6 { padding-left: 1.5rem; padding-right: 1.5rem; } }
+
+/* ── flex gap → 后代 margin ──
+ * 排除 flex-wrap：换行后每行首元素也会拿到 margin-left，整行右移。
+ * flex-col 用 margin-top（主轴纵向），其余用 margin-left（主轴横向）。
+ */
+html[data-legacy-css='1'] .flex:not(.flex-wrap).mtb-item[data-v-263316ac] > * + * { margin-left: 3px; }
+html[data-legacy-css='1'] .flex-col.mtb-item[data-v-263316ac] > * + * { margin-top: 3px; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).tile > * + * { margin-left: .75rem; }
+html[data-legacy-css='1'] .flex-col.tile > * + * { margin-top: .75rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).set-head > * + * { margin-left: .5rem; }
+html[data-legacy-css='1'] .flex-col.set-head > * + * { margin-top: .5rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).poster-grid > * + * { margin-left: 1.75rem 1rem; }
+html[data-legacy-css='1'] .flex-col.poster-grid > * + * { margin-top: 1.75rem 1rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).set-grid > * + * { margin-left: .625rem; }
+html[data-legacy-css='1'] .flex-col.set-grid > * + * { margin-top: .625rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).set-sub > * + * { margin-left: .5rem; }
+html[data-legacy-css='1'] .flex-col.set-sub > * + * { margin-top: .5rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-0\.5 > * + * { margin-left: 0.125rem; }
+html[data-legacy-css='1'] .flex-col.gap-0\.5 > * + * { margin-top: 0.125rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-1 > * + * { margin-left: 0.25rem; }
+html[data-legacy-css='1'] .flex-col.gap-1 > * + * { margin-top: 0.25rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-1\.5 > * + * { margin-left: 0.375rem; }
+html[data-legacy-css='1'] .flex-col.gap-1\.5 > * + * { margin-top: 0.375rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-2 > * + * { margin-left: 0.5rem; }
+html[data-legacy-css='1'] .flex-col.gap-2 > * + * { margin-top: 0.5rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-2\.5 > * + * { margin-left: 0.625rem; }
+html[data-legacy-css='1'] .flex-col.gap-2\.5 > * + * { margin-top: 0.625rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-3 > * + * { margin-left: 0.75rem; }
+html[data-legacy-css='1'] .flex-col.gap-3 > * + * { margin-top: 0.75rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-4 > * + * { margin-left: 1rem; }
+html[data-legacy-css='1'] .flex-col.gap-4 > * + * { margin-top: 1rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-5 > * + * { margin-left: 1.25rem; }
+html[data-legacy-css='1'] .flex-col.gap-5 > * + * { margin-top: 1.25rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-6 > * + * { margin-left: 1.5rem; }
+html[data-legacy-css='1'] .flex-col.gap-6 > * + * { margin-top: 1.5rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-8 > * + * { margin-left: 2rem; }
+html[data-legacy-css='1'] .flex-col.gap-8 > * + * { margin-top: 2rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-\[3px\] > * + * { margin-left: 3px; }
+html[data-legacy-css='1'] .flex-col.gap-\[3px\] > * + * { margin-top: 3px; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-px > * + * { margin-left: 1px; }
+html[data-legacy-css='1'] .flex-col.gap-px > * + * { margin-top: 1px; }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).max-sm\:gap-1\.5 > * + * { margin-left: 0.375rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .flex-col.max-sm\:gap-1\.5 > * + * { margin-top: 0.375rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).max-sm\:gap-2 > * + * { margin-left: 0.5rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .flex-col.max-sm\:gap-2 > * + * { margin-top: 0.5rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).max-sm\:gap-4 > * + * { margin-left: 1rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .flex-col.max-sm\:gap-4 > * + * { margin-top: 1rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).max-sm\:gap-6 > * + * { margin-left: 1.5rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .flex-col.max-sm\:gap-6 > * + * { margin-top: 1.5rem; } }
+@media (min-width:40rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).sm\:gap-2 > * + * { margin-left: 0.5rem; } }
+@media (min-width:40rem) { html[data-legacy-css='1'] .flex-col.sm\:gap-2 > * + * { margin-top: 0.5rem; } }
+@media (min-width:40rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).sm\:gap-3 > * + * { margin-left: 0.75rem; } }
+@media (min-width:40rem) { html[data-legacy-css='1'] .flex-col.sm\:gap-3 > * + * { margin-top: 0.75rem; } }
+@media (min-width:40rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).sm\:gap-6 > * + * { margin-left: 1.5rem; } }
+@media (min-width:40rem) { html[data-legacy-css='1'] .flex-col.sm\:gap-6 > * + * { margin-top: 1.5rem; } }
+@media (min-width:40rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).sm\:gap-8 > * + * { margin-left: 2rem; } }
+@media (min-width:40rem) { html[data-legacy-css='1'] .flex-col.sm\:gap-8 > * + * { margin-top: 2rem; } }
+@media (min-width:48rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).md\:gap-1 > * + * { margin-left: 0.25rem; } }
+@media (min-width:48rem) { html[data-legacy-css='1'] .flex-col.md\:gap-1 > * + * { margin-top: 0.25rem; } }
+@media (min-width:48rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).md\:gap-5 > * + * { margin-left: 1.25rem; } }
+@media (min-width:48rem) { html[data-legacy-css='1'] .flex-col.md\:gap-5 > * + * { margin-top: 1.25rem; } }
+@media (min-width:64rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).lg\:gap-5 > * + * { margin-left: 1.25rem; } }
+@media (min-width:64rem) { html[data-legacy-css='1'] .flex-col.lg\:gap-5 > * + * { margin-top: 1.25rem; } }
+@media (min-width:64rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).lg\:gap-6 > * + * { margin-left: 1.5rem; } }
+@media (min-width:64rem) { html[data-legacy-css='1'] .flex-col.lg\:gap-6 > * + * { margin-top: 1.5rem; } }
+@media (min-width:64rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).lg\:gap-10 > * + * { margin-left: 2.5rem; } }
+@media (min-width:64rem) { html[data-legacy-css='1'] .flex-col.lg\:gap-10 > * + * { margin-top: 2.5rem; } }
+@media (max-width:639px) { html[data-legacy-css='1'] .flex:not(.flex-wrap).tile > * + * { margin-left: .5rem; } }
+@media (max-width:639px) { html[data-legacy-css='1'] .flex-col.tile > * + * { margin-top: .5rem; } }
+@media (max-width:639px) { html[data-legacy-css='1'] .flex:not(.flex-wrap).set-sub > * + * { margin-left: .125rem; } }
+@media (max-width:639px) { html[data-legacy-css='1'] .flex-col.set-sub > * + * { margin-top: .125rem; } }
+
+/* ── gap-x / gap-y（产物是 column-gap / row-gap）──
+ * ★ 只按主轴补：gap-x 只给 flex-row 的 margin-left，gap-y 只给 flex-col 的 margin-top。
+ *   交叉轴（flex-col 的横向 gap）与换行后的行间距用 margin 表达不了，跳过。
+ */
+@media (max-height:520px) { html[data-legacy-css='1'] .flex-col.poster-grid > * + * { margin-top: 1.125rem; } }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-x-3 > * + * { margin-left: 0.75rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-x-4 > * + * { margin-left: 1rem; }
+html[data-legacy-css='1'] .flex:not(.flex-wrap).gap-x-6 > * + * { margin-left: 1.5rem; }
+html[data-legacy-css='1'] .flex-col.gap-y-1 > * + * { margin-top: 0.25rem; }
+html[data-legacy-css='1'] .flex-col.gap-y-1\.5 > * + * { margin-top: 0.375rem; }
+html[data-legacy-css='1'] .flex-col.gap-y-2 > * + * { margin-top: 0.5rem; }
+html[data-legacy-css='1'] .flex-col.gap-y-2\.5 > * + * { margin-top: 0.625rem; }
+html[data-legacy-css='1'] .flex-col.gap-y-3 > * + * { margin-top: 0.75rem; }
+html[data-legacy-css='1'] .flex-col.gap-y-5 > * + * { margin-top: 1.25rem; }
+html[data-legacy-css='1'] .flex-col.gap-y-6 > * + * { margin-top: 1.5rem; }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).max-sm\:gap-x-2 > * + * { margin-left: 0.5rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).max-sm\:gap-x-2\.5 > * + * { margin-left: 0.625rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .flex:not(.flex-wrap).max-sm\:gap-x-3 > * + * { margin-left: 0.75rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .flex-col.max-sm\:gap-y-1 > * + * { margin-top: 0.25rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .flex-col.max-sm\:gap-y-2 > * + * { margin-top: 0.5rem; } }
+@media not all and (min-width:40rem) { html[data-legacy-css='1'] .flex-col.max-sm\:gap-y-5 > * + * { margin-top: 1.25rem; } }
+
+/* ── space-y / space-x（margin-block/inline-start，需 Chrome 87）── */
+
+/* ── aspect-ratio → padding-top 占位 ──
+ * 只给"未定位"的子元素补，避免把底部渐变（h-16）拉满整图 ——
+ * 那样会让所有海报发暗（实测踩过）。
+ *
+ * ★★ 这条降级对「固定宽的 flex 子项」是错的，必须另给固定高度。
+ *   `padding-top: 56.25%` 的百分比相对**父容器宽度**算，不是自身宽度。
+ *   实测（2026-10-30 投影仪 Chrome 66）：壁纸卡片是 `w-[8.5rem]` 的
+ *   flex 子项、父容器宽 900px+ → padding-top 算出 510px，
+ *   卡片被拉成 153×511（应 153×86），底部文字被推出屏幕。
+ *   判据：元素若带 `w-[Nrem]` 这类固定宽，直接在模板里补
+ *   `h-[N×比例]`，不要只依赖本文件的 padding-top 占位。
+ */
+html[data-legacy-css='1'] .aspect-\[2\/3\]:not([class*="h-["]) { position: relative; height: 0; padding-top: 150%; }
+html[data-legacy-css='1'] .aspect-\[2\/3\]:not([class*="h-["]) > :not(.absolute):not(.fixed) { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+html[data-legacy-css='1'] .aspect-video:not([class*="h-["]) { position: relative; height: 0; padding-top: 56.25%; }
+html[data-legacy-css='1'] .aspect-video:not([class*="h-["]) > :not(.absolute):not(.fixed) { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+
+/* ── rotate 独立属性 → transform（Chrome 104 才有 rotate）──
+ * ★ 用 transform 而不是重写 rotate：老内核只认 transform。
+ *   只对"纯 rotate 类"生成——若元素还带 translate / scale，
+ *   它们也走 transform，这里的兜底会把位移/缩放一起覆盖掉。
+ */
+html[data-legacy-css='1'] .-rotate-90 { transform: rotate(-90deg); }
+html[data-legacy-css='1'] .rotate-90 { transform: rotate(90deg); }
+html[data-legacy-css='1'] .rotate-180 { transform: rotate(180deg); }
+
+/* ── inset 简写 ── */
+html[data-legacy-css='1'] .inset-0 { top: 0; right: 0; bottom: 0; left: 0; }

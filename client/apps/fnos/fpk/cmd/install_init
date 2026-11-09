@@ -1,0 +1,26 @@
+#!/bin/bash
+# 安装前：只做目录与默认配置准备。
+# ★ 永远 exit 0：依赖缺失不在安装阶段阻断（官方要求"依赖缺失或不可用时给出清晰提示"），
+#   缺失状态由 /api/health 的 deps 字段与 UI 表达。
+set -u
+
+mkdir -p "$TRIM_PKGVAR/data" "$TRIM_PKGVAR/plugins" "$TRIM_PKGVAR/logs" "$TRIM_PKGVAR/run" 2>/dev/null
+# 插件可写目录（config/.cache）挂到 PKGVAR；载荷此时可能还没展开，install_callback 会重跑
+"$(dirname "$0")/plugins_setup" >/dev/null 2>&1
+
+if [ ! -f "$TRIM_PKGETC/meow.conf" ]; then
+    mkdir -p "$TRIM_PKGETC" 2>/dev/null
+    cat > "$TRIM_PKGETC/meow.conf" <<'EOF'
+MEOW_SHELL_PORT=30010
+MEOW_API_PORT=30011
+EOF
+fi
+
+# 依赖与应用同卷：dirname(TRIM_APPDEST) = @appcenter 所在目录，不硬编码 /vol1
+JAVA="$(dirname "$TRIM_APPDEST")/java-21-openjdk/bin/java"
+if [ ! -x "$JAVA" ]; then
+    echo "未检测到 Java 21 运行时（$JAVA）。应用仍会安装，但影视后端不会启动；请在应用中心安装 java-21-openjdk（约 340 MB）后启动本应用。" \
+        > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null
+fi
+
+exit 0

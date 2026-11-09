@@ -1,0 +1,14 @@
+#!/bin/bash
+# 安装后：记录落点，便于排障（不阻塞安装）。
+set -u
+mkdir -p "$TRIM_PKGVAR/logs" 2>/dev/null
+# 载荷已展开，这次才能真正建链接（install_init 时目录可能还不存在）
+"$(dirname "$0")/plugins_setup" >/dev/null 2>&1
+{
+    echo "[install_callback] $(date '+%F %T') ver=$TRIM_APPVER"
+    echo "  APPDEST=$TRIM_APPDEST"
+    echo "  PKGVAR=$TRIM_PKGVAR"
+    echo "  PKGETC=$TRIM_PKGETC"
+    echo "  SERVICE_PORT=$TRIM_SERVICE_PORT"
+} >> "$TRIM_PKGVAR/logs/install.log" 2>/dev/null
+exit 0

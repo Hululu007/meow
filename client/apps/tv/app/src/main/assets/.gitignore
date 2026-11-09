@@ -1,0 +1,17 @@
+# 前端 dist 由 `syncWebAssets` 在构建前复制进来，属于构建产物。
+# 入库会和 web/dist 内容重复，且改了前端忘了重新 build 时会用旧产物。
+# tv-nav.js 是手写源码，要保留。
+*
+!tv-nav.js
+!.gitignore
+# 运行时模块的启动器与壳侧载荷代码（手写源码，不是第三方二进制）。
+!launch.js
+!node-payload/
+!node-payload/**
+
+# ★ 公开壳：以下源包文件**故意不入库**（2026-11-09 剥离）。
+#   · spider.jar / spider-ext.jar：第三方 jar，无上游许可
+#   · node-payload-danmu.zip：danmu_api 载荷（上游 AGPL）
+#   私有全量构建/官方 CI 在 gradle 之前把它们放到本地目录即可，
+#   本文件的白名单不会阻止构建，只阻止它们进 git。
+#   纯壳构建缺这些文件是合法产物：用户在设置页导入源包后恢复能力。

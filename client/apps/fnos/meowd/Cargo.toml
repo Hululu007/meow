@@ -1,0 +1,50 @@
+[package]
+name = "meowd"
+version = "1.1.5"
+edition = "2021"
+description = "猫窝 Meow fnOS 无头壳：静态托管 + /api 反代 + Java 后端守护"
+license = "MIT"
+
+[[bin]]
+name = "meowd"
+path = "src/main.rs"
+
+[dependencies]
+# axum 0.7 与 tower-http 0.5 都是 hyper 1.x 生态，静态托管直接用 ServeDir。
+axum = "0.7"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "signal",
+    "process",
+    "time",
+    "fs",
+    "io-util",
+    "sync",
+] }
+# 只反代到 127.0.0.1:30011，不需要 TLS；stream 用来把后端响应按流透传（视频 Range / SSE）。
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+tower-http = { version = "0.5", features = ["fs"] }
+# 网关兜底连接也要用 oneshot 调 Router
+tower = { version = "0.5", features = ["util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 只用于 setsid / kill(-pgid)；Windows 上不参与编译分支。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+# axum 0.7 的 serve() 只接受 TcpListener（0.7.9 实测），unix socket 需要自己 accept 后交给 hyper。
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+
+# fnOS 包体越小越好：静态 musl 目标 + 体积优先。
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

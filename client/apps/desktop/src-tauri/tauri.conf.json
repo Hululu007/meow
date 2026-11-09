@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "猫窝",
+  "version": "1.1.5",
+  "identifier": "com.meow.player",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @meow/web dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "pnpm --filter @meow/web build",
+    "frontendDist": "../../web/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "猫窝",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false,
+        "theme": "Dark",
+        "backgroundColor": "#12141d",
+        "additionalBrowserArgs": "--remote-debugging-port=9455"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ]
+  }
+}

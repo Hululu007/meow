@@ -1,0 +1,29 @@
+{
+  "id": "danmu-api",
+  "name": "弹幕聚合服务",
+  "capability": "danmaku",
+  "required": false,
+  "fatal": false,
+  "version": "1.0.0",
+  "exec": "node",
+  "execFallback": ["../node/node.exe", "../node/node", "node.exe"],
+  "args": ["danmu_api/server.js"],
+  "cwd": ".",
+  "port": 9321,
+  "portFallback": [9322, 9323, 9324, 9325],
+  "health": "/api/v2/fongmi/danmaku?name=test",
+  "healthExpect": "",
+  "healthTimeoutMs": 90000,
+  "healthIntervalMs": 800,
+  "autostart": false,
+  "env": {
+    "DANMU_API_PORT": "{port}",
+    "DANMU_API_BIND": "127.0.0.1",
+    "SOURCE_ORDER": "360,bilibili,tencent,iqiyi,youku,mango,migu,sohu"
+  },
+  "inject": {
+    "target": "{appData}/data/policy.json",
+    "key": "danmakuApi",
+    "value": "http://127.0.0.1:{port}"
+  }
+}

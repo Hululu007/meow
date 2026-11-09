@@ -1,0 +1,48 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物
+dist/
+target/
+*.exe
+*.msi
+*.nsis.zip
+
+# Tauri 生成
+apps/desktop/src-tauri/gen/schemas/
+
+# 本地调试产物
+*.log
+.edge-profile/
+.smoke/
+.vite-dev.log
+.verify-*.png
+.settings-*.png
+.web-*.png
+.pc-*.png
+.exe-icon*.png
+shot-*.png
+tmp/
+.tmp/
+
+# 环境
+# Vite 会按 mode 读 .env / .env.[mode] / .env.[mode].local，
+# 任一文件都可能带 token 或内网地址，所以整个家族都排掉，只放行示例。
+# 注意：根 .gitignore 只写了 .env（git 是完全同名匹配），挡不住 .env.production。
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 临时调试文件（根目录）
+.tmp-*

@@ -1,0 +1,82 @@
+# 构建上下文排除：只保留两个 Dockerfile 真正需要的东西
+#
+# 关键坑（踩过）：绝不能把本地 node_modules 带进镜像，否则 COPY 会覆盖
+# 容器里刚装好的依赖（实测：@vitejs/plugin-vue 明明装了却被本地空目录
+# 盖掉，报 ERR_MODULE_NOT_FOUND）。
+
+# ── 依赖与构建产物：一律排除，容器里自己装 ──────────────
+**/node_modules/
+**/target/
+**/dist/
+# 例外：web 的预构建产物要能被 COPY 进镜像（Dockerfile.web 的 runtime-dist 路线）。
+#  Docker 排除目录后不再向下遍历，所以这里不能写 `**/dist/` 再 negate 子项，
+#  只能单独放行这一个路径。
+!client/apps/web/dist/
+**/__pycache__/
+*.pyc
+server/host/classes/
+# ★ 写 `server/build/*` 而不是 `server/build/`：后者排除目录本身，Docker 就
+#   不再向下遍历，下面的 `!server/build/dist/` 全部失效 —— 镜像里永远没有
+#   dex jar，而启动日志只会多一行 `(class only — Android CANNOT load)`，
+#   症状是 TV/投影仪加载不了 jar 但后端看起来一切正常。
+server/build/*
+# 例外：spider jar 的 **dex 形态**必须进镜像。
+#
+# 为什么非放不可：/spider-latest.jar 这个端点同时服务 Android 客户端
+# （Fongmi / TVBox 系 / 我们自己的 TV 壳），它们靠 DexClassLoader 加载，
+# 只认 ZIP 里的 classes.dex。而 libs/spider.jar 是 883 个 .class 的 JVM jar，
+# 拿它下发必然报「jar 里没有类 Xxx」。
+#
+# 实测：镜像里没有 dist/ 时，后端启动日志直接打
+#   [api] spider jar: /app/libs/spider.jar (class only — Android CANNOT load)
+# 于是 findDexSpiderJar() 找不到候选、回落到 class 版，生态出口就是断的。
+#
+# 只放行这几个文件，别写成 `!server/build/` —— 那会把 build/.tmp 下
+# 几百个一次性脚本一起塞进构建上下文（实测 297 个）。
+# 也别写成 `!server/build/dist/`（整个目录）：dist 下还有 dex/、dev-build/、
+# goproxy/ 等几十 MB 的中间产物，会一起进上下文。
+!server/build/dist/
+!server/build/dist/.gitkeep
+!server/build/dist/*.jar
+server/build/dist/*
+!server/build/dist/.gitkeep
+!server/build/dist/*.jar
+# Tauri 生成的 schema（dev 产物，镜像不需要）
+client/apps/desktop/src-tauri/gen/
+
+# ── 上游参考：648MB，Docker 完全用不到 ──────────────────
+# 弹幕服务改用官方镜像 logvar/danmu-api，不再从 research/ 构建。
+# （之前为自建 danmu 镜像开过 negate 口子，现已不需要，整目录排除即可。）
+research/
+
+# 逆向产物：Docker 完全用不到
+reverse/
+
+# ── 运行时数据与本地配置 ────────────────────────────
+data/
+.env
+*.log
+
+# ── Git 与编辑器 ───────────────────────────────────
+**/.git/
+.idea/
+.vscode/
+.DS_Store
+
+# ── 调试残留 ───────────────────────────────────────
+.edge-profile/
+.smoke/
+*.pc-*.png
+dm*.xml
+tx.xml
+lst.json
+ds.json
+release/
+release-*/
+
+# ── 文档与工具链：镜像用不到 ─────────────────────────
+docs/
+# 注意：合并后没有 tools/ 目录，逆向工具在 reverse/tooling/（上面 reverse/ 已排除）
+.tmp/
+*.md
+!README.md

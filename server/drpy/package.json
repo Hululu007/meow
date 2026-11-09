@@ -1,0 +1,17 @@
+{
+  "name": "meow-drpy-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "license": "SEE LICENSE IN LICENSE",
+  "description": "drpy (.js) 源的外部运行时；由 meow 后端按 api 后缀路由过来",
+  "main": "server.js",
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "crypto-js": "^4.1.1",
+    "sync-fetch": "^0.6.0-1"
+  },
+  "scripts": {
+    "test": "node tests/smoke.mjs",
+    "start": "node server.js"
+  }
+}

@@ -1,0 +1,15 @@
+plugins {
+    id 'java-library'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+/*
+ * 为什么是纯 java-library 而不是 com.android.library：
+ * 这两个接口要同时被**宿主 APK**和**运行时模块 APK**编译，不能依赖任何
+ * android.* 类型 —— 一旦用了 Context/Intent，模块就必须引入 Android 运行时，
+ * 接口对齐的成本立刻上升。所以参数一律用 String/原始类型。
+ */

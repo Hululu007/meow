@@ -1,0 +1,18 @@
+[
+  {
+    "stepTitle": "卸载选项",
+    "items": [
+      {
+        "type": "radio",
+        "field": "wizard_keep_data",
+        "label": "是否保留数据",
+        "initValue": "keep",
+        "helpText": "保留：配置、插件、日志与播放进度保留，重新安装可直接恢复。删除：删除应用数据目录（配置/插件/日志/缓存）；共享目录中的影片文件请自行提前备份。",
+        "options": [
+          { "label": "保留数据（推荐）", "value": "keep" },
+          { "label": "删除数据", "value": "delete" }
+        ]
+      }
+    ]
+  }
+]

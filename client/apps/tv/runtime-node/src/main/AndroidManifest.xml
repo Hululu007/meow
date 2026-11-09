@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  运行时模块 APK：不含任何 Activity/Service —— 它只是一份"带 .so 的代码包"，
+  由宿主通过 DexClassLoader 加载。装它只是为了拿到一个**只读**的 lib 路径
+  （Android 10+ 禁止从可写目录 dlopen）。
+
+  因此不需要 exported 组件，也不需要任何权限。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="false"
+        android:hasCode="true"
+        android:label="meow node runtime" />
+
+</manifest>

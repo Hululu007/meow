@@ -1,0 +1,119 @@
+# 猫窝 Meow —— 完整编排（构建 + 启动）
+#
+#   web        nginx + 静态文件（无 JVM）        30010   ← 本地构建
+#   apiserver  JVM + spider jar（无 nginx）      30011   ← 本地构建
+#   danmu_api  官方镜像 logvar/danmu-api         30012   ← 拉取
+#
+# 用法（只指定这一个文件即可，不需要叠加别的）：
+#   docker compose -f docker-compose.build.yml up -d --build
+#
+# 与 docker-compose.yml 的关系：**二选一，不是叠加**
+#   docker-compose.yml       启动用，镜像从 Registry 拉（给只用发布镜像的人）
+#   docker-compose.build.yml 本文件，从源码构建（给改源码的人）
+#
+# 两个文件的端口、环境变量、卷、网络完全一致，只是镜像来源不同。
+# 两个文件都用 name: meow 和同样的 container_name，所以切换时会接管同一组容器。
+#
+# 常用：
+#   docker compose -f docker-compose.build.yml up -d --build    构建并启动
+#   docker compose -f docker-compose.build.yml build            只构建
+#   docker compose -f docker-compose.build.yml build web        只重建前端
+#   docker compose -f docker-compose.build.yml up -d apiserver  只起后端（用已构建镜像）
+#
+# 停单个服务用 stop/start，不要用 `down <服务名>`：
+# down 会删掉共享的 meow 网络，让其他运行中的容器失去网络。
+# 删单个容器用 `rm -sf <服务名>`。
+#
+# 多架构构建并推送用 build-push-docker.ps1（compose 不做 manifest list）。
+
+name: meow
+
+services:
+  apiserver:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.apiserver
+    image: ${APISERVER_IMAGE:-chrplus/meow-apiserver:${MEOW_VERSION:-1.1.5}}
+    container_name: meow-apiserver
+    ports:
+      # 默认只绑本机。要给 TV/局域网直连，改 APISERVER_BIND=0.0.0.0。
+      # 注意 /api/proxy/stream 会转发任意 URL，暴露公网等于开放正向代理。
+      - "${APISERVER_BIND:-127.0.0.1}:${APISERVER_PORT:-30011}:9979"
+    volumes:
+      - ../../data:/data
+      # 热换 spider jar 时取消注释（文件必须存在，否则 Docker 会建成空目录）
+      # - ../../server/host/libs/spider.jar:/app/libs/spider.jar:ro
+    environment:
+      MEOW_DATA: /data
+      MEOW_PORT: "9979"
+      # 用 `-` 而非 `:-`：显式写空串（MEOW_DANMAKU_API=）表示"不用聚合服务"，
+      MEOW_JS_RUNTIME: ${MEOW_JS_RUNTIME-http://drpy:9330}
+      # `:-` 会把空串当未设置，置空就失效了。
+      MEOW_DANMAKU_API: ${MEOW_DANMAKU_API-http://danmu_api:9321}
+      # 写操作令牌：保护收藏/进度/片库删除/缓存清理/配置导入等写端点。
+      #   空串 = 关闭鉴权（单机自用默认值）；非空则所有写请求要带 X-Meow-Token。
+      # ★ 后端读取顺序：本变量 → policy.json 的 authToken，两处都空才关闭。
+      MEOW_AUTH_TOKEN: ${MEOW_AUTH_TOKEN-}
+      # CORS 来源策略，默认 `*` = 不限制。详见 docker-compose.yml 同项注释。
+      MEOW_CORS: ${MEOW_CORS-*}
+      JAVA_OPTS: ${APISERVER_JAVA_OPTS:--Xms64m -Xmx512m -Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8}
+    restart: unless-stopped
+    networks: [meow]
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.web
+    image: ${WEB_IMAGE:-chrplus/meow-web:${MEOW_VERSION:-1.1.5}}
+    container_name: meow-web
+    ports:
+      - "${WEB_PORT:-30010}:8080"
+    environment:
+      # nginx 反代目标。连外部后端时改绝对地址，如 http://192.0.2.10:30011
+      MEOW_APISERVER: ${MEOW_APISERVER:-http://apiserver:9979}
+    restart: unless-stopped
+    networks: [meow]
+
+  # drpy 运行时（.js 源）：apiserver 通过 MEOW_JS_RUNTIME 指向它。
+  # 没有它，配置里 200+ 个 drpy 站会被判"不可用"。
+  drpy:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.drpy
+    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${MEOW_VERSION:-1.1.5}}
+    container_name: meow-drpy
+    ports:
+      - "${DRPY_PORT:-30013}:9330"
+    environment:
+      DRPY_PORT: "9330"
+      DRPY_STRIP_REMOTE: "1"
+    restart: unless-stopped
+    networks: [meow]
+
+  danmu_api:
+    # 官方镜像，不从本仓库构建（上游源码不在此仓库）。
+    # 版本固定不用 latest，保证可复现。
+    image: ${DANMU_API_IMAGE:-logvar/danmu-api:1.21.6}
+    container_name: meow-danmu-api
+    ports:
+      - "${DANMU_BIND:-127.0.0.1}:${DANMU_API_PORT:-30012}:9321"
+    volumes:
+      # 首次启动会自动生成 config/.env
+      - ../../data/danmu:/app/config
+    environment:
+      DANMU_API_PORT: "9321"
+      # 必须配，否则只有默认 3 个来源
+      SOURCE_ORDER: ${DANMU_SOURCE_ORDER:-douban,360,renren,hanjutv,iqiyi,tencent,youku,bilibili}
+    restart: unless-stopped
+    healthcheck:
+      # 镜像自带 wget，无 curl
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9321/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    networks: [meow]
+
+networks:
+  meow:
+    driver: bridge

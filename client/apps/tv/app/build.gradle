@@ -1,0 +1,193 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.meow.tv'
+    compileSdk 34
+
+    /**
+     * 把 Web 前端打进 APK 的 assets。
+     *
+     * <p><b>为什么内置而不是让用户填网页地址</b>：TV 上填地址要拿遥控器一个字符
+     * 一个字符敲，是整条安装链路上最劝退的一步。前端只有 2MB（gzip 后 640KB），
+     * 打进 APK 后用户只需要填一个后端 API 地址——甚至自动发现就能填上。
+     *
+     * <p><b>为什么用 sourceSets 映射而不是先 cp 到 assets</b>：复制会产生两份
+     * 同源代码，构建时一旦忘了复制就会用旧前端，排查成本极高。直接指向 dist
+     * 目录，改完 `pnpm build` 重新打包即可。
+     *
+     * <p>路径不存在时构建不失败（用 `exists()` 判断），因为单独编 TV 壳
+     * 调试原生代码时不该强制先构建前端。
+     */
+    def webDist = file('../../web/dist')
+    def webAssets = file('src/main/assets')
+
+    /**
+     * 构建前把前端 dist 同步到 assets/www。
+     *
+     * <p>用 Copy 任务而不是 sourceSets 映射：AGP 对 assets 多目录的过滤规则
+     * 在不同版本上行为不一致，显式复制到一个固定目录行为完全可预期。
+     *
+     * <p>每次 build 前都跑，否则改了前端但没改原生代码时 Gradle 会判定
+     * up-to-date 而用旧前端打包——这种"代码是新的、跑起来是旧的"最难查。
+     */
+    tasks.register('syncWebAssets', Copy) {
+        onlyIf { webDist.exists() }
+        from webDist
+        into webAssets
+        doFirst {
+            println "[meow] syncing web dist -> " + webAssets
+            // 先清空已同步的产物。Vite 每次构建都给文件名加新 hash，
+            // 只 Copy 不删除会让旧 chunk 无限累积——实测连做几轮后
+            // assets/assets/ 里躺了 5 份 index-*.css、4 份 PlayView-*.css，
+            // 其中未展平 @layer 的旧文件也一起进了 APK。
+            // 只删 assets/ 与 index.html，别碰 src/main/assets 下别的资源。
+            delete(new File(webAssets, 'assets'))
+            delete(new File(webAssets, 'index.html'))
+        }
+        doLast {
+            println "[meow] web assets files: " + webAssets.listFiles()?.length
+        }
+    }
+
+    tasks.named('preBuild').configure { dependsOn 'syncWebAssets' }
+
+    defaultConfig {
+        applicationId 'com.meow.tv'
+        // 26 而不是 23：TV 网关复用 apiserver 源码后，core/DataPaths、core/VideoCache、
+        // core/PosterStore 等用的是 java.nio.file.*，那是 API 26 才引入的。
+        // desugaring 覆盖不到 nio.file（只给 java.time / stream / Optional 兜底），
+        // 所以只能抬 minSdk，否则 API 23-25 的设备一进网关就 NoClassDefFoundError。
+        // 实测目标设备：极米 Z6X Pro = Android 9 (API 28)，MuMu = API 30+，都够。
+        minSdk 26
+        targetSdk 34
+        // 与主版本对齐（AGENTS §4.1 的六处版本号之外，TV 是第七处）
+        versionCode 1105
+        versionName '1.1.5'
+        // 默认指向宿主机上的 Web 容器；电视上第一次跑请用 intent extra 覆盖：
+        //   adb shell am start -n com.meow.tv/.MainActivity --es url http://192.168.1.2:30010
+        buildConfigField 'String', 'DEFAULT_URL', '"http://10.0.2.2:30010"'
+    }
+
+    buildFeatures { buildConfig true }
+
+    /**
+     * 直接编译 apiserver 的源码，不再另写一份网关。
+     *
+     * <p><b>为什么必须这样</b>：TV 原来有一份手抄的 `LocalGateway`，只有 8 条路由，
+     * 而前端需要 41 条。两份代码最实际的损失是「修一处漏一处」——m3u8 的
+     * `EXT-X-KEY` 改写在后端早就有（handleStream 里），TV 那份没有，表现就是
+     * 同一个源在 Web 能播、在 TV 黑屏。现在 41 条路由只有一份实现。
+     *
+     * <p><b>为什么是 `src/shared` 这一个目录</b>：后端把「两端都能编」的代码收在
+     * `server/host/src/shared/`（platform / core / routes / ApiServer）。
+     * JVM 专属的 `jvm/`、JVM 启动类、Android stub、以及 TV 侧已有完整实现的
+     * `com/github/catvod/` 都在它外面。于是只需加一个 srcDir，不需要任何
+     * exclude —— 排除规则写错（比如排除 `com/**`，会连带干掉 TV 自己的
+     * `com.meow.tv`）就是整包编译失败。
+     *
+     * <p>路径：app/ → tv/ → apps/ → client/ → 仓库根，共四层。
+     */
+    sourceSets {
+        main {
+            java.srcDirs += ["${file('../../../../')}/server/host/src/shared"]
+        }
+    }
+
+    // 签名：keystore.properties 不在仓库里（.gitignore），本地生成后即可出 release 包。
+    // 没有该文件时回退到 debug 签名，保证 CI/新克隆也能 assembleDebug。
+    def ksProps = new File(rootDir, 'keystore.properties')
+    signingConfigs {
+        release {
+            if (ksProps.exists()) {
+                def p = new Properties()
+                ksProps.withInputStream { p.load(it) }
+                storeFile file(p['storeFile'])
+                storePassword p['storePassword']
+                keyAlias p['keyAlias']
+                keyPassword p['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig ksProps.exists() ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // 运行时模块的共享接口（宿主与模块各编一份，逐字对齐）
+    implementation project(':plugin-api')
+    // 端上播放器：现在 TV 是 WebView + hls.js（网页里的 <video>），
+    // 受 WebView 解码能力限制（部分盒子不支持 HEVC/AV1，也不给硬解），
+    // 而且要经 JS 层转一手。ExoPlayer 直接走 MediaCodec，是电视端的正解。
+    //
+    // 只引 exoplayer + hls：dash/smoothstreaming/rtsp 用不到，
+    // 少一个包 APK 小几百 KB。版本 1.4.1 是本地 Gradle 缓存里已有的，
+    // 免得离线环境拉不到（镜像见根 build.gradle 的 pluginManagement）。
+    implementation 'androidx.media3:media3-exoplayer:1.4.1'
+    implementation 'androidx.media3:media3-exoplayer-hls:1.4.1'
+    implementation 'androidx.media3:media3-ui:1.4.1'
+    implementation 'androidx.media3:media3-datasource-okhttp:1.4.1'
+    // 播放地址与弹幕要带 Referer/UA，用 OkHttp 做 data source 才能自定义请求头。
+    //
+    // 固定 4.12.0 而不是 5.x：okhttp 5.5.0 的依赖要求 compileSdk 37，
+    // 而本项目是 AGP 8.5.2 + compileSdk 34（实测报
+    // "Dependency requires libraries and applications that depend on it to compile
+    //  against version 37 or later"）。升 AGP/compileSdk 会拖累整个 TV 工程，
+    // 代价远大于收益——catvod 里只有一处用到了 5.x 才有的 API（见 Net.java 的补丁）。
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    // catvod-api 用到了这两块：日志拦截器与 DoH 解析器（OkDns）
+    implementation 'com.squareup.okhttp3:logging-interceptor:4.12.0'
+    implementation 'com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0'
+
+    /*
+     * 社区 spider 的 HTML 解析依赖（Jable/Hanime 这类 Jsoup 系）。
+     *
+     * ★ 必须放在**宿主**（这里），不能打进外部 jar：DexClassLoader 是父加载器
+     *   优先，jar 里自带一份也不会被用到；反过来宿主没有、jar 里有，也只会在
+     *   运行时 NoClassDefFoundError。
+     */
+    implementation 'org.jsoup:jsoup:1.15.3'
+
+    // 端上执行生态 jar 需要 catvod-api 的依赖：
+    // gson 要 2.11+（utils/Json.java 用了 GsonBuilder.setStrictness，
+    // 2.10 没有这个 API）；okhttp 上面已经有了。
+    implementation 'com.google.code.gson:gson:2.14.0'
+
+    // catvod-api 用到的 androidx 件（照着 import 逐个补，不多引）：
+    // annotation 是 @Nullable/@NonNull/@Keep；collection 的 ArrayMap 用于小表；
+    // core 的 HandlerCompat 兼容旧 API 的 postAsCallback；
+    // preference 的 PreferenceManager 取默认 SharedPreferences 名。
+    // WebViewAssetLoader：把 assets/www 用 https://appassets.androidplatform.net/
+    // 暴露给 WebView。用它而不是 file:// —— file:// 下 localStorage、
+    // fetch 相对路径、ES module 都受限，前端会跑不起来。
+    implementation 'androidx.webkit:webkit:1.11.0'
+    implementation 'androidx.annotation:annotation:1.9.1'
+    implementation 'androidx.collection:collection:1.4.5'
+    implementation 'androidx.core:core:1.13.1'
+    implementation 'androidx.preference:preference:1.2.1'
+
+    // 复用 apiserver 源码后需要的依赖：
+    //
+    // smbj —— core/Library.java 与 core/Transcode.java 用它读 NAS 的 SMB 共享。
+    // 纯 Java 实现（471 个 class，不引用 java.nio.file），能直接进 APK。
+    // 传递依赖（asn-one、slf4j-api）由 maven 自动带入。
+    implementation 'com.hierynomus:smbj:0.13.0'
+    // smbj 用 slf4j 打日志；不引实现会打印 "Failed to load class StaticLoggerBinder"
+    // 并静默丢弃 SMB 侧日志（功能不受影响，但排障时看不到东西）。
+    implementation 'org.slf4j:slf4j-nop:1.7.36'
+
+    // org.json：Android 自带（android.jar 里的 org.json.JSONObject 与后端
+    // android-json.jar 同源），不需要声明。
+}
+

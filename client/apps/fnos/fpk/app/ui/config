@@ -1,0 +1,13 @@
+{
+  ".url": {
+    "meow.main": {
+      "title": "猫窝 Meow",
+      "icon": "images/icon_{0}.png",
+      "type": "iframe",
+      "url": "/app/meow",
+      "gatewaySocket": "meow.sock",
+      "gatewayPrefix": "/app/meow",
+      "allUsers": true
+    }
+  }
+}

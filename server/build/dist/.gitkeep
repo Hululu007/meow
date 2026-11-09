@@ -1,0 +1,10 @@
+占位文件：让 `server/build/dist/` 在任何干净检出里都存在。
+
+为什么需要（踩过 2026-10-29）：Dockerfile.apiserver 要 COPY 这个目录里的
+dex jar（spider-*.jar，build_tv_jar.py 产出、不入库）。目录不存在时
+`COPY server/build/dist/spider-*.jar` 报的不是"通配符无匹配"而是
+`lstat /server/build/dist: no such file or directory` —— CI 连续 5 次
+全挂在这一行，而 COPY 没有 if-not-exists 选项。
+
+所以目录必须常驻，用整目录 COPY（有 jar 就带、没有就只有这个文件）。
+★ 不要删：删了 CI 的 docker job 立刻红，连带 publish 跳过。

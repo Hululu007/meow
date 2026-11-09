@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 装运行时模块 / 装自己的新版本都要它。缺了系统会直接拒绝：
+     日志是 InstallStart: Requesting uid N needs to declare permission ... -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+        <!--
+      Android 11+ 包可见性：不声明 <queries> 的话，getPackageInfo("com.meow.runtime.node")
+      会直接抛 NameNotFoundException（实测 logcat: AppsFilter ... BLOCKED），
+      表现为"模块装了却认不出来"。
+    -->
+    <queries>
+        <package android:name="com.meow.runtime.node" />
+    </queries>
+
+<application
+        android:allowBackup="false"
+        android:largeHeap="true"
+        android:label="猫窝"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:banner="@mipmap/tv_banner"
+        android:theme="@style/Theme.MeowTv">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="unspecified"
+            android:windowSoftInputMode="adjustResize|stateAlwaysHidden"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 配置页：独立 Activity，保证任何情况下都能退出（不会困在白屏） -->
+        <activity
+            android:name=".SetupActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode"
+            android:theme="@style/Theme.MeowTv" />
+
+        <!-- 端上原生播放（ExoPlayer）。不导出：只由壳内 JS 通过 meowTv 桥拉起，
+             外部应用无权直接唤起播放（避免变成任意地址播放器）。
+             调试包的可测入口在 src/debug/AndroidManifest.xml（用 overlay 覆盖
+             exported，避免同一 activity 在本文件里声明两次）。 -->
+        <activity
+            android:name=".NativePlayerActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode"
+            android:theme="@style/Theme.MeowTv" />
+
+        <!-- 页面嗅探：不可见 WebView 拦请求找媒体地址（纯 JS 计算地址的唯一解法）。
+             同样不导出：只由壳内 JS 通过 meowTv.sniffPage 拉起。 -->
+        <activity
+            android:name=".SniffActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize" />
+
+        <!--
+          应用在线更新：把 cache/updates/ 下的 APK 通过 content:// 交给系统安装器。
+
+          为什么需要：Android 7+ 不允许把 file:// 的安装包交给 Intent
+          （StrictMode 直接抛 FileUriExposedException）。FileProvider 生成一个
+          一次性授权的 content://，系统安装器凭 FLAG_GRANT_READ_URI_PERMISSION 读。
+          exported=false + grantUriPermissions=true 是最小暴露面。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_paths" />
+        </provider>
+            <!-- 端内网关独立进程（32 位 ART 崩溃隔离用，见 GatewayService 注释） -->
+        <!-- 模块装/更新后自动重启 :node（见 ModuleInstallReceiver 注释） -->
+        <receiver
+            android:name=".runtime.ModuleInstallReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_ADDED" />
+                <action android:name="android.intent.action.PACKAGE_REPLACED" />
+                <data android:scheme="package" />
+            </intent-filter>
+        </receiver>
+        <!-- node 运行时宿主：独立进程，崩了不带走主进程/网关 -->
+        <service
+            android:name=".runtime.NodeService"
+            android:process=":node"
+            android:exported="false" />
+
+        <service
+            android:name=".GatewayService"
+            android:process=":spider"
+            android:exported="false" />
+
+</application>
+
+    <!--
+      Android 11+ 的包可见性：要能查询"谁能处理 apk 安装"，否则
+      resolveActivity 返回 null、安装器拉不起来。
+      ★ 必须是 <manifest> 的直接子元素，放进 <application> 会编译报错。
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/vnd.android.package-archive" />
+        </intent>
+    </queries>
+</manifest>

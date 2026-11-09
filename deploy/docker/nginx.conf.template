@@ -1,0 +1,103 @@
+# web 容器的 nginx 模板。启动时由官方镜像的 envsubst 渲染，
+# 只替换环境变量里真实存在的 ${NAME}，nginx 自己的 $host/$uri 不受影响。
+#
+# 上游用变量而非字面地址：字面地址在启动时解析，apiserver 不在则容器起不来；
+# 用变量则延迟到请求时，后端缺席时 /api 返 503，静态页面照常可用。
+
+server {
+    listen 8080;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # JSON 错误文案含中文，需显式声明字符集
+    charset utf-8;
+
+    resolver 127.0.0.11 valid=5s ipv6=off;
+    set $meow_backend "${MEOW_APISERVER}";
+
+    gzip on;
+    gzip_types text/plain text/css application/javascript application/json
+               image/svg+xml application/vnd.apple.mpegurl;
+    gzip_min_length 1024;
+
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    # 前端存活探针，不依赖后端
+    location = /healthz {
+        default_type application/json;
+        access_log off;
+        return 200 '{"ok":true,"role":"web"}';
+    }
+
+    location = /health {
+        proxy_pass $meow_backend/api/health;
+        proxy_http_version 1.1;
+        access_log off;
+    }
+
+    # CatVod 出口（Fongmi / TVBox / 我们的 TV 端都按约定取根路径）。
+    # 不写这两条会被 location / 的 try_files 兜到 index.html —— 客户端拿到一段
+    # HTML 去 JSON.parse 直接失败，表现为「TV 填了地址什么都不加载」。
+    # 用精确匹配而不是前缀：/config 是前端自己的路由，不能被这里吃掉。
+    location = /config.json {
+        proxy_pass $meow_backend/config.json;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        add_header Cache-Control "no-store" always;
+        proxy_intercept_errors on;
+        error_page 502 = @backend_down;
+    }
+
+    location = /spider-latest.jar {
+        proxy_pass $meow_backend/spider-latest.jar;
+        proxy_http_version 1.1;
+        # 后端按 Host 生成配置里的 jar 绝对地址，丢端口会让 TV 下载打到 80
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+        proxy_intercept_errors on;
+        error_page 502 = @backend_down;
+    }
+
+    location /api/ {
+        proxy_pass $meow_backend;
+        proxy_http_version 1.1;
+
+        # 视频代理是流式的，必须关缓冲
+        proxy_buffering off;
+        proxy_request_buffering off;
+
+        # 用 $http_host（含端口）而不是 $host（不含端口）：
+        # 后端拿 Host 生成 m3u8 分片的绝对地址，丢了端口会变成 http://127.0.0.1/api/...，
+        # 播放器请求会打到 80 端口而失败。
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        client_max_body_size 64m;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+
+        proxy_intercept_errors on;
+        error_page 502 = @backend_down;
+    }
+
+    location @backend_down {
+        default_type "application/json; charset=utf-8";
+        add_header Cache-Control "no-store" always;
+        return 503 '{"code":-1,"msg":"apiserver 未连接：请启动 apiserver 容器，或把 MEOW_APISERVER 指向可用的后端地址"}';
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

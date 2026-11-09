@@ -1,0 +1,237 @@
+/*
+ * 老内核降级层（Chrome < 88）
+ * ══════════════════════════════════════════════════════════════
+ *
+ * 为什么需要：实测一台极米投影仪（XGIMI TV / Android 9 / Chrome 66）
+ * 上大量样式失效，根因不是"样式丢了"，而是内核缺少特性实现：
+ *
+ *   padding-inline / margin-inline  需 87   ← Tailwind v4 的 px-*/mx-* 全靠它
+ *   flex gap                        需 84   ← 全站 178 个容器
+ *   aspect-ratio                    需 88   ← 海报卡高度塌成 0
+ *   color-mix()                     需 111  ← 主题色/半透明
+ *   inset 简写                      需 87
+ *   min()/max()/clamp()             需 79
+ *
+ * ★ 为什么不用 @supports 判定
+ *   实测 Chrome 66 上 `CSS.supports('gap','1px')` 返回 **true**，但 flex gap
+ *   实际完全不生效。也就是说 @supports 只验语法、不验实现，用它做降级
+ *   会静默失效。所以改由 JS 实测后挂 `data-legacy-css` 属性，这里只在
+ *   该属性存在时生效（见 src/main.ts 的 detectLegacyCss）。
+ *
+ * ★ 为什么必须写在 @layer 之外
+ *   Tailwind v4 把工具类放进 utilities 层；层外声明一律胜过任何 @layer
+ *   内的规则，这是能覆盖 .px-6 的唯一办法（提高特异性对分层无效）。
+ *
+ * ★ 为什么不覆盖 flex-wrap 容器的横向 gap
+ *   换行后每行首元素也会拿到 margin-left，整行会右移。已实测 13 处
+ *   flex-wrap，一律跳过横向兜底（宁可有间距偏差，也不要错位）。
+ */
+
+html[data-legacy-css='1'] {
+  /* 兜底：让 ::before 之类的伪元素也拿到正常盒模型 */
+  -webkit-text-size-adjust: 100%;
+}
+
+/* ── 1~2. 逻辑属性与 flex gap ──
+ * ★ 这两部分已改为**由构建产物自动生成**（scripts/gen-legacy-css.mjs →
+ *   legacy-generated.css）。原因：手写清单会漏档位。
+ *   实测漏过 -mx-6 / inset-x-2 / px-7 等，而且 Tailwind 到底生成哪些档
+ *   只有产物里才知道 —— 手写等于猜。
+ *   这里不再维护，见 legacy-generated.css。
+ */
+
+/* ── 3. aspect-ratio → padding-top 占位 ───────────────────────
+ * 88 以下不支持。海报是 2:3，用 padding-top:150% 保持比例。
+ *
+ * ★ 坑：不能无脑给 `> *` 加 height:100%。
+ *   海报卡里除图片外还有角标、hover 播放按钮、底部渐变（h-16）。
+ *   把它们全拉成 100% 高，会让那条本应只在底部 64px 的黑色渐变
+ *   铺满整张图 —— 表现为"所有海报都发暗"（实测踩过）。
+ *
+ *   正确做法：只处理"还没定位"的子元素（图片外层容器），
+ *   已经 absolute 的保持原样。
+ */
+html[data-legacy-css='1'] .aspect-\[2\/3\] {
+  position: relative;
+  height: 0;
+  padding-top: 150%;
+}
+html[data-legacy-css='1'] .aspect-\[2\/3\] > :not(.absolute):not(.fixed) {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+html[data-legacy-css='1'] .aspect-\[16\/9\] {
+  position: relative;
+  height: 0;
+  padding-top: 56.25%;
+}
+html[data-legacy-css='1'] .aspect-\[16\/9\] > :not(.absolute):not(.fixed) {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── 4. inset / inset-x / inset-y ─────────────────────────────── */
+html[data-legacy-css='1'] .inset-0 { top: 0; right: 0; bottom: 0; left: 0; }
+html[data-legacy-css='1'] .inset-x-0 { left: 0; right: 0; }
+html[data-legacy-css='1'] .inset-y-0 { top: 0; bottom: 0; }
+html[data-legacy-css='1'] .inset-1 { top: .25rem; right: .25rem; bottom: .25rem; left: .25rem; }
+
+/* ── 5. min()/max()/clamp() 的直接使用者 ─────────────────────────
+ * 逐个类补救：产物里 max() 有 22 处、min() 有 7 处。
+ * 这些是任意值（如 max-w-[calc(...)]），无法枚举，
+ * 所以只处理最常见的几个固定形态。
+ */
+html[data-legacy-css='1'] .max-w-\[1600px\] { max-width: 1600px; }
+html[data-legacy-css='1'] .max-w-\[1500px\] { max-width: 1500px; }
+html[data-legacy-css='1'] .max-w-md { max-width: 28rem; }
+html[data-legacy-css='1'] .max-w-full { max-width: 100%; }
+
+/* ── 6. 电视焦点环：只认 tv-nav 的 .meow-tv-focus ──────────────
+ *
+ * 原来这里是 `*:focus { outline: 2px solid accent }`，本意是"遥控器操作
+ * 必须有可见焦点框"（老内核没有 :focus-visible，那条规则会整条失效）。
+ *
+ * ★ 踩过（2026-11-06 投影仪实测，用户报「圆环和四角聚焦框同时出现、
+ *   像是残留的聚焦」）：
+ *   tv-nav 只搬 `.meow-tv-focus` **类**、不搬 DOM 焦点（只有输入框才 focus()）。
+ *   而页面里有好几处主动 `focus()`：播放页面板聚焦当前集、返回页恢复焦点、
+ *   搜索页自动聚焦输入框…… 这些元素于是**长期带着 DOM 焦点**，
+ *   在 Chrome 66 上就一直画着上面那圈 outline。
+ *   更糟的是老内核的 `outline` **不跟随 border-radius**：胶囊/圆形按钮上
+ *   画出来是个直角方框 —— 用户看到的就是"正常的圆环 + 残留的四角方框"。
+ *
+ * 现在：表单控件保留默认轮廓（打字要有反馈），其余一律交给
+ * `.meow-tv-focus`（box-shadow，天然跟随圆角，且由 tv-nav 精确控制）。
+ */
+html[data-legacy-css='1'][data-tv='1'] input:focus,
+html[data-legacy-css='1'][data-tv='1'] textarea:focus,
+html[data-legacy-css='1'][data-tv='1'] select:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+html[data-legacy-css='1'][data-tv='1'] button:focus,
+html[data-legacy-css='1'][data-tv='1'] a:focus,
+html[data-legacy-css='1'][data-tv='1'] [tabindex]:focus,
+html[data-legacy-css='1'][data-tv='1'] [role='button']:focus {
+  outline: none !important;
+}
+
+/* ── 7. backdrop-filter 失效时的观感兜底 ───────────────────────
+ * 老内核不渲染毛玻璃，半透明背景会直接糊在内容上，改成实色。
+ */
+html[data-legacy-css='1'] .backdrop-blur,
+html[data-legacy-css='1'] .backdrop-blur-sm,
+html[data-legacy-css='1'] .backdrop-blur-md,
+html[data-legacy-css='1'] .backdrop-blur-lg,
+html[data-legacy-css='1'] .backdrop-blur-xl,
+html[data-legacy-css='1'] .backdrop-blur-2xl {
+  /* ★ 用主题色兜底而不是写死深色（2026-11-06）：浅色主题下写死深色会把
+     顶栏/面板整片刷黑。--color-elevated 各主题都有，且比背景亮一档，
+     正好承担"毛玻璃没了、内容要盖住"的角色。 */
+  background-color: var(--color-elevated, rgba(14, 15, 18, 0.96));
+}
+
+/* ── 8. grid 子项高度约束（★ 滚不动的根因）───────────────────────
+ *
+ * 现象：设置页右侧内容滚不动，按 15 次方向键都没反应。
+ *
+ * 实测（投影仪 Chrome 66）：
+ *   外层 .lg:h-[calc(100vh-6rem)] → 612px  ✓
+ *   grid 容器                     → 612px  ✓
+ *   grid 的两个子项               → 3797px ✗（应为 612）
+ *
+ * 子项上有 lg:h-full + lg:overflow-y-auto，但它们的高度被内容撑开了。
+ * 在 grid 里 `height:100%` 要按"行高"解析，而显式 grid-template-rows
+ * 缺失时，隐式行高由内容决定 —— 新内核会让 1fr 参与分配、老内核不会。
+ *
+ * 修法：给 grid 显式声明 minmax(0,1fr)（0 的下界才能压住内容）。
+ * 实测：子项从 3797px 变 612px，scrollHeight == clientHeight，滚动恢复。
+ */
+@media (min-width: 1024px) {
+  /* 用属性选择器而不是转义类名：Tailwind 的 [200px_minmax(0,1fr)] 转义形式
+     在不同产物里不稳定（踩过：手写 .lg\:grid-cols-\[...\] 没匹配上） */
+  html[data-legacy-css='1'] [class~='lg:grid-cols-[200px_minmax(0,1fr)]'] {
+    grid-template-rows: minmax(0, 1fr);
+  }
+}
+
+/* ── 9. translate / rotate / scale 单属性 → transform ─────────────
+ *
+ * 需 Chrome 104。Tailwind v4 把它们编译成独立属性：
+ *   .-translate-y-1/2 { translate: var(--tw-translate-x) var(--tw-translate-y) }
+ * 老核心不认这个属性，元素只剩 `top:50%`，于是**向下偏半个自身高度**。
+ *
+ * 实测（投影仪 Chrome 66，CSS.supports('translate','50% 50%') === false）：
+ *   搜索框放大镜  +12px（应 0，补 transform 后归零）
+ *   设置页竖线     +9px（应 0，补 transform 后归零）
+ *
+ * ★ 为什么用属性选择器而不是转义类名
+ *   类名里的 `/` `[` `]` 在产物中会带反斜杠（.-translate-y-1\/2），
+ *   手写转义容易多写一层（踩过：`\\.` 写成双反斜杠，选择器永不匹配）。
+ *   [class~='…'] 按空格分词精确匹配未转义的字面类名，产物怎么转义都不影响。
+ *
+ * ★ 为什么不用 @supports
+ *   同 §开头：CSS.supports 与实现不一致（gap 就是反例），这里统一按 JS 探测走。
+ */
+html[data-legacy-css='1'] [class~='-translate-y-1/2'] {
+  -webkit-transform: translateY(-50%);
+  transform: translateY(-50%);
+}
+html[data-legacy-css='1'] [class~='-translate-x-1/2'] {
+  -webkit-transform: translateX(-50%);
+  transform: translateX(-50%);
+}
+html[data-legacy-css='1'] [class~='-translate-x-1/2'][class~='-translate-y-1/2'] {
+  -webkit-transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%);
+}
+html[data-legacy-css='1'] [class~='translate-x-4'] {
+  -webkit-transform: translateX(1rem);
+  transform: translateX(1rem);
+}
+html[data-legacy-css='1'] [class~='translate-x-0.5'] {
+  -webkit-transform: translateX(.125rem);
+  transform: translateX(.125rem);
+}
+html[data-legacy-css='1'] [class~='rotate-90'] {
+  -webkit-transform: rotate(90deg);
+  transform: rotate(90deg);
+}
+html[data-legacy-css='1'] [class~='-rotate-90'] {
+  -webkit-transform: rotate(-90deg);
+  transform: rotate(-90deg);
+}
+html[data-legacy-css='1'] [class~='rotate-180'] {
+  -webkit-transform: rotate(180deg);
+  transform: rotate(180deg);
+}
+
+/* ── 10. button 上的 grid 居中只对齐纵向 ────────────────────────
+ *
+ * 实测（Chrome 66 干净环境，同一条 display:grid;place-items:center 规则）：
+ *   div / a / span / label / section / li  → 横向纵向都居中 (0,0)
+ *   button                                 → 横向偏 -28px，纵向 0
+ *
+ * 这是旧 Blink 对 button 匿名内容盒的实现缺陷：justify-items 被吞掉，
+ * 子元素贴左边缘。全仓库 18 个 button 用这套写法（AI 悬浮球、播放器
+ * 圆形按钮、收藏/历史角标、直播音量键…），在投影仪上图标全部偏左。
+ *
+ * ★ 为什么只改 button 不改全局
+ *   div 等元素已经被实测证明正常，加规则会与将来的原生实现叠加
+ *   （margin-left:auto 会给已居中的元素多推一次）。
+ *
+ * ★ 为什么用 flex 而不是给子元素 margin:auto
+ *   margin:auto 也实测有效，但它只对单子元素成立；flex 与 place-items
+ *   语义等价且多子元素时仍均匀分布，覆盖面更宽。
+ */
+html[data-legacy-css='1'] button[class~='grid'][class~='place-items-center'] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

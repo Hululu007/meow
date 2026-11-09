@@ -1,0 +1,51 @@
+#!/bin/bash
+# 随包插件的运行期可写目录。
+#
+# 插件载荷在 $TRIM_APPDEST/plugins/<id>（升级时整目录被替换、运行期只读），
+# 而 danmu_api 会往两个位置写：
+#   config/  首次启动从 .env 模板生成 .env，页面上改配置也写这里
+#   .cache/  搜索结果与番剧数据缓存（process.cwd()/.cache）
+# 所以每次安装/升级后把这两处指回 $TRIM_PKGVAR，用户配置与缓存跨版本保留。
+#
+# 由 install_init / install_callback / upgrade_callback 调用；早于载荷展开时
+# 目录不存在，脚本自然空转，install_callback 会再跑一次。
+set -u
+
+[ -n "${TRIM_APPDEST:-}" ] && [ -n "${TRIM_PKGVAR:-}" ] || exit 0
+
+for pdir in "$TRIM_APPDEST"/plugins/*/; do
+    [ -f "$pdir/manifest.json" ] || continue
+    id="$(basename "$pdir")"
+    var="$TRIM_PKGVAR/plugins/$id"
+
+    # --- config/ ---
+    cfg="$var/config"
+    mkdir -p "$cfg" 2>/dev/null
+    if [ -d "$pdir/config" ] && [ ! -L "$pdir/config" ]; then
+        # .env.example 每次都更新（上游可能加新键）；.env 只在缺失时复制，
+        # 否则会覆盖用户在页面上改过的配置
+        [ -f "$pdir/config/.env.example" ] && cp -f "$pdir/config/.env.example" "$cfg/.env.example" 2>/dev/null
+        [ -f "$pdir/config/.env" ] && [ ! -f "$cfg/.env" ] && cp -f "$pdir/config/.env" "$cfg/.env" 2>/dev/null
+    fi
+    if [ -L "$pdir/config" ]; then
+        ln -sfn "$cfg" "$pdir/config" 2>/dev/null
+    elif [ -d "$pdir/config" ]; then
+        rm -rf "$pdir/config" 2>/dev/null && ln -s "$cfg" "$pdir/config" 2>/dev/null
+    fi
+
+    # --- .cache/ ---
+    cache="$var/.cache"
+    mkdir -p "$cache" 2>/dev/null
+    if [ -L "$pdir/.cache" ]; then
+        ln -sfn "$cache" "$pdir/.cache" 2>/dev/null
+    elif [ ! -e "$pdir/.cache" ]; then
+        ln -s "$cache" "$pdir/.cache" 2>/dev/null
+    fi
+
+    # 安装钩子以 root 跑，落到 meow 名下的目录不改属主会写不进去
+    if [ "$(id -u 2>/dev/null || echo 1)" = "0" ]; then
+        chown -R meow:meow "$cfg" "$cache" 2>/dev/null || true
+    fi
+done
+
+exit 0
