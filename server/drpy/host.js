@@ -531,18 +531,6 @@ function createSandbox(opts) {
     }
   }
   sandbox.pick = pick
-  /*
-   * ★ 必须把 requireModule 挂成沙箱 __req（2026-11-09 修复）。
-   *
-   * 顶层规则脚本经 convertEsm 后，`import x from "assets://..."` 会变成
-   * `__req("assets://...")`；不挂这个全局就会在 vm.runInContext 里报
-   * `__req is not defined`（CI 的 stub-engine 实测）。
-   *
-   * 安全性由 requireModule 自己保证：assets 只读 lib/npm、remote 默认阻断、
-   * 裸模块名走 ALLOWED_BARE_MODULES 白名单。原来的 RCE 是因为白名单之前
-   * 直接 require(spec)；现在挂回去不会恢复那条路径。
-   */
-  sandbox.__req = requireModule
   // CatVod 的 JS 宿主会提供若干可变全局，drpy2 引擎直接用。
   // `Object.defineProperty(globalThis,'myValues',{...})` 在只读/不可配置的
   // 全局上会抛 "Cannot redefine property"（实测），所以这里显式给一个
@@ -623,18 +611,29 @@ async function loadSpider(api, ext, opts) {
     sandbox.module = mod
     sandbox.exports = mod.exports
     sandbox.__JS_SPIDER__ = undefined
-    vm.runInContext(convertEsm(compatPatch(source)), context, { filename: api, timeout: 15000 })
+    // ★ __req 只作为 wrapper 参数注入，不挂 sandbox 全局：
+    //   顶层 import 经 convertEsm 改写为 __req(...)，在函数作用域内提供即可。
+    //   安全门禁 tests/security-gates.test.ts 禁止 sandbox.__req。
+    const code = convertEsm(compatPatch(source))
+    const fn = vm.runInContext(
+      `(function(module, exports, __req, __filename){
+${code}
+; return module.exports;
+})`,
+      context, { filename: api, timeout: 15000 })
+    const returned = fn(mod, mod.exports, requireModule, api)
     exported = sandbox.__JS_SPIDER__
-    if (!exported && mod.exports && Object.keys(mod.exports).length) {
-      const e = mod.exports
+    if (!exported && returned && Object.keys(returned).length) {
+      const e = returned
       // drpy2 的形态：export default {...}，转换后是 module.exports.default。
       // 不解包的话 exported.init/home 全是 undefined，调用只会返回空——
       // 表现是"引擎加载成功但 home 永远空"，最难查的一种。
       exported = e.default && typeof e.default === 'object' ? e.default : e
     }
     if (!exported) {
-      const wrapped = vm.runInContext(`(function(){${source}\n; return typeof __JS_SPIDER__!=='undefined'?__JS_SPIDER__:null})()`, context)
-      exported = wrapped
+      const wrapped = vm.runInContext(`(function(__req){${source}
+; return typeof __JS_SPIDER__!=='undefined'?__JS_SPIDER__:null})`, context)
+      exported = wrapped(requireModule)
     }
   } catch (e) {
     throw new Error('script eval failed: ' + e.message)
