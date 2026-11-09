@@ -8,6 +8,7 @@ on:
       - 'release-v[0-9]*'
       - 'tv-v[0-9]*'
       - 'pc-v[0-9]*'
+      - 'tv-plugins-v[0-9]*'
   release:
     types: [published]
   workflow_dispatch:
@@ -16,6 +17,16 @@ on:
         description: '版本号（留空读 client/package.json）'
         required: false
         type: string
+      docker:
+        description: '构建并推送 DockerHub 三镜像'
+        required: false
+        type: boolean
+        default: true
+      tv_plugins:
+        description: '构建 TV 运行时模块（3 ABI）'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -35,6 +46,8 @@ jobs:
       tv: ${{ steps.scope.outputs.tv }}
       pc: ${{ steps.scope.outputs.pc }}
       plugins: ${{ steps.scope.outputs.plugins }}
+      docker: ${{ steps.scope.outputs.docker }}
+      tvplugins: ${{ steps.scope.outputs.tvplugins }}
       release: ${{ steps.scope.outputs.release }}
     steps:
       - uses: actions/checkout@v4
@@ -72,20 +85,22 @@ jobs:
           set_out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             set_out tv true; set_out pc true; set_out plugins true; set_out release false
+            set_out docker '${{ inputs.docker }}'; set_out tvplugins '${{ inputs.tv_plugins }}'
             exit 0
           fi
           TAG="${GITHUB_REF#refs/tags/}"
           case "$TAG" in
-            release-v[0-9]*) set_out tv true;  set_out pc true;  set_out plugins true;  set_out release true ;;
-            tv-v[0-9]*)      set_out tv true;  set_out pc false; set_out plugins false; set_out release true ;;
-            pc-v[0-9]*)      set_out tv false; set_out pc true;  set_out plugins true;  set_out release true ;;
+            release-v[0-9]*)    set_out tv true;  set_out pc true;  set_out plugins true;  set_out docker true;  set_out tvplugins true;  set_out release true ;;
+            tv-v[0-9]*)         set_out tv true;  set_out pc false; set_out plugins false; set_out docker false; set_out tvplugins false; set_out release true ;;
+            pc-v[0-9]*)         set_out tv false; set_out pc true;  set_out plugins true;  set_out docker false; set_out tvplugins false; set_out release true ;;
+            tv-plugins-v[0-9]*) set_out tv false; set_out pc false; set_out plugins false; set_out docker false; set_out tvplugins true;  set_out release true ;;
             *) echo "::error::无法识别的 tag：$TAG"; exit 1 ;;
           esac
 
   web:
     name: Web dist
     needs: plan
-    if: ${{ needs.plan.outputs.tv == 'true' || needs.plan.outputs.pc == 'true' }}
+    if: ${{ needs.plan.outputs.tv == 'true' || needs.plan.outputs.pc == 'true' || needs.plan.outputs.docker == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -126,6 +141,24 @@ jobs:
     with:
       version: ${{ needs.plan.outputs.version }}
 
+  docker:
+    name: Docker 三镜像
+    needs: [plan, web]
+    if: ${{ needs.plan.outputs.docker == 'true' }}
+    uses: ./.github/workflows/_docker.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      latest: true
+    secrets:
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+  tv_plugins:
+    name: TV 运行时模块
+    needs: plan
+    if: ${{ needs.plan.outputs.tvplugins == 'true' }}
+    uses: ./.github/workflows/_tv_plugins.yml
+    secrets: inherit
+
   plugins:
     name: apiserver 插件
     needs: plan
@@ -136,11 +169,13 @@ jobs:
 
   publish:
     name: 建 draft Release
-    needs: [plan, web, tv, pc, plugins]
+    needs: [plan, web, tv, pc, plugins, docker, tv_plugins]
     if: ${{ !cancelled() && github.event_name == 'push' && needs.plan.outputs.release == 'true'
             && needs.tv.result != 'failure' && needs.tv.result != 'cancelled'
             && needs.pc.result != 'failure' && needs.pc.result != 'cancelled'
-            && needs.plugins.result != 'failure' && needs.plugins.result != 'cancelled' }}
+            && needs.plugins.result != 'failure' && needs.plugins.result != 'cancelled'
+            && needs.docker.result != 'failure' && needs.docker.result != 'cancelled'
+            && needs.tv_plugins.result != 'failure' && needs.tv_plugins.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
