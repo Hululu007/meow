@@ -1,0 +1,585 @@
+# fpk 单推链路（fnOS 原生应用包）。
+#
+# ═══════════════════════════════════════════════════════════════════════
+# 触发入口
+# ═══════════════════════════════════════════════════════════════════════
+#
+#   git tag fpk-v1.0.8        → 构建 x86 + arm 两个 fpk，产物进 artifacts
+#   Actions 页面 Run workflow   → 同上（仅手动验证，不建 Release）
+#
+# ★ 前缀后面必须紧跟数字（与 release.yml 同一套 glob 规则）：
+#   `fpk-verify-1.0.8` 这类名字**不会触发**。
+# ★ **不监听 push 到 main**：fpk 只在发版/补包时构建，日常提交不烧额度。
+# ★ **不建 Release**：fpk 只出 artifacts（保留 90 天）。release.yml 里
+#   带前缀的构建 tag（release/tv/pc/plugins/tv-plugins）才建 draft Release。
+#
+# ═══════════════════════════════════════════════════════════════════════
+# 为什么和 release.yml 分开
+# ═══════════════════════════════════════════════════════════════════════
+#
+# 1. fpk 依赖系统 java-21-openjdk / 网络下载 fnpack，构建口径与三端安装包不同；
+# 2. 全量发版**不包含 fpk**（见 release.yml「整理目录」里的断言）——
+#    fpk 走这条独立链路，补包时不用重跑 Docker/TV/PC。
+#
+# ═══════════════════════════════════════════════════════════════════════
+# 产物
+# ═══════════════════════════════════════════════════════════════════════
+#
+#   meow_<version>_x86.fpk   platform=x86  （meowd: x86_64 musl static-pie）
+#   meow_<version>_arm.fpk   platform=arm  （meowd: aarch64 musl static）
+#
+# 命名里带架构：官方 manifest 的 `all` 只允许「包内不含架构相关二进制」，
+# 我们的 bin/meowd 是 ELF，必须按架构分包（见 docs 的 manifest 原文）。
+#
+# ═══════════════════════════════════════════════════════════════════════
+# 回写 FnDepot 应用源（只有 tag 推送才做）
+# ═══════════════════════════════════════════════════════════════════════
+#
+# tag 推送且 x86/arm 都构建成功后，publish-index 把两个 fpk + fnpack.json
+# 一起提交到 upchr/FnDepot（V2 索引）。**workflow_dispatch 不写索引**，
+# 只出 artifact —— 手动验证包体时不要把半成品推给用户。
+#
+# ★ 跨仓推送用 secrets.FNDEPOT_TOKEN：GITHUB_TOKEN 只能写本仓库。
+# ★ 只改 apps.meow.releases[<version>] 这一棵子树，其余节点原样保留。
+# ★ 双架构是硬条件：只有 x86 的索引比不出索引更糟（arm 用户会以为源坏了）。
+
+name: fpk
+
+on:
+  push:
+    tags:
+      - 'fpk-v[0-9]*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（留空取 client/package.json）'
+        required: false
+        type: string
+
+# 不建 Release，只需要读仓库
+permissions:
+  contents: read
+
+concurrency:
+  group: fpk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: 版本与范围
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 读版本号
+        id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ inputs.version }}"
+          if [ -z "$V" ]; then V=$(node -p "require('./client/package.json').version"); fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "版本：$V"
+
+      # 13 处版本号的一致性校验（含 TV versionCode 与 compose 兜底）
+      - name: 版本一致性
+        shell: pwsh
+        run: ./deploy/scripts/bump-version.ps1 -Check
+
+      # ★ fpk manifest 不在 bump-version.ps1 的 13 处里。
+      #   构建时 build-fpk.sh 会用 VERSION 覆盖它，产物永远是对的；
+      #   这里只拦「仓库里的 manifest 已经漂了」：要么手动改，要么把 fpk
+      #   也加进 bump 脚本（那会把文档里的 13 变成 14，所以暂不这么做）。
+      - name: fpk manifest 版本
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ steps.v.outputs.version }}"
+          M=$(grep -E '^version[[:space:]]*=' client/apps/fnos/fpk/manifest \
+              | head -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d '[:space:]')
+          if [ "$M" != "$V" ]; then
+            echo "::error::client/apps/fnos/fpk/manifest 的 version=$M，与 client/package.json 的 $V 不一致"
+            echo "改 manifest 里那一行，或改用 tag 触发的 workflow_dispatch 并手动同步。"
+            exit 1
+          fi
+          echo "OK: manifest version=$M"
+
+      # tag 名只是入口，版本号以 package.json 为准；但 fpk-v<数字> 与版本号
+      # 不一致时产物名会与 tag 对不上，先拦住（release.yml 对前缀 tag 不比对，
+      # 这里对 fpk 单独加严）。
+      - name: tag 与版本号一致
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          VER="${{ steps.v.outputs.version }}"
+          if [ "fpk-v$VER" != "$TAG" ]; then
+            echo "::error::tag=$TAG 与版本号 fpk-v$VER 不一致（产物会叫 meow_${VER}_*.fpk）"
+            exit 1
+          fi
+          echo "OK: $TAG"
+
+  build:
+    name: fpk ${{ matrix.platform }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x86
+            # `file` 的输出里必须出现这串，防止把 arm 产物打进 x86 包
+            elf_marker: 'x86-64'
+          - platform: arm
+            elf_marker: 'ARM aarch64'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          # 与 manifest 的 install_dep_apps=java-21-openjdk 对齐；
+          # javac 21 产出的 class 版本 (65) 在 java-21 上直接可跑。
+          java-version: '21'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: 前端构建（包内 web 必须是新鲜的）
+        working-directory: client
+        run: |
+          set -euo pipefail
+          pnpm install --no-frozen-lockfile
+          pnpm --filter @meow/web typecheck
+          # fnOS 微应用挂在 /app/meow 下：base 必须与 ui/config 的 gatewayPrefix 一致，
+          # 否则 assets / 接口会请求到站点根。其它构建目标（web/docker/desktop/tv）不受影响。
+          VITE_API_BASE=/app/meow pnpm --filter @meow/web exec vite build --base=/app/meow/
+          test -f apps/web/dist/index.html
+
+      # fnpack 官方二进制（Linux x86）。地址来自官方文档：
+      #   https://developer.fnnas.com/docs/cli/fnpack
+      # 拿不到时 build-fpk.sh 会退化成 tar 手工打包（结构已核对，但未经安装验证），
+      # 所以这里只警告、不中断；日志里出现 ::warning:: 就要当心。
+      - name: 安装 fnpack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          URL="https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64"
+          if curl -fsSL --retry 3 --connect-timeout 20 "$URL" -o "$RUNNER_TEMP/bin/fnpack"; then
+            chmod +x "$RUNNER_TEMP/bin/fnpack"
+            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+            "$RUNNER_TEMP/bin/fnpack" --version || true
+          else
+            echo "::warning::fnpack 下载失败，将走 tar 兜底打包（建议重跑）"
+          fi
+
+      # ★ 自建 jar，不复制现成产物。
+      #   2026-11-06 踩过：复制 server/build/ 下 11-03 的旧 jar，health 报 1.0.5。
+      #   build-fpk.sh 默认就会跑这个脚本，并且会二次校验 jar 内 VERSION。
+      - name: 构建 apiserver.jar（源码编译）
+        run: bash server/build-plugin-linux.sh
+
+      # ★ SRC/OUT 必须和下面「组包」step 用同一组值：build-arm.sh 产出的
+      #   <OUT>/meowd-aarch64 是 build-fpk.sh 在 arm 分支的唯一输入。
+      #   2026-11-06 踩过：这里只传了 IMG，脚本回落到 /tmp/meow-src，
+      #   docker 挂到空目录 → could not find Cargo.toml → exit 101。
+      - name: 交叉编译 aarch64 meowd
+        if: matrix.platform == 'arm'
+        env:
+          SRC: ${{ github.workspace }}
+          OUT: ${{ runner.temp }}/out-${{ matrix.platform }}
+          IMG: docker.io/library/rust:1-alpine
+        run: bash client/apps/fnos/build-arm.sh
+
+      - name: 组包
+        env:
+          SRC: ${{ github.workspace }}
+          OUT: ${{ runner.temp }}/out-${{ matrix.platform }}
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          # CI 直连 Docker Hub；daocloud 镜像站只在 NAS 上有意义
+          RUST_IMAGE: docker.io/library/rust:1-alpine
+        run: bash client/apps/fnos/build-fpk.sh
+
+      # 二次门禁：脚本里的静态校验之外，这里再断一次 ELF 架构与 jar 新鲜度。
+      # 这些失败都会导致「装上了、起不来」或「能跑但版本是旧的」。
+      - name: 静态校验
+        shell: bash
+        env:
+          OUT: ${{ runner.temp }}/out-${{ matrix.platform }}
+          PLATFORM: ${{ matrix.platform }}
+          ELF_MARKER: ${{ matrix.elf_marker }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          FPK="$OUT/meow_${VERSION}_${PLATFORM}.fpk"
+          test -f "$FPK"
+          U="$OUT/verify"
+          rm -rf "$U"; mkdir -p "$U/app"
+          tar -xzf "$FPK" -C "$U" manifest app.tgz
+          tar -xzf "$U/app.tgz" -C "$U/app"
+
+          # 1) 架构标签与二进制必须对上（写错 arch 会让用户装错包）
+          grep -qE "^platform[[:space:]]*=[[:space:]]*${PLATFORM}" "$U/manifest"
+          file "$U/app/bin/meowd" | tee /dev/stderr | grep -q "$ELF_MARKER"
+
+          # 2) 载荷齐全：漏 web 是白屏，漏 jar 是后端起不来
+          test -s "$U/app/web/index.html"
+          test -s "$U/app/seed/apiserver/apiserver.jar"
+          # 公开壳可以没有 spider.jar；私有全量构建才要求它
+          if [ -f "$U/app/seed/apiserver/spider.jar" ]; then
+            test -s "$U/app/seed/apiserver/spider.jar"
+          fi
+
+          # 3) jar 必须是本次源码编译出来的那一份（同一个 md5），
+          #    并独立再读一次 VERSION —— 双保险防旧产物。
+          md5sum "$U/app/seed/apiserver/apiserver.jar" \
+                 server/build/plugins/apiserver/apiserver.jar | tee /dev/stderr
+          test "$(md5sum "$U/app/seed/apiserver/apiserver.jar" | cut -d' ' -f1)" \
+               = "$(md5sum server/build/plugins/apiserver/apiserver.jar | cut -d' ' -f1)"
+          # 字面匹配（不猜版本格式）：plan 里的 bump-version -Check 已保证
+          # ApiServer.java 的 VERSION == package.json 的版本。
+          unzip -p "$U/app/seed/apiserver/apiserver.jar" ApiServer.class \
+            > "$U/ApiServer.class"
+          grep -aqF "$VERSION" "$U/ApiServer.class"
+
+          # 4) 依赖与入口：manifest 漏了 java 运行时 → 干净 NAS 上 meowd 起不来；
+          #    外层缺 cmd/ → 应用中心点不亮图标（装得上但起不来）
+          grep -qE '^install_dep_apps[[:space:]]*=.*java-21-openjdk' "$U/manifest"
+          # ★ 清单先落盘再匹配：`tar -tzf | grep -q` 在 pipefail 下会因 grep
+          #   命中即退触发 SIGPIPE，tar 报 write error 整步失败（2026-11-06 踩过，
+          #   GNU tar 是 exit 2、bsdtar 是 141）。不要用 `|| true` 抹掉门禁。
+          tar -tzf "$FPK" > "$U/list.txt"
+          grep -q '^cmd/' "$U/list.txt"
+
+          # 5) 包体下限（漏打载荷时通常只剩几 MB）
+          test "$(stat -c%s "$FPK")" -gt 10000000
+
+          # 同一个道理：`sort | head` 也会让 sort 挨 SIGPIPE（清单 > 管道缓冲时）
+          sort "$U/list.txt" > "$U/list.sorted.txt"
+          head -30 "$U/list.sorted.txt"
+          # ★ .sha256 只记文件名，不记绝对路径：CI 里 $FPK 是
+          #   /home/runner/work/_temp/out-xxx/... ，publish-index 会把它下载到
+          #   另一个目录，那时按绝对路径记录的 .sha256 既做不了 `sha256sum -c`，
+          #   也过不了「$F 必须等于 basename」的断言（2026-11-06 踩过）。
+          # ★ --text 是必需的，不是可选：Git bash/MSYS 的 sha256sum 默认 binary
+          #   模式，第二列写成 `*文件名`，publish-index 的 `$2 = basename` 会失败。
+          #   `--text` 让 MSYS 与 Linux 都产出 `hash<两空格>文件名`（实测 coreutils 8.32）。
+          ( cd "$OUT" && sha256sum --text "$(basename "$FPK")" > "$(basename "$FPK").sha256" )
+          cat "$FPK.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fpk-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/out-${{ matrix.platform }}/*.fpk
+            ${{ runner.temp }}/out-${{ matrix.platform }}/*.fpk.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+  # ---------------------------------------------------------------- 索引回写
+  #
+  # 把这一版的两个 fpk 和 fnpack.json 一起提交进 FnDepot（V2 应用源）。
+  # 为什么放 CI：手工改索引要自己算 sha256/填 size，两个包 24MB 还容易
+  # 传错架构；这里直接读构建产出的 .fpk.sha256，口径和构建完全一致。
+  #
+  # ★ 写失败一律 `::error::索引未更新`：PAT 过期、远端冲突这类问题必须
+  #   在日志里一眼可见，不能静默过去（静默 = 用户以为发了新版）。
+  publish-index:
+    name: 回写 FnDepot 索引
+    needs: build
+    # 双架构都成功才发布：matrix 里任一腿失败 → build.result != success。
+    # dispatch 只出 artifact，索引留给真正的 tag 发版。
+    if: github.event_name == 'push' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # ★ 跨 tag 串行：两次发版同时写同一份 fnpack.json 会互相覆盖
+    #   （后推的覆盖先推的，先发的那个版本看起来就丢了）。
+    concurrency:
+      group: fndepot-index
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版本号以 tag 为准（和 plan 里「tag 必须等于 fpk-v<version>」同一口径）。
+      # 这里不读 needs.plan.outputs：本 job 只 needs build，拿不到 plan 的输出。
+      - name: 解析版本
+        id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          VER="${TAG#fpk-v}"
+          if [ -z "$VER" ] || [ "$TAG" != "fpk-v$VER" ]; then
+            echo "::error::索引未更新：tag=$TAG 不是 fpk-v<版本> 形式"
+            exit 1
+          fi
+          PV=$(node -p "require('./client/package.json').version")
+          if [ "$VER" != "$PV" ]; then
+            echo "::error::索引未更新：tag=$TAG 的版本 $VER 与 client/package.json 的 $PV 不一致"
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "发布版本：$VER"
+
+      # ★ 更新说明的单一真源是 CHANGELOG.md 的 `## <版本>` 小节，
+      #   规则与 release.yml / sync-packages.ps1 一致（空行丢弃、没编号的行补 `n. `）。
+      #   抽不到就让整个发布失败，且这一步排在检出 FnDepot 之前——
+      #   宁可索引不动，也不能把模板串写进去（用户侧看到的说明会一直是旧的）。
+      - name: 抽取更新说明
+        id: notes
+        shell: bash
+        env:
+          VER: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::索引未更新：$*"; exit 1; }
+          [ -f CHANGELOG.md ] || fail "CHANGELOG.md 不存在"
+
+          # 标题只认 `## 1.0.9` / `## [1.0.9]` 两种写法：去掉 `## ` 后整串比较，
+          # 保证 1.0.9 不会匹配到 1.0.90，也不会匹配到 1.0.9-fix1。
+          NOTES="$(awk -v v="$VER" '
+            /^##[[:blank:]]/ {
+              h = $0
+              sub(/^##[[:blank:]]+/, "", h)
+              sub(/[[:blank:]]+$/, "", h)
+              if (h == v || h == "[" v "]") { hit = 1; next }
+              if (hit) exit
+            }
+            hit {
+              t = $0
+              gsub(/^[[:blank:]]+|[[:blank:]]+$/, "", t)
+              if (t == "") next
+              n++
+              if (t ~ /^[0-9]+[[:blank:]]*[.、)]/) print t
+              else print n ". " t
+            }
+          ' CHANGELOG.md)"
+
+          if [ -z "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ]; then
+            fail "CHANGELOG.md 缺少 ${VER} 小节"
+          fi
+
+          {
+            echo "notes<<MEOW_EOF"
+            printf '%s\n' "$NOTES"
+            echo "MEOW_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "更新说明取自 CHANGELOG.md 的 ${VER} 小节："
+          printf '%s\n' "$NOTES"
+
+      - name: 下载 x86 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: fpk-x86
+          path: artifacts/x86
+
+      - name: 下载 arm 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: fpk-arm
+          path: artifacts/arm
+
+      # sha256 只认构建阶段写出的 .fpk.sha256，不在这里重算第二个口径。
+      - name: 校验产物
+        id: pkg
+        shell: bash
+        env:
+          VER: ${{ steps.v.outputs.version }}
+          ART: ${{ github.workspace }}/artifacts
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::索引未更新：$*"; exit 1; }
+          for arch in x86 arm; do
+            FPK="$ART/$arch/meow_${VER}_${arch}.fpk"
+            SHAF="$FPK.sha256"
+            [ -s "$FPK" ] || fail "缺少构建产物 $FPK"
+            [ -s "$SHAF" ] || fail "缺少校验文件 $SHAF"
+            [ "$(wc -l < "$SHAF" | tr -d '[:space:]')" -eq 1 ] || fail "$SHAF 不是单行 sha256sum 输出"
+            H="$(awk '{print $1}' "$SHAF")"
+            F="$(awk '{print $2}' "$SHAF")"
+            [ "$F" = "$(basename "$FPK")" ] || fail "$SHAF 记录的文件是 $F，不是 $(basename "$FPK")"
+            [[ "$H" =~ ^[0-9a-f]{64}$ ]] || fail "$SHAF 的 sha256 不是 64 位小写 hex：$H"
+            SZ="$(stat -c%s "$FPK")"
+            [[ "$SZ" =~ ^[0-9]+$ ]] || fail "$FPK 的 size 不是数字：$SZ"
+            echo "$arch: $H  $SZ bytes"
+            {
+              echo "${arch}_sha=$H"
+              echo "${arch}_size=$SZ"
+            } >> "$GITHUB_OUTPUT"
+          done
+
+      # 拿最新索引再动笔：并发组只覆盖本 workflow，别人手动推 FnDepot 时
+      # 仍可能撞上，所以每次都在 clone 后强制对齐 origin/main。
+      - name: 检出并同步 FnDepot
+        id: depot
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.FNDEPOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::索引未更新：$*"; exit 1; }
+          if [ -z "$TOKEN" ]; then
+            fail "缺少 secrets.FNDEPOT_TOKEN（需要可写 upchr/FnDepot 的 PAT）"
+          fi
+          D="$RUNNER_TEMP/FnDepot"
+          AUTH="https://x-access-token:${TOKEN}@github.com/upchr/FnDepot.git"
+          git clone "$AUTH" "$D" || fail "克隆 upchr/FnDepot 失败（检查 PAT 是否过期/无权限）"
+          # 立刻把 token 从 remote 里摘掉，避免后续日志/配置泄露；
+          # 之后的 fetch/push 都显式带 AUTH（GITHUB_TOKEN 推不了别的仓库）。
+          git -C "$D" remote set-url origin "https://github.com/upchr/FnDepot.git"
+          git -C "$D" fetch "$AUTH" main || fail "同步 FnDepot 远端索引失败"
+          git -C "$D" reset --hard FETCH_HEAD || fail "对齐远端 main 失败"
+          git -C "$D" log --oneline -1
+          echo "repo=$D" >> "$GITHUB_OUTPUT"
+
+      - name: 写前校验
+        shell: bash
+        env:
+          REPO: ${{ steps.depot.outputs.repo }}
+          VER: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          IDX="$REPO/fnpack.json"
+          fail() { echo "::error::索引未更新：$*"; exit 1; }
+
+          [ -f "$IDX" ] || fail "FnDepot 仓库根目录没有 fnpack.json"
+          jq -e '(keys | sort) == ["apps", "schema_version", "source_info"]' "$IDX" >/dev/null \
+            || fail "fnpack.json 顶层不再是 schema_version / source_info / apps 三键"
+          jq -e '.schema_version == "2"' "$IDX" >/dev/null \
+            || fail "schema_version 不是 \"2\""
+          jq -e '(.apps | type) == "object" and (.apps | has("meow"))' "$IDX" >/dev/null \
+            || fail "apps.meow 不存在"
+          jq -e '(.apps.meow.releases | type) == "object"' "$IDX" >/dev/null \
+            || fail "apps.meow.releases 不是对象"
+
+          # 其余节点先拍快照：写完再比对，证明 toolsplus / source_info /
+          # 旧 meow 版本一个字节都没动。
+          jq -S --arg ver "$VER" '{
+            schema_version,
+            source_info,
+            toolsplus: (.apps.toolsplus // null),
+            meow_others: (.apps.meow | del(.releases[$ver]))
+          }' "$IDX" > "$RUNNER_TEMP/before.json"
+
+      - name: 写入 releases[版本] 并校验结果
+        shell: bash
+        env:
+          REPO: ${{ steps.depot.outputs.repo }}
+          ART: ${{ github.workspace }}/artifacts
+          VER: ${{ steps.v.outputs.version }}
+          X_SHA: ${{ steps.pkg.outputs.x86_sha }}
+          X_SIZE: ${{ steps.pkg.outputs.x86_size }}
+          A_SHA: ${{ steps.pkg.outputs.arm_sha }}
+          A_SIZE: ${{ steps.pkg.outputs.arm_size }}
+          NOTES: ${{ steps.notes.outputs.notes }}
+        run: |
+          set -euo pipefail
+          IDX="$REPO/fnpack.json"
+          NEW="$RUNNER_TEMP/fnpack.new.json"
+          fail() { echo "::error::索引未更新：$*"; exit 1; }
+
+          # download_url 写相对路径：应用按「源地址 + url」拼完整地址
+          # （docs/33 §插件源相对路径那一节）。
+          XURL="./meow/meow_${VER}_x86.fpk"
+          AURL="./meow/meow_${VER}_arm.fpk"
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # 只赋值 apps.meow.releases[$ver]；同版本重跑会覆盖自己那条，
+          # 不重复追加。changelog 每版都从 CHANGELOG.md 重写（不留旧值），
+          # os_min_version 沿用同版本已有值，没有则沿用最近一条 meow 版本的。
+          jq --arg ver "$VER" --arg now "$NOW" --arg notes "$NOTES" \
+             --arg xsha "$X_SHA" --argjson xsize "$X_SIZE" --arg xurl "$XURL" \
+             --arg asha "$A_SHA" --argjson asize "$A_SIZE" --arg aurl "$AURL" '
+            . as $root
+            | ($root.apps.meow.releases[$ver] // {}) as $old
+            | ([$root.apps.meow.releases[] | .os_min_version]
+               | map(select(. != null)) | last) as $osmin
+            | .apps.meow.releases[$ver] = {
+                changelog: $notes,
+                updated_at: $now,
+                os_min_version: ($old.os_min_version // ($osmin // "1.2.0")),
+                packages: {
+                  x86: {download_url: $xurl, sha256: $xsha, size: $xsize},
+                  arm: {download_url: $aurl, sha256: $asha, size: $asize}
+                }
+              }' "$IDX" > "$NEW" || fail "jq 写入失败"
+
+          jq -e --arg ver "$VER" --arg notes "$NOTES" \
+                --arg xsha "$X_SHA" --arg asha "$A_SHA" \
+                --arg xurl "$XURL" --arg aurl "$AURL" '
+            .schema_version == "2"
+            and (.apps.meow.releases[$ver].changelog == $notes)
+            and (.apps.meow.releases[$ver].packages.x86.sha256 == $xsha)
+            and (.apps.meow.releases[$ver].packages.arm.sha256 == $asha)
+            and (.apps.meow.releases[$ver].packages.x86.download_url == $xurl)
+            and (.apps.meow.releases[$ver].packages.arm.download_url == $aurl)
+            and ([.apps.meow.releases[$ver].packages[].sha256] | all(test("^[0-9a-f]{64}$")))
+            and ([.apps.meow.releases[$ver].packages[].size] | all(type == "number"))
+          ' "$NEW" >/dev/null || fail "写出的索引结构不合法（架构/校验值/下载地址）"
+
+          jq -S --arg ver "$VER" '{
+            schema_version,
+            source_info,
+            toolsplus: (.apps.toolsplus // null),
+            meow_others: (.apps.meow | del(.releases[$ver]))
+          }' "$NEW" > "$RUNNER_TEMP/after.json"
+          diff -u "$RUNNER_TEMP/before.json" "$RUNNER_TEMP/after.json" \
+            || fail "除 apps.meow.releases[$VER] 外的节点被改动"
+
+          mv "$NEW" "$IDX"
+
+          mkdir -p "$REPO/meow"
+          for arch in x86 arm; do
+            SRC="$ART/$arch/meow_${VER}_${arch}.fpk"
+            [ -s "$SRC" ] || fail "缺少 $SRC，包体不会进 FnDepot"
+            cp "$SRC" "$REPO/meow/"
+          done
+          ls -l "$REPO/meow"
+
+      - name: 提交并推送
+        shell: bash
+        env:
+          REPO: ${{ steps.depot.outputs.repo }}
+          VER: ${{ steps.v.outputs.version }}
+          TOKEN: ${{ secrets.FNDEPOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::索引未更新：$*"; exit 1; }
+          cd "$REPO"
+          AUTH="https://x-access-token:${TOKEN}@github.com/upchr/FnDepot.git"
+          git add fnpack.json meow
+          # 幂等：同版本重跑且产物没变时不留空提交。
+          if git diff --cached --quiet; then
+            echo "索引与包体无实质变化，跳过提交"
+            exit 0
+          fi
+          git config user.name "meow-ci"
+          git config user.email "meow-ci@users.noreply.github.com"
+          git commit -m "meow: 发布 ${VER}（x86/arm）"
+          # 被外部提交抢先时同步重试；仍失败就显式报「索引未更新」。
+          for i in 1 2 3; do
+            if ! git pull --rebase --autostash "$AUTH" main; then
+              git rebase --abort || true
+              fail "与远端 main 冲突，无法同步"
+            fi
+            if git push "$AUTH" HEAD:main; then
+              echo "已推送 FnDepot main"
+              exit 0
+            fi
+            echo "第 $i 次推送被拒，同步后重试"
+            sleep 2
+          done
+          fail "推送 upchr/FnDepot 失败（检查 FNDEPOT_TOKEN 的仓库写权限）"

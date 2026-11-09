@@ -1,0 +1,159 @@
+# 可复用工作流：构建 TV 运行时模块（node / danmu_api）。
+#
+# 被 release.yml 调用（workflow_call），不单独触发。
+#
+# ## 为什么单独一条链
+# 模块按 ABI 分三个包（每个 45–54MB），和 TV 壳的节奏完全不同：
+# 壳改一版就重出 APK，而模块**只在 node 版本 / 载荷 / JNI 桥变化时才变**
+# （版本号 `18.20.4.<N>`，N 由 inputs hash 决定）。放在 tv 链里会让每次改 UI
+# 都白跑 3 分钟、白上传 150MB。
+#
+# ## 省额度
+# · ubuntu（1×），不是 windows（2×）
+# · 缓存 `.deps/<nodeVer>`：libnode 的 57MB zip 只在升级 node 时重新下载
+# · 脚本自身有 inputs-hash 复用：内容没变直接 exit 0，不跑 gradle
+#
+# ## 必须用固定签名
+# 模块用与 TV 壳同一个 keystore。debug 签名每台 runner 各一份，用户装过旧版
+# 后永远升不上新版本（INSTALL_FAILED_UPDATE_INCOMPATIBLE）。
+
+name: _tv_plugins
+
+on:
+  # 手动触发单跑这条链（验 CI 用，不产生 Release）
+  #
+  # ★ workflow_dispatch 必须**单独声明 inputs**：只写在 workflow_call 下的话，
+  #   手动触发时 inputs.node_version 是空串 → 脚本去下 .../v/nodejs-mobile-v-android.zip
+  #   → 拿到 404 HTML → "Central Directory corrupt"（实测红在这）。
+  workflow_dispatch:
+    inputs:
+      node_version:
+        description: node 版本
+        required: false
+        default: '18.20.4'
+  workflow_call:
+    inputs:
+      node_version:
+        description: node 版本（决定 .deps 缓存键与版本号前缀）
+        required: false
+        type: string
+        default: '18.20.4'
+    secrets:
+      TV_KEYSTORE_B64:
+        required: false
+      TV_STORE_PASSWORD:
+        required: false
+      TV_KEY_ALIAS:
+        required: false
+      TV_KEY_PASSWORD:
+        required: false
+    outputs:
+      artifact:
+        description: 产出的 artifact 名
+        value: tv-plugins
+
+jobs:
+  tv_plugins:
+    name: TV 运行时模块
+    runs-on: ubuntu-latest
+    # 防卡死烧满 6 小时上限（=360 分钟额度）
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 准备 Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # 默认 packages 是 "tools platform-tools"，而 tools 已从仓库移除 → exit 1
+          packages: 'platform-tools'
+
+      - name: 准备 platform / build-tools / NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          # ★ NDK 优先用 runner 预装的（ubuntu-latest 自带 26.x）：省一次 ~1 分钟的下载
+          NDK_DIR=$(ls -d "${ANDROID_HOME}"/ndk/26.* 2>/dev/null | head -1 || true)
+          if [ -z "${NDK_DIR:-}" ]; then
+            echo "runner 没预装 NDK 26，现装"
+            sdkmanager "ndk;26.1.10909125" > /dev/null
+            NDK_DIR=$(ls -d "${ANDROID_HOME}"/ndk/26.* | head -1)
+          fi
+          echo "ANDROID_NDK=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "NDK=$NDK_DIR"
+          ls -d "$NDK_DIR" > /dev/null
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+          cache-read-only: false
+
+      - name: 还原签名材料
+        shell: bash
+        env:
+          KS_B64: ${{ secrets.TV_KEYSTORE_B64 }}
+          STORE_PASS: ${{ secrets.TV_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.TV_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.TV_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KS_B64:-}" ]; then
+            echo "::warning::未配置 TV_KEYSTORE_B64，模块将出 debug 签名包（用户无法覆盖升级）"
+            exit 0
+          fi
+          echo "$KS_B64" | base64 -d > client/apps/tv/meow-release.jks
+          P=client/apps/tv/keystore.properties
+          printf 'storeFile=../meow-release.jks\n' >  "$P"
+          printf 'storePassword=%s\n' "$STORE_PASS" >> "$P"
+          printf 'keyAlias=%s\n'      "$KEY_ALIAS"  >> "$P"
+          printf 'keyPassword=%s\n'   "$KEY_PASS"   >> "$P"
+
+      # 57MB 的 nodejs-mobile 包：只在升级 node 时重新下载
+      # ★ 缓存的不只是 libnode，还有**产物**（release/runtime-node-*）：
+      #   脚本的 inputs 未变时靠"产物齐全"才走 reuse；只缓存 .deps 的话
+      #   每次 CI 都会因为 allPresent=false 重新跑 gradle（实测 163s 白花）。
+      #   key 由真正影响产物的输入算出来：node 版本 + 载荷 + 桥源码 + 构建脚本。
+      - name: 缓存 libnode + 模块产物
+        uses: actions/cache@v4
+        with:
+          path: |
+            client/apps/tv/runtime-node/.deps
+            release/runtime-node-*
+          key: tv-plugins-${{ inputs.node_version }}-${{ hashFiles('client/apps/tv/runtime-node/src/main/cpp/node_bridge.cpp', 'client/apps/tv/runtime-node/build.gradle', 'client/apps/tv/runtime-node/build-runtime-module.ps1', 'client/apps/tv/app/src/main/assets/node-payload-danmu.zip', 'client/apps/tv/app/src/main/assets/launch.js') }}
+
+      - name: 构建三个 ABI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd client/apps/tv/runtime-node
+          # ubuntu runner 自带 pwsh；脚本内部已按平台切 curl.exe/curl
+          pwsh -NoProfile -File build-runtime-module.ps1 -NodeVersion "${{ inputs.node_version }}"
+
+      - name: 自检产物
+        shell: bash
+        run: |
+          set -euo pipefail
+          D="release/runtime-node-${{ inputs.node_version }}"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            # 资产名带版本，所以用 glob 找（不能用固定名）
+            apk=$(ls "$D"/tv-node-"$abi"-*.apk 2>/dev/null | head -1)
+            if [ -z "$apk" ] || [ ! -f "$apk" ]; then
+              echo "::error::缺 tv-node-$abi 的 apk"; ls -la "$D" || true; exit 1
+            fi
+            # 包内必须真的有对应 ABI 的 libnode.so，否则装上也是加载失败
+            unzip -l "$apk" | grep -q "lib/$abi/libnode.so"               || { echo "::error::$apk 里没有 lib/$abi/libnode.so"; exit 1; }
+            echo "ok $abi $(du -h "$apk" | cut -f1) $(sha256sum "$apk" | cut -c1-12)"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tv-plugins
+          path: |
+            release/runtime-node-*/tv-node-*.apk
+          if-no-files-found: error
