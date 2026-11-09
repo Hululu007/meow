@@ -877,32 +877,33 @@ if (-not $DryRun -and -not $SkipUpload) {
 #   https://raw.githubusercontent.com/<repo>/updates/packages.json
 # 单文件、force push；不碰 main，也不在源码历史里留发版提交。
 if (-not $DryRun) {
-    $wt = Join-Path ([IO.Path]::GetTempPath()) ("meow-updates-" + [guid]::NewGuid().ToString('N'))
-    $branchName = "updates-static-" + [guid]::NewGuid().ToString('N')
-    $oldPrompt = $env:GIT_TERMINAL_PROMPT
-    $env:GIT_TERMINAL_PROMPT = '0'
+    # 用临时 index 生成一个只含 packages.json 的 orphan 提交，再 force push
+    # 到 updates 分支。不建 worktree（Windows 上会撞 locked: initializing），
+    # 也不把 mktree 文本经 PowerShell 管道（会带 BOM，实测 input format error）。
+    $idx = Join-Path ([IO.Path]::GetTempPath()) ("meow-index-" + [guid]::NewGuid().ToString('N'))
+    $oldIndex = $env:GIT_INDEX_FILE
+    $env:GIT_INDEX_FILE = $idx
     try {
         Write-Host "`n更新静态清单分支 updates …" -ForegroundColor Cyan
-        & git -C $repoRoot worktree add --detach $wt 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "worktree add 失败" }
-        Copy-Item -LiteralPath $OutFile -Destination (Join-Path $wt 'packages.json') -Force
-        & git -C $wt checkout --orphan $branchName 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "checkout --orphan 失败" }
-        # orphan 会保留原 index；先清空，保证分支里只有 packages.json
-        & git -C $wt rm -r --cached . 2>&1 | Out-Null
-        & git -C $wt add -f packages.json 2>&1 | Out-Null
-        & git -C $wt -c user.email="actions@github.com" -c user.name="github-actions" commit -m "chore(updates): packages.json for $tag" 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "commit 失败" }
-        & git -C $wt push --force origin HEAD:updates 2>&1 | Out-Null
+        & git -C $repoRoot read-tree --empty 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "read-tree 失败" }
+        $blob = (& git -C $repoRoot hash-object -w $OutFile).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $blob) { throw "hash-object 失败" }
+        & git -C $repoRoot update-index --add --cacheinfo "100644,$blob,packages.json" 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "update-index 失败" }
+        $tree = (& git -C $repoRoot write-tree).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $tree) { throw "write-tree 失败" }
+        $commit = (& git -C $repoRoot -c user.email="actions@github.com" -c user.name="github-actions" commit-tree $tree -m "chore(updates): packages.json for $tag").Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $commit) { throw "commit-tree 失败" }
+        & git -C $repoRoot push --force origin "${commit}:refs/heads/updates" 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "push 失败" }
         Write-Host "✅ updates 分支已更新（$tag）" -ForegroundColor Green
     } catch {
         Write-Host "  ! 静态清单推送失败（不影响本次 Release）：$($_.Exception.Message)" -ForegroundColor DarkYellow
     } finally {
-        & git -C $repoRoot worktree remove --force $wt 2>&1 | Out-Null
-        & git -C $repoRoot branch -D $branchName 2>&1 | Out-Null
-        if ($null -eq $oldPrompt) { Remove-Item Env:GIT_TERMINAL_PROMPT -ErrorAction SilentlyContinue }
-        else { $env:GIT_TERMINAL_PROMPT = $oldPrompt }
+        Remove-Item -LiteralPath $idx -Force -ErrorAction SilentlyContinue
+        if ($null -eq $oldIndex) { Remove-Item Env:GIT_INDEX_FILE -ErrorAction SilentlyContinue }
+        else { $env:GIT_INDEX_FILE = $oldIndex }
     }
 }
 
