@@ -1,0 +1,204 @@
+name: release
+
+# 公开壳发布：只构建不依赖源包的产物（Web/PC/TV/apiserver 插件）。
+# 真实 config / spider jar / payload 不在公开库，也不进 Release。
+on:
+  push:
+    tags:
+      - 'release-v[0-9]*'
+      - 'tv-v[0-9]*'
+      - 'pc-v[0-9]*'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（留空读 client/package.json）'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: 判定范围
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tv: ${{ steps.scope.outputs.tv }}
+      pc: ${{ steps.scope.outputs.pc }}
+      plugins: ${{ steps.scope.outputs.plugins }}
+      release: ${{ steps.scope.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 读版本号
+        id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ inputs.version }}"
+          if [ -z "$V" ]; then V=$(node -p "require('./client/package.json').version"); fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "version=$V"
+      - name: tag 与版本号一致
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          VER="${{ steps.v.outputs.version }}"
+          EXPECT="${TAG##*-v}"
+          if [ "$EXPECT" != "$VER" ]; then
+            echo "::error::tag=$TAG 里的版本($EXPECT) 与 package.json 的 $VER 不一致"
+            exit 1
+          fi
+      - name: 版本一致性
+        shell: pwsh
+        run: ./deploy/scripts/bump-version.ps1 -Check
+      - name: 解析范围
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          set_out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            set_out tv true; set_out pc true; set_out plugins true; set_out release false
+            exit 0
+          fi
+          TAG="${GITHUB_REF#refs/tags/}"
+          case "$TAG" in
+            release-v[0-9]*) set_out tv true;  set_out pc true;  set_out plugins true;  set_out release true ;;
+            tv-v[0-9]*)      set_out tv true;  set_out pc false; set_out plugins false; set_out release true ;;
+            pc-v[0-9]*)      set_out tv false; set_out pc true;  set_out plugins true;  set_out release true ;;
+            *) echo "::error::无法识别的 tag：$TAG"; exit 1 ;;
+          esac
+
+  web:
+    name: Web dist
+    needs: plan
+    if: ${{ needs.plan.outputs.tv == 'true' || needs.plan.outputs.pc == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+      - name: 构建 web
+        working-directory: client
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm --filter @meow/web build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: client/apps/web/dist
+          if-no-files-found: error
+
+  tv:
+    name: TV APK
+    needs: [plan, web]
+    if: ${{ needs.plan.outputs.tv == 'true' }}
+    uses: ./.github/workflows/_tv.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+    secrets: inherit
+
+  pc:
+    name: PC 壳
+    needs: [plan, web]
+    if: ${{ needs.plan.outputs.pc == 'true' }}
+    uses: ./.github/workflows/_pc_shell.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+
+  plugins:
+    name: apiserver 插件
+    needs: plan
+    if: ${{ needs.plan.outputs.plugins == 'true' }}
+    uses: ./.github/workflows/_plugins.yml
+    with:
+      plugins_only: apiserver
+
+  publish:
+    name: 建 draft Release
+    needs: [plan, web, tv, pc, plugins]
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.plan.outputs.release == 'true'
+            && needs.tv.result != 'failure' && needs.tv.result != 'cancelled'
+            && needs.pc.result != 'failure' && needs.pc.result != 'cancelled'
+            && needs.plugins.result != 'failure' && needs.plugins.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: 下载产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: 整理目录
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          find dist -type f \( -name '*.apk' -o -name '*.exe' -o -name '*.zip' \) -exec cp {} upload/ \; || true
+          ls -la upload
+          # 公开壳发布守卫：绝不允许源包混进 Release
+          if find upload -type f \( -name 'spider*.jar' -o -name 'config.sites.json' -o -name 'node-payload-danmu.zip' \) | grep -q .; then
+            echo "::error::公开 Release 里出现源包文件"; exit 1
+          fi
+      - name: 生成 SHA256
+        shell: bash
+        working-directory: upload
+        run: |
+          set -euo pipefail
+          [ "$(ls | wc -l)" -gt 0 ] && sha256sum * > SHA256SUMS.txt
+      - name: 建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: true
+          generate_release_notes: false
+          files: upload/*
+          body: |
+            ## 公开壳产物
+
+            本 Release 只含空壳，不含 spider jar / 真实站点配置 / payload。
+            安装后请在应用内导入自己的源包。
+
+            | 文件 | 说明 |
+            |---|---|
+            | `meow-TV-*.apk` | TV 空壳（release 签名） |
+            | `meow-setup-*.exe` / `meow-bare-*.exe` | PC 空壳 |
+            | `apiserver-*.zip` | 后端插件（空壳） |
+            | `SHA256SUMS.txt` | 校验 |
+
+  sync-packages:
+    name: 生成 packages.json
+    if: github.event_name == 'release' && github.event.action == 'published'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: 生成并上传清单
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./deploy/scripts/sync-packages.ps1 -Tag $env:GITHUB_REF_NAME

@@ -1,0 +1,91 @@
+# 最小 CI：三块互不依赖的检查，任何一块红了都不该发版。
+#
+# 为什么只跑这些：仓库里没有可用的端到端环境（需要 Android SDK / Docker /
+# 真实源站），所以 CI 只保证"能编译 + 单测绿"，端到端仍靠 release-checklist
+# （docs/31 第八章）里的手动验收。
+#
+# ## 为什么不监听 push 到 main
+#
+# 这三块在本地是同一组命令（`pnpm build` 本身就是 `vue-tsc --noEmit && vite build`、
+# `server/host/build.bat` 是 javac、`server/drpy` 的 `npm test`），推 main 时本地
+# 必然已经跑过一遍，云端重放拿不到新信息。实测 2026-10-26 一天 push 触发 28 次、
+# 28/28 全绿、0 次拦下问题，且私有仓不支持分支保护 —— 红了也已经推上去了，
+# 起不到门禁作用（真正的门禁在 release.yml，那边抓到过 5 次失败）。
+#
+# 所以改成按需：有 PR 时自动跑（将来走 PR 流程即自动成为门禁），
+# 或者要单独验时在 Actions 页面手动 dispatch。
+name: ci
+
+on:
+  # ★ 限制到 main：不写 branches 时任何向任何分支开的 PR 都会跑（含 fork 来的）。
+  #   当前没有多分支 PR 流程，收紧只影响将来，对现状零副作用。
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  version:
+    name: 版本一致性（13 处）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # ★ 这条原来只在 release.yml 的 plan 里跑，等于「打 tag 那一刻才发现版本没对齐」——
+      #   而版本号要同步 13 处，最容易漏的是 Cargo.lock（v0.9.16 就栽在这，
+      #   0.1 分钟就失败）。ci 现在很便宜且按需触发，提前跑一遍几乎零成本。
+      #   ubuntu 上能跑 pwsh（GitHub 托管 runner 自带），不需要 windows-latest。
+      - name: 校验
+        shell: pwsh
+        run: ./deploy/scripts/bump-version.ps1 -Check
+
+  web:
+    name: 前端（构建 + 类型 + 单测）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 启用 pnpm
+        run: corepack enable
+      - name: 安装依赖
+        working-directory: client
+        run: pnpm install --no-frozen-lockfile
+      - name: 构建
+        working-directory: client
+        run: pnpm --filter @meow/web build
+      - name: 类型检查
+        working-directory: client/apps/web
+        run: npx vue-tsc --noEmit
+      - name: 单测
+        working-directory: client/apps/web
+        run: npx vitest run
+
+  backend:
+    name: 后端（javac）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: 编译宿主
+        working-directory: server/host
+        run: |
+          mkdir -p classes
+          javac -encoding UTF-8 -cp 'libs/*' -d classes $(find src -name '*.java')
+
+  drpy:
+    name: drpy 运行时（npm test）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 安装依赖
+        working-directory: server/drpy
+        run: npm ci --no-audit --no-fund
+      - name: 宿主契约测试（离线）
+        working-directory: server/drpy
+        run: npm test

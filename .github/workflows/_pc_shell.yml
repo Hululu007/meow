@@ -1,0 +1,122 @@
+# 可复用工作流：构建 PC 安装包（Tauri / Windows）。
+#
+# 被 release.yml 调用（workflow_call）。
+#
+# ## 为什么和插件拆开（2026-11）
+#
+# 原来两者在同一个 windows job 里，插件是 Java/Node 的活却按 Windows 的
+# 2 倍计费。现在插件搬到 `_plugins.yml`（Linux），这里只留真正需要 Windows
+# 的部分：Rust/GNU 工具链 + NSIS 打包。
+#
+# ## 缓存（关键，首版没有它跑了 15m40s）
+#
+# Rust 的 tauri 依赖树首次编译极慢。Swatinem/rust-cache 缓存 target/ 与
+# ~/.cargo/registry，二次构建实测可从 15 分钟降到 3–5 分钟。
+
+name: _pc_shell
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+    outputs:
+      artifact:
+        description: 产出的 artifact 名
+        value: pc
+
+jobs:
+  pc:
+    name: PC 壳（Windows）
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      # ★ build-gnu.ps1 会调 `tauri`（来自 node_modules 的 @tauri-apps/cli）。
+      #   拆 job 时以为"dist 用 artifact 就不需要 node 了"，实测直接报
+      #   `npm error could not determine executable to run`。
+      - name: 安装前端依赖（build-gnu.ps1 需要 tauri CLI）
+        working-directory: client
+        run: pnpm install --no-frozen-lockfile
+
+      # 前端 dist 由 release.yml 的 web job 统一构建（同一次 run 的 artifact）
+      - name: 取前端 dist
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: client/apps/web/dist
+
+      - name: 安装 Rust（GNU host）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+          targets: x86_64-pc-windows-gnu
+
+      # ★ 关键缓存：tauri 的依赖树首次编译极慢，缓存后 15 分钟 → 3-5 分钟
+      - name: 缓存 Rust 依赖
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client/apps/desktop/src-tauri -> target
+          # 只按 Cargo.lock 失效：改 .rs 不该清空依赖缓存
+          key: ${{ hashFiles('client/apps/desktop/src-tauri/Cargo.lock') }}
+
+      - name: 安装 MinGW
+        shell: pwsh
+        run: |
+          choco install mingw -y --no-progress
+          $cands = @(
+            'C:\ProgramData\mingw64\mingw64\bin',
+            'C:\ProgramData\mingw64\bin'
+          )
+          $mingwBin = $cands | Where-Object { Test-Path (Join-Path $_ 'x86_64-w64-mingw32-gcc.exe') } | Select-Object -First 1
+          if (-not $mingwBin) {
+            $gcc = Get-ChildItem 'C:\ProgramData' -Recurse -Filter 'x86_64-w64-mingw32-gcc.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($gcc) { $mingwBin = $gcc.DirectoryName }
+          }
+          if (-not $mingwBin) { throw 'MinGW install ok but gcc not found' }
+          "MINGW_BIN=$mingwBin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "MINGW_BIN=$mingwBin"
+
+      - name: 构建 PC 包
+        shell: pwsh
+        run: |
+          Push-Location client/apps/desktop
+          ./build-gnu.ps1 --bundles nsis
+          if ($LASTEXITCODE -ne 0) { throw 'PC 构建失败' }
+          Pop-Location
+
+      - name: 收集 PC 产物
+        shell: pwsh
+        run: |
+          $V = '${{ inputs.version }}'
+          $rel = 'client/apps/desktop/src-tauri/target/x86_64-pc-windows-gnu/release'
+          $out = Join-Path '${{ runner.temp }}' 'pc-out'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+
+          $setup = Get-ChildItem (Join-Path $rel 'bundle/nsis') -Filter "*$V*x64-setup.exe" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $setup) { throw "找不到含 $V 的安装包（bundle/nsis）" }
+          # 改 ASCII 名：GitHub 会把非 ASCII 附件名转义成 "-"/"_"，
+          # 实测 Release 里显示成 "-_0.9.15_x64-setup.exe"，用户认不出是什么。
+          Copy-Item $setup.FullName (Join-Path $out "meow-setup-$V.exe")
+
+          $bare = Join-Path $rel 'meow-player.exe'
+          if (Test-Path $bare) { Copy-Item $bare (Join-Path $out "meow-bare-$V.exe") }
+          Get-ChildItem $out | ForEach-Object { Write-Host $_.Name }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pc
+          path: ${{ runner.temp }}/pc-out/*
+          if-no-files-found: error

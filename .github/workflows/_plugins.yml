@@ -1,0 +1,111 @@
+# 可复用工作流：构建插件 zip（apiserver / drpy / danmu-api / ffmpeg）。
+#
+# 被 release.yml 调用（workflow_call），也可手动 dispatch 单验。
+#
+# ## 为什么和 PC 壳拆开（2026-11）
+#
+# 原来插件和 PC 壳挤在一个 job 里，插件的频率远低于壳，混在一起意味着
+# "只发插件"也要赔上一次 Rust 编译。拆开后两者可独立 dispatch。
+#
+# ## 为什么仍在 Windows（实测结论）
+#
+# 本想把插件搬到 Linux 省掉 2 倍计费，实测**跑不通**：`build-plugins.ps1`
+# 写死调 `powershell`（Linux 只有 pwsh，已改成按平台选），但下游
+# `build-plugin.ps1` 内部还直接调 `cmd`，逐个移植成本远大于收益。
+# 结论：插件留在 Windows；要省额度只能整脚本跨平台化，另开任务。
+#
+# ## 内容没变就跳过
+#
+# key 由真正影响产物的输入算出来：units.json（插件清单唯一真源）+ 各构建脚本 +
+# server 源码。命中就直接用缓存里的 plugins-out 上传，不跑任何构建。
+# 实测收益：apiserver 的 jlink 约 2–3 分钟。
+
+name: _plugins
+
+on:
+  workflow_dispatch:
+    inputs:
+      plugins_only:
+        description: '只构建这些插件（逗号分隔，如 apiserver；留空=全部）'
+        required: false
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      plugins_only:
+        description: 只构建这些插件（逗号分隔，空=全部）
+        required: false
+        type: string
+        default: ''
+    outputs:
+      artifact:
+        description: 产出的 artifact 名
+        value: plugins
+
+jobs:
+  plugins:
+    name: 插件（Windows）
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # apiserver 插件要 javac + jlink
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # danmu 插件要在克隆下来的上游里跑 npm install
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 缓存插件产物
+        id: pcache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/plugins-out
+          key: plugins-${{ hashFiles('deploy/units.json', 'server/build-plugin.ps1', 'server/build-plugin-danmu.ps1', 'server/build-plugin-drpy.ps1', 'server/build-plugin-ffmpeg.ps1', 'server/host/src/**', 'server/drpy/**') }}
+
+      # danmu 插件需要上游源码（不入库）：浅克隆一次，拿不到就跳过该插件
+      - name: 准备 danmu 上游源码
+        if: ${{ steps.pcache.outputs.cache-hit != 'true' && (inputs.plugins_only == '' || contains(inputs.plugins_only, 'danmu')) }}
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $dst = 'research/upstream/danmu_api'
+          if (Test-Path $dst) { Write-Host '已存在'; exit 0 }
+          New-Item -ItemType Directory -Path (Split-Path $dst) -Force | Out-Null
+          git clone --depth 1 https://github.com/huangxd-/danmu_api.git $dst
+          Push-Location $dst
+          npm install --omit=dev --no-audit --no-fund
+          Pop-Location
+
+      # 插件列表读 deploy/units.json（唯一真源），不在这里写死脚本名。
+      - name: 构建插件
+        if: ${{ steps.pcache.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: |
+          $outPlugins = Join-Path '${{ runner.temp }}' 'plugins-out'
+          $only = '${{ inputs.plugins_only }}'
+          if ($only) {
+            Write-Host "只构建：$only（跳过其余插件，省 ffmpeg 110MB 下载 / danmu 上游 clone）"
+            ./deploy/scripts/build-plugins.ps1 -OutDir $outPlugins -Only ($only -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          } else {
+            ./deploy/scripts/build-plugins.ps1 -OutDir $outPlugins
+          }
+          if ($LASTEXITCODE -ne 0) { throw '插件构建失败（见上方 units.json 清单）' }
+
+      - name: 命中缓存（跳过构建）
+        if: ${{ steps.pcache.outputs.cache-hit == 'true' }}
+        shell: bash
+        run: |
+          echo "插件输入未变，复用缓存产物"
+          ls -la "${{ runner.temp }}/plugins-out" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugins
+          path: ${{ runner.temp }}/plugins-out/**
+          if-no-files-found: error

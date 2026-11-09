@@ -169,7 +169,6 @@ reverse/artifacts/config.json
 # 完整版保留在私有库 upchr/meow-private。
 reverse/
 research/
-.github/
 AGENTS.md
 server/README.md
 docs/archive/

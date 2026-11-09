@@ -1,0 +1,135 @@
+# 可复用工作流：构建 TV APK。
+#
+# 被 release.yml 调用（workflow_call），不单独触发。
+#
+# ## 为什么独立
+#
+# TV 包 3m44s，是三条链里最便宜也最常单独的（改了 TV 壳原生代码 / 前端但
+# 后端没动时，只需重出 APK）。拆出来后可单独触发，不连带跑 Docker 与 PC。
+
+name: _tv
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+    secrets:
+      TV_KEYSTORE_B64:
+        required: false
+      TV_STORE_PASSWORD:
+        required: false
+      TV_KEY_ALIAS:
+        required: false
+      TV_KEY_PASSWORD:
+        required: false
+    outputs:
+      artifact:
+        description: 产出的 artifact 名
+        value: tv-apk
+
+jobs:
+  tv:
+    name: TV APK
+    runs-on: ubuntu-latest
+    # 防止卡死烧满 6 小时默认上限（= 360 分钟额度）
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # ubuntu-latest 自带 Android SDK。★ setup-android 的 packages 默认值是
+      # "tools platform-tools"，而 tools 包已从仓库移除 → sdkmanager exit 1。
+      # 必须显式覆盖成一个存在的包。
+      - name: 准备 Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: 安装 build-tools 与 platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null
+
+      # gradle 缓存：首次 3m44s，命中缓存后实测可到 1-2 分钟
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+          cache-read-only: false
+
+      # 前端 dist 由 release.yml 的 web job 统一构建（同一次 run 的 artifact）。
+      # 以前这里自己构建一份，三处重复且会漂移。
+      - name: 取前端 dist
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: client/apps/web/dist
+
+      - name: 还原签名材料
+        shell: bash
+        env:
+          KS_B64: ${{ secrets.TV_KEYSTORE_B64 }}
+          STORE_PASS: ${{ secrets.TV_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.TV_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.TV_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KS_B64:-}" ]; then
+            echo "::warning::未配置 TV_KEYSTORE_B64，将出 debug 签名包（用户无法覆盖安装正式版）"
+            exit 0
+          fi
+          echo "$KS_B64" | base64 -d > client/apps/tv/meow-release.jks
+          # storeFile 相对 app/build.gradle 所在目录（app/）解析，
+          # 必须是 ../meow-release.jks —— 本地 properties 里就是这条；
+          # 首版写成 meow-release.jks，导致 validateSigningRelease 报文件不存在。
+          # 用 printf 逐行写而不是 heredoc：heredoc 的 EOF 在 YAML 块里必须顶格，
+          # 会破坏 run 块缩进（实测把 YAML 搞坏过一次）。
+          P=client/apps/tv/keystore.properties
+          printf 'storeFile=../meow-release.jks\n' >  "$P"
+          printf 'storePassword=%s\n' "$STORE_PASS" >> "$P"
+          printf 'keyAlias=%s\n'      "$KEY_ALIAS"  >> "$P"
+          printf 'keyPassword=%s\n'   "$KEY_PASS"   >> "$P"
+          echo "keystore.properties 已生成（storeFile 指向 ../meow-release.jks）"
+          ls -l client/apps/tv/meow-release.jks "$P"
+      - name: 构建 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd client/apps/tv
+          gradle assembleRelease --console=plain
+
+      # ★ 公开壳：源码库不再带 assets/spider.jar，所以这里**不能**再断言它存在。
+      #   私有全量构建要带 jar 时，在构建前把 dex jar 放进 assets（CI 注入）；
+      #   公开构建产出纯壳 APK 也是合法产物。这里只记录实际形态，不阻断。
+      - name: 自检：内置 dex jar（纯壳可缺省）
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=client/apps/tv/app/build/outputs/apk/release/app-release.apk
+          if unzip -l "$APK" | grep -q 'assets/spider.jar'; then
+            echo "OK: 含内置 dex jar（全量形态）"
+          else
+            echo "纯壳 APK：无内置 dex jar，用户需在设置页导入源包"
+          fi
+
+      - name: 落位并改名
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ inputs.version }}"
+          mkdir -p out
+          cp client/apps/tv/app/build/outputs/apk/release/app-release.apk "out/meow-TV-$V.apk"
+          ls -lh out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tv-apk
+          path: out/*.apk
+          if-no-files-found: error
