@@ -9,14 +9,18 @@
 
 ```text
 sources/
-├── config.jvm.json     # JVM / PC / Docker：顶层 spider 指向 class jar
-├── config.tv.json      # TV：顶层 spider + 每个 csp_ 站点 jar 指向 dex jar
+├── config.all.json     # 统一入口：顶层 class jar + 每个 csp_ 站点 dex jar
+├── config.jvm.json     # 仅 JVM / PC / Docker：顶层 spider 指向 class jar
+├── config.tv.json      # 仅 TV：顶层 spider + 每个 csp_ 站点 jar 指向 dex jar
 ├── spider.jar          # class 形态（JVM）
 ├── spider-dex.jar      # dex 形态（ZIP 内 classes.dex，TV）
 └── SHA256SUMS.txt
 ```
 
 - class 与 dex **不能混用**：JVM 读不了 dex，Android 读不了纯 class。
+- **`config.all.json` 是唯一可统一给三端的 URL**：顶层 `spider` 指向 class jar（JVM 用），
+  每个 `csp_` 站点 `jar` 指向 dex jar（TV 用）。JVM 会顺带下载 dex（约 0.8MB），
+  但类查找先命中 class jar，不影响功能。
 - `config.tv.json` 里所有 `api` 以 `csp_` 开头的站点都要带 `jar`，否则 TV 会跳过该站。
 - 配置里的 `spider` / `jar` 必须是**客户端能访问到的绝对地址**（不要写 `127.0.0.1`，除非客户端就在同一台机器）。
 
@@ -91,6 +95,9 @@ d8 --min-api 21 --output dexout spider.jar
 
 以现有 `config.sites.json` 为底：
 
+- `config.all.json`：`spider = http://<HOST>:18080/spider.jar`，并给每个
+  `csp_` 站点加 `"jar": "http://<HOST>:18080/spider-dex.jar"`；删除 `danmaku` 的
+  `127.0.0.1` 模板。
 - `config.jvm.json`：`spider = http://<HOST>:18080/spider.jar`；删除 `danmaku` 里的
   `127.0.0.1` 模板（远端客户端用不了）。
 - `config.tv.json`：`spider = http://<HOST>:18080/spider-dex.jar`，并给每个
@@ -107,8 +114,11 @@ sha256sum config.jvm.json config.tv.json spider.jar spider-dex.jar > SHA256SUMS.
 
 | 客户端 | 填写的配置地址 |
 |---|---|
-| PC / Web / Docker / 自建 JVM 后端 | `http://<HOST>:18080/config.jvm.json` |
-| TV 本机执行（dex） | `http://<HOST>:18080/config.tv.json` |
+| **PC / Web / Docker / TV 统一** | `http://<HOST>:18080/config.all.json` |
+| 仅 PC / Web / Docker / 自建 JVM 后端 | `http://<HOST>:18080/config.jvm.json` |
+| 仅 TV 本机执行（dex） | `http://<HOST>:18080/config.tv.json` |
+
+统一入口会多下载一份 dex（约 0.8MB）；要最小下载就按端分开。
 
 - 老数据迁移：导入时勾选「用这份配置的顶层 spider 覆盖本地」/ 请求里带 `replaceSpider=true`，
   否则旧的失效 `spider` 会保留，jar 站仍 `ClassNotFoundException`。
