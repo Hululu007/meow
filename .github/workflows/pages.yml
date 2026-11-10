@@ -1,0 +1,72 @@
+# 文档站（VitePress）→ GitHub Pages
+#
+# 只在文档相关路径变化时触发：站点源码、仓库里的技术文档、更新日志、应用版本号。
+# 技术文档与 CHANGELOG 是唯一真源，站内的 dev/ 与 changelog 由 site/scripts/sync-docs.mjs
+# 在构建前生成，所以改 docs/ 也要重建。
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/**'
+      - 'CHANGELOG.md'
+      - 'client/package.json'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# 同一时间只跑一个部署；不要取消进行中的，避免 Pages 上出现半套产物
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    name: 构建站点
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # lastUpdated 需要完整提交历史，浅克隆会让每页都显示同一时间
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      - name: 安装依赖
+        working-directory: site
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建
+        working-directory: site
+        run: pnpm run build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/.vitepress/dist
+
+  deploy:
+    name: 部署
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

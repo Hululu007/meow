@@ -1,0 +1,7 @@
+node_modules/
+.vitepress/dist/
+.vitepress/cache/
+
+# 从仓库 docs/ 与 CHANGELOG.md 同步生成，构建前由 scripts/sync-docs.mjs 重建
+docs/dev/
+docs/reference/changelog.md

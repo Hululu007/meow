@@ -2,6 +2,14 @@
   <img src="client/brand/logo.svg" width="96" height="96" alt="猫窝 Meow" />
 </p>
 
+<p align="center">
+  <a href="https://upchr.github.io/meow/">文档站</a>
+  ·
+  <a href="https://github.com/upchr/meow/releases">下载</a>
+  ·
+  <a href="docs/00-目录索引.md">技术文档</a>
+</p>
+
 # 猫窝 Meow
 
 跨端影视客户端：**Web / PC / TV 一套内核，三个出口**。

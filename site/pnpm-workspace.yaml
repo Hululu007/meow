@@ -1,0 +1,4 @@
+# 文档站独立于 client/ 的 workspace，但沿用同样的 build-script 放行策略。
+# pnpm 11 默认不跑依赖的 postinstall；esbuild 必须放行，否则 VitePress 构建时二进制不可用。
+allowBuilds:
+  esbuild: true

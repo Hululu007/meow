@@ -1,0 +1,70 @@
+/**
+ * 品牌配色取自 client/apps/web/src/styles/tokens.css 的 Material 主题：
+ * 主色 #03DAC5，浅色模式压暗到 #00897B 保证正文对比度。
+ */
+:root {
+  --vp-c-brand-1: #00897b;
+  --vp-c-brand-2: #00a896;
+  --vp-c-brand-3: #03dac5;
+  --vp-c-brand-soft: rgba(3, 218, 197, 0.14);
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #03dac5 15%, #00897b 55%, #4c6f96 95%);
+  --vp-home-hero-image-background-image: linear-gradient(
+    -45deg,
+    rgba(3, 218, 197, 0.35),
+    rgba(76, 111, 150, 0.3)
+  );
+  --vp-home-hero-image-filter: blur(56px);
+}
+
+.dark {
+  --vp-c-brand-1: #4ff0dd;
+  --vp-c-brand-2: #03dac5;
+  --vp-c-brand-3: #02b3a2;
+  --vp-c-brand-soft: rgba(3, 218, 197, 0.18);
+}
+
+/* 首页 hero：给标题区加一层很淡的径向光晕，避免整页纯色 */
+.VPHero .container {
+  position: relative;
+}
+
+.VPHero .container::before {
+  content: '';
+  position: absolute;
+  inset: -60px 10% auto;
+  height: 320px;
+  background: radial-gradient(ellipse at center, rgba(3, 218, 197, 0.12), transparent 70%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* 首页特性卡片：默认主题的边框偏灰，换成主色的低透明度 */
+.VPFeature {
+  border-color: var(--vp-c-divider);
+  transition: border-color 0.25s;
+}
+
+.VPFeature:hover {
+  border-color: var(--vp-c-brand-1);
+}
+
+/* 表格在窄屏更容易读 */
+.vp-doc table {
+  display: table;
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  .vp-doc table {
+    display: block;
+    overflow-x: auto;
+  }
+}
+
+/* 版本徽标在标题行里不要撑高行距 */
+.vp-doc h1 .meow-version,
+.vp-doc h2 .meow-version {
+  transform: translateY(-2px);
+}
