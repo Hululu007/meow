@@ -44,7 +44,16 @@ const guideSidebar = [
   {
     text: '日常使用',
     items: [
-      { text: '播放、弹幕与直播', link: '/guide/playback' },
+      { text: '播放与弹幕', link: '/guide/playback' },
+      { text: '片库与直播', link: '/guide/library-live' },
+      { text: 'AI 助手', link: '/guide/ai' },
+    ],
+  },
+  {
+    text: '维护',
+    items: [
+      { text: '升级与迁移', link: '/guide/upgrade' },
+      { text: '备份与恢复', link: '/guide/backup' },
       { text: '常见问题', link: '/guide/faq' },
     ],
   },
@@ -57,24 +66,32 @@ const ecosystemSidebar = [
       { text: '插件生态与安装', link: '/ecosystem/plugins' },
       { text: '插件 manifest 规范', link: '/ecosystem/plugin-manifest' },
       { text: '自建插件源', link: '/ecosystem/plugin-source' },
+      { text: 'TV 运行时模块', link: '/ecosystem/runtime-module' },
     ],
   },
   {
     text: '源包',
-    items: [
-      { text: '源包与配置格式', link: '/ecosystem/source-format' },
-      { text: 'TV 运行时模块', link: '/ecosystem/runtime-module' },
-    ],
+    items: [{ text: '源包与配置格式', link: '/ecosystem/source-format' }],
   },
 ]
 
 const referenceSidebar = [
   {
-    text: '参考',
+    text: '版本与排障',
     items: [
       { text: '下载与版本', link: '/reference/downloads' },
       { text: '更新日志', link: '/reference/changelog' },
+      { text: '版本兼容矩阵', link: '/reference/compatibility' },
+      { text: '诊断手册', link: '/reference/diagnostics' },
+    ],
+  },
+  {
+    text: '项目信息',
+    items: [
+      { text: '安全与隐私', link: '/reference/security' },
       { text: '已知限制', link: '/reference/limits' },
+      { text: '术语表', link: '/reference/glossary' },
+      { text: '反馈与贡献', link: '/reference/contributing' },
       { text: '许可与免责', link: '/reference/license' },
     ],
   },
