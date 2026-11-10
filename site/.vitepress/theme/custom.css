@@ -38,6 +38,10 @@
   --mw-grad-1: #10232a;
   --mw-grad-2: #00897b;
   --mw-grad-3: #5b3df5;
+  --mw-cursor-glow: rgba(0, 137, 123, 0.055);
+  --mw-cursor-blend: normal;
+  --mw-noise-opacity: 0.05;
+  --mw-spot: rgba(0, 137, 123, 0.09);
 }
 
 .dark {
@@ -70,6 +74,10 @@
   --mw-grad-1: #eafffb;
   --mw-grad-2: #03dac5;
   --mw-grad-3: #9d8bff;
+  --mw-cursor-glow: rgba(3, 218, 197, 0.075);
+  --mw-cursor-blend: screen;
+  --mw-noise-opacity: 0.035;
+  --mw-spot: rgba(3, 218, 197, 0.13);
 }
 
 /* ── 首页容器：layout: page 默认收窄到文档宽度，这里放开 ───── */
@@ -196,4 +204,45 @@ body {
 .vp-doc h1 .meow-version,
 .vp-doc h2 .meow-version {
   transform: translateY(-2px);
+}
+
+
+/* ── 架构图：悬停某个端时点亮它的连线，其余变淡 ─────────────── */
+.kw-diagram .kw-node,
+.kw-diagram .kw-wire {
+  transition:
+    opacity 0.25s ease,
+    stroke-width 0.25s ease;
+}
+
+.kw-diagram:has(.kw-node:hover) .kw-node:not(:hover) {
+  opacity: 0.45;
+}
+
+.kw-diagram:has(.kw-node:hover) .kw-wire {
+  opacity: 0.12;
+}
+
+.kw-diagram:has(.kw-node-web:hover) .kw-wire-web,
+.kw-diagram:has(.kw-node-pc:hover) .kw-wire-pc,
+.kw-diagram:has(.kw-node-tv:hover) .kw-wire-tv {
+  opacity: 1;
+  stroke-width: 2.6;
+  filter: drop-shadow(0 0 7px rgba(3, 218, 197, 0.55));
+}
+
+.kw-diagram:has(.kw-node:hover) .kw-core rect {
+  stroke-width: 2;
+}
+
+.kw-node:hover rect {
+  stroke: var(--mw-line-strong);
+  stroke-width: 1.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kw-diagram .kw-node,
+  .kw-diagram .kw-wire {
+    transition: none;
+  }
 }

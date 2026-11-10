@@ -64,6 +64,7 @@ const platforms = [
 }
 
 .mw-platform {
+  position: relative;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--mw-line);
@@ -80,6 +81,31 @@ const platforms = [
   border-color: var(--mw-line-strong);
   transform: translateY(-3px);
   box-shadow: 0 20px 50px -24px rgba(3, 218, 197, 0.35);
+}
+
+.mw-platform::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  background: radial-gradient(
+    260px circle at var(--mx, 50%) var(--my, 0%),
+    var(--mw-spot),
+    transparent 60%
+  );
+}
+
+.mw-platform:hover::after {
+  opacity: 1;
+}
+
+.mw-platform > * {
+  position: relative;
+  z-index: 1;
 }
 
 .mw-chrome {

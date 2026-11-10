@@ -97,6 +97,32 @@ const features = [
   opacity: 0.9;
 }
 
+/* 鼠标跟随光斑：坐标由 HomePage 的 pointermove 写入 --mx/--my */
+.mw-feature::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  background: radial-gradient(
+    240px circle at var(--mx, 50%) var(--my, 0%),
+    var(--mw-spot),
+    transparent 62%
+  );
+}
+
+.mw-feature:hover::after {
+  opacity: 1;
+}
+
+.mw-feature > * {
+  position: relative;
+  z-index: 1;
+}
+
 .mw-feature-icon {
   display: grid;
   place-items: center;

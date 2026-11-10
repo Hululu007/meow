@@ -5,6 +5,22 @@ import HeroSection from './HeroSection.vue'
 import PlatformCards from './PlatformCards.vue'
 import RevealOnScroll from './RevealOnScroll.vue'
 
+const stats = [
+  { value: '0', label: '内置内容源' },
+  { value: '3', label: '端形态' },
+  { value: '4', label: 'Docker 容器' },
+  { value: '41', label: 'TV 端内路由' },
+]
+
+/** 把指针位置写进卡片的 CSS 变量，光斑才能跟随鼠标 */
+function onSpotlight(e: PointerEvent) {
+  const el = (e.target as HTMLElement | null)?.closest?.('.mw-feature, .mw-platform')
+  if (!(el instanceof HTMLElement)) return
+  const rect = el.getBoundingClientRect()
+  el.style.setProperty('--mx', `${e.clientX - rect.left}px`)
+  el.style.setProperty('--my', `${e.clientY - rect.top}px`)
+}
+
 const sourcePack = withBase('/guide/source-pack.html')
 const downloads = withBase('/reference/downloads.html')
 const limits = withBase('/reference/limits.html')
@@ -12,12 +28,19 @@ const license = withBase('/reference/license.html')
 </script>
 
 <template>
-  <div class="mw-home">
+  <div class="mw-home" @pointermove="onSpotlight">
     <HeroSection />
+
+    <div class="mw-stats">
+      <div v-for="s in stats" :key="s.label" class="mw-stat">
+        <b>{{ s.value }}</b>
+        <span>{{ s.label }}</span>
+      </div>
+    </div>
 
     <section class="mw-section">
       <header class="mw-section-head">
-        <span class="mw-eyebrow">CAPABILITIES</span>
+        <div class="mw-sec-meta"><span class="mw-sec-index">01</span><span class="mw-eyebrow">CAPABILITIES</span></div>
         <h2>一个后端，把三端该做的事都做了</h2>
         <p>
           搜索、详情、播放地址解析、弹幕聚合、代理与转码都收敛在同一套宿主里。
@@ -31,7 +54,7 @@ const license = withBase('/reference/license.html')
 
     <section class="mw-section mw-section-alt">
       <header class="mw-section-head">
-        <span class="mw-eyebrow">PLATFORMS</span>
+        <div class="mw-sec-meta"><span class="mw-sec-index">02</span><span class="mw-eyebrow">PLATFORMS</span></div>
         <h2>三种形态，按你的设备选</h2>
         <p>同一份配置语义，不同的加载器与外壳。也可以只跑后端，把电视和手机当播放器。</p>
       </header>
@@ -44,7 +67,7 @@ const license = withBase('/reference/license.html')
       <RevealOnScroll>
         <div class="mw-boundary">
           <div class="mw-boundary-copy">
-            <span class="mw-eyebrow">BOUNDARY</span>
+            <div class="mw-sec-meta"><span class="mw-sec-index">03</span><span class="mw-eyebrow">BOUNDARY</span></div>
             <h2>装完是空壳</h2>
             <p>
               仓库与公开 Release 都不含源包。没有 spider jar 与站点配置，
@@ -86,7 +109,7 @@ const license = withBase('/reference/license.html')
     <section class="mw-section mw-cta">
       <div class="mw-cta-glow" aria-hidden="true"></div>
       <RevealOnScroll>
-        <span class="mw-eyebrow">GET STARTED</span>
+        <div class="mw-sec-meta"><span class="mw-sec-index">04</span><span class="mw-eyebrow">GET STARTED</span></div>
         <h2>五分钟起一个能用的后端</h2>
         <p>四条命令，加上你自己的源包。</p>
         <div class="mw-cta-actions">
@@ -108,6 +131,48 @@ const license = withBase('/reference/license.html')
 <style scoped>
 .mw-home {
   overflow: clip;
+}
+
+.mw-stats {
+  margin-top: 6px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 32px;
+}
+
+.mw-stat {
+  padding: 26px 10px 28px;
+  border-left: 1px solid var(--mw-line);
+  text-align: center;
+}
+
+.mw-stat:first-child {
+  border-left: 0;
+}
+
+.mw-stat b {
+  display: block;
+  color: var(--mw-text);
+  font-size: clamp(26px, 2.6vw, 34px);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(180deg, var(--mw-text) 30%, var(--mw-text-2) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.mw-stat span {
+  display: block;
+  margin-top: 7px;
+  color: var(--mw-text-3);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
 }
 
 .mw-section {
@@ -132,9 +197,26 @@ const license = withBase('/reference/license.html')
   margin-bottom: 44px;
 }
 
+.mw-sec-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.mw-sec-index {
+  padding: 1px 7px;
+  border: 1px solid var(--mw-line);
+  border-radius: 5px;
+  color: var(--mw-text-3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
 .mw-eyebrow {
   display: inline-block;
-  margin-bottom: 14px;
+  margin-bottom: 0;
   color: var(--mw-cyan);
   font-size: 11.5px;
   font-weight: 700;
@@ -266,6 +348,10 @@ const license = withBase('/reference/license.html')
   pointer-events: none;
 }
 
+.mw-cta .mw-sec-meta {
+  justify-content: center;
+}
+
 .mw-cta p {
   margin-top: 14px;
 }
@@ -349,6 +435,21 @@ const license = withBase('/reference/license.html')
     grid-template-columns: 1fr;
     gap: 28px;
     padding: 30px 24px;
+  }
+}
+
+@media (max-width: 720px) {
+  .mw-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 0 22px;
+  }
+
+  .mw-stat:nth-child(3) {
+    border-left: 0;
+  }
+
+  .mw-stat:nth-child(n + 3) {
+    border-top: 1px solid var(--mw-line);
   }
 }
 

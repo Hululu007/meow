@@ -5,11 +5,15 @@ import './custom.css'
 import VersionBadge from './components/VersionBadge.vue'
 import HomePage from './components/HomePage.vue'
 import ScrollProgress from './components/ScrollProgress.vue'
+import CursorGlow from './components/CursorGlow.vue'
 
 export default {
   extends: DefaultTheme,
-  // 顶部 2px 滚动进度条，挂在 VitePress 的 layout-top 插槽上
-  Layout: () => h(DefaultTheme.Layout, null, { 'layout-top': () => h(ScrollProgress) }),
+  Layout: () =>
+    h(DefaultTheme.Layout, null, {
+      // 顶部 2px 滚动进度条 + 全站鼠标柔光
+      'layout-top': () => [h(ScrollProgress), h(CursorGlow)],
+    }),
   enhanceApp({ app }) {
     app.component('VersionBadge', VersionBadge)
     app.component('HomePage', HomePage)

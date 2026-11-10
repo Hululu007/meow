@@ -20,24 +20,24 @@
 
     <!-- 连接线：三端 → 宿主 → 源包 -->
     <g class="kw-wires" fill="none" stroke-linecap="round">
-      <path class="kw-wire" d="M174 78 C 210 78, 212 210, 250 210" />
-      <path class="kw-wire" d="M174 220 C 200 220, 222 220, 250 220" />
-      <path class="kw-wire" d="M174 362 C 210 362, 212 230, 250 230" />
+      <path class="kw-wire kw-wire-web" d="M174 78 C 210 78, 212 210, 250 210" />
+      <path class="kw-wire kw-wire-pc" d="M174 220 C 200 220, 222 220, 250 220" />
+      <path class="kw-wire kw-wire-tv" d="M174 362 C 210 362, 212 230, 250 230" />
       <path class="kw-wire kw-wire-out" d="M430 220 C 464 220, 472 220, 508 220" />
     </g>
 
     <!-- 三端 -->
-    <g class="kw-node">
+    <g class="kw-node kw-node-web">
       <rect x="16" y="40" width="158" height="76" rx="12" />
       <text x="95" y="72" class="kw-node-title" text-anchor="middle">Web</text>
       <text x="95" y="94" class="kw-node-sub" text-anchor="middle">Docker 四容器</text>
     </g>
-    <g class="kw-node">
+    <g class="kw-node kw-node-pc">
       <rect x="16" y="182" width="158" height="76" rx="12" />
       <text x="95" y="214" class="kw-node-title" text-anchor="middle">PC</text>
       <text x="95" y="236" class="kw-node-sub" text-anchor="middle">Tauri 桌面壳</text>
     </g>
-    <g class="kw-node">
+    <g class="kw-node kw-node-tv">
       <rect x="16" y="324" width="158" height="76" rx="12" />
       <text x="95" y="356" class="kw-node-title" text-anchor="middle">TV</text>
       <text x="95" y="378" class="kw-node-sub" text-anchor="middle">端内网关</text>

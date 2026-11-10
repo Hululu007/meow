@@ -1,15 +1,36 @@
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { withBase } from 'vitepress'
 import KernelDiagram from './KernelDiagram.vue'
 
 const quickStart = withBase('/guide/quick-start.html')
 const downloads = withBase('/reference/downloads.html')
+
+const visual = ref<HTMLElement | null>(null)
+let raf = 0
+
+onMounted(() => {
+  const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  if (reduce) return
+  const onScroll = () => {
+    if (raf) return
+    raf = requestAnimationFrame(() => {
+      raf = 0
+      // 图示轻微滞后滚动，制造景深；限制幅度避免跑出可视区
+      const y = Math.min(window.scrollY, 820)
+      if (visual.value) visual.value.style.transform = `translate3d(0, ${(y * 0.09).toFixed(2)}px, 0)`
+    })
+  }
+  window.addEventListener('scroll', onScroll, { passive: true })
+  onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
+})
 </script>
 
 <template>
   <section class="mw-hero">
     <div class="mw-hero-bg" aria-hidden="true"></div>
     <div class="mw-hero-grid" aria-hidden="true"></div>
+    <div class="mw-hero-noise" aria-hidden="true"></div>
 
     <div class="mw-hero-inner">
       <div class="mw-hero-copy">
@@ -54,12 +75,17 @@ const downloads = withBase('/reference/downloads.html')
         </ul>
       </div>
 
-      <div class="mw-hero-visual">
+      <div ref="visual" class="mw-hero-visual">
         <KernelDiagram />
       </div>
     </div>
 
     <div class="mw-hero-fade" aria-hidden="true"></div>
+
+    <div class="mw-hero-scroll" aria-hidden="true">
+      <span>向下滚动</span>
+      <i></i>
+    </div>
   </section>
 </template>
 
@@ -70,16 +96,26 @@ const downloads = withBase('/reference/downloads.html')
   display: flex;
   align-items: center;
   min-height: min(74vh, 730px);
-  padding: 44px 0 60px;
+  padding: 44px 0 84px;
   overflow: hidden;
 }
 
 .mw-hero-bg,
 .mw-hero-grid,
+.mw-hero-noise,
 .mw-hero-fade {
   position: absolute;
   inset: 0;
   pointer-events: none;
+}
+
+/* 细颗粒噪点：给大块深色底增加质感，避免纯色的“塑料感” */
+.mw-hero-noise {
+  z-index: -1;
+  opacity: var(--mw-noise-opacity);
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 140px 140px;
 }
 
 .mw-hero-bg {
@@ -267,6 +303,46 @@ const downloads = withBase('/reference/downloads.html')
 .mw-hero-visual {
   position: relative;
   margin-left: -34px;
+  will-change: transform;
+}
+
+.mw-hero-scroll {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  transform: translateX(-50%);
+  color: var(--mw-text-3);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+}
+
+.mw-hero-scroll i {
+  display: block;
+  width: 1px;
+  height: 34px;
+  background: linear-gradient(to bottom, var(--mw-cyan), transparent);
+  transform-origin: top;
+  animation: mw-scroll-hint 2.2s ease-in-out infinite;
+}
+
+@keyframes mw-scroll-hint {
+  0% {
+    transform: scaleY(0.2);
+    opacity: 0.2;
+  }
+  45% {
+    transform: scaleY(1);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scaleY(0.2);
+    opacity: 0.2;
+  }
 }
 
 @keyframes mw-pulse {
@@ -278,6 +354,14 @@ const downloads = withBase('/reference/downloads.html')
   50% {
     opacity: 0.45;
     box-shadow: 0 0 4px var(--mw-cyan);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mw-hero-scroll i {
+    animation: none;
+    opacity: 0.5;
+    transform: scaleY(1);
   }
 }
 
@@ -309,6 +393,10 @@ const downloads = withBase('/reference/downloads.html')
   .mw-hero {
     min-height: auto;
     padding-bottom: 44px;
+  }
+
+  .mw-hero-scroll {
+    display: none;
   }
 }
 
