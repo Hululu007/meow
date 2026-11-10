@@ -75,7 +75,7 @@ Get-FileHash .\meow-setup-1.1.5.exe -Algorithm SHA256
 |---|---|
 | Web | Docker 24+ / Compose 插件；2 GB 可用内存 |
 | PC | Windows 10 1809 及以上 |
-| TV | Android 7.0（API 24）及以上；运行时模块需 Android 8.0（API 26） |
+| TV | Android 8.0（API 26）及以上；壳与运行时模块的 minSdk 相同 |
 | fnOS | 飞牛系统；x86_64 或 arm64 |
 
 ## 历史版本

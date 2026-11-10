@@ -11,7 +11,7 @@ Android TV 客户端是一个 WebView 壳 + 端上 ExoPlayer + 本地 jar 执行
 | adb | `adb install -r meow-TV-<版本>.apk` |
 | 应用市场 | 本项目不投应用市场，只提供 APK |
 
-最低 Android 7.0（API 24）。投影仪常见的 Android 9 / armeabi-v7a 能装，但见页尾的限制。
+最低 Android 8.0（API 26）。投影仪常见的 Android 9 / armeabi-v7a 能装，但见页尾的限制。
 
 ## 两种运行方式
 
@@ -96,7 +96,7 @@ TV 壳里带一个本地 HTTP 网关（默认 41 条路由），把 `spider` 调
 
 | 症状 | 先查什么 |
 |---|---|
-| 装了打不开 / 闪退 | 架构是否匹配（投影仪常见 armeabi-v7a）；Android 版本是否 ≥ 7.0 |
+| 装了打不开 / 闪退 | 架构是否匹配（投影仪常见 armeabi-v7a）；Android 版本是否 ≥ 8.0 |
 | 配置导入成功但站点全红 | jar 是不是 dex 形态；站点有没有 `jar` 字段 |
 | 一直「正在加载」 | 配置地址电视能不能访问；换手机热点验证一次 |
 | 能搜不能播 | 源站地址绑客户端 IP 或已过期，换线路试试 |

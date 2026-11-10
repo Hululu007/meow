@@ -14,6 +14,40 @@
 
 生成物在 `site/.gitignore` 里，不提交。改技术文档只改 `docs/`，站点会跟着更新。
 
+## 改功能时要同步哪些页
+
+`dev/` 与更新日志是自动生成的，永远不要手改。**其余页面是手写的**，
+功能变更时需要人工同步——按改动类型查这张表：
+
+| 改了什么 | 要同步的页面 |
+|---|---|
+| Docker 容器 / 端口 / `.env` 键 | `guide/web-docker.md`、`guide/quick-start.md`、`reference/downloads.md` |
+| PC 插件流程、端口回退、安装包形态 | `guide/pc.md`、`ecosystem/plugins.md` |
+| TV 安装、遥控、网关、运行时模块 | `guide/tv.md`、`ecosystem/runtime-module.md` |
+| config 字段（`spider` / `spiderJvm` / `sites` / `parses` …） | `ecosystem/source-format.md`、`guide/source-pack.md` |
+| 导入选项（`mode` / `onConflict` / `replaceSpider`） | `guide/source-pack.md` |
+| 插件清单字段（fnpack / manifest） | `ecosystem/plugin-manifest.md`、`ecosystem/plugin-source.md` |
+| Release 资产名、系统要求 | `reference/downloads.md` |
+| 新增或移除用户可见能力 | 首页 `index.md`、`guide/what-is-meow.md` 的能力表 |
+| 已知缺陷新增或修复 | `reference/limits.md`、`guide/faq.md` |
+| 许可条款、第三方代码 | `reference/license.md` |
+
+## 硬事实去哪核对
+
+手写页里的数字必须能对上代码，不要凭印象。已经因此修过两次（TV minSdk 写成 7.0、
+弹幕默认顺序漏了 danmu_api）：
+
+| 事实 | 核对位置 |
+|---|---|
+| TV 最低版本 | `client/apps/tv/app/build.gradle` 的 `minSdk` |
+| 容器、端口、环境变量 | `deploy/docker/docker-compose.yml`、`.env.example` |
+| PC 插件端口与回退 | `server/plugin-manifests/*.manifest.json` |
+| 弹幕默认优先级 | `server/host/src/shared/ApiServer.java` 的 `DANMAKU_PRIORITY` |
+| 配置导入选项 | `server/host/src/shared/ApiServer.java` + `SettingsView.vue` 的界面文案 |
+| 运行时模块 `min_sdk` / `min_app_version` | `deploy/scripts/sync-packages.ps1` |
+| Release 资产名 | GitHub Releases 或 `deploy/scripts/sync-packages.ps1` |
+| 构建单元与产物 | `deploy/units.json` |
+
 ## 本地开发
 
 ```bash
