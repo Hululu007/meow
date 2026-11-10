@@ -445,7 +445,11 @@ if ($scope -contains 'meow-pc') {
 }
 
 if ($scope -contains 'meow-tv') {
-    $a = Find-Asset '*.apk'
+    # 只认壳 APK。tv-node-* 是同 release 里的运行时模块，不是壳；
+    # 2026-11-09 踩过：原来写 '*.apk' 且 Find-Asset 按体积降序，
+    # 54MB 的 tv-node-x86_64 会把 21MB 的 meow-TV 顶掉，清单把 TV 壳指到模块上。
+    $a = Find-Asset 'meow-TV-*.apk'
+    if (-not $a) { $a = Find-Asset '*-TV-*.apk' | Where-Object { $_.name -notlike 'tv-node-*' } }
     if ($a) {
         $packages['meow-tv'] = New-Entry $a $appVersion `
             @('android-arm64', 'android-armv7', 'android-x86_64') 'TV'

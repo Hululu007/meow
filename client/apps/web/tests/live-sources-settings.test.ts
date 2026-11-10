@@ -60,4 +60,50 @@ describe('设置页直播源：编辑 / 测试 / 恢复内置', () => {
     expect(J, '响应里没带 updated').toMatch(/out\.put\("updated"/)
     expect(A, '前端类型缺 updated').toMatch(/updated\?: string/)
   })
+
+  it('内置 iptv-org 用语言包 zho（一条顶 cn+hk+tw）', () => {
+    expect(J, '内置源没换成语言包').toContain('languages/zho.m3u')
+    // 注释里可以提到旧地址，真实配置行不能再用国家包
+    expect(J, '还在用 countries/cn.m3u 当内置源').not.toMatch(/"https:\/\/iptv-org[^"]*countries\/cn\.m3u"/)
+  })
+
+  it('iptv-org 国家源可一键添加（国家码不好记，英国是 uk 不是 gb）', () => {
+    expect(S, '缺少国家预设表').toContain('LIVE_COUNTRY_PRESETS')
+    expect(S, '缺少快捷添加处理函数').toContain('function addCountryLive')
+    // 英国是 uk：gb.m3u 实测 404
+    expect(S, '英国码写错').toMatch(/code: 'uk'/)
+    expect(S, '不该出现 gb 码').not.toMatch(/code: 'gb'/)
+    // 和手输添加一样要先真拉一遍
+    expect(S, '快捷添加没做校验').toMatch(/addCountryLive[\s\S]{0,700}verify: true/)
+    // 已加过的置灰
+    expect(S, '没做重复判断').toContain('hasCountryPreset')
+  })
+
+  it('加完一条源后，内置源不会从设置页消失（POST 也要回合并列表）', () => {
+    // 后端：POST 的两个成功分支都必须回 livesWithBuiltin()。
+    // 裸 `lives` 只是存储表，内置源平时不在表里 → 用户会以为内置源被覆盖了。
+    expect(J, 'duplicate 分支回了裸表').toMatch(
+      /put\("duplicate", true\)[\s\S]{0,120}livesWithBuiltin\(\)/,
+    )
+    expect(J, '新增分支回了裸表').toMatch(
+      /JSONObject okOut = new JSONObject\(\)\.put\("ok", true\)\.put\("lives", livesWithBuiltin\(\)\)/,
+    )
+    // 前端：老后端仍可能回裸表，所以以 GET 为准再刷一次
+    expect(S, 'doAddLive 加完没重读').toMatch(
+      /async function doAddLive[\s\S]{0,1400}await refreshLives\(\)/,
+    )
+    expect(S, 'addCountryLive 加完没重读').toMatch(
+      /async function addCountryLive[\s\S]{0,1400}await refreshLives\(\)/,
+    )
+  })
+
+  it('「更多国家/地区」按需拉全量列表（8 个按钮不够用）', () => {
+    expect(S, '缺展开开关').toContain('function toggleAllCountries')
+    expect(S, '没拉 iptv-org 的国家清单').toContain(
+      'iptv-org.github.io/api/countries.json',
+    )
+    // 该接口的 code 不是严格 ISO（英国是 UK，与 uk.m3u 一致），别拿 ISO 校正
+    expect(S, '缺少中文名映射表').toContain('COUNTRY_ZH')
+    expect(S, '中文名表缺英国').toContain("UK: '英国'")
+  })
 })

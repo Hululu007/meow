@@ -147,20 +147,36 @@ const chipsEl = ref<HTMLElement | null>(null)
 /**
  * 聚焦的胶囊居中（2026-11-06 用户报：右键后靠右的胶囊聚焦会出界）。
  *
- * <p>★ 用 focusin 不用 watch(activeTid)：遥控器右键只是**移动焦点**，
- * 没有点选，activeTid 不变 —— watch 永远不触发。focusin 会冒泡，
- * 编程式 focus()（tv-nav 的移焦）同样触发。
+ * <p>★ 两条触发路径，缺一不可：
+ * <ol>
+ *   <li>鼠标/键盘 focusin —— 浏览器原生焦点；</li>
+ *   <li>tv-nav 的 `meow:tv-focus` —— 遥控器移焦是**只加 class 不调 focus()**
+ *       （焦点框是 box-shadow，不抢 DOM 焦点），所以 focusin 根本不会触发。
+ *       2026-11-10 用户报「欧美剧胶囊右键聚焦出界、看不见所选」就是这条：
+ *       胶囊 index 一直往右走，元素坐标跑到视口外，行却不滚。</li>
+ * </ol>
  *
  * <p>和设置页分区胶囊（SettingsView 的 chipsEl watch）同一个手法：
  * scrollLeft 把目标项居中，**不用 scrollIntoView** —— 部分内核会连带
  * 滚竖向容器把页面拽回去（docs/27 §5.9）。
  */
-function onChipFocus(e: FocusEvent) {
+function centerChip(el: HTMLElement | null, behavior: ScrollBehavior = 'smooth') {
   const box = chipsEl.value
-  const el = e.target as HTMLElement | null
   if (!box || !box.clientWidth || !el) return
   const target = el.offsetLeft - (box.clientWidth - el.offsetWidth) / 2
-  box.scrollTo({ left: Math.max(0, target), behavior: 'smooth' })
+  box.scrollTo({ left: Math.max(0, target), behavior })
+}
+
+function onChipFocus(e: FocusEvent) {
+  centerChip(e.target as HTMLElement | null)
+}
+
+/** tv-nav 遥控器移焦：从全局高亮元素里挑出当前分类胶囊再居中 */
+function onTvFocus() {
+  const el = document.querySelector('.cat-chips .meow-tv-focus')
+  // 遥控器用 auto：tv-nav 刚做过一次"最小必要横向滚动"，再用 smooth 会
+  // 先跳一下再缓动；同一帧内直接居中，画面不会闪。
+  if (el instanceof HTMLElement) centerChip(el, 'auto')
 }
 
 function loadMore() {
@@ -178,9 +194,12 @@ function onScroll() {
 
 onMounted(() => {
   window.addEventListener('scroll', onScroll, { passive: true })
+  // 遥控器移焦不走 focusin（tv-nav 只加 class），必须单独听它的事件
+  window.addEventListener('meow:tv-focus', onTvFocus)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('scroll', onScroll)
+  window.removeEventListener('meow:tv-focus', onTvFocus)
 })
 
 /** 记住点过的影片，供历史页使用 */

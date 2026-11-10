@@ -2322,6 +2322,12 @@ async function doAddLive() {
       return
     }
     liveSources.value = r.lives || liveSources.value
+    /*
+     * POST 回来的 `lives` 可能只是**存储表**（老后端不带内置源，内置源是
+     * GET 时虚拟补上的）→ 加完一条自定义源，列表里两条内置源会从界面上
+     * 消失（用户以为是"被覆盖了"）。所以统一以 GET 的结果为准。
+     */
+    await refreshLives()
     liveName.value = ''
     liveUrlInput.value = ''
     liveMsg.value = r.duplicate
@@ -2460,6 +2466,144 @@ async function doResetBuiltin() {
     liveMsg.value = e?.message || String(e)
   } finally {
     liveBusy.value = ''
+  }
+}
+
+/**
+ * iptv-org 国家/地区快捷添加。
+ *
+ * <p>为什么做这个：iptv-org 按 **ISO 两位国家码** 分文件（`countries/<code>.m3u`），
+ * 但用户在设置页无从知道码是什么，而且英国是 `uk` 不是 ISO 的 `gb`
+ * （`gb.m3u` 404），手输还容易拼错。这里列实测可用的几条，点一下就加。
+ *
+ * <p>为什么不列港台：内置的 iptv-org 中文台用的是**语言包**
+ * `languages/zho.m3u`，本来就把港澳台（和 CCTV-4 各洲版、CGTN 等海外
+ * 中文台）一起收进来了，再加 `hk` / `tw` 只会在合并后多出一批重复线路。
+ *
+ * <p>`ch` 是 2026-11-10 实测台数，只用于按钮 tooltip；真实台数以添加时
+ * 解析出的为准（iptv-org 每天在变）。
+ */
+const LIVE_COUNTRY_PRESETS = [
+  { code: 'jp', label: '日本', ch: 9 },
+  { code: 'kr', label: '韩国', ch: 72 },
+  { code: 'th', label: '泰国', ch: 72 },
+  { code: 'sg', label: '新加坡', ch: 9 },
+  { code: 'us', label: '美国', ch: 1504 },
+  { code: 'uk', label: '英国', ch: 309 },
+  { code: 'de', label: '德国', ch: 305 },
+  { code: 'fr', label: '法国', ch: 200 },
+] as const
+
+function countryPresetUrl(code: string) {
+  return `https://iptv-org.github.io/iptv/countries/${code}.m3u`
+}
+
+/** 已加过的国家源（按钮置灰：再点只会得到"这个地址已经在了"） */
+function hasCountryPreset(code: string) {
+  const url = countryPresetUrl(code)
+  return liveSources.value.some((s) => s.url === url)
+}
+
+async function addCountryLive(c: { code: string; label: string; ch?: number }) {
+  const url = countryPresetUrl(c.code)
+  if (hasCountryPreset(c.code)) return
+  liveBusy.value = url
+  liveMsg.value = ''
+  try {
+    // 和手输添加一样先真拉一遍：iptv-org 也有空文件/404 的国家
+    const r = await addLiveSource({ name: `iptv-org ${c.label}`, url, verify: true })
+    if (!r.ok) {
+      liveMsg.value = r.msg || `iptv-org ${c.label} 解析不出频道，没保存`
+      return
+    }
+    liveSources.value = r.lives || liveSources.value
+    await refreshLives()
+    liveMsg.value = `已添加 iptv-org ${c.label}${r.channels ? `，解析出 ${r.channels} 个频道` : ''}`
+  } catch (e: any) {
+    liveMsg.value = e?.message || String(e)
+  } finally {
+    liveBusy.value = ''
+  }
+}
+
+/**
+ * 「更多国家/地区」：iptv-org 有 250 个国家/地区文件，8 个快捷按钮不够用。
+ *
+ * <p>列表按需从 `iptv-org.github.io/api/countries.json`（19KB，CORS 开放）
+ * 拉，不在打开设置页时就拉。这个接口的 code 直接用就能拼出
+ * `countries/<code>.m3u` —— 注意它用的不是严格 ISO（英国是 `UK` 不是 `GB`，
+ * 与 `uk.m3u` 实测一致），所以**别拿 ISO 表去校正**。
+ *
+ * <p>中文名只覆盖常用的一百多个；剩下的保留英文名 —— 为了一个按钮编造
+ * 冷门国家的译名没有意义，用户看得懂 English name 就够。
+ */
+const COUNTRY_ZH: Record<string, string> = {
+  AE: '阿联酋', AF: '阿富汗', AL: '阿尔巴尼亚', AM: '亚美尼亚', AO: '安哥拉',
+  AR: '阿根廷', AT: '奥地利', AU: '澳大利亚', AZ: '阿塞拜疆', BA: '波黑',
+  BD: '孟加拉国', BE: '比利时', BG: '保加利亚', BH: '巴林', BJ: '贝宁',
+  BO: '玻利维亚', BR: '巴西', BY: '白俄罗斯', CA: '加拿大', CH: '瑞士',
+  CI: '科特迪瓦', CL: '智利', CM: '喀麦隆', CN: '中国', CO: '哥伦比亚',
+  CR: '哥斯达黎加', CU: '古巴', CY: '塞浦路斯', CZ: '捷克', DE: '德国',
+  DK: '丹麦', DO: '多米尼加', DZ: '阿尔及利亚', EC: '厄瓜多尔', EE: '爱沙尼亚',
+  EG: '埃及', ES: '西班牙', ET: '埃塞俄比亚', FI: '芬兰', FR: '法国',
+  GB: '英国', GE: '格鲁吉亚', GH: '加纳', GR: '希腊', GT: '危地马拉',
+  HK: '香港', HN: '洪都拉斯', HR: '克罗地亚', HU: '匈牙利', ID: '印度尼西亚',
+  IE: '爱尔兰', IL: '以色列', IN: '印度', IQ: '伊拉克', IR: '伊朗',
+  IS: '冰岛', IT: '意大利', JM: '牙买加', JO: '约旦', JP: '日本',
+  KE: '肯尼亚', KG: '吉尔吉斯斯坦', KH: '柬埔寨', KP: '朝鲜', KR: '韩国',
+  KW: '科威特', KZ: '哈萨克斯坦', LA: '老挝', LB: '黎巴嫩', LK: '斯里兰卡',
+  LT: '立陶宛', LU: '卢森堡', LV: '拉脱维亚', LY: '利比亚', MA: '摩洛哥',
+  MD: '摩尔多瓦', ME: '黑山', MK: '北马其顿', MM: '缅甸', MN: '蒙古',
+  MO: '澳门', MT: '马耳他', MU: '毛里求斯', MV: '马尔代夫', MX: '墨西哥',
+  MY: '马来西亚', MZ: '莫桑比克', NA: '纳米比亚', NG: '尼日利亚', NI: '尼加拉瓜',
+  NL: '荷兰', NO: '挪威', NP: '尼泊尔', NZ: '新西兰', OM: '阿曼',
+  PA: '巴拿马', PE: '秘鲁', PH: '菲律宾', PK: '巴基斯坦', PL: '波兰',
+  PR: '波多黎各', PS: '巴勒斯坦', PT: '葡萄牙', PY: '巴拉圭', QA: '卡塔尔',
+  RO: '罗马尼亚', RS: '塞尔维亚', RU: '俄罗斯', SA: '沙特阿拉伯', SD: '苏丹',
+  SE: '瑞典', SG: '新加坡', SI: '斯洛文尼亚', SK: '斯洛伐克', SN: '塞内加尔',
+  SO: '索马里', SY: '叙利亚', TH: '泰国', TJ: '塔吉克斯坦', TM: '土库曼斯坦',
+  TN: '突尼斯', TR: '土耳其', TT: '特立尼达和多巴哥', TW: '台湾', TZ: '坦桑尼亚',
+  UA: '乌克兰', UG: '乌干达', UK: '英国', US: '美国', UY: '乌拉圭',
+  UZ: '乌兹别克斯坦', VE: '委内瑞拉', VN: '越南', YE: '也门', ZA: '南非',
+  ZM: '赞比亚', ZW: '津巴布韦',
+}
+
+/** 全部国家/地区（按需加载；空 = 还没拉过） */
+const allCountries = ref<{ code: string; label: string; flag: string }[]>([])
+const countriesBusy = ref(false)
+const countriesMsg = ref('')
+const showAllCountries = ref(false)
+
+async function toggleAllCountries() {
+  showAllCountries.value = !showAllCountries.value
+  // 拉过一次就复用；失败则保留 msg，下次展开会重试
+  if (!showAllCountries.value || allCountries.value.length || countriesBusy.value) return
+  countriesBusy.value = true
+  countriesMsg.value = ''
+  try {
+    const r = await fetch('https://iptv-org.github.io/api/countries.json', { cache: 'no-cache' })
+    if (!r.ok) throw new Error('HTTP ' + r.status)
+    const arr = (await r.json()) as { code?: string; name?: string; flag?: string }[]
+    const list = arr
+      .filter((x) => x && typeof x.code === 'string')
+      .map((x) => {
+        const up = String(x.code).toUpperCase()
+        return {
+          code: up.toLowerCase(),
+          label: COUNTRY_ZH[up] || x.name || up,
+          flag: x.flag || '',
+          zh: !!COUNTRY_ZH[up],
+        }
+      })
+    // 有中文名的排前面（也就是用户最可能找的那批），组内按拼音/字母排
+    list.sort((a, b) => (a.zh === b.zh ? a.label.localeCompare(b.label, 'zh-Hans-CN') : a.zh ? -1 : 1))
+    allCountries.value = list
+  } catch (e: any) {
+    countriesMsg.value =
+      '国家列表拉取失败（' + (e?.message || '网络错误') + '）——也可以直接手输 ' +
+      'https://iptv-org.github.io/iptv/countries/<code>.m3u'
+  } finally {
+    countriesBusy.value = false
   }
 }
 
@@ -5044,7 +5188,8 @@ onBeforeUnmount(() => {
       </p>
       <p class="mt-1 text-[11px] leading-relaxed text-ink-3">
         开盒自带<strong class="text-ink-2">两条内置源</strong>：Guovin 公共源
-        （每日更新，央视/卫视/地方台，836 频道）和 iptv-org 中国台（149 频道，含港澳台）。
+        （央视/卫视/地方台，836 频道，源站自称每日更新，点「测试」能看是否停更）
+        和 iptv-org 中文台（222 频道，用语言包，含港澳台与 CCTV-4 各洲版、CGTN 等海外中文台）。
         它们只是索引别人的流、不托管内容，版权状况不明；源站不稳时可能打不开，
         可以逐条删掉换成自己的（删了不会自己回来）。
       </p>
@@ -5165,6 +5310,50 @@ onBeforeUnmount(() => {
         >
           {{ liveBusy === 'add' ? '校验中…' : '添加' }}
         </button>
+      </div>
+      <!-- iptv-org 国家快捷添加：国家码不好记（英国是 uk 不是 gb），点一下就加 -->
+      <div class="mt-2 flex flex-wrap items-center gap-1.5">
+        <span class="text-[11px] text-ink-3">快捷添加 iptv-org：</span>
+        <button
+          v-for="c in LIVE_COUNTRY_PRESETS"
+          :key="c.code"
+          class="rounded-md bg-card px-2 py-1 text-[11px] text-ink-2 transition hover:bg-accent/20 hover:text-accent disabled:opacity-40"
+          :disabled="!!liveBusy || hasCountryPreset(c.code)"
+          :title="`${countryPresetUrl(c.code)}（实测 ${c.ch} 个台）`"
+          @click="addCountryLive(c)"
+        >
+          {{ liveBusy === countryPresetUrl(c.code) ? '校验中…' : c.label }}
+        </button>
+        <button
+          class="rounded-md px-2 py-1 text-[11px] text-ink-3 underline-offset-2 transition hover:bg-card-hover hover:text-accent"
+          @click="toggleAllCountries"
+        >
+          {{ showAllCountries ? '收起' : '更多国家/地区 ▾' }}
+        </button>
+      </div>
+      <!-- 全部 250 个国家/地区：按需拉 countries.json，只在这个折叠区里渲染 -->
+      <div v-if="showAllCountries" class="mt-1.5 rounded-md bg-field p-2">
+        <p v-if="countriesBusy" class="text-[11px] text-ink-3">正在拉国家列表…</p>
+        <p v-else-if="countriesMsg" class="text-[11px] text-warn">{{ countriesMsg }}</p>
+        <div
+          v-else
+          class="grid max-h-56 grid-cols-2 gap-1 overflow-y-auto sm:grid-cols-3 lg:grid-cols-5"
+        >
+          <button
+            v-for="c in allCountries"
+            :key="c.code"
+            class="flex min-w-0 items-center gap-1 truncate rounded px-1.5 py-1 text-left text-[11px] text-ink-2 transition hover:bg-accent/20 hover:text-accent disabled:opacity-40"
+            :disabled="!!liveBusy || hasCountryPreset(c.code)"
+            :title="countryPresetUrl(c.code)"
+            @click="addCountryLive(c)"
+          >
+            <span class="shrink-0">{{ c.flag }}</span>
+            <span class="truncate">{{ c.label }}</span>
+          </button>
+        </div>
+        <p class="mt-1 px-0.5 text-[10px] leading-relaxed text-ink-3">
+          港澳台与海外中文台已经在内置的「iptv-org 中文台」里，再加对应国家会多出重复线路。
+        </p>
       </div>
       <p v-if="liveMsg" class="mt-1.5 text-[11px] text-ink-3">{{ liveMsg }}</p>
 

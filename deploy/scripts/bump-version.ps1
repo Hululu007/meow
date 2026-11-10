@@ -15,6 +15,9 @@
 #   .env / .env.example  MEOW_VERSION（.env 不入库，存在才改）
 #   client/apps/tv/app/build.gradle  versionName + versionCode
 #   docker-compose.yml / docker-compose.build.yml  MEOW_VERSION 兜底
+#   fnOS：fpk/manifest 的 version + meowd 的 Cargo.toml/Cargo.lock
+#         （meowd 用 CARGO_PKG_VERSION 报 /api/health，漏改会出现
+#          "manifest 1.1.6、页面 1.1.5" 这种永远提示可升级的假象）
 #
 # versionCode 规则：major*1000 + minor*100 + patch（0.9.12 → 912）。
 # 1.0.0 会变成 1000，大于所有 0.x，符合 Android「只能增大」的要求。
@@ -83,6 +86,17 @@ function Build-Entries([string]$Old, [string]$New, [int]$OldCode, [int]$NewCode)
     # compose 兜底跟版本走：它曾是 0.8.0 时坑过——没 .env 就拉旧镜像
     $list += ,@('deploy/docker/docker-compose.yml', { param($t) $t.Replace("MEOW_VERSION:-$script:Old", "MEOW_VERSION:-$script:New") })
     $list += ,@('deploy/docker/docker-compose.build.yml', { param($t) $t.Replace("MEOW_VERSION:-$script:Old", "MEOW_VERSION:-$script:New") })
+    # fnOS fpk：manifest 是裸 `version=x.y.z`（无引号、无空格）；meowd 的 Cargo 版本
+    # 会被 /api/health 直接报出去，两者必须跟着走。
+    $list += ,@('client\apps\fnos\fpk\manifest', {
+        param($t) $t -replace ("(?m)^version=" + [regex]::Escape($script:Old) + "\s*$"), "version=$script:New"
+    })
+    $list += ,@('client\apps\fnos\meowd\Cargo.toml', {
+        param($t) $t -replace ("(?m)^version = `"" + [regex]::Escape($script:Old) + "`""), "version = `"$script:New`""
+    })
+    $list += ,@('client\apps\fnos\meowd\Cargo.lock', {
+        param($t) $t -replace ("(?s)(name = `"meowd`"\s*\r?\nversion = `")" + [regex]::Escape($script:Old) + "(`")"), "`${1}$script:New`${2}"
+    })
     return $list
 }
 

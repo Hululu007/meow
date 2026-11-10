@@ -183,12 +183,12 @@ public class ApiServer {
         routes.HealthRoutes.bind(new routes.HealthRoutes.SiteSource() {
             @Override
             public int siteCount() {
-                return SITES.size();
+                return implementedSiteCount();
             }
 
             @Override
             public int extCount() {
-                return EXT.size();
+                return implementedExtCount();
             }
 
             @Override
@@ -198,9 +198,7 @@ public class ApiServer {
 
             @Override
             public java.util.List<String> siteKeys() {
-                synchronized (SITES) {
-                    return new java.util.ArrayList<>(SITES.keySet());
-                }
+                return implementedSiteKeys();
             }
 
             @Override
@@ -681,7 +679,7 @@ public class ApiServer {
      */
     private static void logStartupTail(int actualPort) {
         System.out.println("[api] " + VERSION + " listening on http://127.0.0.1:" + actualPort);
-        System.out.println("[api] sites: " + SITES.size() + " | ext: " + EXT.size());
+        System.out.println("[api] sites: " + siteCount() + " | ext: " + implementedExtCount());
         System.out.println("[api] data: " + core.DataPaths.root().toAbsolutePath());
         System.out.println("[api] danmaku api: " + (danmakuApiConfigured() ? "configured" : "not configured (using built-in hosts)"));
         /*
@@ -1612,7 +1610,7 @@ public class ApiServer {
         JSONObject o = new JSONObject();
         try {
             boolean spiderJar = spiderJarPresent();
-            boolean configLoaded = !SITES.isEmpty();
+            boolean configLoaded = siteCount() > 0;
 
             JSONArray caps = new JSONArray();
             if (danmakuApiConfigured()) caps.put("danmakuExternal");
@@ -1638,8 +1636,8 @@ public class ApiServer {
             o.put("nativeSources", sources.NativeSources.size());
             o.put("version", VERSION);
             o.put("capabilities", caps);
-            o.put("sites", SITES.size());
-            o.put("ext", EXT.size());
+            o.put("sites", siteCount());
+            o.put("ext", implementedExtCount());
             o.put("spiderJar", spiderJar);
             o.put("configLoaded", configLoaded);
             o.put("danmakuApi", danmakuApiConfigured() ? "configured" : "builtin");
@@ -1885,22 +1883,26 @@ public class ApiServer {
         }
     }
 
-    /** spider jar 是否可加载（类路径上能找到一个已知 spider 类即视为在）。 */
+    /**
+     * spider jar 是否真的在。
+     *
+     * <p>不能再用 {@code com.github.catvod.crawler.Spider} 判断：源码里有一份
+     * 给 JVM 宿主编译用的空实现桩，它恒能被类路径加载，导致空壳的
+     * {@code /api/health} 一直谎报 {@code spiderJar=true}。
+     *
+     * <p>改用真实 jar 才有的站点类（完整内置 jar 实测含 Proxy/Bili）。
+     * 两者都找不到就是没有可用的 spider 实现。
+     */
     private static boolean spiderJarPresent() {
-        try {
-            platform.Bridge.loadClass("com.github.catvod.crawler.Spider");
-            return true;
-        } catch (Throwable t) {
-            return false;
-        }
+        return spiderClassPresent("Proxy") || spiderClassPresent("Bili");
     }
 
     /**
      * 这个站点自己的 jar 类能不能加载 —— "这台机器到底装没装这个源"的判据。
      *
-     * <p>与 {@link #spiderJarPresent()} 的区别：后者问的是基类
-     * {@code com.github.catvod.crawler.Spider}，而 {@code src/com/github/catvod/crawler/}
-     * 里有一份**给 JVM 宿主编译用的空实现桩**，所以它恒为 true。
+     * <p>{@link #spiderJarPresent()} 也用真实站点类（Proxy/Bili）判断，
+     * 不能再问 {@code com.github.catvod.crawler.Spider}：源码里有一份给 JVM
+     * 编译用的空实现桩，问它恒为 true，空壳会被误判成“有 jar”。
      * 判断"某站点有没有实现"必须按站点类名问（与 {@code createInstance} 一致，
      * 多实例 key 形如 {@code Bili#2} 时要先去掉 {@code #n}）。
      */
@@ -1991,11 +1993,14 @@ public class ApiServer {
     public static java.util.List<String> siteKeysForWarmup() {
         java.util.List<String> out = new java.util.ArrayList<>();
         try {
-            synchronized (SITES) {
-                for (String k : SITES.keySet()) {
-                    if (routes.HealthRoutes.isSkipped(k)) continue;
-                    out.add(k);
-                }
+            // 与 /api/sites 同源过滤：空壳没有 jar，不该拿 44 个默认名去预热
+            // （TV 实测 warmup ok=0 fail=44，白白消耗堆）。
+            // 原生源（豆瓣）不需要 jar 类预热，跳过——它的 home 会走网络，
+            // 放进 warmup 只会多一条 fail。
+            for (String k : implementedSiteKeys()) {
+                if (sources.NativeSources.get(k) != null) continue;
+                if (routes.HealthRoutes.isSkipped(k)) continue;
+                out.add(k);
             }
         } catch (Throwable ignored) {
         }
@@ -2906,7 +2911,9 @@ public class ApiServer {
                 return;
             }
             sendJson(ex, 200, new JSONObject().put("ok", true).put("duplicate", true)
-                    .put("lives", lives).toString());
+                    .put("lives", livesWithBuiltin())
+                    .put("builtin", builtinLiveUrls())
+                    .toString());
             return;
         }
 
@@ -2933,7 +2940,17 @@ public class ApiServer {
             sendJson(ex, 500, "{\"code\":-1,\"msg\":\"cannot write config.sites.json\"}");
             return;
         }
-        JSONObject okOut = new JSONObject().put("ok", true).put("lives", lives);
+        /*
+         * ★ 必须回 livesWithBuiltin() 而不是 lives。
+         *
+         *   `lives` 只是**存储表**：内置源是"表里没有时补的默认项"，根本不在表里
+         *   （用户删过才会留禁用标记）。早期这里回 raw lives，设置页加完一条
+         *   自定义源就把两条内置源从列表里抹掉了 —— 后端数据没丢，但用户看到
+         *   "内置的不显示了"，以为被覆盖。GET 一直是合并过的，所以只有 POST 后
+         *   这一瞬间错位（2026-11-10 用户截图报障）。
+         */
+        JSONObject okOut = new JSONObject().put("ok", true).put("lives", livesWithBuiltin())
+                .put("builtin", builtinLiveUrls());
         if (verifyInfo != null) {
             okOut.put("verified", true).put("channels", verifyInfo.optInt("channels", 0));
         }
@@ -11808,7 +11825,17 @@ public class ApiServer {
      */
     private static final String[][] BUILTIN_LIVES = {
             { "公共直播源（每日更新）", "https://guovin.github.io/iptv-api/result.m3u" },
-            { "iptv-org 中国台", "https://iptv-org.github.io/iptv/countries/cn.m3u" },
+            /*
+             * 用 **语言包** 而不是国家包（`countries/cn.m3u`）。
+             *
+             * 实测（2026-11-10）：zho 有 222 个唯一台，cn 只有 152，而 cn 的
+             * 145/152 被 zho 覆盖 —— zho 独有 78 个（港澳台 + CCTV-4 各洲版 +
+             * CGTN + 天映电影等海外中文台）。一条语言包顶替原来要加 cn+hk+tw
+             * 三条国家包，分类结构也更简单。
+             *
+             * 解析耗时 0.7s（cn 是 0.15s），可接受。
+             */
+            { "iptv-org 中文台", "https://iptv-org.github.io/iptv/languages/zho.m3u" },
     };
 
     /** 某条 url 是不是内置源之一 */
@@ -12496,7 +12523,7 @@ public class ApiServer {
                     .put("totalSites", siteCount())
                     // 内置基线条数：这些站不在配置文件里，替换导入也删不掉。
                     // 预览里要报出来，否则用户以为「替换 = 清空」。
-                    .put("builtinSites", sitesBaseline == null ? 0 : sitesBaseline.size())
+                    .put("builtinSites", implementedBaselineCount())
                     .put("skipped", skipped)
                     .put("depot", depotOut)
                     .put("diff", diff);
@@ -12683,11 +12710,70 @@ public class ApiServer {
         }
     }
 
+    /**
+     * 这个站点名当前**真的有实现**吗？
+     *
+     * <p>公开壳删掉了 spider.jar / config.sites.json，但源码里仍保留了一份
+     * 44 条的默认站点名（历史内置源的显示名）。如果直接把它们下发，空壳会
+     * 显示 44 个点进去全失败的“幽灵站”。所以对外输出前统一按这里过滤：
+     * <ul>
+     *   <li>原生源（目前只有豆瓣）—— 不依赖 jar，编译进后端</li>
+     *   <li>classpath / 导入 jar 里能加载到 {@code com.github.catvod.spider.<key>}</li>
+     *   <li>配置导入的非 csp_ 站（drpy / 苹果CMS / http 直连）—— API 表里有地址</li>
+     * </ul>
+     *
+     * <p>完整包有 spider.jar 时，44 条都会通过；公开空壳只剩豆瓣。这样
+     * “空壳没有源”是接口层面的事实，而不是只靠文档约定。
+     */
+    private static boolean siteImplemented(String key) {
+        if (key == null || key.isEmpty()) return false;
+        if (sources.NativeSources.get(key) != null) return true;
+        if (spiderClassPresent(key)) return true;
+        String api = API.get(key);
+        return api != null && !api.isEmpty() && !api.startsWith("csp_");
+    }
+
+    /** 对外可见站点键的快照（过滤掉没有实现的默认名）。 */
+    private static List<String> implementedSiteKeys() {
+        List<String> out = new ArrayList<>();
+        synchronized (SITES) {
+            for (String key : SITES.keySet()) {
+                if (siteImplemented(key)) out.add(key);
+            }
+        }
+        return out;
+    }
+
+    /** 对外可见站点数（health / 导入统计用）。 */
+    private static int implementedSiteCount() {
+        return implementedSiteKeys().size();
+    }
+
+    /** 对外可见站点的 ext 数（health 用）。 */
+    private static int implementedExtCount() {
+        int n = 0;
+        synchronized (EXT) {
+            for (String key : EXT.keySet()) {
+                if (siteImplemented(key)) n++;
+            }
+        }
+        return n;
+    }
+
+    /** 启动基线里真正有实现的条数（导入预览的 builtinSites 用）。 */
+    private static int implementedBaselineCount() {
+        Map<String, String> base = sitesBaseline;
+        if (base == null) return 0;
+        int n = 0;
+        for (String key : base.keySet()) {
+            if (siteImplemented(key)) n++;
+        }
+        return n;
+    }
+
     /** 站点总数的原子快照（导入会在另一线程 clear+put）。 */
     private static int siteCount() {
-        synchronized (SITES) {
-            return SITES.size();
-        }
+        return implementedSiteCount();
     }
 
     /** 启动后立刻存一份基线；必须在 loadMultiInstances() 之前调用。 */
@@ -12714,6 +12800,8 @@ public class ApiServer {
     private static String sitesJson() throws Exception {
         JSONArray arr = new JSONArray();
         for (Map.Entry<String, String> e : SITES.entrySet()) {
+            // 空壳里默认表有 44 个名字，但没有 jar 的站不能当“可用源”下发
+            if (!siteImplemented(e.getKey())) continue;
             JSONObject o = new JSONObject().put("key", e.getKey()).put("name", e.getValue())
                     .put("api", API.getOrDefault(e.getKey(), "csp_" + e.getKey()));
             String ext = EXT.get(e.getKey());
@@ -12755,6 +12843,8 @@ public class ApiServer {
         JSONObject root = new JSONObject();
         JSONArray arr = new JSONArray();
         for (Map.Entry<String, String> e : SITES.entrySet()) {
+            // 与 /api/sites 同源：没有实现的名字不下发（否则 TV 导入会拿到幽灵站）
+            if (!siteImplemented(e.getKey())) continue;
             JSONObject o = new JSONObject().put("key", e.getKey()).put("name", e.getValue())
                     .put("type", 3).put("api", "csp_" + e.getKey());
             String ext = EXT.get(e.getKey());

@@ -1114,6 +1114,14 @@ Docker 容器   PC sidecar   远端服务器
 **端口**：fpk 已无 `service_port`，30010 由 `wizard_port` 决定
 （`cmd/main` 的 `PORT` 回退链 `wizard_port → MEOW_SHELL_PORT → TRIM_SERVICE_PORT → 30010`）。
 
+**向导端口规则不能用 `min`/`max`**（2026-11-09 踩坑，装 1.1.5 时两个端口框恒红字）：
+飞牛应用中心的向导表单是 async-validator，`type:"text"` 的值是**字符串**，`min`/`max`
+被判成**字符串长度**而不是数值（源码 `range()` 里 `typeof value === 'string'` 时比较
+`value.length`）。写 `{min:1024,max:65535}` 时 `"30010".length = 5 < 1024`，必然报
+「端口范围 1024–65535」，`下一步` 被拦死、装不了。正确写法是 `required` + 纯数字
+`pattern` + **范围正则**（当前 1024–65535 的正则见 `wizard/install`）。
+`build-fpk.sh` 打包前会校验 wizard JSON 合法、且端口规则里不能再出现 `min`/`max`。
+
 **升级端点**：
 
 | 端点 | 作用 | 关键字段 / 约束 |

@@ -611,19 +611,48 @@
    */
   function scrollIntoViewWithin(el) {
     var pad = 8 // 留一点余量，别让焦点框贴着边缘
+    /*
+     * 横向的余量要比纵向大：焦点环是 2px accent + 12px 辉光，合计外扩 14px。
+     * 分类胶囊这类 overflow-x 容器如果只留 8px，环会被容器裁掉一小圈。
+     */
+    var padX = 16
     var node = el.parentElement
     while (node && node !== document.body) {
       var st = getComputedStyle(node)
-      var scrollable =
+      var scrollableY =
         (st.overflowY === 'auto' || st.overflowY === 'scroll') &&
         node.scrollHeight > node.clientHeight + 1
-      if (scrollable) {
+      if (scrollableY) {
         var nr = node.getBoundingClientRect()
         var er = el.getBoundingClientRect()
         if (er.top < nr.top + pad) {
           node.scrollTop -= nr.top + pad - er.top
         } else if (er.bottom > nr.bottom - pad) {
           node.scrollTop += er.bottom - (nr.bottom - pad)
+        }
+      }
+      /*
+       * ★ 横向滚动容器必须单独处理（2026-11-10 用户报「首页分类胶囊右键
+       *   聚焦出界、看不见所选」）。
+       *
+       * 原来这里只看 overflowY，于是 <div class="overflow-x-auto"> 里的
+       * 胶囊永远不滚：tv-nav 是"加 class 不算 focus()"，页面的 focusin
+       * 居中也收不到；焦点 index 一直往右走，元素坐标跑到 1700+（视口
+       * 1500），用户看到的就是"框没了"。
+       *
+       * 这里做最小必要滚动，把元素拉回可视区；页面若还想居中（HomeView
+       * 的 meow:tv-focus 监听）会在之后覆盖成居中，两者不冲突。
+       */
+      var scrollableX =
+        (st.overflowX === 'auto' || st.overflowX === 'scroll') &&
+        node.scrollWidth > node.clientWidth + 1
+      if (scrollableX) {
+        var nrx = node.getBoundingClientRect()
+        var erx = el.getBoundingClientRect()
+        if (erx.left < nrx.left + padX) {
+          node.scrollLeft -= nrx.left + padX - erx.left
+        } else if (erx.right > nrx.right - padX) {
+          node.scrollLeft += erx.right - (nrx.right - padX)
         }
       }
       node = node.parentElement

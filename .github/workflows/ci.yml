@@ -74,6 +74,9 @@ jobs:
         run: |
           mkdir -p classes
           javac -encoding UTF-8 -cp 'libs/*' -d classes $(find src -name '*.java')
+      - name: 空壳站点表门禁
+        working-directory: server/host
+        run: python3 test_empty_shell_sites.py
 
   drpy:
     name: drpy 运行时（npm test）

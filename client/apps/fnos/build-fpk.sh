@@ -140,6 +140,25 @@ fi
 
 chmod +x "$PKG"/cmd/*
 
+# wizard 静态校验（2026-11-09 踩坑后加）：
+#   1) 必须是合法 JSON —— 不合法时 tar 照样能打包，装到应用中心才向导空白/装不上；
+#   2) 端口字段不能用 min/max —— 飞牛向导表单是 async-validator，text 字段的
+#      min/max 判的是**字符串长度**（"30010".length = 5 < 1024），正确的端口
+#      也会被判「端口范围 1024–65535」而拦死安装。改用范围正则。
+for f in "$PKG"/wizard/*; do
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -m json.tool "$f" >/dev/null 2>&1 || { echo "$f 不是合法 JSON" >&2; exit 1; }
+    elif command -v node >/dev/null 2>&1; then
+        node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$f" >/dev/null 2>&1 \
+            || { echo "$f 不是合法 JSON" >&2; exit 1; }
+    fi
+    if grep -qE '"min"[^}]*端口范围|"max"[^}]*端口范围' "$f"; then
+        echo "$f: 端口规则用了 min/max —— 向导按字符串长度校验，正确端口也会被判越界。" >&2
+        echo "改用范围正则（见 wizard/install）；见 docs/36「向导端口规则不能用 min/max」。" >&2
+        exit 1
+    fi
+done
+
 echo "[4/5] pack"
 cd "$PKG"
 if command -v fnpack >/dev/null 2>&1; then

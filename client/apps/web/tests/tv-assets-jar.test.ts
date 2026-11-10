@@ -23,10 +23,15 @@ const CI = readFileSync(
 )
 
 describe('内置 dex jar：有则校验，无则纯壳', () => {
-  it('.gitignore 不再强制放行 spider.jar（公开壳不入库）', () => {
+  it('.gitignore 只对第三方二进制关门：spider.jar 不入库、danmu 载荷入库', () => {
     expect(GITIGNORE).not.toMatch(/^!spider\.jar\s*$/m)
     expect(GITIGNORE).not.toMatch(/^!spider-ext\.jar\s*$/m)
-    expect(GITIGNORE).not.toMatch(/^!node-payload-danmu\.zip\s*$/m)
+    // danmu 载荷是**日更的 JS wrapper 压缩包**（不是源包二进制），
+    // _tv_plugins / build-runtime-module.ps1 都读它；2026-11-09 起按原仓库
+    // 对齐入库（2b342ee），所以这里的断言方向反过来了。
+    expect(GITIGNORE, 'danmu 载荷应放行（tv_plugins 构建要用）').toMatch(
+      /^!node-payload-danmu\.zip\s*$/m,
+    )
   })
 
   it('文件存在时必须是 dex 形态（体积量级检查）；不存在 = 纯壳', () => {
