@@ -79,9 +79,18 @@ function syncDevDocs() {
   // 目录索引改写成站内索引（原文的链接已被 rewriteLinks 处理过）
   const indexSrc = join(repoDocs, '00-目录索引.md')
   if (existsSync(indexSrc)) {
-    const body = rewriteLinks(readFileSync(indexSrc, 'utf8'), '00-目录索引.md')
+    let body = rewriteLinks(readFileSync(indexSrc, 'utf8'), '00-目录索引.md')
+    // 原文的一级标题是「文档索引（公开壳）」，放进站点改用面向访客的标题
+    // 注意用 [^\r\n]* 而不是 .*：文档是 CRLF，点号不匹配 \r
+    body = body.replace(/^#\s+[^\r\n]*\r?\n/, '')
     const banner = '<!-- 由 site/scripts/sync-docs.mjs 从 docs/00-目录索引.md 生成，请勿直接编辑 -->\n\n'
-    writeFileSync(join(docsOut, 'index.md'), banner + body, 'utf8')
+    const header = `# 开发文档
+
+> 这一组是架构与实现文档，面向二次开发与排障。
+> 只想把客户端装起来用，走 [快速开始](/guide/quick-start)；各端安装见 [指南](/guide/what-is-meow)。
+
+`
+    writeFileSync(join(docsOut, 'index.md'), banner + header + body, 'utf8')
   }
 
   console.log(`[sync] 技术文档 ${DEV_DOCS.length} 篇 → docs/dev/`)
