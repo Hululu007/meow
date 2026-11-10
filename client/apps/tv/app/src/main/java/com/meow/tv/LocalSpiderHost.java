@@ -470,6 +470,7 @@ public final class LocalSpiderHost {
     private static boolean download(String url, File dest) {
         HttpURLConnection c = null;
         try {
+            url = core.ConfigText.idnUrl(url);
             c = (HttpURLConnection) new URL(url).openConnection();
             c.setConnectTimeout(15_000);
             c.setReadTimeout(30_000);

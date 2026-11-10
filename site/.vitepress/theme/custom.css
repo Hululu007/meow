@@ -1,21 +1,43 @@
 /**
  * 品牌配色取自 client/apps/web/src/styles/tokens.css 的 Material 主题：
  * 主色 #03DAC5，浅色模式压暗到 #00897B 保证正文对比度。
+ *
+ * 首页（HomePage.vue 及其子组件）使用 --mw-* 这一组变量；
+ * 文档页继续沿用 VitePress 的 --vp-* 变量，两套在下面的 :root/.dark 里各配一次。
  */
+
 :root {
+  /* ── VitePress 品牌色（浅色） ───────────────── */
   --vp-c-brand-1: #00897b;
   --vp-c-brand-2: #00a896;
   --vp-c-brand-3: #03dac5;
   --vp-c-brand-soft: rgba(3, 218, 197, 0.14);
 
-  --vp-home-hero-name-color: transparent;
-  --vp-home-hero-name-background: linear-gradient(120deg, #03dac5 15%, #00897b 55%, #4c6f96 95%);
-  --vp-home-hero-image-background-image: linear-gradient(
-    -45deg,
-    rgba(3, 218, 197, 0.35),
-    rgba(76, 111, 150, 0.3)
-  );
-  --vp-home-hero-image-filter: blur(56px);
+  --vp-nav-bg-color: rgba(247, 250, 251, 0.78);
+  --vp-sidebar-bg-color: transparent;
+
+  /* ── 首页视觉变量（浅色） ──────────────────── */
+  --mw-bg: #f7fafb;
+  --mw-panel: rgba(8, 30, 34, 0.035);
+  --mw-panel-flat: rgba(255, 255, 255, 0.62);
+  --mw-panel-hover: rgba(8, 30, 34, 0.06);
+  --mw-line: rgba(8, 30, 34, 0.1);
+  --mw-line-strong: rgba(0, 137, 123, 0.42);
+  --mw-text: #0c1a1e;
+  --mw-text-2: #4a5c63;
+  --mw-text-3: #7b8b91;
+  --mw-cyan: #00897b;
+  --mw-violet: #6d4aff;
+  --mw-glow-a: rgba(3, 218, 197, 0.2);
+  --mw-glow-b: rgba(124, 92, 255, 0.14);
+  --mw-grid-line: rgba(8, 30, 34, 0.055);
+  --mw-icon-bg: rgba(0, 137, 123, 0.08);
+  --mw-code-bg: rgba(8, 30, 34, 0.05);
+  --mw-chrome-bg: rgba(8, 30, 34, 0.04);
+  --mw-section-alt-bg: rgba(8, 30, 34, 0.038);
+  --mw-grad-1: #10232a;
+  --mw-grad-2: #00897b;
+  --mw-grad-3: #5b3df5;
 }
 
 .dark {
@@ -23,39 +45,146 @@
   --vp-c-brand-2: #03dac5;
   --vp-c-brand-3: #02b3a2;
   --vp-c-brand-soft: rgba(3, 218, 197, 0.18);
+
+  --vp-nav-bg-color: rgba(5, 8, 12, 0.72);
+  --vp-sidebar-bg-color: transparent;
+
+  --mw-bg: #05080c;
+  --mw-panel: rgba(255, 255, 255, 0.035);
+  --mw-panel-flat: rgba(255, 255, 255, 0.018);
+  --mw-panel-hover: rgba(255, 255, 255, 0.06);
+  --mw-line: rgba(255, 255, 255, 0.09);
+  --mw-line-strong: rgba(3, 218, 197, 0.42);
+  --mw-text: #e9f2f4;
+  --mw-text-2: #98a8b0;
+  --mw-text-3: #6b7c84;
+  --mw-cyan: #03dac5;
+  --mw-violet: #8b6dff;
+  --mw-glow-a: rgba(3, 218, 197, 0.16);
+  --mw-glow-b: rgba(124, 92, 255, 0.15);
+  --mw-grid-line: rgba(255, 255, 255, 0.05);
+  --mw-icon-bg: rgba(3, 218, 197, 0.09);
+  --mw-code-bg: rgba(0, 0, 0, 0.35);
+  --mw-chrome-bg: rgba(255, 255, 255, 0.025);
+  --mw-section-alt-bg: rgba(255, 255, 255, 0.032);
+  --mw-grad-1: #eafffb;
+  --mw-grad-2: #03dac5;
+  --mw-grad-3: #9d8bff;
 }
 
-/* 首页 hero：给标题区加一层很淡的径向光晕，避免整页纯色 */
-.VPHero .container {
-  position: relative;
+/* ── 首页容器：layout: page 默认收窄到文档宽度，这里放开 ───── */
+.VPPage .vp-doc,
+.VPPage .container,
+.VPPage .content {
+  max-width: none !important;
+  padding: 0 !important;
 }
 
-.VPHero .container::before {
-  content: '';
-  position: absolute;
-  inset: -60px 10% auto;
-  height: 320px;
-  background: radial-gradient(ellipse at center, rgba(3, 218, 197, 0.12), transparent 70%);
-  pointer-events: none;
-  z-index: -1;
+.VPPage {
+  padding-bottom: 0 !important;
 }
 
-/* 首页特性卡片：默认主题的边框偏灰，换成主色的低透明度 */
-.VPFeature {
-  border-color: var(--vp-c-divider);
-  transition: border-color 0.25s;
+/* ── 全局观感 ───────────────────────────────────── */
+html {
+  scroll-behavior: smooth;
 }
 
-.VPFeature:hover {
-  border-color: var(--vp-c-brand-1);
+body {
+  background-color: var(--vp-c-bg);
 }
 
-/* 表格在窄屏更容易读 */
+/* 导航栏玻璃效果（VitePress 自己处理滚动后的背景，这里只加模糊） */
+.VPNavBar {
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+}
+
+.VPNavBar .divider {
+  background-color: var(--mw-line);
+}
+
+/* 正文里的表格与代码块圆角化 */
 .vp-doc table {
   display: table;
   width: 100%;
+  border-radius: 10px;
+  overflow: hidden;
 }
 
+.vp-doc tr:nth-child(2n) {
+  background-color: var(--mw-panel);
+}
+
+.vp-doc div[class*='language-'] {
+  border: 1px solid var(--mw-line);
+  border-radius: 12px;
+}
+
+.vp-doc div[class*='language-'] > span.lang {
+  color: var(--mw-text-3);
+}
+
+.vp-doc img {
+  border-radius: 10px;
+}
+
+.vp-doc a {
+  text-underline-offset: 3px;
+}
+
+/* 侧边栏与正文的分隔更轻 */
+.VPSidebar {
+  border-right: 1px solid var(--mw-line);
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+  background-color: var(--mw-line-strong);
+}
+
+::selection {
+  background: rgba(3, 218, 197, 0.26);
+}
+
+/* 文档页内容淡入 */
+.VPDoc .content-container {
+  animation: mw-fade-in 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes mw-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .VPDoc .content-container {
+    animation: none;
+  }
+}
+
+/* 窄屏表格可横向滚动 */
 @media (max-width: 640px) {
   .vp-doc table {
     display: block;

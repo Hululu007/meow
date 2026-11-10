@@ -89,6 +89,8 @@ export default defineConfig({
   srcDir: './docs',
   lastUpdated: true,
   cleanUrls: false,
+  // 影院感：首屏默认深色，用户仍可切回浅色
+  appearance: 'dark',
 
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }],

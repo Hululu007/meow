@@ -119,6 +119,7 @@ public final class LocalSites {
      */
     static ImportResult importFrom(Context ctx, String configJson, String configBase) {
         ImportResult r = new ImportResult();
+        configBase = core.ConfigText.idnUrl(configBase);
         try {
             JSONObject cfg = new JSONObject(configJson);
             // DNS 相关的表（hosts / doh）必须在这里就应用：spider 的第一次

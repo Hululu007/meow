@@ -9105,65 +9105,11 @@ public class ApiServer {
     }
 
     private static boolean looksLikeJson(String s) {
-        if (s == null) return false;
-        String t = s.trim();
-        if (t.startsWith("﻿")) t = t.substring(1).trim();
-        return t.startsWith("{") || t.startsWith("[");
+        return core.ConfigText.looksJson(s);
     }
 
     private static String decodeConfigText(String raw) {
-        if (raw == null) return null;
-        String s = raw.trim();
-        if (s.startsWith("2423")) {
-            try {
-                return cbcConfig(s.replaceAll("\s+", ""));
-            } catch (Throwable ignored) {
-                return raw;
-            }
-        }
-        // Fongmi Decoder 还支持 `xxxxxxxx**base64`；配置站偶尔用这种伪装
-        java.util.regex.Matcher m = java.util.regex.Pattern
-                .compile("^[A-Za-z0-9]{8}\\*\\*(.+)$", java.util.regex.Pattern.DOTALL).matcher(s);
-        if (m.find()) {
-            try {
-                byte[] b = java.util.Base64.getDecoder().decode(m.group(1).replaceAll("\s+", ""));
-                return new String(b, StandardCharsets.UTF_8);
-            } catch (Throwable ignored) {
-            }
-        }
-        return raw;
-    }
-
-    /** 还原 Fongmi Decoder.cbc：Hex 串里带 $#key#$ 与尾部 13 字符 IV。 */
-    private static String cbcConfig(String hex) throws Exception {
-        byte[] head = hex2byte(hex);
-        String decoded = new String(head, StandardCharsets.UTF_8).toLowerCase(java.util.Locale.ROOT);
-        int a = decoded.indexOf("$#");
-        int b = decoded.indexOf("#$");
-        if (a < 0 || b <= a + 2) throw new IllegalArgumentException("2423 markers");
-        String key = pad16(decoded.substring(a + 2, b));
-        String iv = pad16(decoded.substring(decoded.length() - 13));
-        int marker = hex.indexOf("2324");
-        if (marker < 0 || hex.length() <= marker + 4 + 26) throw new IllegalArgumentException("2423 payload");
-        byte[] payload = hex2byte(hex.substring(marker + 4, hex.length() - 26));
-        javax.crypto.Cipher c = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding");
-        c.init(javax.crypto.Cipher.DECRYPT_MODE,
-                new javax.crypto.spec.SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "AES"),
-                new javax.crypto.spec.IvParameterSpec(iv.getBytes(StandardCharsets.UTF_8)));
-        return new String(c.doFinal(payload), StandardCharsets.UTF_8);
-    }
-
-    private static String pad16(String s) {
-        return s + "0000000000000000".substring(s.length());
-    }
-
-    private static byte[] hex2byte(String s) {
-        if (s.length() % 2 != 0) throw new IllegalArgumentException("odd hex");
-        byte[] out = new byte[s.length() / 2];
-        for (int i = 0; i < out.length; i++) {
-            out[i] = (byte) Integer.parseInt(s.substring(i * 2, i * 2 + 2), 16);
-        }
-        return out;
+        return core.ConfigText.decode(raw);
     }
 
     private static String fetchTextAccel(String url, int timeout, List<String> proxies) {
@@ -9864,37 +9810,7 @@ public class ApiServer {
      * 否则「肥猫/饭太硬」这类中文域名的配置永远报 502 fetch failed。
      */
     private static String idnUrl(String url) {
-        if (url == null || url.isEmpty()) return url;
-        try {
-            java.net.URI u = new java.net.URI(url);
-            String rawAuth = u.getRawAuthority();
-            if (rawAuth == null) return url;
-            String userInfo = "";
-            String hostPort = rawAuth;
-            int at = rawAuth.lastIndexOf('@');
-            if (at >= 0) {
-                userInfo = rawAuth.substring(0, at + 1);
-                hostPort = rawAuth.substring(at + 1);
-            }
-            if (hostPort.startsWith("[")) return url;   // IPv6，无需 IDN
-            String host = hostPort;
-            String port = "";
-            int colon = hostPort.lastIndexOf(':');
-            if (colon > 0) {
-                host = hostPort.substring(0, colon);
-                port = hostPort.substring(colon);
-            }
-            String ascii = java.net.IDN.toASCII(host);
-            if (ascii.equalsIgnoreCase(host)) return url;
-            StringBuilder sb = new StringBuilder();
-            sb.append(u.getScheme()).append("://").append(userInfo).append(ascii).append(port);
-            if (u.getRawPath() != null) sb.append(u.getRawPath());
-            if (u.getRawQuery() != null) sb.append('?').append(u.getRawQuery());
-            if (u.getRawFragment() != null) sb.append('#').append(u.getRawFragment());
-            return sb.toString();
-        } catch (Throwable t) {
-            return url;
-        }
+        return core.ConfigText.idnUrl(url);
     }
 
     private static HttpURLConnection openStream(String url, String referer, String ua)

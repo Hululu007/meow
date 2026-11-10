@@ -1560,12 +1560,13 @@ public class TvBridge {
     public String importLocalConfig(String configUrl) {
         try {
             LocalSites.load(activity);
-            String json = fetch(configUrl);
+            String normalized = core.ConfigText.idnUrl(configUrl);
+            String json = fetch(normalized);
             if (json == null || json.isEmpty()) {
                 return "{\"ok\":false,\"message\":\"配置下载失败\"}";
             }
             LocalSites.ImportResult r =
-                    LocalSites.importFrom(activity, json, configUrl);
+                    LocalSites.importFrom(activity, json, normalized);
             /*
              * 导入成功 = 站点表/ jar 地址都可能变了 → 旧 DexClassLoader 与旧
              * Spider 实例必须作废，否则"换了配置还跑旧代码"，而且每换一次
@@ -1581,7 +1582,7 @@ public class TvBridge {
                  * 网关此刻可能还没起（前端是导入之后才 startLocalGateway），
                  * 所以这里直接写文件，不依赖网关进程。
                  */
-                LocalSites.syncGatewayConfig(activity, json, configUrl);
+                LocalSites.syncGatewayConfig(activity, json, normalized);
                 LocalSpiderHost.clear(activity);
                 GatewayServer.restart(activity);
             }
@@ -1594,12 +1595,28 @@ public class TvBridge {
     }
 
     private String fetch(String url) {
+        url = core.ConfigText.idnUrl(url);
+        String last = null;
+        /*
+         * 配置站会按 UA 分流：okhttp 给 2423 加密配置，浏览器 UA 给 HTML 首页。
+         * 先按 APK 客户端 UA 请求并解码；不是 JSON 再回退浏览器 UA。
+         */
+        for (String ua : new String[]{"okhttp/3.12.0", "Mozilla/5.0"}) {
+            String decoded = core.ConfigText.decode(fetchOnce(url, ua));
+            if (core.ConfigText.looksJson(decoded)) return decoded;
+            if (decoded != null && !decoded.trim().isEmpty()) last = decoded;
+        }
+        return last;
+    }
+
+    private String fetchOnce(String url, String ua) {
         java.net.HttpURLConnection c = null;
         try {
             c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
             c.setConnectTimeout(12_000);
             c.setReadTimeout(20_000);
-            c.setRequestProperty("User-Agent", "meow-tv");
+            c.setRequestProperty("User-Agent", ua);
+            c.setRequestProperty("Accept", "application/json, text/plain, */*");
             if (c.getResponseCode() != 200) return null;
             java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
             try (java.io.InputStream in = c.getInputStream()) {
