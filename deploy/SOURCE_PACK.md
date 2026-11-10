@@ -120,6 +120,19 @@ sha256sum config.jvm.json config.tv.json spider.jar spider-dex.jar > SHA256SUMS.
 
 统一入口会多下载一份 dex（约 0.8MB）；要最小下载就按端分开。
 
+### CatVod / Fongmi 兼容性
+
+- **核心字段符合** CatVod/Fongmi 结构：`spider`、`sites`（`key/name/api/type/ext/jar/searchable`）、
+  `lives`、`parses`、`headers`、`hosts`、`ads`、`rules`、`doh`、`wallpaper`、`logo`。
+- **`config.all.json` 只给猫窝自己的 PC/Docker/TV**：顶层 `spider` 是 class jar，
+  Fongmi/TVBox 等 Android 客户端会直接拿它做 `DexClassLoader`，没有 `classes.dex` 会加载失败，
+  还没轮到站点级 dex jar。
+- 第三方 Android/CatVod 客户端请用 `config.tv.json`（顶层就是 dex jar）；
+  JVM 类 CatVod 客户端请用 `config.jvm.json`（顶层是 class jar）。
+- 我们的 `proxy` 是字符串数组（猫窝自定义），Fongmi 的 `proxy` 期望
+  `{name,hosts,urls}` 对象数组，会被忽略；`parses` 里的 `Demo`/`Web` 也是猫窝内置名，
+  不是标准解析 URL。要给第三方客户端用，建议删掉/改写这两项。
+
 - 老数据迁移：导入时勾选「用这份配置的顶层 spider 覆盖本地」/ 请求里带 `replaceSpider=true`，
   否则旧的失效 `spider` 会保留，jar 站仍 `ClassNotFoundException`。
 - TV 只导入 `api` 以 `csp_` 开头且带 `jar` 的站点。
