@@ -9088,9 +9088,87 @@ public class ApiServer {
      * 配置导入的抓取：GitHub 公开 host 先直连，失败按 proxies 依次换。
      * 仍然走 fetchText/openStream（强制 DoH），不另造一套 HTTP 客户端。
      */
+    /**
+     * 配置抓取：先按 OkHttp/APK 客户端 UA 请求，再解 2423/图片伪装。
+     *
+     * <p>肥猫这类接口按 UA 分流：浏览器 UA 返回 HTML 首页，OkHttp UA 才返回
+     * `2423...` 的 Hex+AES 配置（Fongmi 的 Decoder 就是这么做的）。只带
+     * `Mozilla/5.0` 会永远导入失败，且报错看起来像“网页不是 JSON”。
+     */
+    private static String fetchConfigText(String url, int timeout) {
+        String t = decodeConfigText(fetchText(url, timeout, null, "okhttp/3.12.0"));
+        if (looksLikeJson(t)) return t;
+        // 少数站反过来：APK UA 被挡，浏览器 UA 才给 JSON/普通配置。各试一次。
+        String b = decodeConfigText(fetchText(url, timeout, null, "Mozilla/5.0"));
+        if (looksLikeJson(b)) return b;
+        return t != null && !t.trim().isEmpty() ? t : b;
+    }
+
+    private static boolean looksLikeJson(String s) {
+        if (s == null) return false;
+        String t = s.trim();
+        if (t.startsWith("﻿")) t = t.substring(1).trim();
+        return t.startsWith("{") || t.startsWith("[");
+    }
+
+    private static String decodeConfigText(String raw) {
+        if (raw == null) return null;
+        String s = raw.trim();
+        if (s.startsWith("2423")) {
+            try {
+                return cbcConfig(s.replaceAll("\s+", ""));
+            } catch (Throwable ignored) {
+                return raw;
+            }
+        }
+        // Fongmi Decoder 还支持 `xxxxxxxx**base64`；配置站偶尔用这种伪装
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("^[A-Za-z0-9]{8}\\*\\*(.+)$", java.util.regex.Pattern.DOTALL).matcher(s);
+        if (m.find()) {
+            try {
+                byte[] b = java.util.Base64.getDecoder().decode(m.group(1).replaceAll("\s+", ""));
+                return new String(b, StandardCharsets.UTF_8);
+            } catch (Throwable ignored) {
+            }
+        }
+        return raw;
+    }
+
+    /** 还原 Fongmi Decoder.cbc：Hex 串里带 $#key#$ 与尾部 13 字符 IV。 */
+    private static String cbcConfig(String hex) throws Exception {
+        byte[] head = hex2byte(hex);
+        String decoded = new String(head, StandardCharsets.UTF_8).toLowerCase(java.util.Locale.ROOT);
+        int a = decoded.indexOf("$#");
+        int b = decoded.indexOf("#$");
+        if (a < 0 || b <= a + 2) throw new IllegalArgumentException("2423 markers");
+        String key = pad16(decoded.substring(a + 2, b));
+        String iv = pad16(decoded.substring(decoded.length() - 13));
+        int marker = hex.indexOf("2324");
+        if (marker < 0 || hex.length() <= marker + 4 + 26) throw new IllegalArgumentException("2423 payload");
+        byte[] payload = hex2byte(hex.substring(marker + 4, hex.length() - 26));
+        javax.crypto.Cipher c = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding");
+        c.init(javax.crypto.Cipher.DECRYPT_MODE,
+                new javax.crypto.spec.SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "AES"),
+                new javax.crypto.spec.IvParameterSpec(iv.getBytes(StandardCharsets.UTF_8)));
+        return new String(c.doFinal(payload), StandardCharsets.UTF_8);
+    }
+
+    private static String pad16(String s) {
+        return s + "0000000000000000".substring(s.length());
+    }
+
+    private static byte[] hex2byte(String s) {
+        if (s.length() % 2 != 0) throw new IllegalArgumentException("odd hex");
+        byte[] out = new byte[s.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = (byte) Integer.parseInt(s.substring(i * 2, i * 2 + 2), 16);
+        }
+        return out;
+    }
+
     private static String fetchTextAccel(String url, int timeout, List<String> proxies) {
         if (proxies == null || proxies.isEmpty() || !isConfigAccelHost(url)) {
-            return fetchText(url, timeout);
+            return fetchConfigText(url, timeout);
         }
         java.util.LinkedHashSet<String> cands = new java.util.LinkedHashSet<>();
         cands.add(url);
@@ -9100,7 +9178,7 @@ public class ApiServer {
         }
         String last = "";
         for (String u : cands) {
-            String t = fetchText(u, timeout);
+            String t = fetchConfigText(u, timeout);
             if (t != null && !t.trim().isEmpty()) {
                 if (!u.equals(url)) System.out.println("[config] accel hit: " + u);
                 return t;
