@@ -8658,6 +8658,7 @@ public class ApiServer {
     private static String fetchTextPlain(String url, int timeout, String referer) {
         HttpURLConnection c = null;
         try {
+            url = idnUrl(url);
             c = (HttpURLConnection) new java.net.URL(url).openConnection();
             c.setConnectTimeout(timeout);
             c.setReadTimeout(timeout);
@@ -9775,6 +9776,49 @@ public class ApiServer {
      * 视频 CDN 的实际出口 IP 与源站签发时的客户端 IP 不同，会被
      * "the source ip is forbidden" 拦掉。
      */
+    /**
+     * 把 URL 里的 Unicode 域名转成 punycode。
+     *
+     * <p>Java 的 {@code URL}/{@code URI} 对中文域名不会自动做 IDN 转换：
+     * {@code new URL("http://肥猫.net").openConnection()} 实测直接
+     * {@code SocketException: Unexpected end of file from server}，而
+     * {@code http://xn--z7x900a.net} 正常 200。所有抓取入口统一在这里归一化，
+     * 否则「肥猫/饭太硬」这类中文域名的配置永远报 502 fetch failed。
+     */
+    private static String idnUrl(String url) {
+        if (url == null || url.isEmpty()) return url;
+        try {
+            java.net.URI u = new java.net.URI(url);
+            String rawAuth = u.getRawAuthority();
+            if (rawAuth == null) return url;
+            String userInfo = "";
+            String hostPort = rawAuth;
+            int at = rawAuth.lastIndexOf('@');
+            if (at >= 0) {
+                userInfo = rawAuth.substring(0, at + 1);
+                hostPort = rawAuth.substring(at + 1);
+            }
+            if (hostPort.startsWith("[")) return url;   // IPv6，无需 IDN
+            String host = hostPort;
+            String port = "";
+            int colon = hostPort.lastIndexOf(':');
+            if (colon > 0) {
+                host = hostPort.substring(0, colon);
+                port = hostPort.substring(colon);
+            }
+            String ascii = java.net.IDN.toASCII(host);
+            if (ascii.equalsIgnoreCase(host)) return url;
+            StringBuilder sb = new StringBuilder();
+            sb.append(u.getScheme()).append("://").append(userInfo).append(ascii).append(port);
+            if (u.getRawPath() != null) sb.append(u.getRawPath());
+            if (u.getRawQuery() != null) sb.append('?').append(u.getRawQuery());
+            if (u.getRawFragment() != null) sb.append('#').append(u.getRawFragment());
+            return sb.toString();
+        } catch (Throwable t) {
+            return url;
+        }
+    }
+
     private static HttpURLConnection openStream(String url, String referer, String ua)
             throws IOException {
         return openStream(url, referer, ua, loadPolicy().optBoolean("safeDns", false));
@@ -9783,6 +9827,7 @@ public class ApiServer {
     /** forceDoh=true 时无视 safeDns 开关强制走 DoH（弹幕抓取用） */
     private static HttpURLConnection openStream(String url, String referer, String ua,
                                                 boolean forceDoh) throws IOException {
+        url = idnUrl(url);
         JSONObject policy = loadPolicy();
         boolean safeDns = forceDoh || policy.optBoolean("safeDns", false);
         // provider 可以是内置名（ali/tencent/...），也可以是配置 doh 表里给的完整 URL。
@@ -12260,6 +12305,7 @@ public class ApiServer {
             return;
         }
         url = url.trim();
+        url = idnUrl(url);
         if (url.isEmpty()) {
             sendJson(ex, 400, "{\"code\":-1,\"msg\":\"missing url\"}");
             return;
