@@ -1,7 +1,6 @@
 package core;
 
 import java.net.IDN;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Locale;
@@ -26,33 +25,55 @@ public final class ConfigText {
     /** Unicode 域名 → punycode；Java 的 URL 不会自动做 IDN。 */
     public static String idnUrl(String url) {
         if (url == null || url.isEmpty()) return url;
+        /*
+         * 不用 java.net.URI：Android 的 libcore 与桌面 JDK 对 Unicode
+         * authority 的接受度不完全一致；这里只解析 URI 里最小的一段
+         * ——scheme://authority/path?query#fragment——既够处理配置地址，
+         * 也避免重建 URL 时把 path/query 重新编码。
+         */
+        int scheme = url.indexOf("://");
+        if (scheme <= 0) return url;
+        int authStart = scheme + 3;
+        int authEnd = url.length();
+        for (int i = authStart; i < url.length(); i++) {
+            char c = url.charAt(i);
+            if (c == '/' || c == '?' || c == '#') {
+                authEnd = i;
+                break;
+            }
+        }
+        if (authEnd <= authStart) return url;
+
+        String auth = url.substring(authStart, authEnd);
+        String userInfo = "";
+        int at = auth.lastIndexOf('@');
+        if (at >= 0) {
+            userInfo = auth.substring(0, at + 1);
+            auth = auth.substring(at + 1);
+        }
+        if (auth.startsWith("[")) return url; // IPv6
+
+        String host = auth;
+        String port = "";
+        int colon = auth.lastIndexOf(':');
+        if (colon > 0) {
+            boolean digits = true;
+            for (int i = colon + 1; i < auth.length(); i++) {
+                if (!Character.isDigit(auth.charAt(i))) {
+                    digits = false;
+                    break;
+                }
+            }
+            if (digits) {
+                host = auth.substring(0, colon);
+                port = auth.substring(colon);
+            }
+        }
+        if (host.isEmpty()) return url;
         try {
-            URI u = new URI(url);
-            String rawAuth = u.getRawAuthority();
-            if (rawAuth == null) return url;
-            String userInfo = "";
-            String hostPort = rawAuth;
-            int at = rawAuth.lastIndexOf('@');
-            if (at >= 0) {
-                userInfo = rawAuth.substring(0, at + 1);
-                hostPort = rawAuth.substring(at + 1);
-            }
-            if (hostPort.startsWith("[")) return url; // IPv6
-            String host = hostPort;
-            String port = "";
-            int colon = hostPort.lastIndexOf(':');
-            if (colon > 0) {
-                host = hostPort.substring(0, colon);
-                port = hostPort.substring(colon);
-            }
             String ascii = IDN.toASCII(host);
             if (ascii.equalsIgnoreCase(host)) return url;
-            StringBuilder sb = new StringBuilder();
-            sb.append(u.getScheme()).append("://").append(userInfo).append(ascii).append(port);
-            if (u.getRawPath() != null) sb.append(u.getRawPath());
-            if (u.getRawQuery() != null) sb.append('?').append(u.getRawQuery());
-            if (u.getRawFragment() != null) sb.append('#').append(u.getRawFragment());
-            return sb.toString();
+            return url.substring(0, authStart) + userInfo + ascii + port + url.substring(authEnd);
         } catch (Throwable t) {
             return url;
         }
@@ -72,7 +93,7 @@ public final class ConfigText {
         Matcher m = BASE64_PREFIX.matcher(s);
         if (m.find()) {
             try {
-                byte[] b = Base64.getDecoder().decode(m.group(1).replaceAll("\s+", ""));
+                byte[] b = Base64.getDecoder().decode(m.group(1).replaceAll("\\s+", ""));
                 return new String(b, StandardCharsets.UTF_8);
             } catch (Throwable ignored) {
             }

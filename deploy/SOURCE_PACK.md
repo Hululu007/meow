@@ -122,6 +122,11 @@ sha256sum config.jvm.json config.tv.json spider.jar spider-dex.jar > SHA256SUMS.
 
 统一入口会多下载一份 dex（约 0.8MB）；要最小下载就按端分开。
 
+TV 本机导入（设置 → 本机执行 → 导入配置）与 PC 后端共用
+`server/host/src/shared/core/ConfigText.java`：中文域名先转 punycode，
+再按 `okhttp/3.12.0` → `Mozilla/5.0` 两个 UA 依次请求并解码
+（Fongmi 的 `2423` Hex+AES、8 位前缀 + `**` base64 都支持）。
+
 ### CatVod / Fongmi 兼容性
 
 - **核心字段符合** CatVod/Fongmi 结构：`spider`、`sites`（`key/name/api/type/ext/jar/searchable`）、
