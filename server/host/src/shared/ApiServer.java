@@ -516,7 +516,7 @@ public class ApiServer {
      */
     private static final int PARSE_TIMEOUT_MS = 15_000;
     /** 后端版本；健康检查与前端能力协商用。 */
-    public static final String VERSION = "1.1.5";
+    public static final String VERSION = "1.1.6";
     /** 进程启动时间（毫秒），用于 uptime。 */
     private static volatile long STARTED_AT = 0;
 
@@ -12382,7 +12382,8 @@ public class ApiServer {
                  * 静默丢站比慢一点更难查。
                  */
                 boolean externalJar = !s.optString("jar", "").isEmpty()
-                        || !doc.optString("spider", "").isEmpty();
+                        || !doc.optString("spider", "").isEmpty()
+                        || !doc.optString("spiderJvm", "").isEmpty();
                 if (!externalJar && !spiderClassPresent(cls, jarClasses)) {
                     reason = "缺少 spider 类 " + cls;
                 }
@@ -12477,6 +12478,19 @@ public class ApiServer {
         if (!importedSpider.isEmpty()
                 && (replaceSpider || saved.optString("spider", "").isEmpty())) {
             saved.put("spider", importedSpider);
+        }
+        /*
+         * spiderJvm 是猫窝自定义字段（Fongmi 忽略）：统一配置里顶层 spider 是
+         * dex jar，JVM 用 spiderJvm 指向 class jar。replaceSpider 时如果新配置
+         * 没有这个字段，必须清掉本地旧值，否则旧的 class jar 会继续覆盖新 spider。
+         */
+        String importedSpiderJvm = doc.optString("spiderJvm", "");
+        if (replaceSpider) {
+            if (importedSpiderJvm.isEmpty()) saved.remove("spiderJvm");
+            else saved.put("spiderJvm", importedSpiderJvm);
+        } else if (!importedSpiderJvm.isEmpty()
+                && saved.optString("spiderJvm", "").isEmpty()) {
+            saved.put("spiderJvm", importedSpiderJvm);
         }
         /*
          * ★ 本地还没有的非 sites 表，用**本次导入的那份配置**补齐。

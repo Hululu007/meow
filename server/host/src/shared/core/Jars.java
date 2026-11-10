@@ -135,7 +135,15 @@ public final class Jars {
             String txt = DataPaths.read("config.sites.json");
             if (txt == null || txt.trim().isEmpty()) return out;
             JSONObject cfg = new JSONObject(txt);
-            addSpec(out, cfg.optString("spider", ""));
+            /*
+             * 自定义字段 spiderJvm：统一配置里顶层 spider 必须是 **dex jar**（Fongmi/
+             * Android 会用 DexClassLoader 加载它），JVM 不能读 dex。JVM 侧优先读
+             * spiderJvm 指向的 class jar；没有这个字段才回退到 spider。
+             * Fongmi 会忽略未知字段，因此同一份 config 可以同时给 Android 和 JVM。
+             */
+            String jvmSpider = cfg.optString("spiderJvm", "").trim();
+            if (jvmSpider.isEmpty()) jvmSpider = cfg.optString("spider", "");
+            addSpec(out, jvmSpider);
             JSONArray sites = cfg.optJSONArray("sites");
             if (sites != null) {
                 for (int i = 0; i < sites.length(); i++) {

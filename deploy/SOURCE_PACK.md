@@ -9,7 +9,7 @@
 
 ```text
 sources/
-├── config.all.json     # 统一入口：顶层 class jar + 每个 csp_ 站点 dex jar
+├── config.all.json     # 统一入口：顶层 dex + spiderJvm class，站点不写 jar
 ├── config.jvm.json     # 仅 JVM / PC / Docker：顶层 spider 指向 class jar
 ├── config.tv.json      # 仅 TV：顶层 spider + 每个 csp_ 站点 jar 指向 dex jar
 ├── spider.jar          # class 形态（JVM）
@@ -18,9 +18,11 @@ sources/
 ```
 
 - class 与 dex **不能混用**：JVM 读不了 dex，Android 读不了纯 class。
-- **`config.all.json` 是唯一可统一给三端的 URL**：顶层 `spider` 指向 class jar（JVM 用），
-  每个 `csp_` 站点 `jar` 指向 dex jar（TV 用）。JVM 会顺带下载 dex（约 0.8MB），
-  但类查找先命中 class jar，不影响功能。
+- **`config.all.json` 是统一入口**：
+  - 顶层 `spider` 指向 **dex jar**（Fongmi/Android/TV 直接加载）；
+  - 自定义 `spiderJvm` 指向 **class jar**（猫窝 JVM/PC/Docker 优先读它）；
+  - 站点不写 `jar`，Fongmi 自动用顶层 dex，猫窝 TV 也回退顶层 dex。
+  - Fongmi 会忽略未知字段 `spiderJvm`，因此同一份配置可同时给 Android 和猫窝三端。
 - `config.tv.json` 里所有 `api` 以 `csp_` 开头的站点都要带 `jar`，否则 TV 会跳过该站。
 - 配置里的 `spider` / `jar` 必须是**客户端能访问到的绝对地址**（不要写 `127.0.0.1`，除非客户端就在同一台机器）。
 
@@ -95,8 +97,8 @@ d8 --min-api 21 --output dexout spider.jar
 
 以现有 `config.sites.json` 为底：
 
-- `config.all.json`：`spider = http://<HOST>:18080/spider.jar`，并给每个
-  `csp_` 站点加 `"jar": "http://<HOST>:18080/spider-dex.jar"`；删除 `danmaku` 的
+- `config.all.json`：`spider = http://<HOST>:18080/spider-dex.jar`，
+  `spiderJvm = http://<HOST>:18080/spider.jar`；站点不写 `jar`；删除 `danmaku` 的
   `127.0.0.1` 模板。
 - `config.jvm.json`：`spider = http://<HOST>:18080/spider.jar`；删除 `danmaku` 里的
   `127.0.0.1` 模板（远端客户端用不了）。
@@ -124,11 +126,11 @@ sha256sum config.jvm.json config.tv.json spider.jar spider-dex.jar > SHA256SUMS.
 
 - **核心字段符合** CatVod/Fongmi 结构：`spider`、`sites`（`key/name/api/type/ext/jar/searchable`）、
   `lives`、`parses`、`headers`、`hosts`、`ads`、`rules`、`doh`、`wallpaper`、`logo`。
-- **`config.all.json` 只给猫窝自己的 PC/Docker/TV**：顶层 `spider` 是 class jar，
-  Fongmi/TVBox 等 Android 客户端会直接拿它做 `DexClassLoader`，没有 `classes.dex` 会加载失败，
-  还没轮到站点级 dex jar。
-- 第三方 Android/CatVod 客户端请用 `config.tv.json`（顶层就是 dex jar）；
-  JVM 类 CatVod 客户端请用 `config.jvm.json`（顶层是 class jar）。
+- **`config.all.json` 可以给 Fongmi/TVBox**：顶层 `spider` 是 dex jar，站点无 `jar`
+  时 Fongmi 会自动用顶层；`spiderJvm` 是未知字段会被忽略。
+- 猫窝 JVM 侧优先读 `spiderJvm` 的 class jar，不会下载/挂载 dex。
+- 如果想完全避免未知字段，第三方客户端仍可用 `config.tv.json`（纯 dex）；
+  JVM 类 CatVod 客户端用 `config.jvm.json`（纯 class）。
 - 我们的 `proxy` 是字符串数组（猫窝自定义），Fongmi 的 `proxy` 期望
   `{name,hosts,urls}` 对象数组，会被忽略；`parses` 里的 `Demo`/`Web` 也是猫窝内置名，
   不是标准解析 URL。要给第三方客户端用，建议删掉/改写这两项。
