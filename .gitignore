@@ -3,6 +3,8 @@ node_modules/
 target/
 dist/
 build/
+# dex2jar 构建时按需下载，不入库（fetch-dex2jar.ps1/.sh）
+server/tools/
 *.o
 *.a
 

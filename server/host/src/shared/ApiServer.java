@@ -12526,6 +12526,10 @@ public class ApiServer {
             return;
         }
 
+        // JVM 导入期预处理：只有 classes.dex 的 jar 先转成 class jar，
+        // 再写回 spiderJvm / 站点 jar；Android 端跳过。
+        JSONObject dex2jvm = core.Dex2Jvm.rewrite(doc, configBase);
+
         java.util.Set<String> jarClasses = jarSpiderClasses();
         invalidateConfigTables();
         JSONArray kept = new JSONArray();
@@ -12643,6 +12647,7 @@ public class ApiServer {
                     .put("builtinSites", implementedBaselineCount())
                     .put("skipped", skipped)
                     .put("depot", depotOut)
+                    .put("dex2jvm", dex2jvm)
                     .put("diff", diff);
             // 存下原文，确认导入时复用（见 importPreviewSlot 的注释）
             importPreviewSlot = new String[]{url, raw, String.valueOf(System.currentTimeMillis())};
@@ -12754,6 +12759,7 @@ public class ApiServer {
                 .put("totalSites", siteCount())
                 .put("skipped", skipped)
                 .put("depot", depotOut)
+                .put("dex2jvm", dex2jvm)
                 // 导入完成后也回一份 diff：用户要知道"这次到底加了什么、丢了什么"，
                 // 而不是只看到一个站点总数
                 .put("diff", diff)

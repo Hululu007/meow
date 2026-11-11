@@ -17,7 +17,8 @@
 #   powershell -ExecutionPolicy Bypass -File build-plugin.ps1 -SkipJre   # 只做 jar
 
 param(
-    [switch]$SkipJre
+    [switch]$SkipJre,
+    [switch]$SkipDex2Jar
 )
 
 $ErrorActionPreference = 'Stop'
@@ -179,6 +180,25 @@ if (Test-Path (Join-Path $distSrc "spider.jar")) {
     Write-Host '  (纯壳插件：不含 spider.jar，用户需导入源包)' -ForegroundColor Yellow
 }
 Copy-Item "$root\plugin-manifests\apiserver.manifest.json" "$out\manifest.json" -Force
+
+# dex2jar：JVM 导入 dex 源时在插件内完成转换，不依赖宿主安装 Java/工具。
+# 运行期 Dex2Jvm 会按 cwd 找 tools/dex2jar，不需要写 manifest env。
+if (-not $SkipDex2Jar) {
+    $repoRoot = Split-Path $root -Parent
+    $fetch = Join-Path $repoRoot 'deploy\scripts\fetch-dex2jar.ps1'
+    $dexSrc = Join-Path $root 'tools\dex2jar'
+    if (-not (Test-Path (Join-Path $dexSrc 'lib'))) {
+        if (-not (Test-Path $fetch)) { throw "找不到 dex2jar 获取脚本：$fetch" }
+        & $fetch -Dest $dexSrc
+    }
+    New-Item -ItemType Directory -Path "$out\tools" -Force | Out-Null
+    if (Test-Path "$out\tools\dex2jar") { Remove-Item "$out\tools\dex2jar" -Recurse -Force }
+    Copy-Item $dexSrc "$out\tools\dex2jar" -Recurse -Force
+    $dexMb = [math]::Round(((Get-ChildItem "$out\tools\dex2jar" -Recurse | Measure-Object Length -Sum).Sum) / 1MB, 1)
+    Write-Host "  tools/dex2jar: ${dexMb}MB" -ForegroundColor Green
+} else {
+    Write-Host '  (跳过 dex2jar：插件不支持 dex 源转换)' -ForegroundColor Yellow
+}
 
 # 校验：有 jar 就报大小；没有也不阻断（纯壳插件是合法产物）。
 $spiderJar = Join-Path $out 'dist\spider.jar'
