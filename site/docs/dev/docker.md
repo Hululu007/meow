@@ -118,7 +118,7 @@ drpy 的 tag 来源不同——`docker-compose.yml` 用 `${DRPY_VERSION:-0.9.23}
 
 默认镜像 `chrplus/meow-{web,apiserver}:${MEOW_VERSION}`（amd64 + arm64 双架构）。
 `MEOW_VERSION` 的 compose 兜底值必须与 `client/package.json` 及 `ApiServer.VERSION`
-同步（写作本文时 `1.1.7`）；不一致的表现是“代码是新的、跑起来是旧行为”。兜底值
+同步；不一致的表现是“代码是新的、跑起来是旧行为”。兜底值
 散落在**每个 compose 文件**里，改版本时逐一检查——只改主文件、漏掉
 `docker-compose.with-sources.yml` 的情况出现过。
 
@@ -201,8 +201,8 @@ compose 不做 manifest list，要发布多架构镜像用 `build-push-docker.ps
 
 | 变量 | 默认 | 组 | 什么时候改 |
 |---|---|---|---|
-| `MEOW_VERSION` | `1.1.7`（compose 兜底，随发版手动同步） | A | 即 `meow/{web,apiserver}` 的 tag |
-| `DRPY_VERSION` | `0.9.23` | A | drpy tag，**独立版本线** |
+| `MEOW_VERSION` | compose 兜底值，随发版手动同步（见 §3.1） | A | 即 `meow/{web,apiserver}` 的 tag |
+| `DRPY_VERSION` | compose 兜底值 | A | drpy tag，**独立版本线** |
 | `WEB_IMAGE` / `APISERVER_IMAGE` | `chrplus/meow-*:${MEOW_VERSION}` | A | 换自己的仓库 |
 | `DRPY_IMAGE` | `chrplus/meow-drpy:${DRPY_VERSION}` | A | 跨两个 compose 共用时钉死 |
 | `DANMU_API_IMAGE` | `logvar/danmu-api:1.21.6` | A | 升级弹幕服务 |
