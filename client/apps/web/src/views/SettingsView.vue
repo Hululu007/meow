@@ -357,7 +357,7 @@ const SCAN_PUSH_ITEMS: Array<{ group: string; items: string[] }> = [
     ],
   },
   { group: 'AI', items: ['启用', '接口地址', '模型', 'API Key', '上下文轮数', '超时', '最大输出'] },
-  { group: '维护', items: ['安全 DNS', 'DNS 服务商'] },
+  { group: '网络与加速', items: ['安全 DNS', 'DNS 服务商'] },
   { group: '应用更新', items: ['更新源', '备用源', '访问令牌', '自动检查壳', '自动检查模块', '自动检查插件', '自动检查 fnOS'] },
 ]
 
@@ -3761,6 +3761,7 @@ const NAV_ITEMS = [
   { id: 'conn', label: '连接' },
   { id: 'plugin', label: '本机插件', desktopOnly: true },
   { id: 'localexec', label: '本机执行', tvOnly: true },
+  { id: 'runtime', label: '运行时模块', tvOnly: true },
   // 远程调试 PC 也有（Tauri 内置 MCP），只有 Web 用不上 ——
   // 浏览器沙箱里既起不了 TCP 监听，也没有可被控制的应用窗口
   { id: 'tvdebug', label: '远程调试', nativeOnly: true },
@@ -3774,6 +3775,8 @@ const NAV_ITEMS = [
   { id: 'storage', label: '存储' },
   { id: 'sync', label: 'WebDAV' },
   { id: 'ai', label: 'AI' },
+  { id: 'net', label: '网络与加速' },
+  { id: 'update', label: '更新' },
   { id: 'maint', label: '维护' },
 ] as const
 
@@ -4502,7 +4505,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <p class="mb-1 text-[11px] text-ink-3">
-          加速与访问令牌同「维护 → GitHub 加速」，私有仓只填一次。
+          加速与访问令牌同「网络与加速 → GitHub 加速」，私有仓只填一次。
         </p>
         <label class="mb-1.5 flex items-center gap-1.5 text-[11px] text-ink-2">
           <input
@@ -4861,12 +4864,14 @@ onBeforeUnmount(() => {
         肥猫 <code class="rounded bg-field px-1">http://xn--z7x900a.net/tv</code>。
         jar 地址<b>以配置里写的为准</b>——填肥猫配置就下肥猫的 jar，填后端配置就下后端的。
       </p>
-    <!-- ══════════ 运行时模块（仅 TV）══════════
-         放在「本机执行」区末尾：先讲网关与配置，再讲给网关供弹幕的
-         node 模块；它仍是本机执行的一部分，不另开导航项。 -->
-    <div class="mt-4 border-t border-line pt-3" data-runtime-module>
-      <div class="flex items-center justify-between">
-        <h3 class="set-title">运行时模块</h3>
+    </section>
+
+    <!-- ══════════ 运行时模块（仅 TV）══════════ -->
+    <section v-if="tvMode" data-sec="runtime" data-runtime-module class="set-card shrink-0">
+      <div class="set-head">
+        <h2 class="set-title">运行时模块</h2>
+        <span class="set-hint">内置 node 运行时 · 供本机网关弹幕聚合</span>
+        <span class="flex-1" />
         <span class="text-[11px] text-ink-3">
           {{
             modState.installed
@@ -4879,6 +4884,7 @@ onBeforeUnmount(() => {
           }}
         </span>
       </div>
+
       <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
         内置 node 运行时（danmu_api 弹幕聚合）。需要单独安装一个约 60MB 的模块包，
         按 CPU 架构分发 —— 所以不在安装包里，避免给所有人加 60MB。
@@ -4933,7 +4939,6 @@ onBeforeUnmount(() => {
       <p class="mt-2 text-[11px] leading-relaxed text-ink-3">
         关掉后弹幕会回落到内置聚合站（境外，多数网络下拿不到结果）；播放不受影响。
       </p>
-    </div>
 
     </section>
     <!-- ══════════ 远程调试（TV / PC）══════════ -->
@@ -5076,7 +5081,7 @@ onBeforeUnmount(() => {
       </div>
 
       <p class="mt-1 text-[11px] text-ink-3">
-        GitHub 地址会自动尝试「维护 → GitHub 加速」里的代理；其它站点直连。
+        GitHub 地址会自动尝试「网络与加速 → GitHub 加速」里的代理；其它站点直连。
       </p>
 
       <!-- 导入方式：默认追加。替换是破坏性动作，必须用户自己选 -->
@@ -6641,15 +6646,11 @@ onBeforeUnmount(() => {
       </p>
     </section>
 
-    <!-- ══════════ 维护 ══════════
-      ★ 放"出问题了才来"的东西：网络解析、应用更新、备份/日志/重置。
-      DNS 也在这里 —— 它决定"域名解析成哪个 IP"，属于网络层而不是源配置；
-      源能不能用是另一回事，混在「搜索与源」里会让人以为换个 DNS 就能修好失效源。
-    -->
-    <section data-sec="maint" class="set-card flex shrink-0 flex-col">
+    <!-- ══════════ 网络与加速 ══════════ -->
+    <section data-sec="net" class="set-card shrink-0">
       <div class="set-head">
-        <h2 class="set-title">维护</h2>
-        <span class="set-hint">网络解析 · {{ desktop || tvMode ? '应用更新 · ' : '' }}备份与诊断</span>
+        <h2 class="set-title">网络与加速</h2>
+        <span class="set-hint">DNS 解析 · GitHub 加速</span>
       </div>
 
       <!-- ── 网络（DNS）── -->
@@ -6697,6 +6698,15 @@ onBeforeUnmount(() => {
 
       <!-- 全局 GitHub 加速：只改传输层；业务源仍在各自区块 -->
       <GitAccelPanel />
+
+    </section>
+
+    <!-- ══════════ 更新 ══════════ -->
+    <section data-sec="update" class="set-card shrink-0">
+      <div class="set-head">
+        <h2 class="set-title">更新</h2>
+        <span class="set-hint">壳 / 模块 / 插件 / fpk · 源与备用源</span>
+      </div>
 
       <!-- 更新中心：壳 / 模块 / 插件 / fpk 的统一检查入口 -->
       <UpdateCenter />
@@ -6808,7 +6818,7 @@ onBeforeUnmount(() => {
           />
         </div>
         <p class="mt-1 text-[11px] text-ink-3">
-          访问令牌与 GitHub 加速在「维护 → GitHub 加速」里统一设置（应用更新 / 插件源共用）。
+          访问令牌与 GitHub 加速在「网络与加速 → GitHub 加速」里统一设置（应用更新 / 插件源共用）。
           自定义源失败时只会尝试这里显式填写的备用源，不会静默回落官方源。
         </p>
         <p class="mt-1 text-[11px] text-ink-3">
@@ -6839,6 +6849,15 @@ onBeforeUnmount(() => {
         与上面 PC/TV 的更新块并列，不合并——两者的安装通道完全不同。
       -->
       <FpkUpgradePanel v-if="!desktop && !tvMode" />
+
+    </section>
+
+    <!-- ══════════ 维护 ══════════ -->
+    <section data-sec="maint" class="set-card flex shrink-0 flex-col">
+      <div class="set-head">
+        <h2 class="set-title">维护</h2>
+        <span class="set-hint">备份 · 日志 · 重置</span>
+      </div>
 
       <!-- ── 数据与维护 ──
         ★ 展开站点明细时**不要**加 `min-h-0`。
@@ -6878,6 +6897,7 @@ onBeforeUnmount(() => {
 
       <p v-if="backupMsg" class="mt-2 text-[11px] text-ink-3">{{ backupMsg }}</p>
     </section>
+
       </div><!-- /右侧内容 -->
     </div><!-- /两栏网格 -->
 

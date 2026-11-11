@@ -596,7 +596,7 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 
 #### GitHub 加速与静态清单回退（2026-11-09）
 
-- **全局设置**：设置 → 维护 →「GitHub 加速」，可自定义有序列表、逐项测试、启停、恢复默认；应用更新 / 插件源 / fpk / 配置导入共用。
+- **全局设置**：设置 → 网络与加速 →「GitHub 加速」，可自定义有序列表、逐项测试、启停、恢复默认；应用更新 / 插件源 / fpk / 配置导入共用。
 - **只加速公开地址**：`raw.githubusercontent.com`、`github.com/.../releases/download/`、公开 `api.github.com`。私有仓 token 请求**直连**，公共代理不转发 Authorization。
 - **默认顺序**（实测定，前端可调）：直连 → `gh-proxy.com` → `ghfast.top` → `ghproxy.net`；`gh.llkk.cc` 预设保留但默认停用；jsDelivr 仅用于索引或 <20MB 文件。
 - **资产选择**：清单里没有 token 时客户端优先 `browser_download_url`（标准 release 链接，代理才生效）；有 token（私有仓）才转 `api.github.com/.../releases/assets/<id>`。

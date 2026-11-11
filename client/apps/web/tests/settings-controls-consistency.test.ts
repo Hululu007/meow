@@ -120,10 +120,10 @@ describe('设置页分区归属', () => {
     expect(blockOf('storage'), '本地弹幕又跑回存储区了').not.toContain('dmLocal')
   })
 
-  it('DNS 在「维护」区（网络层，不是源配置）', () => {
-    const b = blockOf('maint')
-    expect(b, '安全DNS 不在维护区').toContain('dnsChoice')
-    expect(b, 'DNS 测试不在维护区').toContain('probeDns')
+  it('DNS 在「网络与加速」区（网络层，不是源配置）', () => {
+    const b = blockOf('net')
+    expect(b, '安全DNS 不在网络与加速区').toContain('dnsChoice')
+    expect(b, 'DNS 测试不在网络与加速区').toContain('probeDns')
     expect(blockOf('source'), 'DNS 又跑回搜索与源区了').not.toContain('dnsChoice')
   })
 
@@ -133,9 +133,9 @@ describe('设置页分区归属', () => {
     expect(blockOf('storage'), 'WebDAV 又混回存储区了').not.toContain('dav.url')
   })
 
-  it('应用更新在「维护」区，且仍受 desktop/tvMode 门控', () => {
-    const b = blockOf('maint')
-    expect(b, '应用更新不在维护区').toContain('updFound')
+  it('应用更新在「更新」区，且仍受 desktop/tvMode 门控', () => {
+    const b = blockOf('update')
+    expect(b, '应用更新不在更新区').toContain('updFound')
     expect(b, '应用更新的平台门控丢了（Web 端会看到灰按钮）').toMatch(
       /v-if="desktop \|\| tvMode"/,
     )

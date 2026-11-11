@@ -744,7 +744,7 @@ final class PushServer {
             + "step=\"1\"></div> <div class=\"row\"><span class=\"k\">超时<small>毫秒，推理模型可调大</small></span> <input "
             + "type=\"number\" id=\"p_llmTimeoutMs\" min=\"3000\" max=\"120000\" step=\"1000\"></div> <div "
             + "class=\"row\"><span class=\"k\">最大输出<small>token；推理模型会自动加大</small></span> <input type=\"number\" "
-            + "id=\"p_llmMaxTokens\" min=\"100\" max=\"8000\" step=\"100\"></div> </section> <section> <h2>维护</h2><"
+            + "id=\"p_llmMaxTokens\" min=\"100\" max=\"8000\" step=\"100\"></div> </section> <section> <h2>网络与加速</h2><"
             + "/h2> <div class=\"row\"><span class=\"k\">安全 DNS<small>DoH 解析，绕过 TUN fake-ip</small></span> <span "
             + "class=\"sw\"><input type=\"checkbox\" id=\"g_safeDns\"><i></i></span></div> <div class=\"row\"><"
             + "span class=\"k\">DNS 服务商<small>安全 DNS 关闭时无效</small></span> <select id=\"g_dnsProvider\"><option "

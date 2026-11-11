@@ -1153,7 +1153,7 @@ http，而 GitHub 是 https。浏览器下载还顺带提供真实进度与 sha2
 
 - 索引默认 `cdn.jsdelivr.net/gh/upchr/FnDepot@main/fnpack.json`；同时读取主仓镜像 `raw.githubusercontent.com/upchr/meow/fpk-updates/fpk.json`（FnDepot 不可用或没有更高版本时读镜像；分支在下一次 fpk 发版后出现）。设置页仍接受 `owner/repo` 仓库地址。
 - 多候选顺序：`raw → gh-proxy.com → ghfast.top → ghproxy.net`；索引可追加 jsDelivr；**安装包 >20MB 时 jsDelivr 不可用**（1.1.5 是 19.6MB，1.1.7 已 21.7MB）。
-- 全局「GitHub 加速」列表（设置 → 维护 → GitHub 加速）对所有公开 GitHub 地址生效，支持自定义增删改/排序/测试；私有 token 请求不走代理。
+- 全局「GitHub 加速」列表（设置 → 网络与加速 → GitHub 加速）对所有公开 GitHub 地址生效，支持自定义增删改/排序/测试；私有 token 请求不走代理。
 - 应用包不另建镜像仓；开源后主仓 public releases 即资产镜像，`packages.json` 发版时 force push 到 `updates` 分支做静态清单兜底（详见 [33 §10](33-插件系统.md)）。fpk 的主仓镜像在仓库公开后匿名可读；闭源期仍以 FnDepot 为准。
 - `fpk-v*` 发版会把包挂到主仓 **prerelease** 并生成 `fpk-updates` 分支的 `fpk.json`；FnDepot 仍是飞牛第三方源正式通道。
 - 设置 → 维护 →「更新中心」聚合壳 / 模块 / 插件 / fpk 的检查结果；fpk 行可跳转到本区块执行安装。
