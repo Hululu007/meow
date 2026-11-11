@@ -6,6 +6,7 @@ import VersionBadge from './components/VersionBadge.vue'
 import HomePage from './components/HomePage.vue'
 import ScrollProgress from './components/ScrollProgress.vue'
 import CursorGlow from './components/CursorGlow.vue'
+import MusicPlayer from './components/MusicPlayer.vue'
 
 export default {
   extends: DefaultTheme,
@@ -13,6 +14,7 @@ export default {
     h(DefaultTheme.Layout, null, {
       // 顶部 2px 滚动进度条 + 全站鼠标柔光
       'layout-top': () => [h(ScrollProgress), h(CursorGlow)],
+      'layout-bottom': () => h(MusicPlayer),
     }),
   enhanceApp({ app }) {
     app.component('VersionBadge', VersionBadge)
