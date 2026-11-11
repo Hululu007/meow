@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRouter } from 'vue-router'
 import TilePanel from '@/components/common/TilePanel.vue'
 import TileSelect from '@/components/common/TileSelect.vue'
+import ToggleSwitch from '@/components/common/ToggleSwitch.vue'
 import { useCardCols } from '@/composables/useCardCols'
 import WallpaperPicker from '@/components/common/WallpaperPicker.vue'
 import { THEME_MODES, THEME_STYLES, resolveMode } from '@/stores/theme'
@@ -177,20 +178,11 @@ function onPrefsChanged(e: Event) {
 const trayHintMsg = ref('')
 
 /**
- * 桌面端行为的操作磁贴。
+ * 「桌面端行为」区的重置动作。
  *
  * 只清 `tray-hint-seen`：`closeToTray` 是另一个开关，重置提示不该顺手改它——
  * 用户可能只是想再看一次提示，并不想改当前关闭行为。
  */
-const desktopTiles = computed<TileAction[]>(() => [
-  {
-    key: 'retrayhint',
-    label: '再次显示关闭提示',
-    hint: '只清除「已提示」标记；下次点 X 会重新弹一次，不改关闭行为',
-    arrow: false,
-    onClick: () => void resetTrayHint(),
-  },
-])
 
 async function resetTrayHint() {
   try {
@@ -1043,11 +1035,6 @@ function resetPrefs() {
  * 这两类困惑都能自己回答。
  */
 const searchCacheStats = ref<SearchCacheStats | null>(null)
-const searchCacheHint = computed(() => {
-  const s = searchCacheStats.value
-  if (!s) return ''
-  return `${s.size} 条`
-})
 
 async function loadSearchCacheStats() {
   try {
@@ -1091,7 +1078,7 @@ const cacheTtlFields = [
   },
   {
     key: 'searchCacheFailSec' as const,
-    label: '失败结果缓存',
+    label: '失败缓存',
     options: [
       { value: 0, label: '不缓存' },
       { value: 30, label: '30 秒' },
@@ -1136,59 +1123,44 @@ async function onPolicyCacheChange(
   }
 }
 
-/** 「连接」区的重连动作：重新探测地址并拉站点表 */
-const connectTiles = computed<TileAction[]>(() => [
-  {
-    key: 'reconnect',
-    label: '重连后端',
-    hint: '重新探测地址并拉站点表',
-    onClick: () => store.boot(),
-  },
-])
-
 /** 「存储」区的本机缓存清理（HTTP 缓存 / sessionStorage，不动观看历史与设置） */
 const localCacheMsg = ref('')
-const storageTiles = computed<TileAction[]>(() => [
-  {
-    key: 'clearcache',
-    label: '清空本地缓存',
-    hint: '只清海报/脚本缓存，历史和设置都保留',
-    // 清的是**可再生的**那部分：Cache Storage（海报、脚本等 HTTP 缓存）
-    // 与 sessionStorage（本标签页的临时状态）。
-    //
-    // ★ 绝不能碰 `meow.history.list` —— 那是观看历史，不是缓存。
-    //   早先这行就在里面，于是「清空本地缓存」会静默删掉全部观看进度，
-    //   而旁边「恢复默认设置」却写着"观看历史不会删除"，两个按钮的语义正好相反。
-    //   （用户报「这些功能都有用吗」时查出来的。）
-    onClick: () => {
-      try {
-        sessionStorage.clear()
-      } catch {
-        /* 忽略 */
-      }
-      /*
-       * ★ CacheStorage 只在安全上下文（https / localhost）存在。
-       *   TV 壳里页面是 http://meow.local，`caches` 是 undefined ——
-       *   原来写 `caches?.keys?.().then(...)`，可选链让整行变成 undefined，
-       *   但**提示照样说"已清空"**，用户以为清了其实什么都没动
-       *   （点过的人会觉得这个按钮是假的）。
-       *   这里区分两种情况，把真实结果告诉用户。
-       */
-      const hasCacheApi = typeof caches !== 'undefined' && typeof caches.keys === 'function'
-      if (hasCacheApi) {
-        void caches
-          .keys()
-          .then((ks) => Promise.all(ks.map((k) => caches.delete(k))))
-          .catch(() => undefined)
-          .then(() => {
-            localCacheMsg.value = '本地缓存已清空（观看历史与设置都保留）'
-          })
-      } else {
-        localCacheMsg.value = '已清空临时数据；HTTP 缓存由电视自己管理（此环境无 CacheStorage）'
-      }
-    },
-  },
-])
+/**
+ * 清掉**可再生的**那部分：Cache Storage（海报、脚本等 HTTP 缓存）
+ * 与 sessionStorage（本标签页的临时状态）。
+ *
+ * ★ 绝不能碰 `meow.history.list` —— 那是观看历史，不是缓存。
+ *   早先这行就在里面，于是「清空本地缓存」会静默删掉全部观看进度，
+ *   而旁边「恢复默认设置」却写着"观看历史不会删除"，两个按钮的语义正好相反。
+ *   （用户报「这些功能都有用吗」时查出来的。）
+ */
+function clearLocalCache() {
+  try {
+    sessionStorage.clear()
+  } catch {
+    /* 忽略 */
+  }
+  /*
+   * ★ CacheStorage 只在安全上下文（https / localhost）存在。
+   *   TV 壳里页面是 http://meow.local，`caches` 是 undefined ——
+   *   原来写 `caches?.keys?.then(...)`，可选链让整行变成 undefined，
+   *   但**提示照样说"已清空"**，用户以为清了其实什么都没动
+   *   （点过的人会觉得这个按钮是假的）。
+   *   这里区分两种情况，把真实结果告诉用户。
+   */
+  const hasCacheApi = typeof caches !== 'undefined' && typeof caches.keys === 'function'
+  if (hasCacheApi) {
+    void caches
+      .keys()
+      .then((ks) => Promise.all(ks.map((k) => caches.delete(k))))
+      .catch(() => undefined)
+      .then(() => {
+        localCacheMsg.value = '本地缓存已清空（观看历史与设置都保留）'
+      })
+  } else {
+    localCacheMsg.value = '已清空临时数据；HTTP 缓存由电视自己管理（此环境无 CacheStorage）'
+  }
+}
 
 /** 「维护」区只保留重置/诊断/关于，不再混入连接与存储动作 */
 const maintTiles = computed<TileAction[]>(() => [
@@ -1196,12 +1168,13 @@ const maintTiles = computed<TileAction[]>(() => [
     key: 'resetprefs',
     label: '恢复默认设置',
     hint: '所有设置回默认值，历史与源保留',
+    arrow: false,
     onClick: resetPrefs,
   },
   {
     key: 'logs',
     label: '运行日志',
-    hint: '客户端错误 + 服务端日志同屏',
+    hint: '客户端 + 服务端日志',
     value: '诊断',
     onClick: () => void router.push({ name: 'logs' }),
   },
@@ -1273,45 +1246,28 @@ async function copyText(text: string): Promise<boolean> {
  * 放在对应分组里，避免用户为了清缓存又滚回源管理区。
  */
 const sourceHealthMsg = ref('')
-const healthTiles = computed<TileAction[]>(() => [
-  {
-    key: 'resethealth',
-    label: '重置源健康',
-    // 失效剔除 / 超时拉黑有 10 分钟 TTL。修好源站后用它立刻重来，不用重启后端。
-    value: failedSkipCount.value ? `${failedSkipCount.value} 已失效` : '',
-    onClick: async () => {
-      if (!confirm('重置所有源的健康记录？\n\n会清掉"跳过/降档/降级"标记，下次搜索全部源重新参与（更慢但更全）。')) return
-      try {
-        await resetHealth()
-        sourceHealthMsg.value = '已重置源健康，下次搜索全部源重新参与'
-        await Promise.all([store.refreshSites(), loadHealthDetail()])
-      } catch (e: any) {
-        sourceHealthMsg.value = `重置失败：${e?.message || e}`
-      }
-    },
-  },
-])
+async function resetSourceHealth() {
+  if (!confirm('重置所有源的健康记录？\n\n会清掉"跳过/降档/降级"标记，下次搜索全部源重新参与（更慢但更全）。')) return
+  try {
+    await resetHealth()
+    sourceHealthMsg.value = '已重置源健康，下次搜索全部源重新参与'
+    await Promise.all([store.refreshSites(), loadHealthDetail()])
+  } catch (e: any) {
+    sourceHealthMsg.value = `重置失败：${e?.message || e}`
+  }
+}
 
 /** 「结果缓存」分组的清空动作（与 TTL 输入放在一起） */
 const searchCacheMsg = ref('')
-const cacheTiles = computed<TileAction[]>(() => [
-  {
-    key: 'clearsearchcache',
-    label: '清空搜索缓存',
-    // 结果缓存有结果的是 2 小时。修了源、或想立刻看全量时用它，
-    // 否则同一关键词永远是那份旧结果（搜索页的「重新搜索」是单次强刷，不等价）。
-    value: searchCacheHint.value,
-    onClick: async () => {
-      try {
-        const r = await clearSearchCache()
-        searchCacheMsg.value = `已清空搜索缓存 ${r.cleared} 条`
-        await loadSearchCacheStats()
-      } catch (e: any) {
-        searchCacheMsg.value = `清空失败：${e?.message || e}`
-      }
-    },
-  },
-])
+async function clearSearchCacheNow() {
+  try {
+    const r = await clearSearchCache()
+    searchCacheMsg.value = `已清空搜索缓存 ${r.cleared} 条`
+    await loadSearchCacheStats()
+  } catch (e: any) {
+    searchCacheMsg.value = `清空失败：${e?.message || e}`
+  }
+}
 
 const showSites = ref(false)
 const extCount = computed(() => store.sites.filter((s) => s.ext).length)
@@ -2701,6 +2657,11 @@ function persistLlm() {
   void syncRelaySwitch()
 }
 
+function setLlmEnabled(v: boolean) {
+  llm.value.enabled = v
+  persistLlm()
+}
+
 /**
  * 把「启用」这个开关同步到后端的 `llmRelay.enabled`。
  *
@@ -3756,15 +3717,12 @@ function onWordsChanged() {
 //   ⑥ 存储    —— 空间不够（离线缓存 + 观看记录）
 //   ⑦ WebDAV  —— 多端同步
 //   ⑧ AI      —— AI 配置
-//   ⑨ 维护    —— 网络解析 / 应用更新 / 备份与诊断
+//   ⑨ 维护    —— 备份 / 日志 / 重置 / 远程调试
 const NAV_ITEMS = [
   { id: 'conn', label: '连接' },
   { id: 'plugin', label: '本机插件', desktopOnly: true },
   { id: 'localexec', label: '本机执行', tvOnly: true },
   { id: 'runtime', label: '运行时模块', tvOnly: true },
-  // 远程调试 PC 也有（Tauri 内置 MCP），只有 Web 用不上 ——
-  // 浏览器沙箱里既起不了 TCP 监听，也没有可被控制的应用窗口
-  { id: 'tvdebug', label: '远程调试', nativeOnly: true },
   // 托盘/关闭行为只在 PC 上有意义；Web 起不了托盘，TV 壳也不是这个交互
   { id: 'desktop', label: '桌面端行为', desktopOnly: true },
   { id: 'source', label: '搜索与源' },
@@ -3790,6 +3748,18 @@ const navItems = computed(() =>
   }),
 )
 const activeSec = ref<string>('conn')
+/**
+ * 遥控器最近一次停留的左侧导航项（分区 id）。
+ *
+ * <p>用途只有一个：让右侧内容按左键时**精确回到进入时的那一项**。
+ * 纯几何选焦只能找"同一行最近的"，而导航项与右侧控件高度不对齐，
+ * 实测会落到相邻项上；这里把落点固定成用户来时的导航项。
+ *
+ * <p>为什么与 activeSec 分开：用户可能只在导航里上下移动、还没按 OK
+ * （activeSec 仍是旧分区），但右键已经能直接进入当前聚焦项的分区。
+ * 此时左键该回的是"当前聚焦的那一项"，不是旧高亮项。
+ */
+const lastNavSec = ref<string>('conn')
 /** 手机横向胶囊条：滚动页面时把激活项带进可视区 */
 const chipsEl = ref<HTMLElement | null>(null)
 
@@ -3938,7 +3908,15 @@ function flashSection(el: HTMLElement) {
 function onTvFocus() {
   const el = document.querySelector('.meow-tv-focus')
   if (!el) return
-  if (el.closest('[data-tv-settings-nav]')) return
+  if (el.closest('[data-tv-settings-nav]')) {
+    /*
+     * 记下当前停留的导航项。遥控器在左栏上下移动时就会触发，
+     * 右侧内容的左键出口（data-tv-left）据此精确回到这一项。
+     */
+    const navBtn = el.closest<HTMLElement>('[data-tv-settings-nav] [data-tv-sec]')
+    if (navBtn?.dataset.tvSec) lastNavSec.value = navBtn.dataset.tvSec
+    return
+  }
   if (el.closest('.app-header')) return
   focusScrollIgnoreUntil = Date.now() + 260
   /*
@@ -3969,6 +3947,7 @@ function scrollToSec(id: string) {
   const el = document.querySelector<HTMLElement>(`section[data-sec="${id}"]`)
   if (!el) return
   activeSec.value = id
+  lastNavSec.value = id
   // 进"数据与维护"时刷新一次缓存统计：数字是文案的一部分，
   // 不刷新会一直显示上次打开时的旧值
   if (id === 'maint') void loadSearchCacheStats()
@@ -4245,7 +4224,7 @@ onBeforeUnmount(() => {
         :key="i.id"
         :data-chip="i.id"
         type="button"
-        class="shrink-0 rounded-full border px-3 py-1.5 text-[12px] transition max-sm:px-3.5 max-sm:py-2"
+        class="shrink-0 rounded-full border px-3 py-1.5 text-xs transition max-sm:px-3.5 max-sm:py-2"
         :class="
           activeSec === i.id
             ? 'border-accent/40 bg-accent/15 text-accent'
@@ -4301,6 +4280,9 @@ onBeforeUnmount(() => {
             <button
               v-for="(i, idx) in navItems"
               :key="i.id"
+              :id="'set-nav-' + i.id"
+              :data-tv-sec="i.id"
+              :data-tv-right="'section[data-sec=' + i.id + ']'"
               type="button"
               class="group relative flex items-center gap-2.5 rounded-lg px-2.5 py-1 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/60"
               :class="
@@ -4342,14 +4324,15 @@ onBeforeUnmount(() => {
       -->
       <div
         ref="contentRef"
+        :data-tv-left="'#set-nav-' + lastNavSec"
         class="flex min-w-0 flex-col gap-3 lg:-ml-1 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:px-1"
       >
     <!-- ══════════ 连接 ══════════ -->
     <section data-sec="conn" class="set-card shrink-0">
       <div class="set-head">
         <h2 class="set-title">连接</h2>
-        <!-- 状态徽章紧贴标题：justify-between 会把它推到中间，所以和标题包在一起 -->
-        <span class="flex items-center gap-2">
+        <span class="set-hint">后端地址 · 站点概览</span>
+        <span class="set-actions flex flex-wrap items-center gap-2">
           <span
             class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px]"
             :class="store.online ? 'bg-ok/15 text-ok' : 'bg-hot/15 text-hot'"
@@ -4360,21 +4343,21 @@ onBeforeUnmount(() => {
             />
             {{ store.online ? '已连接' : '未连接' }}
           </span>
-        </span>
-        <span class="set-hint">
-          <template v-if="store.online">
-            {{ store.sites.length }} 源 · {{ extCount }} 带 ext<template v-if="badCount">
-              · {{ badCount }} 不可用</template><template v-if="unsupportedCount">
-              · {{ unsupportedCount }} 待配置</template><template v-if="skippedCount">
-              · {{ skippedCount }} 搜索时跳过</template>
-          </template>
-          <template v-else-if="desktop">等待插件启动</template>
-          <template v-else>请填写后端地址</template>
+          <span class="text-[11px] text-ink-3">
+            <template v-if="store.online">
+              {{ store.sites.length }} 源 · {{ extCount }} 个扩展<template v-if="badCount">
+                · {{ badCount }} 不可用</template><template v-if="unsupportedCount">
+                · {{ unsupportedCount }} 待配置</template><template v-if="skippedCount">
+                · {{ skippedCount }} 搜索时跳过</template>
+            </template>
+            <template v-else-if="desktop">等待插件启动</template>
+            <template v-else>请填写后端地址</template>
+          </span>
         </span>
       </div>
 
       <div class="flex flex-wrap items-center gap-2.5">
-        <span class="w-16 shrink-0 text-xs text-ink-3">后端地址</span>
+        <span class="w-20 shrink-0 text-xs text-ink-3">后端地址</span>
         <input
           v-model="apiUrl"
           :placeholder="apiPlaceholder"
@@ -4404,7 +4387,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="mt-2 flex flex-wrap items-center gap-2.5">
-        <span class="w-16 shrink-0 text-xs text-ink-3">写操作令牌</span>
+        <span class="w-20 shrink-0 text-xs text-ink-3">写操作令牌</span>
         <input
           v-model="authToken"
           type="password"
@@ -4424,16 +4407,13 @@ onBeforeUnmount(() => {
 
       <!-- Web 端：没有插件，必须填地址 —— 这条不能只靠 placeholder 暗示 -->
       <p v-if="!desktop" class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-        网页/TV版没有本机插件，需要填一个可访问的后端地址（自建 Docker / NAS / 别人的服务）。
-        留空则走同源 <code class="rounded bg-field px-1">/api</code>（Docker编排适用）。
+        没有本机插件，需要填可访问的后端地址（Docker / NAS / 自建）；留空则用同源
+        <code class="rounded bg-field px-1">/api</code>。
       </p>
       <!-- PC 端：地址由插件决定，强调不要写死 -->
       <p v-else-if="apiManagedByPlugin" class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-        地址由「影视后端」插件决定，端口被占用时会自动顺延（9979→9980…），所以不要写死。
-        要连别的机器上的后端，直接在上面的输入框里填地址。
+        地址由插件自动分配，端口冲突会顺延，不用手改。要连别的机器，直接填上面的地址。
       </p>
-
-      <TilePanel :items="connectTiles" :cols="2" class="mt-2 shrink-0" />
 
       <!-- TV：遥控器打字太痛苦，给两个"不用打字"的入口 -->
       <div v-if="tvMode" class="mt-3 flex flex-wrap items-center gap-2">
@@ -4454,6 +4434,20 @@ onBeforeUnmount(() => {
         <span class="text-[11px] text-ink-3">
           扫描局域网列出可连的后端；或用手机扫码一次性配好常用设置
         </span>
+      </div>
+
+      <!--
+        重连是即时动作，不是跳转页面：用普通按钮，不用带箭头的磁贴。
+        放在「局域网自动发现 / 扫码填写」下一行，避免三种入口挤成一排。
+      -->
+      <div class="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          class="rounded-md bg-card px-3 py-1.5 text-xs font-medium transition hover:bg-card-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent/60"
+          @click="store.boot()"
+        >
+          重连后端
+        </button>
+        <span class="text-[11px] text-ink-3">重新探测地址并拉站点表</span>
       </div>
     </section>
 
@@ -4539,7 +4533,7 @@ onBeforeUnmount(() => {
             编辑
           </button>
           <button
-            class="rounded px-1.5 py-0.5 text-[11px] text-ink-3 hover:bg-hot/20 hover:text-hot disabled:opacity-30"
+            class="rounded px-1.5 py-0.5 text-[11px] text-ink-3 hover:bg-hot/20 hover:text-hot disabled:opacity-40"
             :disabled="sources.items.length <= 1"
             @click="deleteSource(s.id)"
           >
@@ -4804,48 +4798,43 @@ onBeforeUnmount(() => {
 
     <!-- ══════════ 本机执行（仅 TV）══════════ -->
     <section v-if="tvMode" data-sec="localexec" class="set-card shrink-0">
-      <div class="flex items-center justify-between">
+      <div class="set-head">
         <h2 class="set-title">本机执行</h2>
-        <span class="text-[11px] text-ink-3">{{ localSites }} 个本机站点</span>
+        <span class="set-hint">TV 本机网关 · 不依赖后端</span>
+        <span class="set-actions flex items-center text-[11px] text-ink-3">{{ localSites }} 个本机站点</span>
       </div>
       <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-        电视可以直接运行配置里的 jar（不依赖后端）。点「启用本机执行」会落地内置 jar、
-        起网关并把后端地址切过去，一次做完。
+        电视可脱离后端，直接运行配置里的 jar。点按钮一次完成：启动本机网关并切换后端地址。
       </p>
       <p class="mt-1 text-[11px] leading-relaxed text-ink-3">
-        <b>能用的</b>：站点列表、首页、分类、详情、搜索、播放地址、封面图、弹幕（弹幕转发到原后端）。
-        <b>仍需要后端</b>：聚合搜索、parse=1 的解析器、直播、片库、离线缓存、进度/收藏同步。
+        站点浏览、搜索、详情、播放、弹幕可用；聚合搜索、解析器、直播、片库、缓存、进度同步仍需后端。
       </p>
-      <div class="set-grid mt-2">
-        <div class="flex flex-wrap items-center gap-2">
-          <button
-            class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-dim"
-            :disabled="localBusy"
-            @click="startLocalExec()"
-          >
-            {{ localGw ? '重启本机网关' : '启用本机执行' }}
-          </button>
-          <span v-if="localGw" class="text-[11px] text-ink-3">{{ localGw }}</span>
-        </div>
-      </div>
-      <div class="mt-3 flex flex-wrap items-end gap-2">
-        <label class="min-w-[18rem] max-sm:min-w-[10rem] flex-1">
-          <span class="mb-1 block text-[11px] text-ink-3">配置地址（含 jar 的 JSON）</span>
-          <input
-            v-model="cfgUrl"
-            class="w-full rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none focus:border-accent/50"
-            placeholder="https://example.com/config.json"
-          />
-        </label>
+      <div class="mt-2 flex flex-wrap items-center gap-2">
         <button
-          class="rounded-md bg-card px-3 py-1.5 text-xs hover:bg-card-hover"
+          class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-dim"
+          :disabled="localBusy"
+          @click="startLocalExec()"
+        >
+          {{ localGw ? '重启本机网关' : '启用本机执行' }}
+        </button>
+        <span v-if="localGw" class="text-[11px] text-ink-3">网关地址 {{ localGw }}</span>
+      </div>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <span class="w-20 shrink-0 text-xs text-ink-3">配置地址</span>
+        <input
+          v-model="cfgUrl"
+          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent/50"
+          placeholder="https://example.com/config.json"
+        />
+        <button
+          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover disabled:opacity-40"
           :disabled="localBusy"
           @click="importLocalConfig()"
         >
           导入到本机
         </button>
         <button
-          class="rounded-md bg-card px-3 py-1.5 text-xs hover:bg-card-hover"
+          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover"
           @click="refreshLocalExec()"
         >
           刷新状态
@@ -4853,16 +4842,12 @@ onBeforeUnmount(() => {
       </div>
       <p v-if="localMsg" class="mt-2 text-[11px] text-accent">{{ localMsg }}</p>
       <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-        只导入 <code class="rounded bg-field px-1">api</code> 是
-        <code class="rounded bg-field px-1">csp_</code> 且带 jar 的站点；
-        drpy（.js）与直连 http 源仍走后端。jar 必须是 <b>dex 形态</b>
-        （ZIP 内含 classes.dex），纯 .class 的 jar 安卓加载不了。
+        配置地址填 JSON（可含 jar）。只导入 <code class="rounded bg-field px-1">csp_</code> + jar 的站点；
+        drpy / 直连 http 走后端。jar 需为 dex（含 <code class="rounded bg-field px-1">classes.dex</code>）。
       </p>
       <p class="mt-1 text-[11px] leading-relaxed text-ink-3">
-        常见可填：自建后端
-        <code class="rounded bg-field px-1">http://&lt;后端&gt;/config.json</code>、
-        肥猫 <code class="rounded bg-field px-1">http://xn--z7x900a.net/tv</code>。
-        jar 地址<b>以配置里写的为准</b>——填肥猫配置就下肥猫的 jar，填后端配置就下后端的。
+        可填自建后端 <code class="rounded bg-field px-1">http://&lt;后端&gt;/config.json</code>，
+        或肥猫 <code class="rounded bg-field px-1">http://xn--z7x900a.net/tv</code>；jar 地址跟随配置。
       </p>
     </section>
 
@@ -4871,8 +4856,7 @@ onBeforeUnmount(() => {
       <div class="set-head">
         <h2 class="set-title">运行时模块</h2>
         <span class="set-hint">内置 node 运行时 · 供本机网关弹幕聚合</span>
-        <span class="flex-1" />
-        <span class="text-[11px] text-ink-3">
+        <span class="set-actions flex items-center text-[11px] text-ink-3">
           {{
             modState.installed
               ? modState.enabled
@@ -4886,23 +4870,21 @@ onBeforeUnmount(() => {
       </div>
 
       <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-        内置 node 运行时（danmu_api 弹幕聚合）。需要单独安装一个约 60MB 的模块包，
-        按 CPU 架构分发 —— 所以不在安装包里，避免给所有人加 60MB。
-        下载源与令牌沿用「在线更新」里的设置（私有仓库不填令牌会 404）。
+        模块约 60MB，按 CPU 架构单独安装；下载源与令牌沿用「更新」设置。
       </p>
-      <div class="set-grid mt-2">
-        <label class="flex items-center gap-2 text-xs">
-          <input
-            type="checkbox"
-            :checked="modState.enabled"
-            :disabled="!modState.installed || modBusy"
-            @change="modToggle()"
-          />
+      <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+        <label class="flex items-center gap-2 text-xs text-ink-3">
           <span>启用</span>
+          <ToggleSwitch
+            :model-value="modState.enabled"
+            :disabled="!modState.installed || modBusy"
+            label="启用运行时模块"
+            @update:model-value="modToggle"
+          />
         </label>
         <div class="text-[11px] text-ink-3">
-          <span v-if="modState.installed">
-            版本 {{ modState.version || '-' }} · 端口 {{ modState.port }} · {{ modState.abi }}
+          <span v-if="modState.installed" class="whitespace-nowrap">
+            {{ modState.abi }} · 版本 {{ modState.version || '-' }} · 端口 {{ modState.port }}
           </span>
           <span v-else>本机架构 {{ modState.abi }}</span>
         </div>
@@ -4937,77 +4919,9 @@ onBeforeUnmount(() => {
         <span v-if="modMsg" class="text-[11px] text-accent">{{ modMsg }}</span>
       </div>
       <p class="mt-2 text-[11px] leading-relaxed text-ink-3">
-        关掉后弹幕会回落到内置聚合站（境外，多数网络下拿不到结果）；播放不受影响。
+        关闭后弹幕改用内置聚合站（境外源可能不可用），播放不受影响。
       </p>
 
-    </section>
-    <!-- ══════════ 远程调试（TV / PC）══════════ -->
-    <section v-if="debugPlatform" data-sec="tvdebug" class="set-card shrink-0">
-      <div class="flex items-center justify-between">
-        <h2 class="set-title">远程调试</h2>
-        <span class="text-[11px]" :class="dbg.running ? 'text-accent' : 'text-ink-3'">
-          {{ dbg.running ? '运行中' : dbg.enabled ? '待生效' : '已关闭' }}
-        </span>
-      </div>
-      <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-        <template v-if="debugPlatform === 'tv'">
-          开启后，同一局域网里的 PC 可以通过 MCP 读取页面状态、截图、派发遥控器按键。
-          用于排查「画面卡住 / 按了没反应」这类只能看见却拿不到状态的问题。
-        </template>
-        <template v-else>
-          本应用内置 MCP 服务，外部工具（脚本 / AI 助手）可以读取页面状态、截图、
-          点击与派发按键。服务随应用启动；关闭窗口只会隐藏到托盘，服务继续运行，
-          只有真正退出应用才会停止。
-        </template>
-      </p>
-
-      <!-- TV：可开关 -->
-      <div v-if="debugPlatform === 'tv'" class="set-grid mt-2">
-        <div class="flex flex-wrap items-center gap-2">
-          <button
-            class="rounded-md px-3 py-1.5 text-xs font-medium"
-            :class="dbg.enabled
-              ? 'bg-card hover:bg-card-hover'
-              : 'bg-accent text-on-accent hover:bg-accent-dim'"
-            @click="toggleTvDebug()"
-          >
-            {{ dbg.enabled ? '关闭远程调试' : '开启远程调试' }}
-          </button>
-          <span v-if="dbg.url" class="text-[11px] text-ink-3">{{ dbg.url }}</span>
-        </div>
-      </div>
-
-      <!-- PC：只读。地址 + 探测区间给客户端抄 -->
-      <div v-else class="mt-3 space-y-1.5">
-        <div>
-          <span class="mb-1 block text-[11px] text-ink-3">服务地址</span>
-          <code class="select-all rounded bg-field px-2 py-1 text-xs text-accent">
-            {{ dbg.url || '未监听' }}
-          </code>
-        </div>
-        <p v-if="dbg.portRange" class="text-[11px] text-ink-3">
-          端口可能顺延，客户端应在 {{ dbg.portRange }} 区间逐个探测
-          <code class="rounded bg-field px-1">/health</code>
-        </p>
-      </div>
-
-      <!-- 令牌要能被抄写：投影仪上没有 adb，验收方只能看屏幕 -->
-      <div v-if="debugPlatform === 'tv' && dbg.enabled && dbg.token" class="mt-3">
-        <span class="mb-1 block text-[11px] text-ink-3">令牌（PC 侧放 X-Meow-Token 头）</span>
-        <code class="select-all rounded bg-field px-2 py-1 text-xs tracking-wider text-accent">
-          {{ groupToken(dbg.token) }}
-        </code>
-      </div>
-      <p v-if="dbg.hint" class="mt-2 text-[11px] text-accent">{{ dbg.hint }}</p>
-      <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-        <template v-if="debugPlatform === 'tv'">
-          每次开启都会换新令牌（怀疑泄漏时重开一次即可）。关闭后服务立即停止。
-        </template>
-        <template v-else>
-          只监听 127.0.0.1，不对外网开放。PC 端 MCP 不设令牌——它不监听局域网，
-          外部机器本来就到不了。
-        </template>
-      </p>
     </section>
 
     <!-- ══════════ 桌面端行为（仅 PC）══════════ -->
@@ -5024,7 +4938,15 @@ onBeforeUnmount(() => {
           @update:model-value="(v) => update('closeToTray', v === 'on')"
         />
       </div>
-      <TilePanel :items="desktopTiles" :cols="2" class="mt-2 shrink-0" />
+      <div class="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover"
+          @click="resetTrayHint"
+        >
+          再次显示关闭提示
+        </button>
+        <span class="text-[11px] text-ink-3">只清除「已提示」标记，不改关闭行为</span>
+      </div>
       <p v-if="trayHintMsg" class="mt-1.5 set-hint">{{ trayHintMsg }}</p>
       <p class="mt-1.5 set-hint">
         默认开：点窗口 X 只是收进系统托盘，后端与播放不会中断；想彻底退出请用托盘右键菜单。
@@ -5042,7 +4964,7 @@ onBeforeUnmount(() => {
     <section data-sec="source" class="set-card shrink-0">
       <div class="set-head">
         <h2 class="set-title">搜索与源</h2>
-        <span class="set-hint">站点源 · 站点管理 · 直播源 · 搜索怎么跑</span>
+        <span class="set-hint">站点源 · 站点管理 · 搜索怎么跑</span>
       </div>
 
       <!-- ── 源配置 ── -->
@@ -5060,7 +4982,7 @@ onBeforeUnmount(() => {
           @keyup.enter="doPreviewImport"
         />
         <button
-          class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-50"
+          class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-40"
           :disabled="cfgBusy"
           @click="doPreviewImport"
         >
@@ -5071,7 +4993,7 @@ onBeforeUnmount(() => {
           先探测一遍，用户能看到每个仓"导入后真正能用几站"，再挑一个。
         -->
         <button
-          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover disabled:opacity-50"
+          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover disabled:opacity-40"
           :disabled="depotBusy"
           :title="'这个地址如果是多仓索引，先列出各仓能不能用再选'"
           @click="probeDepot"
@@ -5201,7 +5123,7 @@ onBeforeUnmount(() => {
         </p>
         <div class="mt-2 flex items-center gap-2">
           <button
-            class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-50"
+            class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-40"
             :disabled="cfgBusy"
             @click="doImportConfig"
           >
@@ -5238,7 +5160,7 @@ onBeforeUnmount(() => {
           <span v-else class="shrink-0 text-[10px] text-ink-3">{{ e.error || '不可用' }}</span>
           <button
             v-if="e.ok"
-            class="shrink-0 rounded-md bg-card-hover px-2.5 py-1 text-[11px] transition hover:bg-accent/20 hover:text-accent disabled:opacity-50"
+            class="shrink-0 rounded-md bg-card-hover px-2.5 py-1 text-[11px] transition hover:bg-accent/20 hover:text-accent disabled:opacity-40"
             :disabled="cfgBusy"
             @click="importDepotEntry(e)"
           >
@@ -5288,7 +5210,7 @@ onBeforeUnmount(() => {
           导入前的配置已备份（{{ cfgBackup.sites ?? '?' }} 站）
         </span>
         <button
-          class="rounded-md bg-card px-2.5 py-1 text-[11px] transition hover:bg-accent/20 hover:text-accent disabled:opacity-50"
+          class="rounded-md bg-card px-2.5 py-1 text-[11px] transition hover:bg-accent/20 hover:text-accent disabled:opacity-40"
           :disabled="restoreBusy"
           @click="restoreLastConfig"
         >
@@ -5324,7 +5246,17 @@ onBeforeUnmount(() => {
           逐个看/停用源、批量处理失效源
         </span>
       </div>
-      <TilePanel :items="healthTiles" :cols="2" class="mt-2 shrink-0" />
+      <div class="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover"
+          @click="resetSourceHealth"
+        >
+          重置源健康
+        </button>
+        <span v-if="failedSkipCount" class="text-[11px] text-ink-3">
+          {{ failedSkipCount }} 个已失效
+        </span>
+      </div>
       <p
         v-if="sourceHealthMsg"
         class="mt-1.5 text-[11px]"
@@ -5333,7 +5265,7 @@ onBeforeUnmount(() => {
         {{ sourceHealthMsg }}
       </p>
       <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-        「重置源健康」清掉跳过/降档标记，下次搜索全部源重新参与（更慢但更全）。
+        清掉跳过/降档标记，下次搜索全部源重新参与（更慢但更全）。
         「清空搜索缓存」在下面的「结果缓存」分组。
       </p>
 
@@ -5351,7 +5283,7 @@ onBeforeUnmount(() => {
           title="drpy 插件启动时会自动写入；手动部署 Node 服务时填它的地址"
         />
         <button
-          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover disabled:opacity-50"
+          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover disabled:opacity-40"
           :disabled="advBusy"
           @click="saveAdvanced"
         >
@@ -5464,15 +5396,8 @@ onBeforeUnmount(() => {
           <span v-if="noiseMsg" class="text-[11px] text-ok">{{ noiseMsg }}</span>
         </div>
         <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-          「过滤隐藏」= 命中就<b>不显示</b>；「仅排序降级」= 仍然显示但
-          <b>排到所有正常结果之后</b>（偶尔想看解说时不用改词表）。
-          <br />
-          逗号、分号或换行分隔，<b>大小写不敏感</b>。同时匹配片名和备注
-          （很多源把"解说"写在备注里，片名仍是正剧名）。单字会被忽略——
-          "剧""片"这类会命中几乎所有内容。
-          <br />
-          只影响<b>聚合搜索结果</b>：单站搜索不经过这层（那是"我就想看这个站
-          返回了什么"的场景）。搜索页会显示本轮滤掉了多少条。
+          命中词不显示；「降级」只排到后面。逗号/换行分隔，不区分大小写，匹配片名与备注；
+          单字忽略。仅影响聚合搜索。
         </p>
       </div>
 
@@ -5496,11 +5421,18 @@ onBeforeUnmount(() => {
         />
       </div>
       <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-        缓存时长是<b>后端</b>行为（policy.json），改完立即生效。
-        当前已缓存 {{ searchCacheStats?.size ?? 0 }} 条；「失败」不要调大 ——
-        那是运行时故障的负缓存，太长会让修好的源迟迟不回来。
+        缓存时长改完立即生效，当前 {{ searchCacheStats?.size ?? 0 }} 条；
+        「失败」别调大，否则修好的源会迟迟不回来。
       </p>
-      <TilePanel :items="cacheTiles" :cols="2" class="mt-2 shrink-0" />
+      <div class="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover"
+          @click="clearSearchCacheNow"
+        >
+          清空搜索缓存
+        </button>
+        <span class="text-[11px] text-ink-3">立刻丢掉已缓存的结果，下次搜索重新跑</span>
+      </div>
       <p
         v-if="searchCacheMsg"
         class="mt-1.5 text-[11px]"
@@ -5518,18 +5450,14 @@ onBeforeUnmount(() => {
         <span class="set-hint">IPTV 播放列表 · 与站点配置互不影响</span>
       </div>
       <p class="text-[11px] leading-relaxed text-ink-3">
-        spider jar 里没有任何类实现 <code class="rounded bg-field px-1">liveContent</code>，
-        所以直播完全靠这里的播放列表。添加时会先把地址真拉一遍，解析不出频道就不保存。
+        直播只靠这里的播放列表。添加时会先拉一遍，解析不出频道就不保存。
       </p>
       <p class="mt-1 text-[11px] leading-relaxed text-ink-3">
-        开盒自带<strong class="text-ink-2">两条内置源</strong>：Guovin 公共源
-        （央视/卫视/地方台，836 频道，源站自称每日更新，点「测试」能看是否停更）
-        和 iptv-org 中文台（222 频道，用语言包，含港澳台与 CCTV-4 各洲版、CGTN 等海外中文台）。
-        它们只是索引别人的流、不托管内容，版权状况不明；源站不稳时可能打不开，
-        可以逐条删掉换成自己的（删了不会自己回来）。
+        内置两条源：Guovin（836 频道）和 iptv-org 中文台（222 频道）。它们只是索引，
+        源站不稳时可能打不开；可逐条删除换成自己的（删了不会自己回来）。
       </p>
       <!-- 多条源时的显示方式：合并（一个台一行、多线路）还是选一条用 -->
-      <label class="mt-2 flex cursor-pointer items-center gap-1.5 text-[12px] text-ink-2">
+      <label class="mt-2 flex cursor-pointer items-center gap-1.5 text-xs text-ink-2">
         <input
           :checked="liveMerge"
           type="checkbox"
@@ -5556,7 +5484,7 @@ onBeforeUnmount(() => {
               class="min-w-[16rem] flex-[2] rounded border border-line bg-card px-2 py-1 font-mono text-xs text-ink outline-none focus:border-accent/50"
             />
             <button
-              class="shrink-0 rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-50"
+              class="shrink-0 rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-40"
               :disabled="!!liveBusy"
               @click="saveEditLive(l.url)"
             >
@@ -5584,21 +5512,21 @@ onBeforeUnmount(() => {
             <span class="max-w-[36%] truncate font-mono text-[11px] text-ink-3">{{ l.url }}</span>
             <!-- 测试：真拉一遍，报台数 + 更新于几天前（不在打开页面时自动拉，208KB 要 6 秒） -->
             <button
-              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink disabled:opacity-50"
+              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink disabled:opacity-40"
               :disabled="!!liveBusy || !!liveTestBusy"
               @click="testLive(l.url)"
             >
               {{ liveTestBusy === l.url ? '测试中…' : '测试' }}
             </button>
             <button
-              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink disabled:opacity-50"
+              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink disabled:opacity-40"
               :disabled="!!liveBusy"
               @click="startEditLive(l)"
             >
               编辑
             </button>
             <button
-              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-hot disabled:opacity-50"
+              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-hot disabled:opacity-40"
               :disabled="!!liveBusy"
               @click="doRemoveLive(l.url)"
             >
@@ -5622,7 +5550,7 @@ onBeforeUnmount(() => {
         <!-- 删错内置源时的撤回入口：不用再去手输那些 CDN 地址 -->
         <button
           v-if="canResetBuiltin && liveSources.length"
-          class="mt-1 rounded-md bg-card px-3 py-1.5 text-[11px] text-ink-2 transition hover:bg-card-hover disabled:opacity-50"
+          class="mt-1 rounded-md bg-card px-3 py-1.5 text-[11px] text-ink-2 transition hover:bg-card-hover disabled:opacity-40"
           :disabled="!!liveBusy"
           @click="doResetBuiltin"
         >
@@ -5643,7 +5571,7 @@ onBeforeUnmount(() => {
           @keyup.enter="doAddLive"
         />
         <button
-          class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-50"
+          class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-40"
           :disabled="liveBusy === 'add'"
           @click="doAddLive"
         >
@@ -5797,7 +5725,7 @@ onBeforeUnmount(() => {
     <section data-sec="danmaku" class="set-card shrink-0">
       <div class="set-head">
         <h2 class="set-title">弹幕</h2>
-        <span class="set-hint">显示效果是本地偏好；源地址由后端使用</span>
+        <span class="set-hint">显示效果本地生效 · 源地址由后端使用</span>
       </div>
 
       <div class="set-sub">
@@ -5885,12 +5813,12 @@ onBeforeUnmount(() => {
             placeholder="留空则用内置源；装「弹幕聚合」插件后会自动填入"
             class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs text-ink outline-none transition placeholder:text-ink-3 focus:border-accent/50"
           />
-          <label class="flex shrink-0 cursor-pointer items-center gap-1.5 text-[12px] text-ink-2">
+          <label class="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-ink-2">
             <input v-model="danmakuTencent" type="checkbox" class="accent-accent" />
             腾讯自动抓取
           </label>
           <button
-            class="shrink-0 rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent/60 disabled:opacity-50"
+            class="shrink-0 rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent/60 disabled:opacity-40"
             :disabled="danmakuSaving"
             @click="saveDanmakuApi"
           >
@@ -5909,7 +5837,7 @@ onBeforeUnmount(() => {
           <span class="w-16 shrink-0 text-xs text-ink-3">自动抓取</span>
           <div class="flex shrink-0 gap-1.5">
             <button
-              class="rounded-md px-2.5 py-1 text-[12px] transition"
+              class="rounded-md px-2.5 py-1 text-xs transition"
               :class="
                 orderFirst === 'builtin'
                   ? 'bg-accent font-medium text-on-accent'
@@ -5920,7 +5848,7 @@ onBeforeUnmount(() => {
               内置直连优先
             </button>
             <button
-              class="rounded-md px-2.5 py-1 text-[12px] transition"
+              class="rounded-md px-2.5 py-1 text-xs transition"
               :class="
                 orderFirst === 'aggregator'
                   ? 'bg-accent font-medium text-on-accent'
@@ -5934,16 +5862,14 @@ onBeforeUnmount(() => {
         </div>
 
         <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-          「弹幕 API 优先」适合装了 danmu_api 的场景——它覆盖哔哔、悠悠、茫茫等
-          20+ 平台，分集匹配通常更准；没装或连不上时自动回落到内置直连。
-          「腾讯自动抓取」关掉后，腾讯只出现在手动搜索里（自动播放不试它）。
+          「弹幕 API 优先」适合装了 danmu_api：覆盖 20+ 平台，分集更准；连不上会自动回落到内置源。
+          关闭「腾讯自动抓取」后，腾讯只在手动搜索里出现。
         </p>
         <p
           v-if="danmakuApi.trim() && orderFirst === 'builtin'"
           class="mt-1.5 text-[11px] leading-relaxed text-warn"
         >
-          已填弹幕 API，但当前是「内置直连优先」：首播通常仍是内置源先到（1–3 秒），
-          想优先用 API 请点「弹幕 API 优先」。
+          已填 API，但当前是「内置直连优先」：首播仍先用内置源。想优先用 API 请切到「弹幕 API 优先」。
         </p>
 
         <!--
@@ -5953,12 +5879,12 @@ onBeforeUnmount(() => {
         -->
         <div class="mt-2.5 flex flex-wrap items-center gap-2">
           <span class="w-16 shrink-0 text-xs text-ink-3">下集预取</span>
-          <label class="flex shrink-0 cursor-pointer items-center gap-1.5 text-[12px] text-ink-2">
+          <label class="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-ink-2">
             <input v-model="prefetchOn" type="checkbox" class="accent-accent" />
             片尾前预抓
           </label>
           <label
-            class="flex shrink-0 items-center gap-1.5 text-[12px]"
+            class="flex shrink-0 items-center gap-1.5 text-xs"
             :class="prefetchOn ? 'text-ink-2' : 'text-ink-3/50'"
           >
             提前
@@ -5969,15 +5895,13 @@ onBeforeUnmount(() => {
               max="3600"
               step="10"
               :disabled="!prefetchOn"
-              class="w-16 rounded-md border border-line bg-field px-2 py-1 text-center font-mono text-xs text-ink outline-none transition focus:border-accent/50 disabled:opacity-50"
+              class="w-16 rounded-md border border-line bg-field px-2 py-1 text-center font-mono text-xs text-ink outline-none transition focus:border-accent/50 disabled:opacity-40"
             />
             秒
           </label>
         </div>
         <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-          在片尾前这么多秒把下一集的弹幕抓好，切集时不用等。触发点是
-          <b>min(片尾标记, 时长) − 提前量</b>：有片尾标记时用标记，没有就用时长。
-          只用内置源时 60 秒足够；用 danmu_api（首次要 7–12 秒）建议留 180 秒。
+          片尾前提前抓下一集，切集不用等。内置源 60 秒够用；danmu_api 首次较慢，建议 180 秒。
         </p>
       </div>
       <!-- 本地弹幕：后端那份在 Web 部署时够不着，浏览器这份才是真离线 -->
@@ -5988,7 +5912,7 @@ onBeforeUnmount(() => {
             {{ dmLocal.entries }} 集 · {{ fmtBytes(dmLocal.bytes) }}
           </span>
           <button
-            class="rounded-md bg-card px-2.5 py-1 text-[11px] transition hover:bg-card-hover disabled:opacity-50"
+            class="rounded-md bg-card px-2.5 py-1 text-[11px] transition hover:bg-card-hover disabled:opacity-40"
             :disabled="!dmLocal.entries"
             @click="clearDmLocal"
           >
@@ -6014,7 +5938,7 @@ onBeforeUnmount(() => {
       <div class="set-grid">
         <TileSelect
           :model-value="prefs.themeStyle"
-          label="主题风格"
+          label="主题"
           :options="themeOptions"
           @update:model-value="(v) => update('themeStyle', v as Prefs['themeStyle'])"
         />
@@ -6075,6 +5999,7 @@ onBeforeUnmount(() => {
     <section data-sec="storage" class="set-card shrink-0">
       <div class="set-head">
         <h2 class="set-title">存储</h2>
+        <span class="set-hint">离线缓存 · 观看记录</span>
         <div class="set-actions flex items-center gap-2 text-[11px] text-ink-3">
           <span>共 {{ fmtBytes(cacheBytes) }}</span>
           <button
@@ -6090,8 +6015,7 @@ onBeforeUnmount(() => {
         <span>断网也能看完一集；分片落在后端数据目录</span>
       </div>
       <p class="text-[11px] leading-relaxed text-ink-3">
-        缓存的用途是<b>断网也能看完一集</b>：分片与播放清单都落在后端数据目录，
-        清单里的地址已改成同目录相对路径，不需要任何服务端参与。
+        断网也能看完一集：分片与清单都在后端数据目录，地址改成同目录相对路径。
       </p>
 
 
@@ -6134,9 +6058,8 @@ onBeforeUnmount(() => {
           <span v-if="cacheCfgMsg" class="text-[11px] text-ok">{{ cacheCfgMsg }}</span>
         </div>
         <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-          配额填 <code class="rounded bg-card px-1">0</code> 表示不限制。
-          超出后按「最久没播放」淘汰——每次播放本地清单都会刷新访问时间，
-          所以正在看的片子不会被删。
+          配额填 <code class="rounded bg-card px-1">0</code> 表示不限制；超限时删最久没播放的，
+          正在看的不会被删。
           <template v-if="cacheDir"><br />实际目录：<code class="text-ink-2 break-all">{{ cacheDir }}</code></template>
         </p>
       </div>
@@ -6171,9 +6094,7 @@ onBeforeUnmount(() => {
           <span v-if="cacheDirMsg" class="text-[11px] text-ok">{{ cacheDirMsg }}</span>
         </div>
         <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-          相对路径按<b>后端数据目录</b>解析，不是进程当前目录；绝对路径也可用，C 盘小的 PC 端
-          可以指到别的盘。<b>改后需重启后端生效</b>——缓存根进程内只解析一次，
-          中途换盘会让正在下的任务分片散落两个目录。
+          相对路径按后端数据目录解析，也可填绝对路径。改后需重启后端生效。
         </p>
       </div>
 
@@ -6222,8 +6143,7 @@ onBeforeUnmount(() => {
           当前后端版本还不汇报弹幕缓存占用（升级后端插件后可见）。
         </template>
         <template v-else>
-          缓存一集时会顺带把这一集的弹幕抓下来存好，断网时播放照样有弹幕。
-          弹幕缓存不占上面的配额，超过 30 天没播放的会在清理时删掉。
+          缓存一集会顺带存弹幕，断网也能看；弹幕缓存不占配额，30 天没播放会被清理。
         </template>
         <span v-if="dmCacheMsg" class="ml-1 text-ink-2">{{ dmCacheMsg }}</span>
       </p>
@@ -6282,7 +6202,15 @@ onBeforeUnmount(() => {
         <span class="font-medium text-ink-2">本机缓存</span>
         <span>海报/脚本等可再生数据；观看历史与设置都保留</span>
       </div>
-      <TilePanel :items="storageTiles" :cols="2" class="mt-2 shrink-0" />
+      <div class="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover"
+          @click="clearLocalCache"
+        >
+          清空本地缓存
+        </button>
+        <span class="text-[11px] text-ink-3">只清海报/脚本缓存，历史和设置都保留</span>
+      </div>
       <p
         v-if="localCacheMsg"
         class="mt-1.5 text-[11px] text-ink-2"
@@ -6315,52 +6243,54 @@ onBeforeUnmount(() => {
       <div class="set-head">
         <h2 class="set-title">WebDAV</h2>
         <span class="set-hint">多端同步观看记录与设置快照</span>
-        <span class="flex-1" />
-        <label class="flex items-center gap-2 text-[11px] text-ink-3">
+        <label class="set-actions flex items-center gap-2 text-[11px] text-ink-3">
           <span>启用</span>
-          <button
-            class="h-5 w-9 rounded-full transition"
-            :class="dav.enabled ? 'bg-accent' : 'bg-card-hover'"
-            :aria-label="dav.enabled ? '关闭 WebDAV 同步' : '开启 WebDAV 同步'"
-            :aria-pressed="dav.enabled"
-            @click="toggleSync"
-          >
-            <span
-              class="block h-4 w-4 rounded-full bg-surface shadow-sm ring-1 ring-black/10 transition"
-              :class="dav.enabled ? 'translate-x-4' : 'translate-x-0.5'"
-            />
-          </button>
+          <ToggleSwitch
+            :model-value="dav.enabled"
+            label="启用 WebDAV 同步"
+            @update:model-value="toggleSync"
+          />
         </label>
       </div>
 
-      <div class="grid grid-cols-1 gap-2.5 md:grid-cols-4">
+      <div class="mt-2 flex flex-wrap items-center gap-2.5">
+        <span class="w-20 shrink-0 text-xs text-ink-3">服务地址</span>
         <input
           v-model="dav.url"
-          class="rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-accent/50 md:col-span-2"
+          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
           placeholder="http://192.168.1.10:5005/meow"
           @input="patchDav({ url: dav.url })"
         />
-        <input
-          v-model="dav.dir"
-          class="rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-accent/50"
-          placeholder="目录 / meow"
-          @input="patchDav({ dir: dav.dir })"
-        />
-        <div class="flex gap-2">
+      </div>
+      <div class="mt-2 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+        <label class="flex items-center gap-2">
+          <span class="w-12 shrink-0 text-xs text-ink-3">目录</span>
+          <input
+            v-model="dav.dir"
+            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+            placeholder="meow"
+            @input="patchDav({ dir: dav.dir })"
+          />
+        </label>
+        <label class="flex items-center gap-2">
+          <span class="w-14 shrink-0 text-xs text-ink-3">用户名</span>
           <input
             v-model="dav.user"
-            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-[11px] outline-none focus:border-accent/50"
-            placeholder="用户名"
+            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent/50"
+            placeholder="可选"
             @input="patchDav({ user: dav.user })"
           />
+        </label>
+        <label class="flex items-center gap-2">
+          <span class="w-12 shrink-0 text-xs text-ink-3">密码</span>
           <input
             v-model="dav.pass"
             type="password"
-            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-[11px] outline-none focus:border-accent/50"
-            placeholder="密码"
+            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent/50"
+            placeholder="可选"
             @input="patchDav({ pass: dav.pass })"
           />
-        </div>
+        </label>
       </div>
 
       <div class="mt-2 flex flex-wrap items-center gap-2">
@@ -6527,9 +6457,8 @@ onBeforeUnmount(() => {
       </div>
 
       <p class="mt-2 text-[11px] leading-relaxed text-ink-3">
-        开启「启用」后：观看后自动上传历史，设置变更时自动新建一份快照（内容没变则跳过）。
-        启动时只拉取历史合并，<b>不会</b>自动改设置。保留最近 10 份快照。
-        WebDAV 地址和密码不会上传到远端。
+        启用后自动上传历史，设置变更时建快照（保留最近 10 份）。启动只合并历史，不改设置；
+        地址密码只存本机。
       </p>
     </section>
 
@@ -6545,12 +6474,10 @@ onBeforeUnmount(() => {
         <span>不填也能用：规则判断在本地完成，模型只负责把结论说成人话</span>
         <label class="ml-auto flex items-center gap-2 text-[11px] text-ink-3">
           <span>启用</span>
-          <input
-            type="checkbox"
-            :checked="llm.enabled"
-            @change="
-              ((llm.enabled = ($event.target as HTMLInputElement).checked), persistLlm())
-            "
+          <ToggleSwitch
+            :model-value="llm.enabled"
+            label="启用 AI 模型"
+            @update:model-value="setLlmEnabled"
           />
         </label>
       </div>
@@ -6623,7 +6550,7 @@ onBeforeUnmount(() => {
 
       <div class="mt-2.5 flex flex-wrap items-center gap-2">
         <button
-          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover disabled:opacity-50"
+          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover disabled:opacity-40"
           :disabled="llmBusy || !llm.baseUrl || !llm.apiKey"
           @click="testLlm"
         >
@@ -6635,14 +6562,10 @@ onBeforeUnmount(() => {
       </div>
 
       <p class="mt-2 text-[11px] leading-relaxed text-ink-3">
-        Key 只存在本机（与 WebDAV 密码同一处），不进备份、不上传。
-        推理模型（名字含 r1 / reasoner / thinking 等）会自动加大输出预算，
-        否则思考过程会把回答挤没。
+        Key 只存本机，不进备份。推理模型会自动加大输出预算，避免思考过程挤掉回答。
       </p>
       <p v-if="!desktop" class="mt-1 text-[11px] leading-relaxed text-ink-3">
-        Web / TV 端经由后端「模型转发」出站。
-        <b>上面那个「启用」就是唯一开关</b>——打开时它会自动替后端打开转发，
-        不用再去改配置文件。
+        Web / TV 通过后端转发；上面的「启用」是唯一开关。
       </p>
     </section>
 
@@ -6669,22 +6592,13 @@ onBeforeUnmount(() => {
         >
           <span class="truncate text-[15px] text-ink">DNS 测试</span>
           <span class="ml-auto flex shrink-0 items-center gap-1.5">
-            <span v-if="dnsProbe" class="text-[12px]" :class="dnsProbe.ok ? 'text-ok' : 'text-warn'">
+            <span v-if="dnsProbe" class="text-xs" :class="dnsProbe.ok ? 'text-ok' : 'text-warn'">
               {{ dnsProbe.ok ? '成功' : '失败' }}
             </span>
             <span
               v-else-if="dnsBusy"
               class="h-3 w-3 animate-spin rounded-full border-2 border-line-hover border-t-accent"
             />
-            <svg
-              class="h-3.5 w-3.5 text-ink-3 group-hover:text-accent"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.5"
-            >
-              <path d="m9 18 6-6-6-6" />
-            </svg>
           </span>
         </button>
       </div>
@@ -6705,7 +6619,9 @@ onBeforeUnmount(() => {
     <section data-sec="update" class="set-card shrink-0">
       <div class="set-head">
         <h2 class="set-title">更新</h2>
-        <span class="set-hint">壳 / 模块 / 插件 / fpk · 源与备用源</span>
+        <span class="set-hint">
+          {{ tvMode ? '壳 / 运行时模块' : desktop ? '壳 / 本机插件' : '壳 / fnOS 应用' }} · 源与备用源
+        </span>
       </div>
 
       <!-- 更新中心：壳 / 模块 / 插件 / fpk 的统一检查入口 -->
@@ -6729,10 +6645,10 @@ onBeforeUnmount(() => {
           :disabled="updChecking || updBusy"
           @click="checkUpdateNow()"
         >
-          {{ updChecking ? '检查中…' : '检查更新' }}
+          {{ updChecking ? '检查中…' : '用此源检查' }}
         </button>
       </div>
-      <div class="px-4 pb-3 text-[12px]">
+      <div class="pb-3 text-[11px]">
         <p v-if="updError" class="text-hot">{{ updError }}</p>
         <template v-else-if="updFound">
           <p class="text-ink">
@@ -6753,7 +6669,7 @@ onBeforeUnmount(() => {
           </ul>
           <div class="mt-2 flex items-center gap-2">
             <button
-              class="rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent hover:bg-accent-dim"
+              class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-dim"
               :disabled="updBusy"
               @click="downloadAndInstall()"
             >
@@ -6784,17 +6700,17 @@ onBeforeUnmount(() => {
           </div>
         </template>
         <p v-else-if="updChecked" class="text-ink-3">已是最新版本</p>
-        <p v-else class="text-ink-3">点右上角「检查更新」查询新版本</p>
+        <p v-else class="text-ink-3">点「用此源检查」查询新版本</p>
 
         <!--
           更新源：TV/Web 读不到插件源（那是 Tauri 命令），必须能在这里手填。
           留空 = 内置 GitHub Release 源；备用源只在主源失败时才试。
         -->
         <div class="mt-3 flex items-center gap-2">
-          <span class="shrink-0 text-[11px] text-ink-3">更新源</span>
+          <span class="shrink-0 text-xs text-ink-3">更新源</span>
           <input
             v-model="updSourceInput"
-            class="min-w-0 flex-1 rounded-md bg-card px-2 py-1 font-mono text-[11px]"
+            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
             :placeholder="updSourcePlaceholder"
             spellcheck="false"
             @change="saveUpdateSource()"
@@ -6808,22 +6724,22 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <div class="mt-1 flex items-center gap-2">
-          <span class="shrink-0 text-[11px] text-ink-3">备用源</span>
+          <span class="shrink-0 text-xs text-ink-3">备用源</span>
           <input
             v-model="updBackupInput"
-            class="min-w-0 flex-1 rounded-md bg-card px-2 py-1 font-mono text-[11px]"
+            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
             placeholder="可选：主源失败时才试，留空=不启用"
             spellcheck="false"
             @change="saveUpdateSource()"
           />
         </div>
         <p class="mt-1 text-[11px] text-ink-3">
-          访问令牌与 GitHub 加速在「网络与加速 → GitHub 加速」里统一设置（应用更新 / 插件源共用）。
-          自定义源失败时只会尝试这里显式填写的备用源，不会静默回落官方源。
+          令牌与 GitHub 加速在「网络与加速 → GitHub 加速」统一设置。自定义源失败时只试这里的备用源，
+          不回落官方源。
         </p>
         <p class="mt-1 text-[11px] text-ink-3">
-          填清单地址（与插件源同格式，取其中 <span class="font-mono">{{ updPlatform === 'windows-x64' ? 'packages.meow-pc' : 'packages.meow-tv' }}</span> 一条）。
-          服务端需允许跨域读该文件。
+          清单地址取其中 <span class="font-mono">{{ updPlatform === 'windows-x64' ? 'packages.meow-pc' : 'packages.meow-tv' }}</span>
+          一条，需允许跨域读取。
         </p>
         <!--
           下载缓存：装完成后**不自动删**（安装器是异步读文件的，秒删可能让它读不到）。
@@ -6856,8 +6772,71 @@ onBeforeUnmount(() => {
     <section data-sec="maint" class="set-card flex shrink-0 flex-col">
       <div class="set-head">
         <h2 class="set-title">维护</h2>
-        <span class="set-hint">备份 · 日志 · 重置</span>
+        <span class="set-hint">备份 · 日志 · 重置 · 调试</span>
       </div>
+
+      <!-- ── 远程调试（TV / PC）：原独立分区，归到维护 ── -->
+      <template v-if="debugPlatform">
+        <div class="set-sub mt-3">
+          <span class="font-medium text-ink-2">远程调试</span>
+          <span>
+            {{
+              debugPlatform === 'tv'
+                ? '局域网 PC 可读取状态 / 截图 / 派发按键'
+                : '内置 MCP 服务，供外部工具读取状态 / 截图 / 派发按键'
+            }}
+          </span>
+          <span class="flex-1" />
+          <span class="text-[11px]" :class="dbg.running ? 'text-accent' : 'text-ink-3'">
+            {{ dbg.running ? '运行中' : dbg.enabled ? '待生效' : '已关闭' }}
+          </span>
+        </div>
+
+        <!-- TV：可开关 -->
+        <div v-if="debugPlatform === 'tv'" class="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            class="rounded-md px-3 py-1.5 text-xs font-medium"
+            :class="dbg.enabled
+              ? 'bg-card hover:bg-card-hover'
+              : 'bg-accent text-on-accent hover:bg-accent-dim'"
+            @click="toggleTvDebug()"
+          >
+            {{ dbg.enabled ? '关闭远程调试' : '开启远程调试' }}
+          </button>
+          <span v-if="dbg.url" class="text-[11px] text-ink-3">{{ dbg.url }}</span>
+        </div>
+
+        <!-- PC：只读。地址 + 探测区间给客户端抄 -->
+        <div v-else class="mt-2 space-y-1.5">
+          <div>
+            <span class="mb-1 block text-[11px] text-ink-3">服务地址</span>
+            <code class="select-all rounded bg-field px-2 py-1 text-xs text-accent">
+              {{ dbg.url || '未监听' }}
+            </code>
+          </div>
+          <p v-if="dbg.portRange" class="text-[11px] text-ink-3">
+            端口可能顺延，客户端在 {{ dbg.portRange }} 区间探测
+            <code class="rounded bg-field px-1">/health</code>
+          </p>
+        </div>
+
+        <!-- 令牌要能被抄写：投影仪上没有 adb，验收方只能看屏幕 -->
+        <div v-if="debugPlatform === 'tv' && dbg.enabled && dbg.token" class="mt-2">
+          <span class="mb-1 block text-[11px] text-ink-3">令牌（PC 侧放 X-Meow-Token 头）</span>
+          <code class="select-all rounded bg-field px-2 py-1 text-xs tracking-wider text-accent">
+            {{ groupToken(dbg.token) }}
+          </code>
+        </div>
+        <p v-if="dbg.hint" class="mt-2 text-[11px] text-accent">{{ dbg.hint }}</p>
+        <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+          <template v-if="debugPlatform === 'tv'">
+            每次开启都会换新令牌，关闭后服务立即停止。
+          </template>
+          <template v-else>
+            只监听 127.0.0.1，不对外网开放。
+          </template>
+        </p>
+      </template>
 
       <!-- ── 数据与维护 ──
         ★ 展开站点明细时**不要**加 `min-h-0`。
@@ -6896,6 +6875,7 @@ onBeforeUnmount(() => {
       <TilePanel :items="maintTiles" :cols="3" class="mt-2 shrink-0" />
 
       <p v-if="backupMsg" class="mt-2 text-[11px] text-ink-3">{{ backupMsg }}</p>
+
     </section>
 
       </div><!-- /右侧内容 -->
@@ -7056,7 +7036,7 @@ onBeforeUnmount(() => {
           class="mt-1.5 min-h-0 flex-1 overflow-y-auto rounded-lg bg-field px-3 outline-none"
         >
 <ul class="divide-y divide-line text-[13px]">
-          <li v-if="!visibleSites.length" class="py-6 text-center text-[12px] text-ink-3">
+          <li v-if="!visibleSites.length" class="py-6 text-center text-xs text-ink-3">
             没有符合条件的源
           </li>
           <li

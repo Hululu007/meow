@@ -84,8 +84,16 @@ export const lastCheckedAt = reactive<Record<UpdateKind, number>>({
 export const moduleLatest = ref<ModuleLatest | null>(null)
 export const moduleCurrent = ref('')
 export const moduleInstalled = ref(false)
-/** 是否读过模块状态（区分“未检查”和“未安装”） */
+/** 是否读过模块安装状态（本地桥，无网络；区分“没装”和“没查过”） */
 export const moduleChecked = ref(false)
+/**
+ * 本次会话是否真的比对过模块版本。
+ *
+ * <p>和 moduleChecked 分开：读安装状态是本地桥调用，页面一打开就能做；
+ * 比对版本要走网络。两者合用一个标志会出现「已是最新」其实根本没查过，
+ * 或「未安装 · 未检查」两条状态叠在一起。
+ */
+export const moduleUpdateChecked = ref(false)
 export const pluginUpdates = ref<PluginLatest[]>([])
 /** 是否已配置插件源（用于 UI 区分“没源”和“没更新”） */
 export const pluginConfigured = ref(false)
@@ -174,6 +182,29 @@ export function isTvShell(): boolean {
   return !!b && typeof b.moduleCheck === 'function'
 }
 
+/**
+ * 只读一次模块安装状态（本地桥，不发请求）。
+ *
+ * <p>为什么要单独做：更新中心原先把「版本未知」显示成「未安装」，
+ * 再配一句「未检查」—— 用户看到「未安装 未检查」两条并列状态，
+ * 实际上模块可能正跑着，只是页面还没查过。打开设置页时先读状态，
+ * 就能只显示一条准确结论：未安装，或版本号 + 未检查。
+ */
+export function hydrateModuleState(): void {
+  if (!isTvShell()) return
+  try {
+    const b = tvBridge()
+    const raw = b.moduleState?.()
+    if (!raw) return
+    const state = JSON.parse(String(raw))
+    moduleChecked.value = true
+    moduleInstalled.value = !!state.installed
+    moduleCurrent.value = String(state.version || '')
+  } catch {
+    /* 桥返回异常就保持“未检查”，不猜安装状态 */
+  }
+}
+
 /** 应用壳更新（PC/TV）。复用 appUpdate store 的结果，避免两份状态 */
 export async function checkApp(silent = false): Promise<boolean> {
   if (checking.app) return false
@@ -198,6 +229,8 @@ export async function checkModule(silent = false): Promise<boolean> {
   const b = tvBridge()
   checking.module = true
   errors.module = ''
+  // 新一轮检查开始：上一次的“已是最新”结论先作废，失败时不能继续冒充
+  moduleUpdateChecked.value = false
   try {
     const state = JSON.parse(String(b.moduleState?.() || '{}'))
     moduleChecked.value = true
@@ -228,6 +261,7 @@ export async function checkModule(silent = false): Promise<boolean> {
           url: String(chk.url || ''),
         }
       : null
+    moduleUpdateChecked.value = true
     mark('module')
     return has
   } catch (e) {

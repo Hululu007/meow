@@ -1303,6 +1303,57 @@
     return true
   }
 
+  /**
+   * 页面显式声明的左右出口：`data-tv-right` / `data-tv-left`。
+   *
+   * <p>为什么需要：几何选焦要求"目标与当前元素在同一行"（左右键的 rowBest
+   * 规则），这样横向移动才稳定。但设置页这类「左侧导航 + 右侧内容」的
+   * 两栏布局里，导航项和右侧第一个控件的高度**不对齐**（导航 33px 一项、
+   * 右侧分区从卡片内边距开始），于是从导航按右键时会因为"同一行没有候选"
+   * 而原地不动 —— 实测 15 个导航项里有 8 项（02/04/07/09/11/12/14/15）
+   * 完全进不去内容区。
+   *
+   * <p>怎么用：给导航项标 `data-tv-right="section[data-sec=…]"`。目标可以
+   * 是任意容器，不是可聚焦元素时取它内部第一个可见可用的控件；再给内容
+   * 容器标 `data-tv-left="#导航项id"`，左键就能精确回到进入时的那一项，
+   * 而不是几何上"差不多同一行"的邻居。
+   *
+   * <p>只在元素自己声明了属性时生效，其它页面的行为完全不变。
+   */
+  function lateralTarget(from, dir) {
+    if (!from || !from.getAttribute) return null
+    var attr = dir === 'right' ? 'data-tv-right' : 'data-tv-left'
+    /*
+     * 属性可以写在控件自己身上（导航项），也可以写在整块容器上
+     * （内容区统一"左键回导航"）。向上找几层即可，不做无限继承。
+     */
+    var sel = null
+    var node = from
+    for (var i = 0; i < 8 && node && node.getAttribute; i++, node = node.parentElement) {
+      sel = node.getAttribute(attr)
+      if (sel) break
+    }
+    if (!sel) return null
+    var target = null
+    try {
+      target = document.querySelector(sel)
+    } catch (e) {
+      return null
+    }
+    if (!target) return null
+    var all = items()
+    var resolved = all.indexOf(target) >= 0 ? target : null
+    if (!resolved) {
+      var candidates = Array.prototype.slice
+        .call(target.querySelectorAll(FOCUSABLE))
+        .filter(visible)
+        .filter(usable)
+      resolved = candidates.length ? candidates[0] : null
+    }
+    if (!resolved) return null
+    return { el: resolved, owner: node, direct: node === from }
+  }
+
   function move(dir) {
     var marked = currentFocus()
     /*
@@ -1314,6 +1365,27 @@
       if (adjustRange(marked, dir)) {
         userMoved = true
         return true
+      }
+    }
+    /*
+     * 页面声明的左右出口优先于几何选焦（见 lateralTarget 的注释）。
+     * 只处理左右：上下仍由几何/列隔离负责，页面不需要为纵轴再写一套。
+     */
+    if (marked && (dir === 'left' || dir === 'right')) {
+      var lateral = lateralTarget(marked, dir)
+      if (lateral) {
+        /*
+         * 直接写在控件上的属性 = 显式改道（导航项右键进内容区）。
+         * 写在容器上的属性 = 本列的边界出口：同行还有邻居就照常走几何，
+         * 只有几何无目标、或目标跑到容器外面（比如左侧导航）时才用它。
+         * 少了这层判断，按钮行里按左键会直接跳过整行邻居跳到导航。
+         */
+        var geo = find(dir, false)
+        if (lateral.direct || !geo || (lateral.owner && !lateral.owner.contains(geo))) {
+          userMoved = true
+          highlight(lateral.el)
+          return true
+        }
       }
     }
     /*

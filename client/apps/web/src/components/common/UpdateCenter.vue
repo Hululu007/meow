@@ -31,6 +31,7 @@ import {
   fpkCurrent,
   fpkLatest,
   fpkVisible,
+  hydrateModuleState,
   isTvShell,
   lastCheckedAt,
   markChecked,
@@ -38,6 +39,7 @@ import {
   moduleCurrent,
   moduleInstalled,
   moduleLatest,
+  moduleUpdateChecked,
   pluginChecked,
   pluginConfigured,
   pluginInstalledCount,
@@ -70,6 +72,7 @@ const moduleLabel = computed(() => {
   if (checking.module) return '检查中…'
   if (!moduleChecked.value) return '未检查'
   if (!moduleInstalled.value) return '未安装'
+  if (!moduleUpdateChecked.value) return '未检查'
   if (moduleLatest.value) return `发现 v${moduleLatest.value.version}`
   return '已是最新'
 })
@@ -87,6 +90,35 @@ const fpkLabel = computed(() => {
   if (!fpkVisible.value) return '未检测到 fpk 壳'
   if (fpkLatest.value) return `发现 v${fpkLatest.value.version}`
   return '已是最新'
+})
+
+/**
+ * 标题右侧的范围说明：只列当前端真正会检查的渠道。
+ *
+ * <p>原来固定写「壳 / 模块 / 插件 / fnOS 应用统一查看」，TV 上会让人以为
+ * 插件和 fpk 也该有状态，实际那两行根本不显示。
+ */
+const scopeLabel = computed(() =>
+  tv ? '壳 / 运行时模块' : desktop ? '壳 / 本机插件' : '壳 / fnOS 应用',
+)
+
+/**
+ * 最近检查时间：只列本次会话真的查过、且当前端可见的渠道。
+ *
+ * <p>踩过（2026-11-11 用户截图）：「模块 未检查」旁边却写「最近检查：
+ * 模块 51 分钟前检查」—— 时间戳是 localStorage 里上次会话留下的，
+ * 而结果状态是内存态。另外 TV 上还会出现「插件 未检查 · fpk 未检查」，
+ * 这两个渠道在 TV 根本不存在。全部按会话标志过滤。
+ */
+const lastParts = computed(() => {
+  const parts: string[] = []
+  if (updPlatform.value !== 'web' && updChecked.value) parts.push(`壳 ${lastText('app')}`)
+  if (tv && moduleUpdateChecked.value) parts.push(`模块 ${lastText('module')}`)
+  if (desktop && pluginChecked.value) parts.push(`插件 ${lastText('plugins')}`)
+  if (!desktop && !tv && fpkVisible.value && fpkChecked.value) {
+    parts.push(`fpk ${lastText('fpk')}`)
+  }
+  return parts
 })
 
 function fmtSize(n: number): string {
@@ -150,14 +182,18 @@ function toggleAuto(key: keyof typeof auto, value: boolean): void {
 onMounted(() => {
   // 不主动发网络请求：设置页经常被打开，自动检查由 App.vue 的
   // 24h 后台任务负责；这里只展示已有状态。
+  //
+  // 模块安装状态是本地桥调用（不发请求），先读一次：
+  // 否则「版本未知」会被显示成「未安装」，再叠一句「未检查」。
+  hydrateModuleState()
 })
 </script>
 
 <template>
-  <div class="set-sub mt-3 border-t border-line pt-3" data-update-center>
+  <div class="mt-3 border-t border-line pt-3 text-[11px] text-ink-2" data-update-center>
     <div class="flex flex-wrap items-center gap-2">
       <span class="font-medium text-ink-2">更新中心</span>
-      <span class="text-[11px] text-ink-3">壳 / 模块 / 插件 / fnOS 应用统一查看</span>
+      <span class="text-[11px] text-ink-3">{{ scopeLabel }} · 统一查看</span>
       <span class="flex-1" />
       <button
         class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
@@ -183,7 +219,7 @@ onMounted(() => {
         查看
       </button>
       <button
-        v-else
+        v-else-if="!updChecked || updError"
         class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
         :disabled="updChecking"
         @click="checkAppNow()"
@@ -196,7 +232,7 @@ onMounted(() => {
     <!-- TV 运行时模块 -->
     <div v-if="tv" class="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2" data-update-row="module">
       <span class="w-24 shrink-0 text-[11px] text-ink-2">运行时模块</span>
-      <span class="font-mono text-[11px] text-ink-3">{{ moduleCurrent || '未安装' }}</span>
+      <span class="font-mono text-[11px] text-ink-3">{{ moduleCurrent || '—' }}</span>
       <span class="text-[11px] text-ink-3">{{ moduleLabel }}</span>
       <span v-if="moduleLatest" class="text-[11px] text-ink-3">{{ fmtSize(moduleLatest.size) }}</span>
       <span class="flex-1" />
@@ -208,7 +244,14 @@ onMounted(() => {
         去更新
       </button>
       <button
-        v-else
+        v-else-if="moduleChecked && !moduleInstalled"
+        class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover"
+        @click="scrollTo('[data-runtime-module]')"
+      >
+        去安装
+      </button>
+      <button
+        v-else-if="!moduleUpdateChecked || errors.module"
         class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
         :disabled="checking.module"
         @click="checkModule(false)"
@@ -231,7 +274,21 @@ onMounted(() => {
         去更新
       </button>
       <button
-        v-else
+        v-else-if="pluginChecked && !pluginInstalledCount"
+        class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover"
+        @click="scrollTo('[data-sec=plugin]')"
+      >
+        去安装
+      </button>
+      <button
+        v-else-if="pluginChecked && pluginInstalledCount && !pluginConfigured"
+        class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover"
+        @click="scrollTo('[data-plugin-source]')"
+      >
+        去配置
+      </button>
+      <button
+        v-else-if="!pluginChecked || errors.plugins"
         class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
         :disabled="checking.plugins"
         @click="checkPlugins(false)"
@@ -256,9 +313,8 @@ onMounted(() => {
         去更新
       </button>
       <button
-        v-else
-        class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disab
-led:opacity-40"
+        v-else-if="!fpkChecked || errors.fpk"
+        class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
         :disabled="checking.fpk"
         @click="checkFpk(false)"
       >
@@ -268,8 +324,8 @@ led:opacity-40"
     </div>
 
     <p class="mt-2 text-[11px] text-ink-3">
-      以上只做检查与跳转；安装仍走各自通道。最近检查：壳 {{ lastText('app') }} ·
-      模块 {{ lastText('module') }} · 插件 {{ lastText('plugins') }} · fpk {{ lastText('fpk') }}
+      检查只更新状态，不会自动安装；升级仍走各自入口。
+      <template v-if="lastParts.length">最近检查：{{ lastParts.join(' · ') }}</template>
     </p>
 
     <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line pt-2 text-[11px]">

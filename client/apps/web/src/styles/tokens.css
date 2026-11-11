@@ -950,12 +950,33 @@ html[data-tv='1'] [class~='text-[13px]'] {
 }
 
 /*
+ * `text-xs` 也是 12px 基准，但上面的 px 类名规则覆盖不到它。
+ *
+ * 踩过（2026-11-11 设置页）：`text-[11px]` 的“测试/编辑/删除”被抬到 14px，
+ * 而 `text-xs` 的“添加/保存”仍是 12px —— 次要按钮反而比主按钮大。
+ * 只作用于设置分区，避免影响首页/播放页已经调好的布局。
+ */
+html[data-tv='1'] section[data-sec] [class~='text-xs'] {
+  font-size: 0.875rem;
+}
+
+/*
  * 走 @layer components 的那几个类（.set-title / .set-hint）不在上面的
  * px 类名覆盖范围内 —— 它们本来就是 rem，会跟着根字号放大，
  * 但 12px/11px 的基准在电视上仍偏小。单独提到 10-foot UI 的下限。
  */
 html[data-tv='1'] .set-title {
-  font-size: 0.9375rem; /* 15px */
+  font-size: 1rem; /* 16px：分区标题要明显高于分组标题 */
+}
+/*
+ * 分组小标题也必须抬到正文之上。
+ *
+ * 踩过（2026-11-11 TV）：`.set-sub` 固定 11px，而正文里的 `text-[11px]`
+ * 被上面的规则抬到 14px、`text-[12px]` 抬到 15px —— 结果「应用更新源与高级设置」
+ * 比它下面的「已是最新版本 / 更新源」还小，层级完全倒过来。
+ */
+html[data-tv='1'] .set-sub {
+  font-size: 0.875rem; /* 14px */
 }
 html[data-tv='1'] .set-hint {
   font-size: 0.8125rem; /* 13px */
@@ -1252,9 +1273,11 @@ html[data-tv='1'] .seg-group .meow-tv-focus {
     margin-bottom: 0.75rem;
     min-height: 1.25rem; /* 标题行等高：有无右侧控件都不跳动 */
   }
-  /* 右侧的说明/操作统一靠右：用 ml-auto 而不是 justify-between ——
-     后者在"标题 + 徽章 + 统计"这类三个子元素的标题行里会把徽章推到中间。 */
-  .set-head > .set-hint,
+  /* 标题行的统一语义（2026-11-11）：
+     左侧 = 分区标题 + 说明（set-hint 紧跟标题），右侧 = 状态/统计/操作
+     （set-actions 靠右）。原来说明也用 ml-auto 靠右，于是「标题 + 说明 +
+     状态」三元素时两个 auto 边距把说明顶到中间，标题行读起来像错位。
+     用 ml-auto 而不是 justify-between —— 后者在三个子元素时同样会推歪。 */
   .set-head > .set-actions {
     margin-left: auto;
   }

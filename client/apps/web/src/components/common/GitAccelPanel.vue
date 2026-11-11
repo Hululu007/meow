@@ -9,6 +9,7 @@
  * <p>保存时同步写 Prefs（Web/TV）和原生 `git-proxies.json`（PC 插件安装器用）。
  */
 import { onMounted, reactive, ref } from 'vue'
+import ToggleSwitch from '@/components/common/ToggleSwitch.vue'
 import {
   enabledProxyPrefixes,
   normalizeGitAccel,
@@ -168,14 +169,17 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="set-sub mt-3 border-t border-line pt-3" data-git-accel>
+  <div class="mt-3 border-t border-line pt-3 text-[11px] text-ink-2" data-git-accel>
     <div class="flex flex-wrap items-center gap-2">
       <span class="font-medium text-ink-2">GitHub 加速</span>
       <span class="text-[11px] text-ink-3">公开 GitHub 地址的备用线路</span>
-      <span class="flex-1" />
-      <label class="flex items-center gap-1 text-[11px] text-ink-2">
-        <input v-model="accel.enabled" type="checkbox" @change="persist()" />
-        启用
+      <label class="set-actions flex items-center gap-2 text-[11px] text-ink-2">
+        <span>启用</span>
+        <ToggleSwitch
+          :model-value="accel.enabled"
+          label="启用 GitHub 加速"
+          @update:model-value="(v) => ((accel.enabled = v), persist())"
+        />
       </label>
     </div>
     <p class="mt-1 text-[11px] leading-relaxed text-ink-3">

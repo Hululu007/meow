@@ -78,7 +78,7 @@ describe('缓存可管理', () => {
   it('前端有清空缓存入口与 TTL 下拉', () => {
     expect(api).toContain('export async function clearSearchCache')
     expect(api).toContain('export async function fetchSearchCacheStats')
-    expect(settings).toContain("key: 'clearsearchcache'")
+    expect(settings).toContain('@click="clearSearchCacheNow"')
     expect(settings).toContain('searchCacheHitSec')
   })
 })
@@ -116,7 +116,7 @@ describe('跳过状态由后端下发，前端不重算', () => {
   it('重置健康有后端端点与前端按钮', () => {
     expect(health).toContain('public static synchronized void resetAll')
     expect(back).toContain('"/api/health/reset"')
-    expect(settings).toContain("key: 'resethealth'")
+    expect(settings).toContain('@click="resetSourceHealth"')
     /*
      * ★ reset 端点必须排在路由兜底之前，否则永远 404（AGENTS §4.3）。
      *

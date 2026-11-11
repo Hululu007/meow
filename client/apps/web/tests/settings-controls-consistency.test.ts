@@ -100,7 +100,7 @@ describe('设置页分区归属', () => {
 
   it('搜索相关控件都在「搜索与源」区', () => {
     const b = blockOf('source')
-    for (const k of ['cacheTtlFields', 'searchLayout', 'searchThreads', 'healthTiles', 'cacheTiles', 'settings-sites']) {
+    for (const k of ['cacheTtlFields', 'searchLayout', 'searchThreads', 'resetSourceHealth', 'clearSearchCacheNow', 'settings-sites']) {
       expect(b, `「搜索与源」区缺少 ${k}`).toContain(k)
     }
   })
@@ -139,5 +139,205 @@ describe('设置页分区归属', () => {
     expect(b, '应用更新的平台门控丢了（Web 端会看到灰按钮）').toMatch(
       /v-if="desktop \|\| tvMode"/,
     )
+  })
+})
+
+/**
+ * 2026-11-11 TV 截图定稿的三件事：
+ *   1. 「重连后端」是即时动作，不该是带箭头的卡片；放到局域网/扫码下一行。
+ *   2. 设置页说明文字过长，本机执行 / 运行时模块先压缩。
+ *   3. 运行时模块的架构类型在版本号左边，且不换行。
+ */
+describe('设置页动作形态与文案（2026-11-11）', () => {
+  const src = readFileSync(SETTINGS, 'utf8')
+
+  it('重连后端是普通按钮，排在局域网发现/扫码下一行', () => {
+    expect(src, '重连又变回磁贴了').not.toContain('const connectTiles')
+    const lan = src.indexOf('局域网自动发现')
+    const reconnect = src.indexOf('重连后端')
+    expect(lan).toBeGreaterThan(-1)
+    expect(reconnect, '重连按钮不在局域网/扫码之后').toBeGreaterThan(lan)
+    const block = src.slice(reconnect - 400, reconnect + 200)
+    expect(block, '重连不是普通按钮').toContain('bg-card')
+    expect(block, '重连还带磁贴的跳转箭头').not.toContain('tile')
+  })
+
+  it('纯动作磁贴不带跳转箭头（箭头只留给会打开新页面的项）', () => {
+    const at = src.indexOf("key: 'resetprefs'")
+    expect(at, '找不到恢复默认设置磁贴').toBeGreaterThan(-1)
+    expect(src.slice(at, at + 500), '恢复默认设置还带着跳转箭头').toContain('arrow: false')
+    // 运行日志 / 关于是真的跳转，保留箭头
+    expect(src.slice(src.indexOf("key: 'logs'"), src.indexOf("key: 'logs'") + 500))
+      .not.toContain('arrow: false')
+    expect(src.slice(src.indexOf("key: 'about'"), src.indexOf("key: 'about'") + 500))
+      .not.toContain('arrow: false')
+  })
+
+  it('单动作磁贴全部改成普通按钮，不再占半张空磁贴', () => {
+    expect(src, '还有单动作磁贴没改').not.toContain('const healthTiles')
+    expect(src).not.toContain('const cacheTiles')
+    expect(src).not.toContain('const storageTiles')
+    expect(src).not.toContain('const desktopTiles')
+    expect(src).toContain('@click="resetSourceHealth"')
+    expect(src).toContain('@click="clearSearchCacheNow"')
+    expect(src).toContain('@click="clearLocalCache"')
+    expect(src).toContain('@click="resetTrayHint"')
+  })
+
+  it('本机执行/运行时模块文案已压缩，不再保留长解释', () => {
+    expect(src).toContain('电视可脱离后端，直接运行配置里的 jar')
+    expect(src).toContain('模块约 60MB，按 CPU 架构单独安装')
+    expect(src, '旧的 60MB 解释又回来了').not.toContain('避免给所有人加 60MB')
+    expect(src, '旧的纯 class 长解释又回来了').not.toContain('纯 .class 的 jar 安卓加载不了')
+  })
+
+  it('运行时模块状态：架构在版本左侧，且不换行', () => {
+    expect(src).toContain('{{ modState.abi }} · 版本')
+    const at = src.indexOf('{{ modState.abi }} · 版本')
+    expect(src.slice(at - 120, at), '状态行没有禁止换行').toContain('whitespace-nowrap')
+  })
+})
+
+describe('DNS 测试的动作形态', () => {
+  it('DNS 测试是即时动作，不带跳转箭头', () => {
+    const src = readFileSync(SETTINGS, 'utf8')
+    const at = src.indexOf('DNS 测试')
+    expect(at).toBeGreaterThan(-1)
+    expect(src.slice(at, at + 900), 'DNS 测试又带上了跳转箭头').not.toContain('m9 18 6-6-6-6')
+  })
+})
+
+describe('远程调试并入维护', () => {
+  it('不再单独成区，内容落在维护区', () => {
+    const src = readFileSync(SETTINGS, 'utf8')
+    expect(src, '远程调试又单独成区了').not.toContain('data-sec="tvdebug"')
+    expect(src, '导航里还留着远程调试').not.toContain("id: 'tvdebug'")
+    const maintAt = src.indexOf('data-sec="maint"')
+    expect(maintAt, '找不到维护区').toBeGreaterThan(-1)
+    expect(src.slice(maintAt), '维护区里没有远程调试').toContain('远程调试')
+    const debugAt = src.indexOf('远程调试', maintAt)
+    const backupAt = src.indexOf('备份与诊断', maintAt)
+    expect(debugAt, '远程调试不在备份与诊断上方').toBeLessThan(backupAt)
+  })
+})
+
+describe('设置页字号层级与标签', () => {
+  const src = readFileSync(SETTINGS, 'utf8')
+  const TOKENS = join(ROOT, 'client', 'apps', 'web', 'src', 'styles', 'tokens.css')
+
+  it('TV 上分组小标题不小于正文，避免“更新源”比分组标题还大', () => {
+    const css = readFileSync(TOKENS, 'utf8')
+    const at = css.indexOf("html[data-tv='1'] .set-sub")
+    expect(at).toBeGreaterThan(-1)
+    expect(css.slice(at, at + 120)).toContain('0.875rem')
+  })
+
+  it('更新源正文与标签和常规表单同一档', () => {
+    expect(src).toContain('class="pb-3 text-[11px]"')
+    expect(src).toContain('class="shrink-0 text-xs text-ink-3">更新源')
+    expect(src).toContain('class="shrink-0 text-xs text-ink-3">备用源')
+  })
+
+  it('本机执行用统一 set-head，动作行不再被单列 set-grid 挤窄', () => {
+    const at = src.indexOf('data-sec="localexec"')
+    const end = src.indexOf('data-sec="runtime"', at)
+    const block = src.slice(at, end)
+    expect(block).toContain('class="set-head"')
+    expect(block).not.toContain('class="set-grid mt-2"')
+    expect(block).toContain('网关地址 {{ localGw }}')
+  })
+
+  it('搜索与源副标题不再提已经独立出去的直播源', () => {
+    expect(src).toContain('站点源 · 站点管理 · 搜索怎么跑')
+    expect(src).not.toContain('站点源 · 站点管理 · 直播源 · 搜索怎么跑')
+  })
+
+  it('WebDAV 四个字段有可见标签，不再只靠 placeholder', () => {
+    const at = src.indexOf('data-sec="sync"')
+    const end = src.indexOf('data-sec="ai"', at)
+    const block = src.slice(at, end)
+    for (const label of ['服务地址', '目录', '用户名', '密码']) {
+      expect(block, `WebDAV 缺少「${label}」标签`).toContain(`>${label}<`)
+    }
+  })
+})
+
+describe('设置页字号刻度统一', () => {
+  const src = readFileSync(SETTINGS, 'utf8')
+  const TOKENS = join(ROOT, 'client', 'apps', 'web', 'src', 'styles', 'tokens.css')
+
+  it('TV 设置页内 text-xs 也抬到 14px，避免次要按钮比主按钮小', () => {
+    const css = readFileSync(TOKENS, 'utf8')
+    expect(css).toContain("html[data-tv='1'] section[data-sec] [class~='text-xs']")
+  })
+
+  it('设置页不再使用 text-[12px]（TV 下会被抬到 15px）', () => {
+    expect(src).not.toContain('text-[12px]')
+  })
+
+  it('禁用态透明度统一为 40%', () => {
+    expect(src).not.toMatch(/disabled:opacity-(30|50)/)
+  })
+})
+
+describe('窄磁贴/表单标签不被截断', () => {
+  const src = readFileSync(SETTINGS, 'utf8')
+
+  it('主题磁贴标签缩到「主题」，避免被色板挤成「主题…」', () => {
+    expect(src).toContain('label="主题"')
+    expect(src).not.toContain('label="主题风格"')
+  })
+
+  it('失败缓存磁贴标签不再超宽', () => {
+    expect(src).toContain("label: '失败缓存'")
+    expect(src).not.toContain("label: '失败结果缓存'")
+  })
+
+  it('连接区两个标签用 w-20，5 个字的「写操作令牌」不换行', () => {
+    expect(src).toContain('class="w-20 shrink-0 text-xs text-ink-3">后端地址')
+    expect(src).toContain('class="w-20 shrink-0 text-xs text-ink-3">写操作令牌')
+  })
+})
+
+describe('设置页控件形态统一（2026-11-11）', () => {
+  const src = readFileSync(SETTINGS, 'utf8')
+  const SWITCH = join(ROOT, 'client', 'apps', 'web', 'src', 'components', 'common', 'ToggleSwitch.vue')
+  const ACCEL = join(ROOT, 'client', 'apps', 'web', 'src', 'components', 'common', 'GitAccelPanel.vue')
+
+  it('启用类开关统一用 ToggleSwitch（不再混用 checkbox）', () => {
+    expect(src).toContain("import ToggleSwitch from '@/components/common/ToggleSwitch.vue'")
+    const sw = readFileSync(SWITCH, 'utf8')
+    expect(sw).toContain('role="switch"')
+    expect(sw).toContain(":aria-checked=\"modelValue\"")
+    // 四处：运行时模块 / AI / WebDAV / GitHub 加速
+    expect(src).toContain('<ToggleSwitch')
+    expect(readFileSync(ACCEL, 'utf8')).toContain('<ToggleSwitch')
+    // 启用类开关不再用原生 checkbox
+    expect(src).not.toContain(':checked="modState.enabled"')
+    expect(src).not.toContain(':checked="llm.enabled"')
+    expect(readFileSync(ACCEL, 'utf8')).not.toContain('v-model="accel.enabled" type="checkbox"')
+  })
+
+  it('分区标题行：左边标题+说明，右边状态/操作', () => {
+    const css = readFileSync(join(ROOT, 'client', 'apps', 'web', 'src', 'styles', 'tokens.css'), 'utf8')
+    // 说明不再 ml-auto（否则会被推到中间），只有 set-actions 靠右
+    expect(css).toMatch(/\.set-head > \.set-actions \{\s*margin-left: auto;/)
+    expect(css).not.toMatch(
+      /\.set-head > \.set-hint,\s*\.set-head > \.set-actions \{\s*margin-left: auto;/,
+    )
+    // 状态类内容统一挂 set-actions
+    expect(src).toContain('class="set-actions flex flex-wrap items-center gap-2"')
+    expect(src).toContain('class="set-actions flex items-center text-[11px] text-ink-3"')
+  })
+
+  it('表单标签统一放左侧（不再一半在上一行）', () => {
+    // WebDAV 四个字段
+    const at = src.indexOf('data-sec="sync"')
+    const block = src.slice(at, at + 4000)
+    expect(block).toContain('w-20 shrink-0 text-xs text-ink-3">服务地址')
+    expect(block).toContain('w-12 shrink-0 text-xs text-ink-3">目录')
+    expect(block).toContain('w-14 shrink-0 text-xs text-ink-3">用户名')
+    // 本机执行配置地址
+    expect(src).toContain('w-20 shrink-0 text-xs text-ink-3">配置地址')
   })
 })

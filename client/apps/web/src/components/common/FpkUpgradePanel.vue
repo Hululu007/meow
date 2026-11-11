@@ -189,7 +189,7 @@ async function start(): Promise<void> {
     </button>
   </div>
 
-  <div v-if="visible" class="px-4 pb-3 text-[length:var(--fs-xs)]">
+  <div v-if="visible" class="pb-3 text-[length:var(--fs-xs)]">
     <p v-if="error" class="text-hot">{{ error }}</p>
 
     <template v-else-if="target && !busy && !done">
@@ -243,7 +243,7 @@ async function start(): Promise<void> {
   </div>
 
   <!-- 索引源：默认走 jsDelivr(gcore)，私有源/内网镜像可在这里改（存 localStorage） -->
-  <div v-if="visible" class="px-4 pb-3 text-[length:var(--fs-mini)] text-ink-3">
+  <div v-if="visible" class="pb-3 text-[length:var(--fs-mini)] text-ink-3">
     <details>
       <summary class="cursor-pointer select-none">更新索引源（{{ indexHost }}）</summary>
       <div class="mt-1.5 flex items-center gap-2">

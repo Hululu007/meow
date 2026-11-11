@@ -15,6 +15,7 @@ import { join } from 'node:path'
  */
 const REPO = join(__dirname, '..', '..', '..', '..')
 const TV_NAV = join(REPO, 'client', 'apps', 'tv', 'app', 'src', 'main', 'assets', 'tv-nav.js')
+const SETTINGS = join(REPO, 'client', 'apps', 'web', 'src', 'views', 'SettingsView.vue')
 
 /** 取一个顶层函数的函数体（按大括号配平）。 */
 function fnBody(src: string, signature: string): string {
@@ -556,5 +557,59 @@ describe('追加 B：弹框打开聚焦第一个元素或当前值', () => {
       'utf8',
     )
     expect(src).toContain(':data-tv-current="o.value === modelValue')
+  })
+})
+
+/**
+ * 设置页「左导航 → 右内容」的左右键出口（2026-11-11）。
+ *
+ * 用户验收要求：「上下左右按键是不是都能触达，有没有无法聚焦的情况」。
+ * 实测（MuMu 192.168.1.77，2560×1440）：15 个导航项里有 8 项
+ * （02/04/07/09/11/12/14/15）按右键完全不动 —— 几何选焦要求目标与当前
+ * 元素在同一行，而导航项 33px 一项、右侧控件从卡片内边距开始，高度不对齐。
+ *
+ * 修法不是放宽"同一行"（会把左右键变成乱跳），而是允许页面显式声明出口：
+ *   - 导航项：data-tv-right="section[data-sec=…]" → 进入该分区第一个控件
+ *   - 内容区：data-tv-left="#set-nav-…" → 精确回到进入时的导航项
+ * 这两条都是"页面声明了才生效"，其它页面行为不变。
+ */
+describe('设置页导航的左右键出口', () => {
+  const nav = readFileSync(TV_NAV, 'utf8')
+
+  it('tv-nav 提供 data-tv-right / data-tv-left 显式出口', () => {
+    const body = fnBody(nav, 'function lateralTarget(')
+    expect(body, '没有读 data-tv-right').toContain("'data-tv-right'")
+    expect(body, '没有读 data-tv-left').toContain("'data-tv-left'")
+    expect(body, '目标不是可聚焦元素时没有取容器内第一个控件').toContain(
+      'target.querySelectorAll(FOCUSABLE)',
+    )
+  })
+
+  it('出口支持写在祖先容器上（内容区统一左键回导航）', () => {
+    const body = fnBody(nav, 'function lateralTarget(')
+    expect(body, '没有向上找声明出口的容器').toContain('node.parentElement')
+    expect(body, '没有区分直接声明与容器继承').toContain('direct: node === from')
+  })
+
+  it('容器继承的出口只在几何无目标或目标在容器外时生效', () => {
+    /*
+     * 否则按钮行里按左键会直接跳过整行邻居跳到导航 —— 实测源区
+     * 「读取并预览」左键应到配置地址输入框，不该回「05 搜索与源」。
+     */
+    const moveBody = fnBody(nav, 'function move(')
+    expect(moveBody, 'move() 没有调用 lateralTarget').toContain('lateralTarget(marked, dir)')
+    expect(moveBody, '没有用直接声明优先').toContain('lateral.direct || !geo')
+    expect(moveBody, '没有判断几何目标是否在容器外').toContain('lateral.owner.contains(geo)')
+  })
+
+  it('设置页导航项声明右键目标，内容区声明左键回当前导航项', () => {
+    const src = readFileSync(SETTINGS, 'utf8')
+    expect(src, '导航项没有 data-tv-right').toContain(
+      ":data-tv-right=\"'section[data-sec=' + i.id + ']'\"",
+    )
+    expect(src, '导航项没有 data-tv-sec').toContain(':data-tv-sec="i.id"')
+    expect(src, '内容区没有 data-tv-left').toContain(
+      ":data-tv-left=\"'#set-nav-' + lastNavSec\"",
+    )
   })
 })
