@@ -9,6 +9,8 @@
 | [三端架构](./architecture.md) | 四层骨架、核心组件、三出口、ADR |
 | [接口契约](./api-contract.md) | 前后端契约：响应、错误码、降级 |
 | [前端手册](./frontend.md) | 前端不可回退决策与踩坑 |
+| [播放与转码](./playback.md) | 八类播放错误、转码决策、ABR、看门狗 |
+| [弹幕](./danmaku.md) | 四源优先级、降级、缓存与调度 |
 | [TV 接入与 Fongmi](./tv-integration.md) | TV 接入、`/config.json`、Fongmi 消费路径 |
 | [插件系统](./plugin-system.md) | manifest、插件源、校验 |
 | [Docker 部署](./docker.md) | 四容器、`.env`、排障、多架构 |

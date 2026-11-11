@@ -103,6 +103,35 @@
 "spider": "<jar-url>;md5;<md5-of-that-exact-file>"
 ```
 
+### 2.1.1 `spiderJvm`：JVM 端优先读这个字段（1.1.6 起）
+
+一份配置要同时给 TV 和 JVM 端用时，顶层 `spider` 必须是 **dex** 形态——Fongmi 只认它。
+JVM 端则优先读自定义字段 `spiderJvm`（class 形态）：
+
+```json
+{
+  "spider": "https://example.com/spider-dex.jar;md5;<hex>",
+  "spiderJvm": "https://example.com/spider-class.jar;md5;<hex>",
+  "sites": [ ... ]
+}
+```
+
+读取顺序（`server/host/src/shared/core/Jars.java`）：
+
+1. `spiderJvm` 非空 → 用它
+2. 否则回退 `spider`
+
+三端行为对照：
+
+| 端 | 读哪个字段 | 说明 |
+|---|---|---|
+| Fongmi / TV | `spider` | 不认识 `spiderJvm`，当作未知字段忽略 |
+| 猫窝 JVM（Web/PC） | 优先 `spiderJvm` | 没有才回退 `spider` |
+| 旧版猫窝（< 1.1.6） | 只有 `spider` | 需要单独的 `config.jvm.json` |
+
+站点内的顺序如果写反（顶层 `spider` 指向 class jar），TV 会直接
+`DexClassLoader` 失败，且不会回退——它没有第二个字段可读。
+
 ### 2.2 MD5 语义（硬约束）
 
 Fongmi 的校验逻辑（`catvod/.../Crypto.java:55`）：

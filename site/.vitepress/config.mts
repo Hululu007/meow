@@ -42,6 +42,8 @@ const devSidebar = [
   { text: '三端架构', link: '/dev/architecture' },
   { text: '接口契约', link: '/dev/api-contract' },
   { text: '前端手册', link: '/dev/frontend' },
+  { text: '播放与转码', link: '/dev/playback' },
+  { text: '弹幕', link: '/dev/danmaku' },
   { text: 'TV 接入与 Fongmi', link: '/dev/tv-integration' },
   { text: '插件系统', link: '/dev/plugin-system' },
   { text: 'Docker 部署', link: '/dev/docker' },
