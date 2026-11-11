@@ -3,7 +3,11 @@
 > **2026-11-09 纯壳剥离**：公开镜像不再内置 `spider.jar` / 真实 `config.sites.json`；
 > 首启播种 `config.sites.example.json`（空壳，44 个静态站），jar 站由用户在应用内
 > **导入源包**恢复。私有全量构建才把 jar 放回 `libs/`、真实配置作为 seed。
-> 源包规则见 README「源包」。
+>
+> **源包规范（2026-11-11）**：统一入口 `config.all.json`，dex 为主；Fongmi/TV 直接
+> 加载，JVM 由 `Dex2Jvm` 导入期转换。规则/校验见
+> [`deploy/source-pack/`](../deploy/source-pack/README.md)，部署见
+> [`SOURCE_PACK.md`](../deploy/SOURCE_PACK.md)。
 
 > **面向**：要自己部署一份 Meow 后端 / 换机器重建 / 出问题排查的人。
 >
@@ -461,16 +465,18 @@ cd deploy/docker && docker compose up -d
 
 公开壳镜像**不含** `spider.jar`。推荐在应用内导入源包：
 
-1. 把 JVM 源包放在容器**可达**的地址（NAS / 宿主 LAN IP / `host.docker.internal`）。
+1. 把源包放在容器**可达**的地址（NAS / 宿主 LAN IP / `host.docker.internal`）。
    **不能写 `127.0.0.1`**：容器里的回环是容器自己，实测报 `Connection refused`。
-2. 设置 →「配置源」填 config URL（顶层 `spider` 指向 **class 形态** jar，可带 `;md5;`）；
+2. 设置 →「配置源」填 **`config.all.json`**（顶层 `spider` 是 dex jar，带 `;md5;`）；
    导入时勾选「用这份配置的顶层 spider 覆盖本地」（API 传 `replaceSpider:true`）。
-3. `Jars.reload()` 挂载后，`/api/health` 的 `sites` 从 44 涨到导入后的数量（如 56），
-   jar 站可搜。
+3. JVM 没有 `spiderJvm` 时，`Dex2Jvm` 会在导入期把 dex 转成 class 并缓存到
+   `/data/jars/converted/`；`/api/health` 的 `sites` 变为导入后的数量，jar 站可搜。
+   升级后旧配置里的 dex 站点需要**重新导入一次**才会触发转换。
 
-私有全量构建要内置：把 class jar 放到 `server/host/libs/spider.jar` 再 build，
+私有全量构建要内置 class jar 时：把 jar 放到 `server/host/libs/spider.jar` 再 build，
 或在 compose 里挂载（文件必须存在；Docker 遇到不存在的 bind 源会创建空目录，
-`/app/libs/spider.jar` 变目录 → `ClassNotFoundException`、容器 unhealthy）。
+`/app/libs/spider.jar` 变目录 → `ClassNotFoundException`、容器 unhealthy）。公开壳不需要
+内置 jar。
 
 ### 4.8 写操作令牌（`MEOW_AUTH_TOKEN`）
 

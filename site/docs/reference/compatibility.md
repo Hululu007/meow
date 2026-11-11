@@ -15,15 +15,17 @@
 | 能力 | 最低应用版本 | 不满足会怎样 |
 |---|---|---|
 | 顶层 `spider`（含 `;md5;`） | 所有版本 | — |
-| 站点级 `jar`（TV 必需） | TV 端早期版本即有 | 缺字段的 `csp_` 站点被跳过 |
-| `spiderJvm`（JVM 与 TV 共用一份配置） | **1.1.6** | 旧版忽略该字段，回退读 `spider` |
+| 站点级 `jar` | TV 端早期版本即有 | 可选；没有时回退顶层 `spider` |
+| `spiderJvm`（JVM 优化/旧版兼容） | **1.1.6** | 旧版忽略该字段，回退读 `spider` |
+| JVM 导入期 dex→class（dex2jvm） | 当前主分支（待发版） | 旧 JVM 不转换 dex，仍需 class jar |
 | 导入模式 `mode` / `onConflict` / `replaceSpider` | 较早版本已有 | 旧版只能整表导入 |
 
-::: warning 旧版 + `spiderJvm` 组合
-旧版应用读不到 `spiderJvm`，会拿顶层 `spider`（dex）去 `Class.forName`，报 `NoClassDefFoundError`。
-
-旧版要么用单独的 `config.jvm.json`，要么把顶层 `spider` 直接指向 class jar。
-升级到 1.1.6 之后才能用一份 `config.all.json` 通吃三端。
+::: warning 旧版 JVM + dex 源包
+不认 dex2jvm 的旧 JVM 会拿顶层 `spider`（dex）去 `Class.forName`，报
+`NoClassDefFoundError`。旧版要么用单独的 `config.jvm.json`（顶层 `spider` 指向
+class jar），要么把 `spider` 直接指向 class jar。
+当前主分支起，猫窝 JVM 导入 `config.all.json` 会自动把 dex 转成 class；Fongmi/TV
+一直直接吃 dex，不受影响。
 :::
 
 ## 应用 × 插件
@@ -48,6 +50,7 @@
 | 飞牛版内置弹幕插件 | 1.1.0 | 复用应用中心 Node 22 |
 | fnOS 应用内更新 | **1.1.3** | 旧版只能走应用中心 |
 | 配置支持 `spiderJvm` | **1.1.6** | 见上 |
+| JVM 导入期 dex→class（dex2jvm） | 当前主分支（待发版） | 源包只需 dex；旧 JVM 用 `config.jvm.json` |
 
 更早的能力没有逐版本记录，以实际界面为准。这张表只列能追溯到 CHANGELOG
 或代码里明确门槛的项。
@@ -65,6 +68,7 @@
 |---|---|
 | 1.0.x → 1.1.x | 直接升；但 TV 运行时模块需要壳先到 1.1.0 |
 | 1.1.0–1.1.5 → 1.1.6 | 可用统一配置，旧 `config.jvm.json` 仍兼容 |
+| 1.1.6 → 当前主分支 | `config.all.json` 的 dex 由 JVM 导入期转换；旧配置需重新导入一次 |
 | 任意 → 降级 | 见 [升级与迁移](/guide/upgrade#降级) |
 
 ::: tip 版本号不齐不用管

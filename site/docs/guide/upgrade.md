@@ -98,10 +98,11 @@ adb install -r meow-TV-<版本>.apk
 
 哪一步断了，见 [常见问题](/guide/faq) 与 [诊断手册](/reference/diagnostics)。
 
-### 别忘了 jar 形态
+### 源包现在是 dex 主入口
 
-迁移到新源包时，JVM 端要 **class 形态** jar，TV 端要 **dex 形态**。
-一份 `config.all.json` 用 `spiderJvm` 分流，细节见 [导入源包](/guide/source-pack#三端要的格式不一样)。
+迁移到新源包时，统一用 `config.all.json` + **dex** jar：Fongmi/TV 直接加载，
+猫窝 JVM 用导入期 `Dex2Jvm` 自动转 class。`spiderJvm` 只是可选的 JVM 优化，
+不再是必需产物。细节见 [导入源包](/guide/source-pack#一份配置通吃三端)。
 
 ## 跨版本变化速查
 
@@ -111,6 +112,7 @@ adb install -r meow-TV-<版本>.apk
 | 飞牛版内置弹幕插件 | 1.1.0 | 复用应用中心 Node 22 |
 | fnOS 应用内更新 | 1.1.3 | 旧版只能走应用中心 |
 | 配置支持 `spiderJvm` | 1.1.6 | 旧版不认该字段，仍需 `config.jvm.json` |
+| JVM 导入期 dex→class（dex2jvm） | 当前主分支 | 源包只需 dex；旧 JVM 仍要 `config.jvm.json` 的 class jar |
 
 更早的能力（端内网关、扫码推送）没有逐版本记录，判断依据以实际界面为准。
 完整对照见 [版本兼容矩阵](/reference/compatibility)。
@@ -124,8 +126,9 @@ adb install -r meow-TV-<版本>.apk
 | TV | `adb install -d <旧 apk>` | `-d` 允许降级；签名必须一致 |
 | fnOS | 先卸载再装旧 fpk | 卸载清数据，先备份 |
 
-降级后如果配置里用了新版本才有的字段（如 `spiderJvm`），旧版会忽略它，
-表现为「源包明明有 jar 却加载不到」——把 `spider` 指回 class jar 即可。
+降级到不认 dex2jvm 的旧 JVM 时，`config.all.json` 里的 dex 不会被转换：
+改用 `config.jvm.json`（顶层 `spider` 指向 class jar），或把 `spider` 指回 class jar。
+`spiderJvm` 这类未知字段会被旧版忽略。
 
 ## 升级后自检
 

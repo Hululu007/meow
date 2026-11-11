@@ -29,7 +29,7 @@ services:
       # 这样拷到 OECT 的 compose 目录也能直接 build。
       context: .
       dockerfile: Dockerfile.sources
-    image: ${MEOW_SOURCES_IMAGE:-chrplus/meow-sources:1.0.0}
+    image: ${MEOW_SOURCES_IMAGE:-chrplus/meow-sources:1.1.0}
     container_name: meow-sources
     ports:
       # 必须绑 0.0.0.0：TV/PC 在局域网里直接访问，不经过主栈 nginx。

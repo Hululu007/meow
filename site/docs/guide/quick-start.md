@@ -13,7 +13,7 @@
 
 ::: tip 先准备好源包
 所有形态装完都是**空壳**，必须有源包才能搜索与播放。
-源包 = `config.json` + spider jar（class 或 dex 形态），详见 [导入源包](/guide/source-pack)。
+源包 = `config.all.json` + dex spider jar（JVM 会自动转 class），详见 [导入源包](/guide/source-pack)。
 :::
 
 ## 一、Docker（最省事）
@@ -64,7 +64,7 @@ docker compose up -d
 
 1. 下载 `meow-TV-<版本>.apk`，用 U 盘或 `adb install` 装到电视 / 盒子。
 2. 打开应用，进入「设置 → 本机执行 → 配置地址」。
-3. 填入源包里的 `config.json` 地址（**TV 需要 dex 形态的 jar**）。
+3. 填入源包里的 `config.all.json` 地址（顶层 `spider` 是 dex jar）。
 4. 返回首页，等待站点加载。
 
 遥控器操作、扫码把后端地址推给电视、端内网关见 [TV / 投影仪](/guide/tv)。

@@ -1,38 +1,72 @@
 # 源包服务部署与维护（OECT / NAS / 任意 Linux）
 
-> 目标：把 **源清单（config）+ class/dex jar** 做成一个常驻 HTTP 入口，
-> 让空壳客户端直接填地址导入，不再依赖开发机上的临时 `python -m http.server`。
+> **规范版本：`meow-source-pack/1`**
 >
-> 这是**独立服务**，不修改现有 Meow Docker compose / 容器。
+> 目标：源包以 **CatVod dex 为主**，一份 `config.all.json` 同时服务
+> Fongmi/TVBox、猫窝 TV 和猫窝 JVM。猫窝 JVM 不要求单独的 class 源包：
+> 它在导入时用 `Dex2Jvm` 把 dex 转成 class 并缓存；`spiderJvm` 只是可选的
+> JVM 优化/旧版兼容字段。
+>
+> 规则与校验脚本在 [`deploy/source-pack/`](source-pack/README.md)，本文只讲部署。
 
-## 一、产物
+## 一、目录与唯一入口
 
 ```text
 sources/
-├── config.all.json     # 统一入口：顶层 dex + spiderJvm class，站点不写 jar
-├── config.jvm.json     # 仅 JVM / PC / Docker：顶层 spider 指向 class jar
-├── config.tv.json      # 仅 TV：顶层 spider + 每个 csp_ 站点 jar 指向 dex jar
-├── spider.jar          # class 形态（JVM）
-├── spider-dex.jar      # dex 形态（ZIP 内 classes.dex，TV）
+├── config.all.json       # 唯一入口（Fongmi / 猫窝 TV / 猫窝 JVM 都填它）
+├── source-pack.json      # 机器可读清单：entry / artifacts / hash / profiles
+├── spider-dex.jar        # 主产物：ZIP 内 classes.dex
+├── spider.jar            # 可选：class 形态，仅旧 JVM / config.jvm.json
+├── config.jvm.json       # 可选：旧 JVM 兼容 profile（deprecated）
+├── config.tv.json        # 可选：显式 TV 兼容 profile（deprecated）
 └── SHA256SUMS.txt
 ```
 
-- class 与 dex **不能混用**：JVM 读不了 dex，Android 读不了纯 class。
-- **`config.all.json` 是统一入口**：
-  - 顶层 `spider` 指向 **dex jar**（Fongmi/Android/TV 直接加载）；
-  - 自定义 `spiderJvm` 指向 **class jar**（猫窝 JVM/PC/Docker 优先读它）；
-  - 站点不写 `jar`，Fongmi 自动用顶层 dex，猫窝 TV 也回退顶层 dex。
-  - Fongmi 会忽略未知字段 `spiderJvm`，因此同一份配置可同时给 Android 和猫窝三端。
-- `config.tv.json` 里所有 `api` 以 `csp_` 开头的站点都要带 `jar`，否则 TV 会跳过该站。
-- 配置里的 `spider` / `jar` 必须是**客户端能访问到的绝对地址**（不要写 `127.0.0.1`，除非客户端就在同一台机器）。
+**新部署只需要 `config.all.json + source-pack.json + spider-dex.jar`。**
 
-## 二、OECT 上的独立服务
+`config.jvm.json` / `config.tv.json` 是兼容产物，不再手工维护。`config.all` 已实测
+可被猫窝 TV 直接导入（站点不写 `jar`，回退顶层 `spider`），所以不需要为了 TV
+再生成一份逐站 `jar` 的配置。
 
-以 OECT 为例，源文件放在 `/vol2/1000/meow-sources`，端口 `18080`。有两种启动方式：**当前用 Docker**；systemd 仅作旧机/无 Docker 环境的备用。
+## 二、硬规则
 
-### 2.1 Docker（当前方式，推荐）
+| 规则 | 要求 |
+|---|---|
+| 顶层 `spider` | 必须是绝对 `http(s)` URL，指向 **dex** jar（ZIP 内 `classes.dex`） |
+| 站点 `jar` | 可选；省略时用顶层 `spider`；写了就必须是 dex |
+| `spiderJvm` | 可选；class jar，仅 JVM 优化/旧版兼容；Fongmi/TV 会忽略 |
+| jar URL | 必须带 `;md5;<32位小写hex>`，或使用版本化文件名；推荐 md5 |
+| 地址 | 绝对 URL；禁止 `file:`、相对路径、`127.0.0.1`、`localhost` |
+| 更新 | 换 jar 必须同时换 md5（或文件名），否则客户端会继续用旧缓存 |
+| 编码 | UTF-8，无 BOM |
+| 缓存 | `config.all.json` 用 `Cache-Control: no-cache`；jar 用 md5/版本号破缓存 |
 
-文件都在 `deploy/docker/`：
+### 三端怎么读
+
+| 端 | 读取 | 加载 |
+|---|---|---|
+| Fongmi / TVBox | `spider` + 可选站点 `jar` | Android `DexClassLoader` |
+| 猫窝 TV | 同上；站点无 `jar` 时回退顶层 `spider` | `DexClassLoader`，不转换 |
+| 猫窝 JVM | 优先 `spiderJvm`；没有则 `spider` | `URLClassLoader`；dex 由 `Dex2Jvm` 导入期转换 |
+
+因此 **`spiderJvm` 不是必需产物**。推荐 `config.all.json` 不写它，让 JVM 走统一
+的 dex2jvm 链路；只有在明确要优化 JVM 冷导入时才加。
+
+## 三、OECT 上的独立服务
+
+源文件放在 `/vol2/1000/meow-sources`，端口 `18080`。当前用 Docker：
+
+```bash
+cd /vol2/1000/docker-data/meow
+
+# .env 至少要有：
+#   MEOW_SOURCES_DIR=/vol2/1000/meow-sources
+#   （可选）MEOW_SOURCES_PORT=18080
+
+docker compose -f docker-compose.sources.yml up -d --build
+```
+
+`deploy/docker/` 里的三个文件：
 
 | 文件 | 用途 |
 |---|---|
@@ -40,90 +74,26 @@ sources/
 | `nginx.sources.conf` | 监听 8080、禁止 SPA fallback、`.jar` 用 `application/java-archive` |
 | `docker-compose.sources.yml` | 独立编排，只读挂载源包目录 |
 
-从 systemd 切换（**先停旧的，否则 18080 被占用**）：
+要点：
 
-```bash
-systemctl disable --now meow-sources
+- **不要把源包 COPY 进镜像**：`Dockerfile.sources` 只装 nginx 配置，jar/config 通过
+  `MEOW_SOURCES_DIR` 只读挂载；公开镜像不含第三方内容。
+- 健康检查同时要求 `source-pack.json` 和 `config.all.json` 可读；只有旧
+  `config.all.json`、没有规范清单的目录会被判未规范化。
+- 找不到文件必须 404，不能回落 `index.html`（否则客户端把 HTML 当 JSON/jar）。
+- 只换源包文件不需要重启 nginx；改 `Dockerfile.sources`/`nginx.sources.conf` 才需要
+  `up -d --build`。
+- 源包服务与主栈 `meow` 完全独立；重建 `meow-web` 不影响它。
 
-cd /path/to/meow/deploy/docker
-MEOW_SOURCES_DIR=/vol2/1000/meow-sources \
-  docker compose -f docker-compose.sources.yml up -d --build
-```
+systemd 仅作无 Docker 环境备用，启动 `python3 -m http.server 18080` 即可；生产推荐
+上面的 nginx 容器。
 
-验证：
+## 四、生成/更新源包
 
-```bash
-curl -I http://192.168.1.20:18080/config.all.json
-curl -I http://192.168.1.20:18080/spider.jar
-curl -I http://192.168.1.20:18080/spider-dex.jar
-docker compose -f docker-compose.sources.yml logs -f sources
-```
+### 1. 取 dex jar
 
-注意：
-
-- **不要把源包 COPY 进镜像**：`Dockerfile.sources` 只装 nginx 配置，jar/config 通过 `MEOW_SOURCES_DIR` 只读挂载；这样公开镜像不含第三方内容，源包更新只换宿主机文件。
-- 同机同端口切换后，`config.*.json` 里的绝对地址不用改；换主机/端口才需要重写 `spider` / `jar` 并重算 `SHA256SUMS.txt`。
-- 改了 `Dockerfile.sources` 或 `nginx.sources.conf` 才需要 `up -d --build`；只换源包文件不需要重启容器。
-- 容器名是 `meow-sources`，编排名是 `meow-sources`，与主栈 `meow` 完全独立。
-
-### 2.2 systemd + Python（旧方式，备用）
-
-`/etc/systemd/system/meow-sources.service`：
-
-```ini
-[Unit]
-Description=Meow source pack static server (port 18080)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=admin
-WorkingDirectory=/vol2/1000/meow-sources
-ExecStart=/usr/bin/python3 -m http.server 18080 --bind 0.0.0.0 --directory /vol2/1000/meow-sources
-Restart=always
-RestartSec=2
-NoNewPrivileges=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-```
-
-启用：
-
-```bash
-systemctl daemon-reload
-systemctl enable --now meow-sources
-systemctl status meow-sources --no-pager
-```
-
-验证：
-
-```bash
-curl -I http://<OECT_HOST>:18080/config.jvm.json
-curl -I http://<OECT_HOST>:18080/spider.jar
-curl -I http://<OECT_HOST>:18080/spider-dex.jar
-```
-
-> 端口按环境改；不要与现有 30010–30013 冲突。
-> 源包目录只读挂给服务即可；OECT 上 `User=admin` 需能读这些文件。
-
-## 三、首次生成
-
-### 1. 取 class jar
-
-JVM 容器内置的 jar：
-
-```bash
-docker cp meow-apiserver:/app/libs/spider.jar ./spider.jar
-```
-
-私有全量构建也可以直接从 `server/host/libs/spider.jar` 取。
-
-### 2. 生成 dex jar（TV）
-
-需要 Android build-tools 的 `d8`：
+CatVod 生态的主产物是 dex jar。若手里只有 class jar，用 Android build-tools 的
+`d8` 生成：
 
 ```bash
 mkdir -p dexout
@@ -131,87 +101,118 @@ d8 --min-api 21 --output dexout spider.jar
 (cd dexout && jar cf ../spider-dex.jar classes.dex)
 ```
 
-### 3. 生成两份 config
+### 2. 生成 `config.all.json`
 
-以现有 `config.sites.json` 为底：
+以现有 CatVod 配置为底，只保留一个顶层 spider：
 
-- `config.all.json`：`spider = http://<HOST>:18080/spider-dex.jar`，
-  `spiderJvm = http://<HOST>:18080/spider.jar`；站点不写 `jar`；删除 `danmaku` 的
-  `127.0.0.1` 模板。
-- `config.jvm.json`：`spider = http://<HOST>:18080/spider.jar`；删除 `danmaku` 里的
-  `127.0.0.1` 模板（远端客户端用不了）。
-- `config.tv.json`：`spider = http://<HOST>:18080/spider-dex.jar`，并给每个
-  `api` 以 `csp_` 开头的站点加 `"jar": "http://<HOST>:18080/spider-dex.jar"`；同样删除
-  `danmaku` 的 `127.0.0.1` 模板。
-
-### 4. 校验清单
-
-```bash
-sha256sum config.jvm.json config.tv.json spider.jar spider-dex.jar > SHA256SUMS.txt
+```json
+{
+  "spider": "http://<HOST>:18080/spider-dex.jar;md5;<spider-dex.jar 的 md5>",
+  "sites": [
+    { "key": "示例", "name": "示例", "type": 3, "api": "csp_Example" }
+  ]
+}
 ```
 
-## 四、客户端怎么用
+- 站点不写 `jar`，由顶层统一提供。
+- 只有站点确实需要**另一个 dex jar** 时才写站点级 `jar`，同样带 md5。
+- 不要写 `spiderJvm`（除非明确要 JVM 优化）。
+- 删掉 `127.0.0.1` 的弹幕/解析模板；远端客户端用不了。
+
+### 3. 生成清单与哈希
+
+```bash
+md5sum sources/spider-dex.jar
+sha256sum sources/config.all.json sources/spider-dex.jar > sources/SHA256SUMS.txt
+```
+
+`source-pack.json` 模板：
+
+```json
+{
+  "schema": "meow-source-pack/1",
+  "entry": "config.all.json",
+  "primaryRuntime": "dex",
+  "generatedAt": "2026-11-11T06:00:00Z",
+  "profiles": {
+    "all": { "config": "config.all.json", "runtimes": ["fongmi", "android", "jvm"] }
+  },
+  "artifacts": [
+    {
+      "name": "spider-dex.jar",
+      "role": "dex-spider",
+      "bytes": 820924,
+      "md5": "<md5>",
+      "sha256": "<sha256>"
+    }
+  ]
+}
+```
+
+### 4. 校验
+
+```bash
+python3 deploy/source-pack/validate.py \
+  --dir /vol2/1000/meow-sources \
+  --base-url http://192.168.1.20:18080
+```
+
+校验会检查：
+
+- `source-pack.json` schema/entry/artifact hash；
+- `config.all.json` 的 `spider`、站点 `jar` 是否绝对 URL、是否 dex；
+- `;md5;` 是否存在且与本地文件一致；
+- `spiderJvm`（如果存在）是否 class jar；
+- `SHA256SUMS.txt`；
+- Fongmi 兼容性 warning。
+
+退出码非 0 即不通过。
+
+## 五、客户端怎么用
 
 | 客户端 | 填写的配置地址 |
 |---|---|
-| **PC / Web / Docker / TV 统一** | `http://<HOST>:18080/config.all.json` |
-| 仅 PC / Web / Docker / 自建 JVM 后端 | `http://<HOST>:18080/config.jvm.json` |
-| 仅 TV 本机执行（dex） | `http://<HOST>:18080/config.tv.json` |
+| **Fongmi / TVBox** | `http://<HOST>:18080/config.all.json` |
+| **猫窝 TV（本机执行）** | `http://<HOST>:18080/config.all.json` |
+| **PC / Web / Docker / 自建 JVM** | `http://<HOST>:18080/config.all.json` |
+| 旧版猫窝 JVM（不认 dex2jvm） | `http://<HOST>:18080/config.jvm.json`（class 兼容 profile） |
 
-统一入口会多下载一份 dex（约 0.8MB）；要最小下载就按端分开。
+Fongmi 导入 `config.all.json` 后会下载顶层 dex jar；猫窝 JVM 导入同一地址，
+若没有 `spiderJvm` 就调用 dex2jvm 转成 class 并使用本地缓存。
 
-TV 本机导入（设置 → 本机执行 → 导入配置）与 PC 后端共用
-`server/host/src/shared/core/ConfigText.java`：中文域名先转 punycode，
-再按 `okhttp/3.12.0` → `Mozilla/5.0` 两个 UA 依次请求并解码
-（Fongmi 的 `2423` Hex+AES、8 位前缀 + `**` base64 都支持）。
+## 六、Fongmi 兼容性
 
-### CatVod / Fongmi 兼容性
+- `spider`、`sites`（`key/name/api/type/ext/jar/searchable`）、`lives`、`parses`、
+  `headers`、`hosts`、`ads`、`rules`、`doh`、`wallpaper`、`logo` 按 CatVod 标准。
+- `spiderJvm` 是未知字段，Fongmi 忽略；不会影响 dex 导入。
+- 猫窝自定义 `proxy` 是字符串数组，Fongmi 期望对象数组，会忽略；给第三方用时
+  可以删掉。
+- `parses` 里的 `Demo`/`Web` 是猫窝内置名，Fongmi 不认识；给第三方用时删掉或
+  改成标准解析 URL。
+- 站点级 `jar` 必须是 dex；class-only 站点 jar 在 Fongmi/TV 上无法加载。
 
-- **核心字段符合** CatVod/Fongmi 结构：`spider`、`sites`（`key/name/api/type/ext/jar/searchable`）、
-  `lives`、`parses`、`headers`、`hosts`、`ads`、`rules`、`doh`、`wallpaper`、`logo`。
-- **`config.all.json` 可以给 Fongmi/TVBox**：顶层 `spider` 是 dex jar，站点无 `jar`
-  时 Fongmi 会自动用顶层；`spiderJvm` 是未知字段会被忽略。
-- 猫窝 JVM 侧优先读 `spiderJvm` 的 class jar，不会下载/挂载 dex。
-- 如果想完全避免未知字段，第三方客户端仍可用 `config.tv.json`（纯 dex）；
-  JVM 类 CatVod 客户端用 `config.jvm.json`（纯 class）。
-- 我们的 `proxy` 是字符串数组（猫窝自定义），Fongmi 的 `proxy` 期望
-  `{name,hosts,urls}` 对象数组，会被忽略；`parses` 里的 `Demo`/`Web` 也是猫窝内置名，
-  不是标准解析 URL。要给第三方客户端用，建议删掉/改写这两项。
-
-- 老数据迁移：导入时勾选「用这份配置的顶层 spider 覆盖本地」/ 请求里带 `replaceSpider=true`，
-  否则旧的失效 `spider` 会保留，jar 站仍 `ClassNotFoundException`。
-- TV 只导入 `api` 以 `csp_` 开头且带 `jar` 的站点。
-
-## 五、更新维护
-
-OECT / 服务端升级或换 jar 后：
+## 七、更新与排障
 
 ```bash
-# 1) 取新 class jar
-docker cp meow-apiserver:/app/libs/spider.jar ./spider-new.jar
-
-# 2) 重建 dex
-rm -rf dexout && mkdir dexout
-d8 --min-api 21 --output dexout spider-new.jar
-(cd dexout && jar cf ../spider-dex.jar classes.dex)
-
-# 3) 更新源目录
-cp spider-new.jar sources/spider.jar
-cp spider-dex.jar sources/spider-dex.jar
-cd sources
-sha256sum config.jvm.json config.tv.json spider.jar spider-dex.jar > SHA256SUMS.txt
-
-# 4) Docker 方式不需要重启（nginx 每次请求都读挂载目录）；回验即可
-curl -I http://192.168.1.20:18080/spider.jar
-curl -I http://192.168.1.20:18080/spider-dex.jar
-# systemd 旧方式才需要：systemctl restart meow-sources
+# 换 dex jar 后
+md5sum sources/spider-dex.jar
+# 更新 config.all.json 的 spider 里的 md5（站点级 jar 同理）
+python3 deploy/source-pack/validate.py --dir sources --base-url http://<HOST>:18080
+curl -fsS http://<HOST>:18080/source-pack.json
+curl -fsS http://<HOST>:18080/config.all.json
 ```
 
-注意：
+| 现象 | 原因 |
+|---|---|
+| Fongmi 导入后没站点 | `spider` 不是 dex / 地址不可达 / 站点无 api |
+| 改了 jar 但客户端还用旧版 | jar URL 没换 md5 或版本文件名 |
+| 猫窝 TV 跳过所有 `csp_` 站 | 站点既无 `jar` 也无顶层 `spider` |
+| 猫窝 JVM 报 `NoClassDefFoundError` | 旧配置里 `spider` 指向 class jar，且无 `spiderJvm`；重新导入 dex 配置 |
+| 含 native `.so` 的 jar 在 JVM 不可用 | dex2jvm 跳过 native jar；这是已知边界 |
+| 源服务 200 但内容像 HTML | nginx 配了 SPA fallback；必须 `try_files $uri =404` |
 
-- `config.*.json` 里的 `spider` / `jar` 地址不随文件名变化，换 jar 不需要改配置；
-  只有换主机/端口才改。
-- OECT 上 `meow-web` 容器重建**不影响**这个独立服务；源包容器名是 `meow-sources`。
-- 只换源包文件不需要 `docker compose ... up`；改了 `Dockerfile.sources` / `nginx.sources.conf` 才需要 `up -d --build`。
-- 不要把源包放回 `meow-web` 的 web 根目录；两者解耦。
-- 源包入口会暴露真实站点清单与 jar；OECT 若映射公网，需自行加访问控制。
+## 八、兼容 profile（不推荐新部署）
+
+- `config.jvm.json`：顶层 `spider` 指向 class jar，供不认 dex2jvm 的旧 JVM。
+- `config.tv.json`：顶层 dex + 每个 `csp_` 站点显式 `jar`，供旧 TV/第三方工具。
+- 两者由 `config.all.json` 派生，不要手工改；新客户端统一用 `config.all.json`。
