@@ -5,19 +5,20 @@
 
 ## 内容从哪来
 
-| 内容 | 真源 | 说明 |
+| 内容 | 位置 | 维护方式 |
 |---|---|---|
-| 首页、指南、生态、下载、限制、许可 | `site/docs/**` | 直接维护 |
-| 开发文档（`docs/dev/`） | 仓库 `docs/*.md` | 构建前由 `scripts/sync-docs.mjs` 生成，**不要手改** |
-| 更新日志（`docs/reference/changelog.md`） | 仓库 `CHANGELOG.md` | 同上，自动裁掉维护说明 |
+| 首页、指南、生态、参考 | `site/docs/**` | 手写 |
+| 技术文档 | `site/docs/dev/**` | 手写，与 GitHub 共用同一份文件 |
+| 更新日志（`docs/reference/changelog.md`） | 由 `scripts/sync-docs.mjs` 生成 | 不提交，构建前从 `CHANGELOG.md` 重建 |
 | Logo | `client/brand/` | 构建时复制到 `docs/public/` |
 
-生成物在 `site/.gitignore` 里，不提交。改技术文档只改 `docs/`，站点会跟着更新。
+技术文档已经迁入 `site/docs/dev/`，仓库的 `docs/` 只留一个 `00-目录索引.md`
+指向这里。所以**改技术文档就是改站点目录里的那份文件**，GitHub 上点开也是它。
 
 ## 改功能时要同步哪些页
 
-`dev/` 与更新日志是自动生成的，永远不要手改。**其余页面是手写的**，
-功能变更时需要人工同步——按改动类型查这张表：
+更新日志是自动生成的，不要手改。**其余页面（含技术文档）都是手写的**，
+功能变更时按改动类型查这张表：
 
 | 改了什么 | 要同步的页面 |
 |---|---|
@@ -68,13 +69,15 @@ pnpm run preview    # 本地预览产物
 ```
 
 构建会检查死链：指向不存在页面的相对链接会直接失败。
-技术文档里的仓库相对路径（如 `../deploy/README.md`）会被自动改写成 GitHub 链接。
+
+技术文档里引用其他技术文档用站内相对路径（`./api-contract.md`）；引用仓库里的其他文件
+（如 `deploy/README.md`）要写 GitHub 绝对地址——**迁移后不再有自动改写**。
 
 ## 部署
 
 `.github/workflows/pages.yml`：
 
-- 触发：push 到 `main` 且改动涉及 `site/**`、`docs/**`、`CHANGELOG.md`、`client/package.json`
+- 触发：push 到 `main` 且改动涉及 `site/**`、`CHANGELOG.md`、`client/package.json`
 - 构建 → `upload-pages-artifact` → `deploy-pages`
 - 也可以在 Actions 页面手动 `workflow_dispatch`
 
@@ -86,10 +89,19 @@ gh api -X POST repos/upchr/meow/pages -f build_type=workflow
 
 ## 新增一个页面
 
+**普通页面**
+
 1. 在 `site/docs/guide/`、`ecosystem/` 或 `reference/` 下建 `.md`
 2. 在 `.vitepress/config.mts` 对应的 `sidebar` 数组里加一条
 3. 需要出现在顶部导航就改 `themeConfig.nav`
-4. 本地 `pnpm run dev` 确认，提交
+
+**技术文档**
+
+1. 在 `site/docs/dev/` 下建 `.md`
+2. 在 `config.mts` 的 `devSidebar` 里加一条
+3. 在 `site/docs/dev/index.md` 和仓库 `docs/00-目录索引.md` 各补一行（站点与 GitHub 两个入口）
+
+本地 `pnpm run dev` 确认后提交。
 
 ## 版本号
 
