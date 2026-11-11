@@ -706,11 +706,21 @@ public class ApiServer {
      * 这样站点表、多实例、健康状态、缓存清单的加载逻辑只有一份。
      */
     public static void boot() {
+        /*
+         * ★ 必须在 initAfterArgs() 之前设。
+         *
+         * 安全 DNS（safeDns）模式下，Scrape.httpConnection 会连 DoH 解析出的
+         * 真实 IP，再把 Host 头设回原域名。HttpURLConnection 默认禁止改 Host，
+         * 而它只在**类第一次初始化时**读一次 sun.net.http.allowRestrictedHeaders。
+         *
+         * initAfterArgs() 里 Jars.reload() 可能已经发起 HTTP（下载/校验 spider jar），
+         * 一旦 HttpURLConnection 先初始化，这里再设就无效 → Host 被静默丢掉 →
+         * 豆瓣 frodo 等按 Host 分流的站点返回 EOF/400，原生源表现为空列表。
+         * 2026-11-11 OECT 实测：safeDns=true 时豆瓣 0 条，safeDns=false 正常。
+         */
+        System.setProperty("sun.net.http.allowRestrictedHeaders", "true");
         initAfterArgs();
         System.setProperty("http.agent", "okhttp/3.12.0");
-        // 安全 DNS 模式下要把 Host 头设回原域名（连接走真实 IP），
-        // HttpURLConnection 默认禁止改 Host，必须显式放开。
-        System.setProperty("sun.net.http.allowRestrictedHeaders", "true");
         try {
             java.security.Security.addProvider((java.security.Provider) Class
                     .forName("org.bouncycastle.jce.provider.BouncyCastleProvider")
