@@ -118,4 +118,4 @@ TV 换机没有好办法，用扫码推送配置 + WebDAV 同步最快。
 ## 相关
 
 - 升级步骤：[升级与迁移](/guide/upgrade)
-- 片库与缓存的位置：[片库与直播](/guide/library-live)
+- 片库与缓存的位置：[片库与缓存](/guide/library)

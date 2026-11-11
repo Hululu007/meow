@@ -102,7 +102,8 @@ const guideSidebar = [
     text: '日常使用',
     items: [
       { text: '播放与弹幕', link: '/guide/playback' },
-      { text: '片库与直播', link: '/guide/library-live' },
+      { text: '点播与直播', link: '/guide/vod-live' },
+      { text: '片库与缓存', link: '/guide/library' },
       { text: 'AI 助手', link: '/guide/ai' },
     ],
   },
