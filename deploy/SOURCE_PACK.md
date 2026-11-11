@@ -26,9 +26,47 @@ sources/
 - `config.tv.json` 里所有 `api` 以 `csp_` 开头的站点都要带 `jar`，否则 TV 会跳过该站。
 - 配置里的 `spider` / `jar` 必须是**客户端能访问到的绝对地址**（不要写 `127.0.0.1`，除非客户端就在同一台机器）。
 
-## 二、OECT 上的独立服务（systemd + Python）
+## 二、OECT 上的独立服务
 
-以 OECT 为例，源文件放在 `/vol2/1000/meow-sources`，端口 `18080`。
+以 OECT 为例，源文件放在 `/vol2/1000/meow-sources`，端口 `18080`。有两种启动方式：**当前用 Docker**；systemd 仅作旧机/无 Docker 环境的备用。
+
+### 2.1 Docker（当前方式，推荐）
+
+文件都在 `deploy/docker/`：
+
+| 文件 | 用途 |
+|---|---|
+| `Dockerfile.sources` | nginx 静态镜像（不含任何 jar/config） |
+| `nginx.sources.conf` | 监听 8080、禁止 SPA fallback、`.jar` 用 `application/java-archive` |
+| `docker-compose.sources.yml` | 独立编排，只读挂载源包目录 |
+
+从 systemd 切换（**先停旧的，否则 18080 被占用**）：
+
+```bash
+systemctl disable --now meow-sources
+
+cd /path/to/meow/deploy/docker
+MEOW_SOURCES_DIR=/vol2/1000/meow-sources \
+  docker compose -f docker-compose.sources.yml up -d --build
+```
+
+验证：
+
+```bash
+curl -I http://192.168.1.20:18080/config.all.json
+curl -I http://192.168.1.20:18080/spider.jar
+curl -I http://192.168.1.20:18080/spider-dex.jar
+docker compose -f docker-compose.sources.yml logs -f sources
+```
+
+注意：
+
+- **不要把源包 COPY 进镜像**：`Dockerfile.sources` 只装 nginx 配置，jar/config 通过 `MEOW_SOURCES_DIR` 只读挂载；这样公开镜像不含第三方内容，源包更新只换宿主机文件。
+- 同机同端口切换后，`config.*.json` 里的绝对地址不用改；换主机/端口才需要重写 `spider` / `jar` 并重算 `SHA256SUMS.txt`。
+- 改了 `Dockerfile.sources` 或 `nginx.sources.conf` 才需要 `up -d --build`；只换源包文件不需要重启容器。
+- 容器名是 `meow-sources`，编排名是 `meow-sources`，与主栈 `meow` 完全独立。
+
+### 2.2 systemd + Python（旧方式，备用）
 
 `/etc/systemd/system/meow-sources.service`：
 
@@ -163,14 +201,17 @@ cp spider-dex.jar sources/spider-dex.jar
 cd sources
 sha256sum config.jvm.json config.tv.json spider.jar spider-dex.jar > SHA256SUMS.txt
 
-# 4) 重启服务（Python 静态服务无需重启也能读到新文件；重启用于确认健康）
-systemctl restart meow-sources
+# 4) Docker 方式不需要重启（nginx 每次请求都读挂载目录）；回验即可
+curl -I http://192.168.1.20:18080/spider.jar
+curl -I http://192.168.1.20:18080/spider-dex.jar
+# systemd 旧方式才需要：systemctl restart meow-sources
 ```
 
 注意：
 
 - `config.*.json` 里的 `spider` / `jar` 地址不随文件名变化，换 jar 不需要改配置；
   只有换主机/端口才改。
-- OECT 上 `meow-web` 容器重建**不影响**这个独立服务。
+- OECT 上 `meow-web` 容器重建**不影响**这个独立服务；源包容器名是 `meow-sources`。
+- 只换源包文件不需要 `docker compose ... up`；改了 `Dockerfile.sources` / `nginx.sources.conf` 才需要 `up -d --build`。
 - 不要把源包放回 `meow-web` 的 web 根目录；两者解耦。
 - 源包入口会暴露真实站点清单与 jar；OECT 若映射公网，需自行加访问控制。

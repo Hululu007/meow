@@ -58,6 +58,16 @@ public class ApiServer {
     private static final Map<String, String> SITES = new LinkedHashMap<>();
 
     /**
+     * 配置文件（config.sites.json）里实际出现的站点 key。
+     *
+     * <p>用来判断"配置是不是权威"：配置里有站点时，源码里那份 44 条静态基线
+     * （历史内置源名字）里**没进配置**的条目不再对外可见 —— 否则「替换式导入」
+     * 重启后又被并回来，垃圾源删不掉（2026-11-11 用户要求剥离垃圾源）。
+     */
+    private static final java.util.Set<String> CONFIG_SITE_KEYS =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+
+    /**
      * 站点 key -> 原始 api（只记**非 csp_** 的那些）。
      *
      * <p>jar 型站点的 api 恒为 `csp_类名`，类名就是 key，所以不必存；
@@ -250,6 +260,18 @@ public class ApiServer {
      */
     private static void loadMultiInstances() {
         try {
+            /*
+             * 配置文件是**权威**：一旦存在站点表，静态基线里那些"没进配置"的
+             * 默认站就不该再出现在列表/搜索里（见 siteVisible）。
+             *
+             * 踩过（2026-11-11 用户要"剥离垃圾源、只留能用的"）：源码里那份
+             * 44 条 SITES.put 基线会在每次 rebuildSites / 冷启动时 **重新并进来**，
+             * 于是「替换式导入」重启后又变回"配置 + 44 条幽灵站"，
+             * 荐片这类跑不起来的基线站永远删不掉。
+             */
+            synchronized (CONFIG_SITE_KEYS) {
+                CONFIG_SITE_KEYS.clear();
+            }
             java.io.File f = core.DataPaths.file("config.sites.json");
             if (!f.exists()) return;
             String txt = new String(java.nio.file.Files.readAllBytes(f.toPath()),
@@ -293,6 +315,7 @@ public class ApiServer {
                     }
                     if (duplicate) continue;
                     takenKey.put(useKey, api);
+                    CONFIG_SITE_KEYS.add(useKey);
                     SITES.put(useKey, cleanSiteName(s.optString("name", key), key));
                     API.put(useKey, api);
                     Object extObj = s.opt("ext");
@@ -323,6 +346,7 @@ public class ApiServer {
                 if (!SITES.containsKey(key)) {
                     SITES.put(key, cleanSiteName(s.optString("name", cls), cls));
                 }
+                CONFIG_SITE_KEYS.add(key);
                 if (!ext.isEmpty()) EXT.put(key, ext);
             }
             System.out.println("[api] multi-instance sites: " + SITES.size());
@@ -2059,6 +2083,15 @@ public class ApiServer {
                 // 不 cancel：让它继续在预热线程里跑完，下一次预热/搜索直接命中
                 return false;
             } catch (Throwable t) {
+                /*
+                 * 预热期就把"跑不起来的源"记进健康表：
+                 * 冷启动后 /api/sites 立刻能看到 unsupported + 原因，
+                 * 用户不用先点一次撞 500 才知道这个源在本构建里跑不了。
+                 */
+                try {
+                    recordHealth(site, false, 0L, loadFailureChain(site, t));
+                } catch (Throwable ignored) {
+                }
                 return false;
             }
         } catch (Throwable t) {
@@ -2332,7 +2365,31 @@ public class ApiServer {
                 recordHealth(site, ok, cost, ok ? null : firstLine(out));
                 return out;
             }
-            Object o = instance(site);
+            Object o;
+            try {
+                o = instance(site);
+            } catch (Throwable t) {
+                /*
+                 * ★ 实例化失败不能冒到 HTTP 层变成 500。
+                 *
+                 * 踩过（2026-11-11 用户报「好多源也是 500」）：实测 171 个源里
+                 * 66 个 500，其中 58 个是 jar 里的源类依赖了当前构建没有的类
+                 * （`com.github.catvod.spider.DexNative`、Sardine…）。500 一路
+                 * 冒到最外层 dispatcher，**没有经过 recordHealth** ——
+                 * 于是这些源永远不会被标 unsupported，每次点都再 500 一次，
+                 * 前端也只能显示"服务器错误"，看不出是"这个源在本构建里根本跑不了"。
+                 *
+                 * 现在：记健康（classify 会把 "cannot load spider" 归到
+                 * unsupported，自动从聚合搜索里摘掉）+ 回一句能看懂的话。
+                 */
+                String chain = loadFailureChain(site, t);
+                recordHealth(site, false, System.currentTimeMillis() - t0, chain);
+                String missing = missingClassOf(t);
+                return new JSONObject().put("code", -1)
+                        .put("msg", "该源在当前构建不可用"
+                                + (missing.isEmpty() ? "" : "（缺少 " + missing + "）"))
+                        .toString();
+            }
             JSONObject b = body == null || body.trim().isEmpty() ? new JSONObject() : new JSONObject(body);
             String raw = callRaw(o, action, b, site);
             String out = emptyFallback(action, raw);
@@ -2387,6 +2444,56 @@ public class ApiServer {
         String m = root.getMessage();
         String s = root.getClass().getSimpleName() + (m == null ? "" : " — " + firstLine(m));
         return s.length() > 300 ? s.substring(0, 300) : s;
+    }
+
+    /**
+     * 站点实例化失败 → 一行可分类的描述。
+     *
+     * <p>前缀 `cannot load spider` 是给 {@code HealthRoutes.classify} 看的：
+     * 它把这个字样归到 unsupported（环境不支持），而不是当成源站故障累计。
+     */
+    private static String loadFailureChain(String site, Throwable t) {
+        return "cannot load spider " + site + ": " + describeError(t);
+    }
+
+    /**
+     * 从异常链里抠出"缺的是哪个类"，抠不到返回空串。
+     *
+     * <p>2026-11-11 实测：171 个源里 58 个是 jar 依赖了当前构建没有的类
+     * （`com.github.catvod.spider.DexNative`、`com.thegrizzlylabs.sardineandroid.Sardine`）。
+     * 用户看到的必须是一句能行动的话（"缺少 X"），而不是 500。
+     */
+    private static String missingClassOf(Throwable t) {
+        Throwable c = t;
+        int depth = 0;
+        while (c != null && depth++ < 8) {
+            String m = c.getMessage();
+            if (m != null) {
+                int i = m.indexOf("Failed resolution of: L");
+                if (i >= 0) {
+                    String s = m.substring(i + "Failed resolution of: L".length());
+                    int j = s.indexOf(';');
+                    if (j > 0) return s.substring(0, j).replace('/', '.');
+                }
+                int q = m.indexOf("Didn't find class \"");
+                if (q >= 0) {
+                    String s = m.substring(q + "Didn't find class \"".length());
+                    int j = s.indexOf('"');
+                    if (j > 0) return s.substring(0, j);
+                }
+                if (c instanceof NoClassDefFoundError) {
+                    String s = m.trim();
+                    // NoClassDefFoundError 的消息就是类名（可能带 "Failed resolution of:"）
+                    if (s.startsWith("com.") || s.startsWith("android.")
+                            || s.startsWith("kotlin.") || s.startsWith("org.")) {
+                        int sp = s.indexOf(' ');
+                        return sp > 0 ? s.substring(0, sp) : s;
+                    }
+                }
+            }
+            c = c.getCause();
+        }
+        return "";
     }
 
     /** 取多行文本的第一行（压栈信息不该进健康表）。 */
@@ -12743,12 +12850,32 @@ public class ApiServer {
         return api != null && !api.isEmpty() && !api.startsWith("csp_");
     }
 
-    /** 对外可见站点键的快照（过滤掉没有实现的默认名）。 */
+    /**
+     * 对外可见吗 = 有实现 **且** 被配置承认。
+     *
+     * <p>★ 配置文件里已经有站点时，源码里那份 44 条静态基线（历史内置源名）
+     * 里**没进配置**的条目不再下发。理由：`rebuildSites()` 每次都先把基线
+     * 灌回 SITES 再叠配置，于是「替换式导入」重启后又会冒出荐片这类跑不起来
+     * 的基线站 —— 用户删不掉、列表里永远有 500（2026-11-11 实测）。
+     *
+     * <p>原生源（豆瓣 / 预告 / 配置中心）不依赖配置，永远可见。
+     */
+    private static boolean siteVisible(String key) {
+        if (!siteImplemented(key)) return false;
+        if (sources.NativeSources.get(key) != null) return true;
+        if (!CONFIG_SITE_KEYS.isEmpty() && !CONFIG_SITE_KEYS.contains(key)) {
+            Map<String, String> base = sitesBaseline;
+            if (base != null && base.containsKey(key)) return false;
+        }
+        return true;
+    }
+
+    /** 对外可见站点键的快照（过滤掉没有实现的默认名与基线幽灵）。 */
     private static List<String> implementedSiteKeys() {
         List<String> out = new ArrayList<>();
         synchronized (SITES) {
             for (String key : SITES.keySet()) {
-                if (siteImplemented(key)) out.add(key);
+                if (siteVisible(key)) out.add(key);
             }
         }
         return out;
@@ -12764,7 +12891,7 @@ public class ApiServer {
         int n = 0;
         synchronized (EXT) {
             for (String key : EXT.keySet()) {
-                if (siteImplemented(key)) n++;
+                if (siteVisible(key)) n++;
             }
         }
         return n;
@@ -12810,8 +12937,9 @@ public class ApiServer {
     private static String sitesJson() throws Exception {
         JSONArray arr = new JSONArray();
         for (Map.Entry<String, String> e : SITES.entrySet()) {
-            // 空壳里默认表有 44 个名字，但没有 jar 的站不能当“可用源”下发
-            if (!siteImplemented(e.getKey())) continue;
+            // 空壳里默认表有 44 个名字，但没有 jar 的站不能当“可用源”下发；
+            // 有配置时，基线里没进配置的默认站也不再下发（见 siteVisible）
+            if (!siteVisible(e.getKey())) continue;
             JSONObject o = new JSONObject().put("key", e.getKey()).put("name", e.getValue())
                     .put("api", API.getOrDefault(e.getKey(), "csp_" + e.getKey()));
             String ext = EXT.get(e.getKey());

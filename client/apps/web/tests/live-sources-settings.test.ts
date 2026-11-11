@@ -105,5 +105,36 @@ describe('设置页直播源：编辑 / 测试 / 恢复内置', () => {
     // 该接口的 code 不是严格 ISO（英国是 UK，与 uk.m3u 一致），别拿 ISO 校正
     expect(S, '缺少中文名映射表').toContain('COUNTRY_ZH')
     expect(S, '中文名表缺英国').toContain("UK: '英国'")
+    // 网络不通时 fetch 必须能超时退出（否则按钮永远停在"正在拉…"）
+    expect(S, '拉列表没有超时').toMatch(/ac\.abort\(\)[\s\S]{0,40}15000/)
+    expect(S, '失败后没有重试入口').toContain('loadAllCountries')
+  })
+
+  it('读不到直播源表时不能说"还没有配置"（冷启动网关还没起来）', () => {
+    expect(S, '没有读取失败状态').toContain('liveErr')
+    expect(S, '失败时仍显示空列表文案').toMatch(
+      /v-if="!liveSources\.length && liveErr"[\s\S]{0,300}重试/,
+    )
+    expect(S, '空列表文案应改为 v-else-if').toMatch(
+      /v-else-if="!liveSources\.length"[\s\S]{0,80}还没有配置直播源/,
+    )
+  })
+
+  it('展开的国家网格能被遥控器走进（同一 data-tv-col）', () => {
+    // tv-nav 上下键只在同一纵向滚动区里找；网格在自己的 overflow 容器里，
+    // 不标同一列就从「更多国家」按↓直接跳过整块网格（2026-11-11 实机）
+    const n = (S.match(/data-tv-col="live-country"/g) || []).length
+    expect(n, '快捷行与展开区都要标同一列').toBe(2)
+  })
+
+  it('网格格子不设 disabled（否则二维选焦斜跳，↓ 离开同一列）', () => {
+    const i = S.indexOf('data-tv-inset-focus')
+    expect(i, '找不到网格标记').toBeGreaterThan(0)
+    const grid = S.slice(i, i + 1200)
+    // 置灰要用 class，不能用 disabled：disabled 会被 tv-nav 的 usable() 踢出候选集
+    expect(grid, '网格格子还在用 :disabled').not.toMatch(/:disabled="[^"]*hasCountryPreset/)
+    expect(grid, '网格没做淡化').toContain("'opacity-40'")
+    // 重复点击要在处理函数里挡，并给出提示
+    expect(S).toMatch(/hasCountryPreset\(c\.code\)[\s\S]{0,80}已经加过了/)
   })
 })

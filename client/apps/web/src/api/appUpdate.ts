@@ -537,6 +537,20 @@ export function setUpdateSource(url: string): void {
 }
 
 /**
+ * 显式备用更新源（空串 = 不启用）。
+ *
+ * 只有用户明确填写才会在主源失败后尝试；**不会**自动回落官方源。
+ * 自定义源可能来自 fork / 内网 / 测试版，静默换源会提示错误版本。
+ */
+export function getBackupUpdateSource(): string {
+  return (getPrefs().updateBackupSource || '').trim()
+}
+
+export function setBackupUpdateSource(url: string): void {
+  savePrefs({ updateBackupSource: (url || '').trim() })
+}
+
+/**
  * 读访问令牌（私有仓用；空串表示匿名）。
  *
  * <p>PC 上优先用原生存的那份（`%APPDATA%/com.meow.player/plugin-token.txt`），
@@ -619,6 +633,19 @@ interface ReleaseListItem {
 }
 
 /**
+ * 壳更新只看壳 tag。
+ *
+ * 模块（18.20.4.x）和插件批次是独立版本线；它们的 Release 里也有
+ * `packages.json`（由 sync-packages 生成），但 tag 数字远大于壳版本。
+ * 如果混进来，`pickManifestRelease` 会永远选中模块 Release，导致壳
+ * 永远看不到真正的新版本。
+ */
+export function isShellReleaseTag(tag: string): boolean {
+  const t = String(tag || '').trim()
+  return !/^(tv-plugins|plugins|docker|fpk)-v/i.test(t)
+}
+
+/**
  * 从 release 列表里挑出「应该用来做更新源」的那一个。
  *
  * <p><b>为什么不直接用 `/releases/latest`</b>（2026-10-29 加固）：
@@ -653,6 +680,7 @@ export function pickManifestRelease(listJson: string): string {
       !r.draft &&
       !r.prerelease &&
       typeof r.tag_name === 'string' &&
+      isShellReleaseTag(r.tag_name) &&
       (r.assets || []).some((a) => a?.name === MANIFEST_ASSET_NAME),
   )
   if (!candidates.length) return ''
@@ -739,12 +767,13 @@ function isOfficialReleaseSource(url: string): boolean {
 async function fetchRawTextCandidates(
   url: string,
   token: string,
-  opts: { allowApi?: boolean } = {},
+  opts: { allowApi?: boolean; index?: boolean } = {},
 ): Promise<string> {
   const accel = currentAccel()
   const cands = gitAccelCandidates(url, accel, {
     for: 'appUpdate',
     allowApi: !!opts.allowApi && !token.trim(),
+    index: !!opts.index,
   })
   let last = ''
   for (const c of cands) {
@@ -761,21 +790,35 @@ async function fetchRawTextCandidates(
 }
 
 async function fetchManifestText(url: string, token: string): Promise<string> {
+  let firstErr: unknown = null
   try {
     return await fetchManifestPrimary(url, token)
   } catch (e) {
-    // 官方源失败时试公开静态清单（开源前 404，开源后可用）
-    if (isOfficialReleaseSource(url)) {
-      try {
-        const mirror = await fetchRawTextCandidates(DEFAULT_MIRROR_SOURCE, '', {})
-        const doc = JSON.parse(mirror) as { packages?: Record<string, unknown> }
-        if (doc && doc.packages) return mirror
-      } catch {
-        /* 镜像也不可用：抛原始错误 */
-      }
-    }
-    throw e
+    firstErr = e
   }
+
+  // ① 用户显式配置的备用源（不会回落到官方源）
+  const backup = getBackupUpdateSource()
+  if (backup && backup !== url) {
+    try {
+      return await fetchManifestPrimary(backup, token)
+    } catch {
+      /* 备用源也失败，继续试官方静态清单 */
+    }
+  }
+
+  // ② 官方源失败时试公开静态清单（开源前 404，开源后可用）
+  if (isOfficialReleaseSource(url)) {
+    try {
+      // index: true 允许 jsDelivr；静态清单是小文件，和 release 资产不同
+      const mirror = await fetchRawTextCandidates(DEFAULT_MIRROR_SOURCE, '', { index: true })
+      const doc = JSON.parse(mirror) as { packages?: Record<string, unknown> }
+      if (doc && doc.packages) return mirror
+    } catch {
+      /* 镜像也不可用：抛原始错误 */
+    }
+  }
+  throw firstErr instanceof Error ? firstErr : new Error(String(firstErr || '拉取更新清单失败'))
 }
 
 async function fetchManifestPrimary(url: string, token: string): Promise<string> {

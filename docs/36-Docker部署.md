@@ -12,6 +12,10 @@
 > `nginx.conf.template`、`.env.example`。
 > （弹幕服务用官方镜像，没有自己的 Dockerfile。）
 >
+> **源包静态服务是独立编排**：`Dockerfile.sources`、`nginx.sources.conf`、
+> `docker-compose.sources.yml`，不包含在下面的四个容器里，部署见
+> [`SOURCE_PACK.md`](../deploy/SOURCE_PACK.md)。
+>
 > **★ 所有 `docker compose` 命令都要先在 `deploy/docker/` 下执行**：两个 compose 的
 > `context: ../..` 与 `volumes: ../../data` 都相对该目录，在仓库根目录跑会报
 > `open ...\docker-compose.yml: The system cannot find the file specified`（实测）。
@@ -1145,12 +1149,14 @@ http，而 GitHub 是 https。浏览器下载还顺带提供真实进度与 sha2
 **真机耗时**（1.1.4→1.1.5，默认索引）：下载 ~2s · 停机 ~2.6s · 登记+安装 ~5.3s ·
 重启 ~2s，合计 **10–12 秒**。界面只捕到 0% 与完成两态，中间态由日志证明。
 
-**更新源与加速（2026-11-09 定稿）**：
+**更新源与加速（2026-11-09 定稿，2026-11-11 双通道）**：
 
-- 索引默认 `cdn.jsdelivr.net/gh/upchr/FnDepot@main/fnpack.json`；设置页也接受 `owner/repo` 仓库地址，客户端归一化后生成候选。
+- 索引默认 `cdn.jsdelivr.net/gh/upchr/FnDepot@main/fnpack.json`；同时读取主仓镜像 `raw.githubusercontent.com/upchr/meow/fpk-updates/fpk.json`（FnDepot 不可用或没有更高版本时读镜像；分支在下一次 fpk 发版后出现）。设置页仍接受 `owner/repo` 仓库地址。
 - 多候选顺序：`raw → gh-proxy.com → ghfast.top → ghproxy.net`；索引可追加 jsDelivr；**安装包 >20MB 时 jsDelivr 不可用**（1.1.5 是 19.6MB，1.1.7 已 21.7MB）。
 - 全局「GitHub 加速」列表（设置 → 维护 → GitHub 加速）对所有公开 GitHub 地址生效，支持自定义增删改/排序/测试；私有 token 请求不走代理。
-- 闭源期**不另建镜像仓**；开源后主仓 public releases 即资产镜像，`packages.json` 发版时 force push 到 `updates` 分支做静态清单兜底（详见 [33 §10](33-插件系统.md)）。
+- 应用包不另建镜像仓；开源后主仓 public releases 即资产镜像，`packages.json` 发版时 force push 到 `updates` 分支做静态清单兜底（详见 [33 §10](33-插件系统.md)）。fpk 的主仓镜像在仓库公开后匿名可读；闭源期仍以 FnDepot 为准。
+- `fpk-v*` 发版会把包挂到主仓 **prerelease** 并生成 `fpk-updates` 分支的 `fpk.json`；FnDepot 仍是飞牛第三方源正式通道。
+- 设置 → 维护 →「更新中心」聚合壳 / 模块 / 插件 / fpk 的检查结果；fpk 行可跳转到本区块执行安装。
 
 **验收**：见 docs/25 与 docs/28 的对应章节。
 

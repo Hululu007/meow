@@ -44,7 +44,7 @@ import {
 } from './stores/favorites'
 import { getPrefs, getWebdav, savePrefs, saveWebdav, type Prefs } from './stores/prefs'
 import { resetHealth } from './api/health'
-import { setUpdateSource, setUpdateToken } from './api/appUpdate'
+import { setBackupUpdateSource, setUpdateSource, setUpdateToken } from './api/appUpdate'
 
 // TV 壳靠 UA 标记识别；PC 浏览器想模拟电视布局用 `?tv=1`。
 // 必须挂在业务代码之前：列数在组件挂载时就要读到这个标记。
@@ -143,11 +143,19 @@ function installPrefsBridge() {
    * 模块级缓存），但仍走它的 setter：一是未来加了内存缓存不会失效，
    * 二是 writeLs 里有 try/catch，配额满时不会把异常抛到原生层。
    */
-  w.__meowUpdateJson = () =>
-    JSON.stringify({
-      source: readLsRaw('meow.updateSource'),
-      token: readLsRaw('meow.updateToken'),
+  w.__meowUpdateJson = () => {
+    const p = getPrefs()
+    return JSON.stringify({
+      // 老版本只写过 legacy localStorage；Prefs 为空时仍要能预填
+      source: p.updateSource || readLsRaw('meow.updateSource'),
+      token: p.updateToken || readLsRaw('meow.updateToken'),
+      backupSource: p.updateBackupSource,
+      autoCheckApp: p.autoCheckApp,
+      autoCheckModule: p.autoCheckModule,
+      autoCheckPlugins: p.autoCheckPlugins,
+      autoCheckFpk: p.autoCheckFpk,
     })
+  }
   w.__meowUpdateApply = (json: string) => {
     try {
       const patch = JSON.parse(String(json || '{}'))
@@ -160,6 +168,22 @@ function installPrefsBridge() {
       if (typeof patch.token === 'string') {
         setUpdateToken(patch.token)
         n++
+      }
+      if (typeof patch.backupSource === 'string') {
+        setBackupUpdateSource(patch.backupSource)
+        n++
+      }
+      const bools = [
+        'autoCheckApp',
+        'autoCheckModule',
+        'autoCheckPlugins',
+        'autoCheckFpk',
+      ] as const
+      for (const k of bools) {
+        if (typeof patch[k] === 'boolean') {
+          savePrefs({ [k]: patch[k] } as Partial<Prefs>)
+          n++
+        }
       }
       return n
     } catch {

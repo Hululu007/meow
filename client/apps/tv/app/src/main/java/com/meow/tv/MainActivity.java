@@ -369,6 +369,19 @@ public class MainActivity extends Activity {
              * 而且因为白屏页也有历史记录，返回键只会在空白之间跳，困死在里头。
              * 这里把失败状态记下来，显示一个能回到配置页的说明页。
              */
+            /**
+             * 首个画面已经提交：页面在画了，撤掉"打不开这个地址"。
+             *
+             * <p>本机前端的 load 事件要等主 bundle 解析完（MuMu 实测 14.3s），
+             * 而首帧几百毫秒就出来了 —— 看门狗只该盯"连一帧都没有"的情况。
+             */
+            @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                cancelLoadWatchdog();
+            }
+
+            /** 注意：进度回调在 WebChromeClient 上（见下面那个匿名类），不在这里 */
+
             @android.annotation.TargetApi(android.os.Build.VERSION_CODES.M)
             @Override
             public void onReceivedError(WebView view, WebResourceRequest req,
@@ -456,6 +469,18 @@ public class MainActivity extends Activity {
              * <p>★ 这个方法在 <b>WebChromeClient</b> 上，不在 WebViewClient 上
              * （放错位置编译报"方法不会覆盖或实现超类型的方法"）。
              */
+            /**
+             * 加载进度起来了（≥10%）说明资源和 JS 在正常进来，撤掉看门狗。
+             *
+             * <p>★ 这个回调在 <b>WebChromeClient</b> 上，不在 WebViewClient 上
+             * （放错位置编译报"方法不会覆盖或实现超类型的方法"，与
+             * {@link #getDefaultVideoPoster()} 同一个坑）。
+             */
+            @Override
+            public void onProgressChanged(WebView view, int newProgress) {
+                if (newProgress >= 10) cancelLoadWatchdog();
+            }
+
             @Override
             public android.graphics.Bitmap getDefaultVideoPoster() {
                 return android.graphics.Bitmap.createBitmap(
@@ -1037,7 +1062,7 @@ public class MainActivity extends Activity {
             injectedApi = api;
             // 用 reload 而不是 loadUrl：保持同一个 origin，localStorage 才在
             web.reload();
-            armLoadWatchdog("内置前端（自启注入）");
+            // 重载不挂看门狗：都是本机 assets，慢≠打不开（见 armLoadWatchdog 注释）
         });
     }
 
@@ -1055,7 +1080,7 @@ public class MainActivity extends Activity {
         injectPending = true;
         if (web != null) {
             web.loadUrl("http://meow.local/index.html");
-            armLoadWatchdog("重新连接后端");
+            // 重载不挂看门狗：都是本机 assets，慢≠打不开（见 armLoadWatchdog 注释）
         }
     }
 
@@ -1083,7 +1108,7 @@ public class MainActivity extends Activity {
         // 用 reload 而不是 loadUrl：保持同一个 origin，localStorage 才在
         web.reload();
         // 重载也要重新上表：否则 reload 卡住时没有任何兜底
-        armLoadWatchdog("内置前端（重载）");
+        // 重载不挂看门狗：都是本机 assets，慢≠打不开（见 armLoadWatchdog 注释）
         return true;
     }
 
@@ -1193,18 +1218,41 @@ public class MainActivity extends Activity {
      * 对主文档失败**不回调**（实测：填一个拒绝连接的地址，页面就是纯黑屏，
      * 日志里连 ERR_CONNECTION_REFUSED 都没有）。只靠回调会把用户永远困在黑屏。
      *
-     * <p>8 秒还没 onPageFinished 就认为失败——正常的局域网页面 1-2 秒就完成了，
-     * 慢网络下 8 秒也足够，再久用户也已经认为"卡死了"。
+     * <p>★ 它只负责"一个字都没画出来"那种情况。**一旦有内容提交（
+     * {@code onPageCommitVisible}）或加载进度过 10%，立刻撤掉**：
+     * 本机前端在这台 MuMu 上实测 DOMInteractive **14.3 秒**（解析主 bundle
+     * 就占大半），而 onPageFinished 要等 load 事件 —— 拿 8 秒去卡它，会在
+     * **页面其实完好**的情况下盖一张"打不开这个地址"的整屏错误页。用户看到
+     * 的是"点了没反应/卡死"，实际是错误页压在正常界面上（2026-11-11 报障）。
+     *
+     * <p>窗口放到 30 秒：真·地址不通仍然等不到任何提交，30 秒后照常报错。
+     * ★ 12 秒还不够：这台 MuMu 冷启动时网关预热和前端解析抢 CPU，实测
+     *   load 事件 14.3 秒才到（而且预热期间更慢），12 秒照样误杀。
+     *
+     * <p>★ <b>只在首次加载时挂</b>。重载（自启注入后端地址 / 换后端 / 重新连接）
+     * 一律不挂：那时页面早就活着，重载加载的还是本机 assets，"地址不通"根本不
+     * 成立；而重载要重新解析一遍 bundle（十几秒），定时判死即使放到 30 秒、
+     * 即使加"evaluateJavascript 探活"，都会在重载进行中误判（实测 2026-11-11：
+     * 探活回调要等新上下文就绪，5 秒等不到就报错）。重载失败由
+     * {@code onReceivedError} 兜底。
      */
     private void armLoadWatchdog(final String url) {
         if (watchdog != null) ui.removeCallbacks(watchdog);
         watchdog = () -> {
             if (!failed) {
                 failed = true;
-                showLoadError(url, "8 秒内没有加载完成，可能地址不通或后端没启动。");
+                showLoadError(url, "30 秒内没有加载完成，可能地址不通或后端没启动。");
             }
         };
-        ui.postDelayed(watchdog, 8000);
+        ui.postDelayed(watchdog, 30000);
+    }
+
+    /** 页面已经在画了 → "打不开这个地址"不再成立，撤掉看门狗。 */
+    private void cancelLoadWatchdog() {
+        if (watchdog != null) {
+            ui.removeCallbacks(watchdog);
+            watchdog = null;
+        }
     }
 
     /**
@@ -1214,16 +1262,23 @@ public class MainActivity extends Activity {
      * （比如把 config.json 填成了网页地址），提示里要直接指出来。
      */
     private void showLoadError(String url, String reason) {
+        /*
+         * 用页面同步下来的主题色（InputTheme）：这是壳兜底的原生页，
+         * 用户平时看不到，一旦出现说明 WebView 已经打不开页面 —— 这时候
+         * 它必须"看着还是猫窝"，否则像另一个应用弹出的报错框。
+         * 读不到主题时 InputTheme 自己会退回品牌深色。
+         */
+        InputTheme t = InputTheme.load(this);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.parseColor("#0e0f12"));
+        root.setBackgroundColor(t.base());
         int pad = (int) (56 * getResources().getDisplayMetrics().density);
         root.setPadding(pad, pad / 2, pad, pad / 2);
         root.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView title = new TextView(this);
         title.setText("打不开这个地址");
-        title.setTextColor(Color.WHITE);
+        title.setTextColor(t.ink());
         title.setTextSize(24);
         root.addView(title);
 
@@ -1241,7 +1296,7 @@ public class MainActivity extends Activity {
             sb.append("常见原因：后端没启动、电视和它不在同一个 WiFi、端口写错。");
         }
         detail.setText(sb.toString());
-        detail.setTextColor(Color.parseColor("#9aa0aa"));
+        detail.setTextColor(t.ink3());
         detail.setTextSize(15);
         detail.setPadding(0, pad / 3, 0, pad / 3);
         root.addView(detail);
@@ -1251,12 +1306,16 @@ public class MainActivity extends Activity {
         // 此时页面进不去、也就进不了设置页，原生配置页是唯一还能操作的地方。
         fix.setText("修改后端地址");
         fix.setAllCaps(false);
+        fix.setTextColor(t.ink());
+        fix.setBackgroundTintList(android.content.res.ColorStateList.valueOf(t.panel()));
         fix.setOnClickListener(v -> openSetup());
         root.addView(fix);
 
         Button retry = new Button(this);
         retry.setText("重试");
         retry.setAllCaps(false);
+        retry.setTextColor(t.onAccent());
+        retry.setBackgroundTintList(android.content.res.ColorStateList.valueOf(t.accent()));
         retry.setOnClickListener(v -> {
             // 重试就是重新加载内置前端（后端地址已经从 prefs 读）
             loadBuiltin();
@@ -1491,7 +1550,7 @@ public class MainActivity extends Activity {
                 injectedApi = api;
                 injectApiBase(api);
                 if (!api.isEmpty()) {
-                    armLoadWatchdog("后端地址变更");
+                    // 重载不挂看门狗：都是本机 assets，慢≠打不开（见 armLoadWatchdog 注释）
                     web.reload();
                 }
             }

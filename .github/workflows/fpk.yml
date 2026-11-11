@@ -4,14 +4,15 @@
 # 触发入口
 # ═══════════════════════════════════════════════════════════════════════
 #
-#   git tag fpk-v1.0.8        → 构建 x86 + arm 两个 fpk，产物进 artifacts
-#   Actions 页面 Run workflow   → 同上（仅手动验证，不建 Release）
+#   git tag fpk-v1.0.8        → 构建 x86 + arm，推 FnDepot + 主仓 Release + fpk-updates
+#   Actions 页面 Run workflow   → 只出 artifacts（手动验证，不推索引）
 #
 # ★ 前缀后面必须紧跟数字（与 release.yml 同一套 glob 规则）：
 #   `fpk-verify-1.0.8` 这类名字**不会触发**。
 # ★ **不监听 push 到 main**：fpk 只在发版/补包时构建，日常提交不烧额度。
-# ★ **不建 Release**：fpk 只出 artifacts（保留 90 天）。release.yml 里
-#   带前缀的构建 tag（release/tv/pc/plugins/tv-plugins）才建 draft Release。
+# ★ **双通道**：FnDepot 是飞牛第三方源的正式通道；同时把同一版 fpk
+#   挂到主仓 Release，并生成 `fpk-updates` 分支的 fpk.json 作为镜像。
+#   release.yml 的 sync-packages 会跳过 fpk-v*，不会误生成 packages.json。
 #
 # ═══════════════════════════════════════════════════════════════════════
 # 为什么和 release.yml 分开
@@ -56,9 +57,9 @@ on:
         required: false
         type: string
 
-# 不建 Release，只需要读仓库
+# 主仓镜像需要创建 Release 并推 fpk-updates 分支
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: fpk-${{ github.ref }}
@@ -583,3 +584,155 @@ jobs:
             sleep 2
           done
           fail "推送 upchr/FnDepot 失败（检查 FNDEPOT_TOKEN 的仓库写权限）"
+
+  # ---------------------------------------------------------------- 主仓镜像
+  #
+  # FnDepot 是飞牛第三方源的正式通道；这里额外把同一版 fpk 挂到主仓
+  # Release，并生成一个只含 fpk.json 的 `fpk-updates` 分支。
+  # 客户端会先读 FnDepot，失败/更旧时再读主仓镜像。
+  #
+  # ★ 用 prerelease 发布：资产公开可下，但不会顶掉主仓的 latest；
+  #   release.yml 的 sync-packages 也会跳过 fpk-v*（见其 if 条件）。
+  publish-main:
+    name: 主仓 fpk 镜像
+    needs: [plan, build]
+    if: github.event_name == 'push' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: fpk-main-index
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载 x86 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: fpk-x86
+          path: artifacts/x86
+
+      - name: 下载 arm 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: fpk-arm
+          path: artifacts/arm
+
+      - name: 校验产物
+        id: pkg
+        shell: bash
+        env:
+          VER: ${{ needs.plan.outputs.version }}
+          ART: ${{ github.workspace }}/artifacts
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::主仓镜像未生成：$*"; exit 1; }
+          for arch in x86 arm; do
+            FPK="$ART/$arch/meow_${VER}_${arch}.fpk"
+            SHAF="$FPK.sha256"
+            [ -s "$FPK" ] || fail "缺少 $FPK"
+            [ -s "$SHAF" ] || fail "缺少 $SHAF"
+            H="$(awk '{print $1}' "$SHAF")"
+            [[ "$H" =~ ^[0-9a-f]{64}$ ]] || fail "$SHAF 的 sha256 不合法"
+            echo "${arch}_sha=$H" >> "$GITHUB_OUTPUT"
+            echo "${arch}_size=$(stat -c%s "$FPK")" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: 取更新说明
+        id: notes
+        shell: bash
+        env:
+          VER: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          NOTES="$(awk -v v="$VER" '
+            /^##[[:blank:]]/ {
+              h = $0
+              sub(/^##[[:blank:]]+/, "", h)
+              sub(/[[:blank:]]+$/, "", h)
+              if (h == v || h == "[" v "]") { hit = 1; next }
+              if (hit) exit
+            }
+            hit {
+              t = $0
+              gsub(/^[[:blank:]]+|[[:blank:]]+$/, "", t)
+              if (t == "") next
+              n++
+              if (t ~ /^[0-9]+[[:blank:]]*[.、)]/) print t
+              else print n ". " t
+            }
+          ' CHANGELOG.md)"
+          if [ -z "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ]; then
+            echo "::error::CHANGELOG.md 缺少 ${VER} 小节"
+            exit 1
+          fi
+          {
+            echo "notes<<MEOW_EOF"
+            printf '%s\n' "$NOTES"
+            echo "MEOW_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 挂主仓 Release（prerelease）
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: true
+          generate_release_notes: false
+          files: |
+            artifacts/x86/*.fpk
+            artifacts/arm/*.fpk
+          body: |
+            ## fnOS fpk ${{ needs.plan.outputs.version }}
+
+            这是主仓镜像，FnDepot 仍是飞牛第三方源的正式通道。
+            客户端在 FnDepot 不可达或索引没有更高版本时会改用本页资产。
+
+      - name: 生成 fpk.json 并推 fpk-updates
+        shell: bash
+        env:
+          VER: ${{ needs.plan.outputs.version }}
+          TAG: ${{ github.ref_name }}
+          X_SHA: ${{ steps.pkg.outputs.x86_sha }}
+          X_SIZE: ${{ steps.pkg.outputs.x86_size }}
+          A_SHA: ${{ steps.pkg.outputs.arm_sha }}
+          A_SIZE: ${{ steps.pkg.outputs.arm_size }}
+          NOTES: ${{ steps.notes.outputs.notes }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::主仓索引未更新：$*"; exit 1; }
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          jq -n             --arg ver "$VER" --arg now "$NOW" --arg notes "$NOTES"             --arg xsha "$X_SHA" --argjson xsize "$X_SIZE" --arg xurl "$BASE/meow_${VER}_x86.fpk"             --arg asha "$A_SHA" --argjson asize "$A_SIZE" --arg aurl "$BASE/meow_${VER}_arm.fpk"             '{
+              schema_version: "2",
+              source_info: {name: "Meow main mirror", url: "https://github.com/upchr/meow"},
+              apps: {
+                meow: {
+                  releases: {
+                    ($ver): {
+                      changelog: $notes,
+                      updated_at: $now,
+                      os_min_version: "1.2.0",
+                      packages: {
+                        x86: {download_url: $xurl, sha256: $xsha, size: $xsize},
+                        arm: {download_url: $aurl, sha256: $asha, size: $asize}
+                      }
+                    }
+                  }
+                }
+              }
+            }' > fpk.json
+          jq -e --arg ver "$VER" '.apps.meow.releases[$ver].packages.x86.sha256 and .apps.meow.releases[$ver].packages.arm.sha256' fpk.json >/dev/null             || fail "fpk.json 结构不合法"
+
+          D="$(mktemp -d)"
+          cp fpk.json "$D/"
+          cd "$D"
+          git init -q
+          git config user.name "meow-ci"
+          git config user.email "meow-ci@users.noreply.github.com"
+          git add fpk.json
+          git commit -q -m "fpk: ${VER} 主仓镜像索引"
+          # 只推一个文件；force 保证旧分支不会混入其他内容
+          git push --force "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:fpk-updates
+          echo "已推送主仓 fpk-updates"

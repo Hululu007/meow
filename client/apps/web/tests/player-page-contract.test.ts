@@ -384,6 +384,24 @@ describe('直播页：多源合并与持久化缓存', () => {
     expect(merge).toContain('fhd|uhd|hd|sd')
   })
 
+  it('新加了源之后进直播页必须重新合并（缓存命中也要刷）', () => {
+    /*
+     * 踩过（2026-11-11 用户加了国家源但在直播页看不到）：判据原来是
+     * `!groups.value.length`，而进页面时磁盘/会话缓存已经把 groups 填满
+     * → 条件恒假 → 后台合并永远不跑。连面板「刷新」也救不回来
+     * （force 只重拉 /api/live，不重拉 m3u）。
+     */
+    expect(src, '还在用缓存内容当合并门槛').not.toMatch(
+      /if \(!groups\.value\.length && playlists\.value\.length\)/,
+    )
+    expect(src, '没有记录本次聚合结果').toMatch(
+      /aggHasGroups = next\.groups\.length > 0/,
+    )
+    expect(src, '合并门槛没改成聚合结果').toMatch(
+      /if \(!aggHasGroups && playlists\.value\.length\)/,
+    )
+  })
+
   it('★ 坏线路先换线路、全试完才换台（多源的 6 条线路不能浪费）', () => {
     const i = src.indexOf('function armBadChannelWatchdog')
     const fn = src.slice(i, i + 2600)

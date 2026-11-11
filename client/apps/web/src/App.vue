@@ -26,6 +26,7 @@ import {
   runCheck as runUpdateCheck,
 } from '@/stores/appUpdate'
 import { isDesktop, listPlugins } from '@/api'
+import { markChecked, runBackgroundChecks } from '@/stores/updateCenter'
 
 const store = useAppStore()
 const route = useRoute()
@@ -64,6 +65,7 @@ function showTrayHint() {
  */
 const AUTO_CHECK_DELAY_MS = 5000
 let autoUpdateTimer: number | undefined
+let bgUpdateTimer: number | undefined
 
 const bgSrc = computed(() => {
   const p = prefs.value
@@ -310,18 +312,26 @@ onMounted(async () => {
  * 「检查更新」时才是非静默，那时错误必须显示出来。
  */
 function scheduleAutoUpdateCheck() {
-  if (!canUpdate.value) return
-  autoUpdateTimer = window.setTimeout(() => {
-    void runUpdateCheck({ silent: true }).then((up) => {
-      // 只有"真的发现新版本"才标记；没有更新时完全无感。
-      // 这里只置待提示标记，**不直接开弹框**——可能正停在播放页，
-      // 弹框会盖住画面。由 tryPromptUpdate 在合适的路由上再开。
-      if (up) {
-        promptPending.value = true
-        tryPromptUpdate()
-      }
-    })
-  }, AUTO_CHECK_DELAY_MS)
+  // 壳：用户可在「更新中心」关掉；默认保留原来的 5 秒静默检查 + 弹框。
+  if (canUpdate.value && getPrefs().autoCheckApp) {
+    autoUpdateTimer = window.setTimeout(() => {
+      void runUpdateCheck({ silent: true }).then((up) => {
+        markChecked('app')
+        // 只有"真的发现新版本"才标记；没有更新时完全无感。
+        // 这里只置待提示标记，**不直接开弹框**——可能正停在播放页，
+        // 弹框会盖住画面。由 tryPromptUpdate 在合适的路由上再开。
+        if (up) {
+          promptPending.value = true
+          tryPromptUpdate()
+        }
+      })
+    }, AUTO_CHECK_DELAY_MS)
+  }
+  // 模块 / 插件 / fpk：24h 节流、只更新状态，不弹框、不自动下载。
+  // 30 秒后再跑，避开首屏和壳检查。
+  bgUpdateTimer = window.setTimeout(() => {
+    void runBackgroundChecks()
+  }, 30_000)
 }
 
 /**
@@ -780,6 +790,7 @@ onBeforeUnmount(() => {
   if (bootGraceTimer !== undefined) window.clearTimeout(bootGraceTimer)
   // 卸载前取消待执行的自动检查：它 5 秒后才跑，期间 App 可能已被替换
   if (autoUpdateTimer !== undefined) window.clearTimeout(autoUpdateTimer)
+  if (bgUpdateTimer !== undefined) window.clearTimeout(bgUpdateTimer)
   offTheme?.()
   offTvMenu?.()
   backOwnerObserver?.disconnect()

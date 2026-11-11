@@ -238,8 +238,8 @@ describe('扫码弹层清单与手机页分组一致', () => {
     }
 
     // 组数是"源码结构还能被解析出来"的哨兵：数字对不上说明解析规则失效或
-    // 手机页被改坏了。加新分组时同步改这里（2026-11-05 加了「直播源」）。
-    expect(phone.size, '解析手机页失败（源码结构变了？）').toBe(12)
+    // 手机页被改坏了。加新分组时同步改这里（2026-11-05 加了「直播源」，2026-11-11 加了「维护」）。
+    expect(phone.size, '解析手机页失败（源码结构变了？）').toBe(11)
     for (const [group, items] of dialog) {
       const real = phone.get(group)
       expect(real, `手机页没有「${group}」这一组`).toBeTruthy()

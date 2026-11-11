@@ -145,6 +145,8 @@ $scope = switch -Regex ($tag) {
     '^pc-v[0-9]'        { @('meow-pc', 'plugins') }  # pc-v* 同时构建 apiserver；其余插件无资产时保留旧条目
     '^plugins-v[0-9]'   { @('plugins') }
     '^release-v[0-9]'   { @('meow-pc', 'meow-tv', 'plugins') }
+    # fpk 走独立 workflow/主仓镜像；即使误触发也不改应用/插件清单
+    '^fpk-v[0-9]'       { @() }
     default {
         # 无前缀的 v0.9.30（只是版本标记，CI 不触发）或其它：按资产实际内容推断
         Write-Host "  ! tag 无已知前缀，按资产内容推断范围" -ForegroundColor DarkYellow

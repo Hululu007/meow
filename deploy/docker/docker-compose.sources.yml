@@ -1,0 +1,40 @@
+# 猫窝源包静态服务（独立编排，不属于 meow 主栈）
+#
+#   sources  nginx 只读源包目录   18080 ← 挂载 sources/
+#
+# 与 docker-compose.yml 的关系：**完全独立**，不共享 name/network。
+# 主栈升级（web/apiserver）不应该重启源包服务；源包更新也不应该重启主栈。
+#
+# 用法：
+#   cd deploy/docker
+#   MEOW_SOURCES_DIR=/vol2/1000/meow-sources \
+#     docker compose -f docker-compose.sources.yml up -d --build
+#
+# 只看日志：
+#   docker compose -f docker-compose.sources.yml logs -f sources
+#
+# 换源包目录/端口：
+#   MEOW_SOURCES_DIR=/path/to/sources MEOW_SOURCES_PORT=18081 \
+#     docker compose -f docker-compose.sources.yml up -d
+#
+# ★ 同机同端口从 systemd 切过来时，先 systemctl disable --now meow-sources，
+#   否则 18080 被占用，容器起不来。config.*.json 里的绝对地址不用改。
+
+name: meow-sources
+
+services:
+  sources:
+    build:
+      # 源包镜像只 COPY 本目录的 nginx.sources.conf，不需要整个仓库上下文；
+      # 这样拷到 OECT 的 compose 目录也能直接 build。
+      context: .
+      dockerfile: Dockerfile.sources
+    image: ${MEOW_SOURCES_IMAGE:-chrplus/meow-sources:1.0.0}
+    container_name: meow-sources
+    ports:
+      # 必须绑 0.0.0.0：TV/PC 在局域网里直接访问，不经过主栈 nginx。
+      - "${MEOW_SOURCES_BIND:-0.0.0.0}:${MEOW_SOURCES_PORT:-18080}:8080"
+    volumes:
+      # 只读挂载：源包由宿主机上的生成/更新流程维护，容器不写。
+      - "${MEOW_SOURCES_DIR:-./sources}:/usr/share/nginx/html:ro"
+    restart: unless-stopped

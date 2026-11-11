@@ -22,8 +22,30 @@ export interface Prefs {
    *   结果就是"手机上填好更新源、推到电视仍然 404"。
    */
   updateSource: string
+  /**
+   * 显式备用更新源（主源失败时才试；空 = 不启用）。
+   *
+   * 只做“用户明确配置的备用源”，**不会**回落到官方源：
+   * 自定义源可能来自 fork/内网/测试版，静默换源会提示错误版本。
+   */
+  updateBackupSource: string
   /** 私有仓访问令牌（公开源留空）。同样随 Prefs 推送，否则模块/更新都下不动 */
   updateToken: string
+  /** 启动后是否自动检查应用自身更新 */
+  autoCheckApp: boolean
+  /** 启动后是否自动检查 TV 运行时模块（仅已安装时生效） */
+  autoCheckModule: boolean
+  /** 启动后是否自动检查 PC 插件（仅有源且已装插件时生效） */
+  autoCheckPlugins: boolean
+  /** 启动后是否自动检查 fnOS fpk（仅 fpk 壳生效） */
+  autoCheckFpk: boolean
+  /**
+   * 插件源是否自动跟随“应用更新源”。
+   *
+   * 打开时会把应用更新源作为一条插件源加入并选中；插件安装器本身不变，
+   * 仍然独立下载/解压/回滚。关闭只停止跟随，不删除已加入的源。
+   */
+  pluginUseAppSource: boolean
   /**
    * GitHub 加速（全局）：有序代理列表 + 每类渠道是否启用。
    *
@@ -206,7 +228,13 @@ export type ThemeMode = 'light' | 'dark' | 'system'
 
 export const DEFAULTS: Prefs = {
   updateSource: '',
+  updateBackupSource: '',
   updateToken: '',
+  autoCheckApp: true,
+  autoCheckModule: true,
+  autoCheckPlugins: true,
+  autoCheckFpk: true,
+  pluginUseAppSource: true,
   gitAccel: DEFAULT_GIT_ACCEL,
   homeCols: 6,
   danmaku: true,

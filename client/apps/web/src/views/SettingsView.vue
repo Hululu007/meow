@@ -81,8 +81,10 @@ import {
 //   各留一份会出现「弹框说发现新版本、这里仍显示已是最新」。
 import {
   clearUpdateCache,
+  getBackupUpdateSource,
   getUpdateSource,
   getUpdateToken,
+  setBackupUpdateSource,
   setUpdateSource,
   APP_PACKAGE_ID,
   APP_PC_ID,
@@ -148,6 +150,7 @@ import { clearSearchHistory, listSearchHistory } from '@/stores/searchHistory'
 import { platformName } from '@/api/nativeBridge'
 import { qrSvg } from '@/utils/qr'
 import FpkUpgradePanel from '@/components/common/FpkUpgradePanel.vue'
+import UpdateCenter from '@/components/common/UpdateCenter.vue'
 import GitAccelPanel from '@/components/common/GitAccelPanel.vue'
 
 const store = useAppStore()
@@ -299,13 +302,26 @@ const scanDialog = reactive({
 
 /** 手机页能改的条目（必须与 PushServer.PHONE_HTML 里的表单一致） */
 const SCAN_PUSH_ITEMS: Array<{ group: string; items: string[] }> = [
-  { group: '连接', items: ['后端地址', '配置地址', '导入方式'] },
-  { group: '直播源', items: ['名称', '播放列表'] },
-  { group: '搜索', items: ['搜索线程', '结果展示', '历史记录条数'] },
+  { group: '连接', items: ['后端地址'] },
   {
-    group: '弹幕',
-    items: ['显示弹幕', '密度', '字号', '透明度', '滚动时长', '显示区域', '屏蔽词'],
+    group: '搜索与源',
+    items: [
+      '配置地址',
+      '导入方式',
+      '清空搜索缓存',
+      '重置源健康',
+      '结果缓存-命中',
+      '结果缓存-空结果',
+      '结果缓存-失败',
+      '噪音过滤词',
+      '命中后',
+      'JS 运行时',
+      '广告分片过滤',
+      '搜索线程',
+      '结果展示',
+    ],
   },
+  { group: '直播源', items: ['名称', '播放列表'] },
   {
     group: '播放',
     items: [
@@ -320,23 +336,12 @@ const SCAN_PUSH_ITEMS: Array<{ group: string; items: string[] }> = [
       '底部迷你进度条',
     ],
   },
-  { group: '外观', items: ['主题', '明暗', '首页列数', '壁纸', '背景模糊', '壁纸可见度'] },
   {
-    group: '搜索与源',
-    items: [
-      '清空搜索缓存',
-      '重置源健康',
-      '结果缓存-命中',
-      '结果缓存-空结果',
-      '结果缓存-失败',
-      '噪音过滤词',
-      '命中后',
-      'JS 运行时',
-      '广告分片过滤',
-    ],
+    group: '弹幕',
+    items: ['显示弹幕', '密度', '字号', '透明度', '滚动时长', '显示区域', '屏蔽词', '弹幕 API', '腾讯自动抓取'],
   },
-  { group: '弹幕源', items: ['弹幕 API', '腾讯自动抓取'] },
-  { group: '存储', items: ['缓存配额', '超限时', '缓存位置', '安全 DNS', 'DNS 服务商'] },
+  { group: '外观', items: ['主题', '明暗', '首页列数', '壁纸', '背景模糊', '壁纸可见度'] },
+  { group: '存储', items: ['缓存配额', '超限时', '缓存位置', '历史记录条数'] },
   {
     group: 'WebDAV 同步',
     items: [
@@ -352,7 +357,8 @@ const SCAN_PUSH_ITEMS: Array<{ group: string; items: string[] }> = [
     ],
   },
   { group: 'AI', items: ['启用', '接口地址', '模型', 'API Key', '上下文轮数', '超时', '最大输出'] },
-  { group: '应用更新', items: ['更新源', '访问令牌'] },
+  { group: '维护', items: ['安全 DNS', 'DNS 服务商'] },
+  { group: '应用更新', items: ['更新源', '备用源', '访问令牌', '自动检查壳', '自动检查模块', '自动检查插件', '自动检查 fnOS'] },
 ]
 
 let connPoll: number | undefined
@@ -1130,13 +1136,19 @@ async function onPolicyCacheChange(
   }
 }
 
-const maintTiles = computed<TileAction[]>(() => [
+/** 「连接」区的重连动作：重新探测地址并拉站点表 */
+const connectTiles = computed<TileAction[]>(() => [
   {
     key: 'reconnect',
     label: '重连后端',
     hint: '重新探测地址并拉站点表',
     onClick: () => store.boot(),
   },
+])
+
+/** 「存储」区的本机缓存清理（HTTP 缓存 / sessionStorage，不动观看历史与设置） */
+const localCacheMsg = ref('')
+const storageTiles = computed<TileAction[]>(() => [
   {
     key: 'clearcache',
     label: '清空本地缓存',
@@ -1169,13 +1181,17 @@ const maintTiles = computed<TileAction[]>(() => [
           .then((ks) => Promise.all(ks.map((k) => caches.delete(k))))
           .catch(() => undefined)
           .then(() => {
-            backupMsg.value = '本地缓存已清空（观看历史与设置都保留）'
+            localCacheMsg.value = '本地缓存已清空（观看历史与设置都保留）'
           })
       } else {
-        backupMsg.value = '已清空临时数据；HTTP 缓存由电视自己管理（此环境无 CacheStorage）'
+        localCacheMsg.value = '已清空临时数据；HTTP 缓存由电视自己管理（此环境无 CacheStorage）'
       }
     },
   },
+])
+
+/** 「维护」区只保留重置/诊断/关于，不再混入连接与存储动作 */
+const maintTiles = computed<TileAction[]>(() => [
   {
     key: 'resetprefs',
     label: '恢复默认设置',
@@ -1186,7 +1202,6 @@ const maintTiles = computed<TileAction[]>(() => [
     key: 'logs',
     label: '运行日志',
     hint: '客户端错误 + 服务端日志同屏',
-    // 排查"点了没反应/某个源失败"的第一入口：客户端错误 + 服务端日志同屏
     value: '诊断',
     onClick: () => void router.push({ name: 'logs' }),
   },
@@ -1194,11 +1209,7 @@ const maintTiles = computed<TileAction[]>(() => [
     key: 'about',
     label: '关于',
     hint: '版本号与项目主页',
-    // 之前这里写死 v0.1.0，与实际版本（0.8.0）差了七个次版本。
-    // 桌面端用 Rust 的 app_version（唯一权威来源），Web 端退到构建期注入值。
     value: `v${appVersion.value}`,
-    // 仓库地址与 appUpdate.ts 的 DEFAULT_UPDATE_SOURCE 同源（upchr/meow）。
-    // 原来指向 `https://github.com/` 首页 —— 占位忘了改，点开是 GitHub 首页。
     onClick: () => openProjectPage(),
   },
 ])
@@ -1256,30 +1267,13 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 /**
- * 「搜索与源」区的两个修复动作。
+ * 「站点明细与源健康」的修复动作。
  *
- * 原来它们和「重连后端/恢复默认设置/运行日志/关于」混在「数据与维护」里，
- * 结果是「某部剧搜不到」要在三个区之间跳：网络(配置源) → 浏览与搜索(线程/缓存)
- * → 数据与维护(重置源健康)。这两个动作的**触发场景**就是"搜索不对"，
- * 所以必须和源配置、搜索参数放在一起。
+ * 只保留“源本身”的修复：重置健康记录。清空搜索缓存属于「结果缓存」，
+ * 放在对应分组里，避免用户为了清缓存又滚回源管理区。
  */
-const sourceTiles = computed<TileAction[]>(() => [
-  {
-    key: 'clearsearchcache',
-    label: '清空搜索缓存',
-    // 结果缓存有结果的是 2 小时。修了源、或想立刻看全量时用它，
-    // 否则同一关键词永远是那份旧结果（搜索页的「重新搜索」是单次强刷，不等价）。
-    value: searchCacheHint.value,
-    onClick: async () => {
-      try {
-        const r = await clearSearchCache()
-        backupMsg.value = `已清空搜索缓存 ${r.cleared} 条`
-        await loadSearchCacheStats()
-      } catch (e: any) {
-        backupMsg.value = `清空失败：${e?.message || e}`
-      }
-    },
-  },
+const sourceHealthMsg = ref('')
+const healthTiles = computed<TileAction[]>(() => [
   {
     key: 'resethealth',
     label: '重置源健康',
@@ -1289,10 +1283,31 @@ const sourceTiles = computed<TileAction[]>(() => [
       if (!confirm('重置所有源的健康记录？\n\n会清掉"跳过/降档/降级"标记，下次搜索全部源重新参与（更慢但更全）。')) return
       try {
         await resetHealth()
-        backupMsg.value = '已重置源健康，下次搜索全部源重新参与'
+        sourceHealthMsg.value = '已重置源健康，下次搜索全部源重新参与'
         await Promise.all([store.refreshSites(), loadHealthDetail()])
       } catch (e: any) {
-        backupMsg.value = `重置失败：${e?.message || e}`
+        sourceHealthMsg.value = `重置失败：${e?.message || e}`
+      }
+    },
+  },
+])
+
+/** 「结果缓存」分组的清空动作（与 TTL 输入放在一起） */
+const searchCacheMsg = ref('')
+const cacheTiles = computed<TileAction[]>(() => [
+  {
+    key: 'clearsearchcache',
+    label: '清空搜索缓存',
+    // 结果缓存有结果的是 2 小时。修了源、或想立刻看全量时用它，
+    // 否则同一关键词永远是那份旧结果（搜索页的「重新搜索」是单次强刷，不等价）。
+    value: searchCacheHint.value,
+    onClick: async () => {
+      try {
+        const r = await clearSearchCache()
+        searchCacheMsg.value = `已清空搜索缓存 ${r.cleared} 条`
+        await loadSearchCacheStats()
+      } catch (e: any) {
+        searchCacheMsg.value = `清空失败：${e?.message || e}`
       }
     },
   },
@@ -2291,13 +2306,22 @@ async function doImportConfig() {
 
 // ---------------------------------------------------------------- 直播源操作
 
+/** 读表失败的原因（空 = 正常）。别把它和"没有配置"混为一谈 */
+const liveErr = ref('')
+
 async function refreshLives() {
   try {
     const r = await fetchLives()
     liveSources.value = r.lives
     liveBuiltin.value = r.builtin
-  } catch {
-    // 读不到就保持空列表：设置页不该因为一张可选表打不开而报错
+    liveErr.value = ''
+  } catch (e: any) {
+    /*
+     * 读不到时**不能把列表画成"还没有配置直播源"**：冷启动阶段网关
+     * 还没起来（TV 上预热十几秒），用户看到空列表会以为内置源没了，
+     * 甚至去点「快捷添加」（2026-11-11 用户截图就是这个状态）。
+     */
+    liveErr.value = e?.message || '请求失败'
   }
 }
 
@@ -2498,15 +2522,28 @@ function countryPresetUrl(code: string) {
   return `https://iptv-org.github.io/iptv/countries/${code}.m3u`
 }
 
-/** 已加过的国家源（按钮置灰：再点只会得到"这个地址已经在了"） */
+/** 已加过的国家源（快捷行按钮置灰；网格里只淡化，仍可聚焦——见 addCountryLive 注释） */
 function hasCountryPreset(code: string) {
   const url = countryPresetUrl(code)
   return liveSources.value.some((s) => s.url === url)
 }
 
+/**
+ * 一键添加一个国家源。
+ *
+ * <p>★ 网格里的按钮**故意不设 disabled**（置灰靠 class），只在处理函数里
+ * 挡重复/并发。原因：tv-nav 的 `usable()` 会把 disabled 元素踢出候选集，
+ * 而网格是二维的 —— 从「爱尔兰」按 ↓ 时，若下方同列的「澳门」因为已添加
+ * 而被 disabled，几何选焦会斜着跳到上一行的「澳大利亚」去
+ * （2026-11-11 用户实测报障）。保持可聚焦，↓ 就永远落在同列下一格。
+ */
 async function addCountryLive(c: { code: string; label: string; ch?: number }) {
   const url = countryPresetUrl(c.code)
-  if (hasCountryPreset(c.code)) return
+  if (liveBusy.value) return
+  if (hasCountryPreset(c.code)) {
+    liveMsg.value = `iptv-org ${c.label} 已经加过了`
+    return
+  }
   liveBusy.value = url
   liveMsg.value = ''
   try {
@@ -2576,12 +2613,23 @@ const showAllCountries = ref(false)
 
 async function toggleAllCountries() {
   showAllCountries.value = !showAllCountries.value
-  // 拉过一次就复用；失败则保留 msg，下次展开会重试
-  if (!showAllCountries.value || allCountries.value.length || countriesBusy.value) return
+  if (!showAllCountries.value) return
+  await loadAllCountries()
+}
+
+/** 只负责拉列表（失败后「重试」也走它）。拉过一次就复用 */
+async function loadAllCountries() {
+  if (allCountries.value.length || countriesBusy.value) return
   countriesBusy.value = true
   countriesMsg.value = ''
+  // 网络不通时 fetch 可能一直挂着（国内直连 github.io 常见）→ 15 秒后主动放弃
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), 15000)
   try {
-    const r = await fetch('https://iptv-org.github.io/api/countries.json', { cache: 'no-cache' })
+    const r = await fetch('https://iptv-org.github.io/api/countries.json', {
+      cache: 'no-cache',
+      signal: ac.signal,
+    })
     if (!r.ok) throw new Error('HTTP ' + r.status)
     const arr = (await r.json()) as { code?: string; name?: string; flag?: string }[]
     const list = arr
@@ -2600,9 +2648,10 @@ async function toggleAllCountries() {
     allCountries.value = list
   } catch (e: any) {
     countriesMsg.value =
-      '国家列表拉取失败（' + (e?.message || '网络错误') + '）——也可以直接手输 ' +
-      'https://iptv-org.github.io/iptv/countries/<code>.m3u'
+      (e?.name === 'AbortError' ? '拉取超时（15 秒）' : '国家列表拉取失败（' + (e?.message || '网络错误') + '）') +
+      ' —— 可以直接手输 https://iptv-org.github.io/iptv/countries/<code>.m3u'
   } finally {
+    clearTimeout(timer)
     countriesBusy.value = false
   }
 }
@@ -2811,7 +2860,11 @@ async function modInstall() {
     // 与「在线更新」共用同一份源/令牌（都在 Prefs 里，手机推送也会带过来）
     const src = (await getUpdateSource()) || ''
     const tok = getUpdateToken()
-    const chk = JSON.parse(b.moduleCheck(src, tok))
+    let chk = JSON.parse(b.moduleCheck(src, tok))
+    const backup = getBackupUpdateSource()
+    if (chk.ok === false && backup && backup !== src) {
+      chk = JSON.parse(b.moduleCheck(backup, tok))
+    }
     if (chk.ok === false) {
       modMsg.value = '检查失败：' + (chk.error || '未知错误')
       return
@@ -3075,6 +3128,8 @@ const updNoteLines = computed<string[]>(() => {
 
 /** 更新源输入框（留空 = 用内置默认源） */
 const updSourceInput = ref<string>(getUpdateSourceSync())
+/** 显式备用源（空 = 不启用；不会自动回落官方源） */
+const updBackupInput = ref<string>(getBackupUpdateSource())
 /**
  * 占位提示。
  *
@@ -3095,11 +3150,16 @@ function getUpdateSourceSync(): string {
 
 function saveUpdateSource(): void {
   setUpdateSource(updSourceInput.value)
+  setBackupUpdateSource(updBackupInput.value)
   // 换了源就把上次的检查结果作废，避免显示旧版本号误导
   updFound.value = null
   updChecked.value = false
   updError.value = ''
   updReady.value = false
+  // 插件源跟随应用更新源时，立即把新地址同步过去并重拉索引
+  void syncPluginAppSource()
+    .then(() => loadIndex(true))
+    .catch(() => {})
 }
 
 function clearUpdateSource(): void {
@@ -3158,6 +3218,59 @@ const sourceForm = ref({ name: '', url: '' })
 const sourceTesting = ref(false)
 const sourceTestMsg = ref('')
 const sourceTestOk = ref(false)
+/** 插件源是否自动跟随应用更新源（安装器仍独立） */
+const pluginUseAppSource = ref(getPrefs().pluginUseAppSource)
+
+/**
+ * 把“应用更新源”落成一条插件源。
+ *
+ * 不覆盖用户已有选择：已有自定义源时只新增/更新这条，不抢当前源。
+ * 应用更新源本身可能是 release 端点，插件安装器会解析出 packages.json。
+ */
+async function syncPluginAppSource(select = false): Promise<void> {
+  if (!desktop || !pluginUseAppSource.value) return
+  try {
+    const url = (await getUpdateSource()) || ''
+    if (!url) return
+    const list = await fetchPluginSources()
+    if (!list) return
+    const hit = list.items.find((s) => s.url === url)
+    if (hit) {
+      if ((select || !list.current) && list.current !== hit.id) {
+        sources.value = await selectPluginSource(hit.id)
+      }
+      return
+    }
+    const named = list.items.find((s) => s.name === '应用更新源')
+    if (named) {
+      const old = list.current
+      sources.value = await updatePluginSource(named.id, url, '应用更新源')
+      // 更新地址可能把当前源改成了它；非主动选择时恢复用户原来的选择
+      if (!select && old && old !== named.id) {
+        sources.value = await selectPluginSource(old)
+      }
+      return
+    }
+    if (!list.items.length) {
+      sources.value = await addPluginSource(url, '应用更新源')
+      return
+    }
+    // 已有自定义源：加进去；非主动选择时恢复原选择
+    const old = list.current
+    sources.value = await addPluginSource(url, '应用更新源')
+    if (!select && old) sources.value = await selectPluginSource(old)
+  } catch {
+    /* 插件源同步失败不阻塞更新检查 */
+  }
+}
+
+async function togglePluginAppSource(): Promise<void> {
+  savePrefs({ pluginUseAppSource: pluginUseAppSource.value })
+  if (pluginUseAppSource.value) {
+    await syncPluginAppSource(true)
+    await loadIndex(true)
+  }
+}
 // 粘贴清单
 const showManifestPaste = ref(false)
 const manifestPaste = ref('')
@@ -3594,6 +3707,8 @@ onMounted(async () => {
   await refreshPlugins()
   if (desktop) {
     pluginTimer = window.setInterval(refreshPlugins, 3000)
+    // 插件源跟随应用更新源（默认开；已有自定义源时不抢当前选择）
+    void syncPluginAppSource().then(() => loadIndex())
     // 拉一次远端索引（失败不阻塞页面，用户仍可导入本地包）
     void loadIndex()
   }
@@ -3652,6 +3767,7 @@ const NAV_ITEMS = [
   // 托盘/关闭行为只在 PC 上有意义；Web 起不了托盘，TV 壳也不是这个交互
   { id: 'desktop', label: '桌面端行为', desktopOnly: true },
   { id: 'source', label: '搜索与源' },
+  { id: 'live', label: '直播源' },
   { id: 'play', label: '播放' },
   { id: 'danmaku', label: '弹幕' },
   { id: 'appearance', label: '外观' },
@@ -4314,6 +4430,8 @@ onBeforeUnmount(() => {
         要连别的机器上的后端，直接在上面的输入框里填地址。
       </p>
 
+      <TilePanel :items="connectTiles" :cols="2" class="mt-2 shrink-0" />
+
       <!-- TV：遥控器打字太痛苦，给两个"不用打字"的入口 -->
       <div v-if="tvMode" class="mt-3 flex flex-wrap items-center gap-2">
         <button
@@ -4365,7 +4483,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 插件源管理 -->
-      <div class="mb-2 rounded-lg bg-white/[0.04] px-3 py-2">
+      <div class="mb-2 rounded-lg bg-white/[0.04] px-3 py-2" data-plugin-source>
         <div class="mb-1.5 flex items-center gap-2">
           <span class="text-[11px] font-medium text-ink-2">插件源</span>
           <span class="text-[11px] text-ink-3">可添加多个，切换即生效</span>
@@ -4386,6 +4504,14 @@ onBeforeUnmount(() => {
         <p class="mb-1 text-[11px] text-ink-3">
           加速与访问令牌同「维护 → GitHub 加速」，私有仓只填一次。
         </p>
+        <label class="mb-1.5 flex items-center gap-1.5 text-[11px] text-ink-2">
+          <input
+            v-model="pluginUseAppSource"
+            type="checkbox"
+            @change="togglePluginAppSource()"
+          />
+          使用应用更新源（同一份 packages.json；插件安装器仍独立）
+        </label>
 
         <div
           v-for="s in sources.items"
@@ -4736,9 +4862,9 @@ onBeforeUnmount(() => {
         jar 地址<b>以配置里写的为准</b>——填肥猫配置就下肥猫的 jar，填后端配置就下后端的。
       </p>
     <!-- ══════════ 运行时模块（仅 TV）══════════
-         放在「本机执行」正上方：这个模块就是给本机网关供弹幕的，
-         用户看"本机执行"之前先知道"弹幕从哪来"。 -->
-    <div class="mt-4 border-t border-line pt-3">
+         放在「本机执行」区末尾：先讲网关与配置，再讲给网关供弹幕的
+         node 模块；它仍是本机执行的一部分，不另开导航项。 -->
+    <div class="mt-4 border-t border-line pt-3" data-runtime-module>
       <div class="flex items-center justify-between">
         <h3 class="set-title">运行时模块</h3>
         <span class="text-[11px] text-ink-3">
@@ -4911,7 +5037,7 @@ onBeforeUnmount(() => {
     <section data-sec="source" class="set-card shrink-0">
       <div class="set-head">
         <h2 class="set-title">搜索与源</h2>
-        <span class="set-hint">源从哪来 · 搜索怎么跑 · 出问题怎么重置</span>
+        <span class="set-hint">站点源 · 站点管理 · 直播源 · 搜索怎么跑</span>
       </div>
 
       <!-- ── 源配置 ── -->
@@ -4946,12 +5072,6 @@ onBeforeUnmount(() => {
           @click="probeDepot"
         >
           {{ depotBusy ? '探测中…' : '多仓探测' }}
-        </button>
-        <button
-          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover"
-          @click="toggleSites"
-        >
-          {{ showSites ? '收起站点' : '查看站点' }}
         </button>
       </div>
 
@@ -5177,185 +5297,40 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <!-- ── 直播源 ── -->
-      <div class="set-sub mt-3">
-        <span class="font-medium text-ink-2">直播源</span>
-        <span>IPTV 播放列表（m3u / txt），与站点配置互不影响</span>
+      <!-- ── 站点明细与源健康 ── -->
+      <div class="set-sub mt-3 border-t border-line pt-3">
+        <span class="font-medium text-ink-2">站点明细与源健康</span>
+        <span>看哪些源失效、停用它们，或让全部重新参与</span>
       </div>
-      <p class="text-[11px] leading-relaxed text-ink-3">
-        spider jar 里没有任何类实现 <code class="rounded bg-field px-1">liveContent</code>，
-        所以直播完全靠这里的播放列表。添加时会先把地址真拉一遍，解析不出频道就不保存。
+      <div class="flex flex-wrap items-center gap-2">
+        <!--
+          data-tv-key：弹层关闭后把焦点还到这里。
+          鼠标点开弹框时 tv-nav 记不到"是谁打开的"（不经过 enter()），
+          关闭后只能靠这个选择器把焦点送回来（见 closeSites）。
+        -->
+        <button
+          data-tv-key="settings-sites"
+          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover"
+          @click="toggleSites"
+        >
+          {{ showSites ? '收起站点' : `站点明细（${store.sites.length}）` }}
+        </button>
+        <span class="text-[11px] text-ink-3">
+          逐个看/停用源、批量处理失效源
+        </span>
+      </div>
+      <TilePanel :items="healthTiles" :cols="2" class="mt-2 shrink-0" />
+      <p
+        v-if="sourceHealthMsg"
+        class="mt-1.5 text-[11px]"
+        :class="sourceHealthMsg.startsWith('已') ? 'text-ok' : 'text-hot'"
+      >
+        {{ sourceHealthMsg }}
       </p>
-      <p class="mt-1 text-[11px] leading-relaxed text-ink-3">
-        开盒自带<strong class="text-ink-2">两条内置源</strong>：Guovin 公共源
-        （央视/卫视/地方台，836 频道，源站自称每日更新，点「测试」能看是否停更）
-        和 iptv-org 中文台（222 频道，用语言包，含港澳台与 CCTV-4 各洲版、CGTN 等海外中文台）。
-        它们只是索引别人的流、不托管内容，版权状况不明；源站不稳时可能打不开，
-        可以逐条删掉换成自己的（删了不会自己回来）。
+      <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+        「重置源健康」清掉跳过/降档标记，下次搜索全部源重新参与（更慢但更全）。
+        「清空搜索缓存」在下面的「结果缓存」分组。
       </p>
-      <!-- 多条源时的显示方式：合并（一个台一行、多线路）还是选一条用 -->
-      <label class="mt-2 flex cursor-pointer items-center gap-1.5 text-[12px] text-ink-2">
-        <input
-          :checked="liveMerge"
-          type="checkbox"
-          class="accent-accent"
-          @change="setLiveMerge(($event.target as HTMLInputElement).checked)"
-        />
-        多源合并显示（同一个台的线路合在一起，不重复占列表）
-      </label>
-      <div class="mt-2 space-y-1">
-        <template v-for="l in liveSources" :key="l.url">
-          <!-- 编辑态：改名 / 换地址（换地址时会先真拉一遍再保存） -->
-          <div
-            v-if="liveEditing === l.url"
-            class="flex flex-wrap items-center gap-2 rounded-md bg-field px-2.5 py-1.5"
-          >
-            <input
-              v-model="liveEditName"
-              placeholder="名称（可留空）"
-              class="min-w-[8rem] flex-1 rounded border border-line bg-card px-2 py-1 text-xs text-ink outline-none focus:border-accent/50"
-            />
-            <input
-              v-model="liveEditUrl"
-              placeholder="https://example.com/live.m3u"
-              class="min-w-[16rem] flex-[2] rounded border border-line bg-card px-2 py-1 font-mono text-xs text-ink outline-none focus:border-accent/50"
-            />
-            <button
-              class="shrink-0 rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-50"
-              :disabled="!!liveBusy"
-              @click="saveEditLive(l.url)"
-            >
-              {{ liveBusy === l.url ? '保存中…' : '保存' }}
-            </button>
-            <button
-              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover"
-              @click="cancelEditLive"
-            >
-              取消
-            </button>
-          </div>
-          <!-- 展示态 -->
-          <div
-            v-else
-            class="flex flex-wrap items-center gap-2 rounded-md bg-field px-2.5 py-1.5"
-          >
-            <span class="min-w-0 flex-1 truncate text-xs text-ink">{{ l.name }}</span>
-            <span
-              v-if="liveBuiltin.includes(l.url)"
-              class="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent"
-            >
-              内置
-            </span>
-            <span class="max-w-[36%] truncate font-mono text-[11px] text-ink-3">{{ l.url }}</span>
-            <!-- 测试：真拉一遍，报台数 + 更新于几天前（不在打开页面时自动拉，208KB 要 6 秒） -->
-            <button
-              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink disabled:opacity-50"
-              :disabled="!!liveBusy || !!liveTestBusy"
-              @click="testLive(l.url)"
-            >
-              {{ liveTestBusy === l.url ? '测试中…' : '测试' }}
-            </button>
-            <button
-              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink disabled:opacity-50"
-              :disabled="!!liveBusy"
-              @click="startEditLive(l)"
-            >
-              编辑
-            </button>
-            <button
-              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-hot disabled:opacity-50"
-              :disabled="!!liveBusy"
-              @click="doRemoveLive(l.url)"
-            >
-              {{ liveBusy === l.url ? '删除中…' : '删除' }}
-            </button>
-          </div>
-          <!-- 测试结果：可用时带「更新于 X 天前」，超 7 天提示已停更 -->
-          <p
-            v-if="liveTestMsg[l.url]"
-            class="px-1 text-[11px]"
-            :class="/^可用/.test(liveTestMsg[l.url]) && !/已停更/.test(liveTestMsg[l.url]) ? 'text-ok' : 'text-warn'"
-          >
-            {{ liveTestMsg[l.url] }}
-          </p>
-        </template>
-        <p v-if="!liveSources.length" class="text-[11px] text-ink-3">还没有配置直播源。</p>
-        <!-- 删错内置源时的撤回入口：不用再去手输那些 CDN 地址 -->
-        <button
-          v-if="canResetBuiltin && liveSources.length"
-          class="mt-1 rounded-md bg-card px-3 py-1.5 text-[11px] text-ink-2 transition hover:bg-card-hover disabled:opacity-50"
-          :disabled="!!liveBusy"
-          @click="doResetBuiltin"
-        >
-          {{ liveBusy === '__reset__' ? '恢复中…' : '恢复内置源' }}
-        </button>
-      </div>
-      <div class="mt-2 flex flex-wrap items-center gap-2.5">
-        <input
-          v-model="liveName"
-          placeholder="名字（可留空）"
-          class="w-36 shrink-0 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent/50"
-        />
-        <input
-          v-model="liveUrlInput"
-          placeholder="https://example.com/live.m3u"
-          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
-          title="支持 m3u 与「频道名,地址」形状的 txt；分组用 #genre# 或 group-title"
-          @keyup.enter="doAddLive"
-        />
-        <button
-          class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-50"
-          :disabled="liveBusy === 'add'"
-          @click="doAddLive"
-        >
-          {{ liveBusy === 'add' ? '校验中…' : '添加' }}
-        </button>
-      </div>
-      <!-- iptv-org 国家快捷添加：国家码不好记（英国是 uk 不是 gb），点一下就加 -->
-      <div class="mt-2 flex flex-wrap items-center gap-1.5">
-        <span class="text-[11px] text-ink-3">快捷添加 iptv-org：</span>
-        <button
-          v-for="c in LIVE_COUNTRY_PRESETS"
-          :key="c.code"
-          class="rounded-md bg-card px-2 py-1 text-[11px] text-ink-2 transition hover:bg-accent/20 hover:text-accent disabled:opacity-40"
-          :disabled="!!liveBusy || hasCountryPreset(c.code)"
-          :title="`${countryPresetUrl(c.code)}（实测 ${c.ch} 个台）`"
-          @click="addCountryLive(c)"
-        >
-          {{ liveBusy === countryPresetUrl(c.code) ? '校验中…' : c.label }}
-        </button>
-        <button
-          class="rounded-md px-2 py-1 text-[11px] text-ink-3 underline-offset-2 transition hover:bg-card-hover hover:text-accent"
-          @click="toggleAllCountries"
-        >
-          {{ showAllCountries ? '收起' : '更多国家/地区 ▾' }}
-        </button>
-      </div>
-      <!-- 全部 250 个国家/地区：按需拉 countries.json，只在这个折叠区里渲染 -->
-      <div v-if="showAllCountries" class="mt-1.5 rounded-md bg-field p-2">
-        <p v-if="countriesBusy" class="text-[11px] text-ink-3">正在拉国家列表…</p>
-        <p v-else-if="countriesMsg" class="text-[11px] text-warn">{{ countriesMsg }}</p>
-        <div
-          v-else
-          class="grid max-h-56 grid-cols-2 gap-1 overflow-y-auto sm:grid-cols-3 lg:grid-cols-5"
-        >
-          <button
-            v-for="c in allCountries"
-            :key="c.code"
-            class="flex min-w-0 items-center gap-1 truncate rounded px-1.5 py-1 text-left text-[11px] text-ink-2 transition hover:bg-accent/20 hover:text-accent disabled:opacity-40"
-            :disabled="!!liveBusy || hasCountryPreset(c.code)"
-            :title="countryPresetUrl(c.code)"
-            @click="addCountryLive(c)"
-          >
-            <span class="shrink-0">{{ c.flag }}</span>
-            <span class="truncate">{{ c.label }}</span>
-          </button>
-        </div>
-        <p class="mt-1 px-0.5 text-[10px] leading-relaxed text-ink-3">
-          港澳台与海外中文台已经在内置的「iptv-org 中文台」里，再加对应国家会多出重复线路。
-        </p>
-      </div>
-      <p v-if="liveMsg" class="mt-1.5 text-[11px] text-ink-3">{{ liveMsg }}</p>
 
       <!-- 运行时：drpy 用外部 Node 进程；广告过滤是可选的后端策略 -->
       <div class="set-sub mt-3">
@@ -5520,37 +5495,217 @@ onBeforeUnmount(() => {
         当前已缓存 {{ searchCacheStats?.size ?? 0 }} 条；「失败」不要调大 ——
         那是运行时故障的负缓存，太长会让修好的源迟迟不回来。
       </p>
-
-      <!-- ── 源健康与修复 ── -->
-      <div class="set-sub">
-        <span class="font-medium text-ink-2">源健康与修复</span>
-        <span>看哪些源失效、停用它们，或让全部重新参与</span>
-      </div>
-      <div class="flex flex-wrap items-center gap-2">
-        <!--
-          data-tv-key：弹层关闭后把焦点还到这里。
-          鼠标点开弹框时 tv-nav 记不到"是谁打开的"（不经过 enter()），
-          关闭后只能靠这个选择器把焦点送回来（见 closeSites）。
-        -->
-        <button
-          data-tv-key="settings-sites"
-          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover"
-          @click="toggleSites"
-        >
-          {{ showSites ? '收起站点' : `站点明细（${store.sites.length}）` }}
-        </button>
-        <span class="text-[11px] text-ink-3">
-          逐个看/停用源、批量处理失效源
-        </span>
-      </div>
-      <TilePanel :items="sourceTiles" :cols="2" class="mt-2 shrink-0" />
-      <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-        「清空搜索缓存」用于修完源立刻看全量结果——搜索页的「重新搜索」只是单次强刷，不等价。
-        「重置源健康」清掉跳过/降档标记，下次搜索全部源重新参与（更慢但更全）。
+      <TilePanel :items="cacheTiles" :cols="2" class="mt-2 shrink-0" />
+      <p
+        v-if="searchCacheMsg"
+        class="mt-1.5 text-[11px]"
+        :class="searchCacheMsg.startsWith('已') ? 'text-ok' : 'text-hot'"
+      >
+        {{ searchCacheMsg }}
       </p>
+
     </section>
 
-    <!-- ══════════ 弹幕 ══════════ -->
+    <!-- ══════════ 直播源 ══════════ -->
+    <section data-sec="live" class="set-card shrink-0">
+      <div class="set-head">
+        <h2 class="set-title">直播源</h2>
+        <span class="set-hint">IPTV 播放列表 · 与站点配置互不影响</span>
+      </div>
+      <p class="text-[11px] leading-relaxed text-ink-3">
+        spider jar 里没有任何类实现 <code class="rounded bg-field px-1">liveContent</code>，
+        所以直播完全靠这里的播放列表。添加时会先把地址真拉一遍，解析不出频道就不保存。
+      </p>
+      <p class="mt-1 text-[11px] leading-relaxed text-ink-3">
+        开盒自带<strong class="text-ink-2">两条内置源</strong>：Guovin 公共源
+        （央视/卫视/地方台，836 频道，源站自称每日更新，点「测试」能看是否停更）
+        和 iptv-org 中文台（222 频道，用语言包，含港澳台与 CCTV-4 各洲版、CGTN 等海外中文台）。
+        它们只是索引别人的流、不托管内容，版权状况不明；源站不稳时可能打不开，
+        可以逐条删掉换成自己的（删了不会自己回来）。
+      </p>
+      <!-- 多条源时的显示方式：合并（一个台一行、多线路）还是选一条用 -->
+      <label class="mt-2 flex cursor-pointer items-center gap-1.5 text-[12px] text-ink-2">
+        <input
+          :checked="liveMerge"
+          type="checkbox"
+          class="accent-accent"
+          @change="setLiveMerge(($event.target as HTMLInputElement).checked)"
+        />
+        多源合并显示（同一个台的线路合在一起，不重复占列表）
+      </label>
+      <div class="mt-2 space-y-1">
+        <template v-for="l in liveSources" :key="l.url">
+          <!-- 编辑态：改名 / 换地址（换地址时会先真拉一遍再保存） -->
+          <div
+            v-if="liveEditing === l.url"
+            class="flex flex-wrap items-center gap-2 rounded-md bg-field px-2.5 py-1.5"
+          >
+            <input
+              v-model="liveEditName"
+              placeholder="名称（可留空）"
+              class="min-w-[8rem] flex-1 rounded border border-line bg-card px-2 py-1 text-xs text-ink outline-none focus:border-accent/50"
+            />
+            <input
+              v-model="liveEditUrl"
+              placeholder="https://example.com/live.m3u"
+              class="min-w-[16rem] flex-[2] rounded border border-line bg-card px-2 py-1 font-mono text-xs text-ink outline-none focus:border-accent/50"
+            />
+            <button
+              class="shrink-0 rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-50"
+              :disabled="!!liveBusy"
+              @click="saveEditLive(l.url)"
+            >
+              {{ liveBusy === l.url ? '保存中…' : '保存' }}
+            </button>
+            <button
+              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover"
+              @click="cancelEditLive"
+            >
+              取消
+            </button>
+          </div>
+          <!-- 展示态 -->
+          <div
+            v-else
+            class="flex flex-wrap items-center gap-2 rounded-md bg-field px-2.5 py-1.5"
+          >
+            <span class="min-w-0 flex-1 truncate text-xs text-ink">{{ l.name }}</span>
+            <span
+              v-if="liveBuiltin.includes(l.url)"
+              class="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent"
+            >
+              内置
+            </span>
+            <span class="max-w-[36%] truncate font-mono text-[11px] text-ink-3">{{ l.url }}</span>
+            <!-- 测试：真拉一遍，报台数 + 更新于几天前（不在打开页面时自动拉，208KB 要 6 秒） -->
+            <button
+              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink disabled:opacity-50"
+              :disabled="!!liveBusy || !!liveTestBusy"
+              @click="testLive(l.url)"
+            >
+              {{ liveTestBusy === l.url ? '测试中…' : '测试' }}
+            </button>
+            <button
+              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink disabled:opacity-50"
+              :disabled="!!liveBusy"
+              @click="startEditLive(l)"
+            >
+              编辑
+            </button>
+            <button
+              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-hot disabled:opacity-50"
+              :disabled="!!liveBusy"
+              @click="doRemoveLive(l.url)"
+            >
+              {{ liveBusy === l.url ? '删除中…' : '删除' }}
+            </button>
+          </div>
+          <!-- 测试结果：可用时带「更新于 X 天前」，超 7 天提示已停更 -->
+          <p
+            v-if="liveTestMsg[l.url]"
+            class="px-1 text-[11px]"
+            :class="/^可用/.test(liveTestMsg[l.url]) && !/已停更/.test(liveTestMsg[l.url]) ? 'text-ok' : 'text-warn'"
+          >
+            {{ liveTestMsg[l.url] }}
+          </p>
+        </template>
+        <p v-if="!liveSources.length && liveErr" class="text-[11px] text-warn">
+          直播源读取失败（{{ liveErr }}）——后端可能还没起来。
+          <button class="ml-1 underline" @click="refreshLives">重试</button>
+        </p>
+        <p v-else-if="!liveSources.length" class="text-[11px] text-ink-3">还没有配置直播源。</p>
+        <!-- 删错内置源时的撤回入口：不用再去手输那些 CDN 地址 -->
+        <button
+          v-if="canResetBuiltin && liveSources.length"
+          class="mt-1 rounded-md bg-card px-3 py-1.5 text-[11px] text-ink-2 transition hover:bg-card-hover disabled:opacity-50"
+          :disabled="!!liveBusy"
+          @click="doResetBuiltin"
+        >
+          {{ liveBusy === '__reset__' ? '恢复中…' : '恢复内置源' }}
+        </button>
+      </div>
+      <div class="mt-2 flex flex-wrap items-center gap-2.5">
+        <input
+          v-model="liveName"
+          placeholder="名字（可留空）"
+          class="w-36 shrink-0 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent/50"
+        />
+        <input
+          v-model="liveUrlInput"
+          placeholder="https://example.com/live.m3u"
+          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+          title="支持 m3u 与「频道名,地址」形状的 txt；分组用 #genre# 或 group-title"
+          @keyup.enter="doAddLive"
+        />
+        <button
+          class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-50"
+          :disabled="liveBusy === 'add'"
+          @click="doAddLive"
+        >
+          {{ liveBusy === 'add' ? '校验中…' : '添加' }}
+        </button>
+      </div>
+      <!-- iptv-org 国家快捷添加：国家码不好记（英国是 uk 不是 gb），点一下就加 -->
+      <!--
+        ★ data-tv-col 不能去掉：tv-nav 的上下键有"只在同一纵向滚动区里找"
+        的隔离（见 tv-nav.js 的 regionMode）。展开区的网格在自己的
+        `overflow-y-auto` 容器里，是一个**不同的滚动区** → 从「更多国家」
+        按 ↓ 会直接把网格整块跳过、掉到下面的「保存」上（2026-11-11 实测）。
+        标成同一列后，上下键走列内几何选焦，能正常进网格、逐行上下走；
+        走到最后一行再按 ↓ 会按"列外"规则离开这块区域。
+      -->
+      <div class="mt-2 flex flex-wrap items-center gap-1.5" data-tv-col="live-country">
+        <span class="text-[11px] text-ink-3">快捷添加 iptv-org：</span>
+        <button
+          v-for="c in LIVE_COUNTRY_PRESETS"
+          :key="c.code"
+          class="rounded-md bg-card px-2 py-1 text-[11px] text-ink-2 transition hover:bg-accent/20 hover:text-accent disabled:opacity-40"
+          :disabled="!!liveBusy || hasCountryPreset(c.code)"
+          :title="`${countryPresetUrl(c.code)}（实测 ${c.ch} 个台）`"
+          @click="addCountryLive(c)"
+        >
+          {{ liveBusy === countryPresetUrl(c.code) ? '校验中…' : c.label }}
+        </button>
+        <button
+          class="rounded-md px-2 py-1 text-[11px] text-ink-3 underline-offset-2 transition hover:bg-card-hover hover:text-accent"
+          @click="toggleAllCountries"
+        >
+          {{ showAllCountries ? '收起' : '更多国家/地区 ▾' }}
+        </button>
+      </div>
+      <!-- 全部 250 个国家/地区：按需拉 countries.json，只在这个折叠区里渲染 -->
+      <div v-if="showAllCountries" class="mt-1.5 rounded-md bg-field p-2" data-tv-col="live-country">
+        <p v-if="countriesBusy" class="text-[11px] text-ink-3">正在拉国家列表…</p>
+        <p v-else-if="countriesMsg" class="text-[11px] text-warn">
+          {{ countriesMsg }}
+          <button class="ml-1 underline" @click="loadAllCountries">重试</button>
+        </p>
+        <div
+          v-else
+          class="grid max-h-56 grid-cols-2 gap-1 overflow-y-auto p-2 sm:grid-cols-3 lg:grid-cols-5"
+          data-tv-inset-focus
+        >
+          <button
+            v-for="c in allCountries"
+            :key="c.code"
+            class="flex min-w-0 items-center gap-1 truncate rounded px-1.5 py-1 text-left text-[11px] text-ink-2 transition hover:bg-accent/20 hover:text-accent"
+            :class="hasCountryPreset(c.code) ? 'opacity-40' : ''"
+            :title="hasCountryPreset(c.code) ? '已添加' : countryPresetUrl(c.code)"
+            @click="addCountryLive(c)"
+          >
+            <span class="shrink-0">{{ c.flag }}</span>
+            <span class="truncate">{{ c.label }}</span>
+          </button>
+        </div>
+        <p class="mt-1 px-0.5 text-[10px] leading-relaxed text-ink-3">
+          港澳台与海外中文台已经在内置的「iptv-org 中文台」里，再加对应国家会多出重复线路。
+        </p>
+      </div>
+      <p v-if="liveMsg" class="mt-1.5 text-[11px] text-ink-3">{{ liveMsg }}</p>
+
+    </section>
+
+    <!-- ══════════ 播放 ══════════ -->
     <section data-sec="play" class="set-card shrink-0">
       <div class="set-head">
         <h2 class="set-title">播放</h2>
@@ -5823,7 +5978,7 @@ onBeforeUnmount(() => {
       <!-- 本地弹幕：后端那份在 Web 部署时够不着，浏览器这份才是真离线 -->
       <div class="mt-3 rounded-md bg-field px-3 py-2.5">
         <div class="flex items-center gap-2">
-          <span class="flex-1 text-xs text-ink-2">本地弹幕</span>
+          <span class="flex-1 text-xs text-ink-2">浏览器弹幕缓存</span>
           <span class="text-[11px] text-ink-3">
             {{ dmLocal.entries }} 集 · {{ fmtBytes(dmLocal.bytes) }}
           </span>
@@ -5836,7 +5991,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-          播放过的弹幕会存在浏览器里，断网后仍能显示。留在服务器上的那份
+          播放过的弹幕会存在浏览器里，断网后仍能显示。后端那份（下面的「存储 → 后端弹幕缓存」）
           在 Web 部署时手机够不着，所以这份是断网看片的关键。
         </p>
         <p v-if="dmLocalMsg" class="mt-1 text-[11px] text-ok">{{ dmLocalMsg }}</p>
@@ -6035,7 +6190,7 @@ onBeforeUnmount(() => {
           </span>
         </div>
         <div class="tile">
-          <span class="shrink-0 text-[15px] text-ink">弹幕缓存</span>
+          <span class="shrink-0 text-[15px] text-ink">后端弹幕缓存</span>
           <span class="ml-auto shrink-0 text-[13px] tabular-nums text-ink-2">
             {{ fmtBytes(danmakuBytes) }}<template v-if="danmakuCount" class="text-ink-3"> · {{ danmakuCount }} 集</template>
           </span>
@@ -6114,6 +6269,20 @@ onBeforeUnmount(() => {
         弹幕配额填 <code class="rounded bg-card px-1">0</code> 表示不限制。
         超出后按「最久没看过」淘汰——每次命中缓存都会刷新访问时间，
         <b>正在播放的那一集永远不会被删</b>。
+      </p>
+
+      <!-- ── 本机缓存 ──
+           海报/脚本等 HTTP 缓存与 sessionStorage，可再生；不动观看历史与设置。 -->
+      <div class="set-sub mt-3 border-t border-line pt-3">
+        <span class="font-medium text-ink-2">本机缓存</span>
+        <span>海报/脚本等可再生数据；观看历史与设置都保留</span>
+      </div>
+      <TilePanel :items="storageTiles" :cols="2" class="mt-2 shrink-0" />
+      <p
+        v-if="localCacheMsg"
+        class="mt-1.5 text-[11px] text-ink-2"
+      >
+        {{ localCacheMsg }}
       </p>
 
       <!-- ── 观看记录 ──
@@ -6529,6 +6698,9 @@ onBeforeUnmount(() => {
       <!-- 全局 GitHub 加速：只改传输层；业务源仍在各自区块 -->
       <GitAccelPanel />
 
+      <!-- 更新中心：壳 / 模块 / 插件 / fpk 的统一检查入口 -->
+      <UpdateCenter />
+
       <!-- ── 应用更新 ──
         只在能装包的平台显示（PC / TV）。Web 端没有"安装包"这个概念，
         显示一个永远灰着的按钮只会让用户困惑。
@@ -6537,7 +6709,7 @@ onBeforeUnmount(() => {
       -->
       <template v-if="desktop || tvMode">
       <div class="set-sub mt-3 border-t border-line pt-3">
-        <span class="font-medium text-ink-2">应用更新</span>
+        <span class="font-medium text-ink-2">应用更新源与高级设置</span>
         <span class="text-[11px] text-ink-3">
           当前 v{{ appVersion }} · 清单里 {{ updPlatform === 'windows-x64' ? 'meow-pc' : 'meow-tv' }} 有更高版本时才提示
         </span>
@@ -6606,7 +6778,7 @@ onBeforeUnmount(() => {
 
         <!--
           更新源：TV/Web 读不到插件源（那是 Tauri 命令），必须能在这里手填。
-          留空则回退到插件的当前源（PC 上自动可用）。
+          留空 = 内置 GitHub Release 源；备用源只在主源失败时才试。
         -->
         <div class="mt-3 flex items-center gap-2">
           <span class="shrink-0 text-[11px] text-ink-3">更新源</span>
@@ -6625,8 +6797,19 @@ onBeforeUnmount(() => {
             清除
           </button>
         </div>
+        <div class="mt-1 flex items-center gap-2">
+          <span class="shrink-0 text-[11px] text-ink-3">备用源</span>
+          <input
+            v-model="updBackupInput"
+            class="min-w-0 flex-1 rounded-md bg-card px-2 py-1 font-mono text-[11px]"
+            placeholder="可选：主源失败时才试，留空=不启用"
+            spellcheck="false"
+            @change="saveUpdateSource()"
+          />
+        </div>
         <p class="mt-1 text-[11px] text-ink-3">
           访问令牌与 GitHub 加速在「维护 → GitHub 加速」里统一设置（应用更新 / 插件源共用）。
+          自定义源失败时只会尝试这里显式填写的备用源，不会静默回落官方源。
         </p>
         <p class="mt-1 text-[11px] text-ink-3">
           填清单地址（与插件源同格式，取其中 <span class="font-mono">{{ updPlatform === 'windows-x64' ? 'packages.meow-pc' : 'packages.meow-tv' }}</span> 一条）。
@@ -6691,7 +6874,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <TilePanel :items="maintTiles" :cols="4" class="mt-2 shrink-0" />
+      <TilePanel :items="maintTiles" :cols="3" class="mt-2 shrink-0" />
 
       <p v-if="backupMsg" class="mt-2 text-[11px] text-ink-3">{{ backupMsg }}</p>
     </section>

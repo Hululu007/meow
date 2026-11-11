@@ -44,12 +44,41 @@ export const FPK_APP_NAME = 'meow'
 export const DEFAULT_INDEX_URL =
   'https://cdn.jsdelivr.net/gh/upchr/FnDepot@main/fnpack.json'
 
+/**
+ * 主仓镜像索引（`fpk-updates` 分支，只有 fpk.json 一个文件）。
+ *
+ * FnDepot 是飞牛第三方源的正式通道；主仓这条是同一份数据的主仓镜像，
+ * 在 FnDepot/jsDelivr 不可达时兜底。索引里的下载地址指向主仓 Release 资产，
+ * 因此不依赖 FnDepot 的包体。
+ */
+export const MAIN_INDEX_URL =
+  'https://raw.githubusercontent.com/upchr/meow/fpk-updates/fpk.json'
+
 export function fpkIndexUrl(): string {
   try {
     return localStorage.getItem('meow.fpkIndex') || DEFAULT_INDEX_URL
   } catch {
     return DEFAULT_INDEX_URL
   }
+}
+
+/**
+ * 默认索引源列表：FnDepot 优先，主仓镜像兜底。
+ *
+ * 用户手填索引时只用自己的那头（不再偷偷加主仓），避免“我明明填了
+ * 内网源，客户端却去公网拉”的意外。
+ */
+export function fpkIndexUrls(): string[] {
+  const custom = (() => {
+    try {
+      return (localStorage.getItem('meow.fpkIndex') || '').trim()
+    } catch {
+      return ''
+    }
+  })()
+  // 手填了默认地址也按“默认”处理，仍享受主仓镜像兜底
+  if (!custom || custom === DEFAULT_INDEX_URL) return [DEFAULT_INDEX_URL, MAIN_INDEX_URL]
+  return [custom]
 }
 
 /** 设置索引地址；传空值表示恢复默认。 */
@@ -234,6 +263,46 @@ export async function fetchIndex(input = fpkIndexUrl()): Promise<FpkIndex> {
   throw new Error(`读取更新索引失败（已试 ${tried} 个地址）：${lastErr}`)
 }
 
+/**
+ * 依次尝试多个索引源（FnDepot → 主仓镜像）。
+ *
+ * 已知 current 时：第一份索引若已有更高版本就直接返回；没有更高版本
+ * 才继续查镜像，避免 jsDelivr 缓存较旧时永远看不到主仓的新版本。
+ * 主仓是镜像不是第二条版本线；需要跨索引挑版本时用
+ * {@link pickLatestFromIndexes}。
+ */
+export async function fetchIndexes(inputs?: string[], current = ''): Promise<FpkIndex[]> {
+  const list = (inputs && inputs.length ? inputs : fpkIndexUrls()).filter(Boolean)
+  if (!list.length) throw new Error('读取更新索引失败：没有配置索引源')
+  const out: FpkIndex[] = []
+  let lastErr: unknown = null
+  for (const src of list) {
+    try {
+      const idx = await fetchIndex(src)
+      if (!idx.apps || !idx.apps[FPK_APP_NAME]) {
+        lastErr = new Error(`索引 ${src} 里没有 ${FPK_APP_NAME}`)
+        continue
+      }
+      out.push(idx)
+      // 第一份索引已经找到比当前新的版本：不用再等镜像（避免 jsDelivr
+      // 正常时还为 404 的 fpk-updates 多等一轮超时）。
+      if (current && hasNewerVersion(idx, current)) return out
+    } catch (e) {
+      lastErr = e
+    }
+  }
+  if (!out.length) {
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr || '读取更新索引失败'))
+  }
+  return out
+}
+
+/** 索引里是否存在比 current 更高的版本（用于决定还要不要查镜像） */
+function hasNewerVersion(idx: FpkIndex, current: string): boolean {
+  const releases = idx.apps[FPK_APP_NAME]?.releases || {}
+  return Object.keys(releases).some((v) => isNewer(v, current))
+}
+
 function archKeyOf(info: FpkShellInfo | null): 'x86' | 'arm' {
   const raw = String(info?.arch || '').toLowerCase()
   if (raw.includes('aarch64') || raw.includes('arm64') || raw.startsWith('arm')) return 'arm'
@@ -271,6 +340,34 @@ export function pickLatest(
       notes: formatNoteLines(release.changelog || ''),
     },
   }
+}
+
+/**
+ * 跨多个索引挑“比当前新”的最高版本。
+ *
+ * 单个索引里 `pickLatest` 已经处理了“最高版本没有本架构包”的情况；
+ * 这里把多个索引的结果放在一起，只有真的没有任何可用包时才返回
+ * `noPackage`（用最高版本提示）。
+ */
+export function pickLatestFromIndexes(
+  indexes: FpkIndex[],
+  info: FpkShellInfo | null,
+  current: string,
+): { latest: FpkLatest } | { noPackage: true; version: string } | null {
+  let best: FpkLatest | null = null
+  let noPkgVersion = ''
+  for (const idx of indexes) {
+    const picked = pickLatest(idx, info, current)
+    if (!picked) continue
+    if ('noPackage' in picked) {
+      if (isNewer(picked.version, noPkgVersion)) noPkgVersion = picked.version
+      continue
+    }
+    if (!best || isNewer(picked.latest.version, best.version)) best = picked.latest
+  }
+  if (best) return { latest: best }
+  if (noPkgVersion) return { noPackage: true, version: noPkgVersion }
+  return null
 }
 
 /**

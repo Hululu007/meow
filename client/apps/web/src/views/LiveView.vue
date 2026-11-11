@@ -633,6 +633,9 @@ async function load(force = false) {
   loadTimer = window.setInterval(() => {
     loadingSeconds.value++
   }, 1000)
+  // 本次聚合（/api/live）到底有没有给出分组。注意它在 try 里赋值、在后面用，
+  // 所以必须提到外面声明 —— 直接引用 try 里的 `next` 会编译失败。
+  let aggHasGroups = false
   try {
     const r = await fetchLive()
     const next = {
@@ -640,6 +643,7 @@ async function load(force = false) {
       playlists: r.playlists || [],
       stats: { tried: r.tried || 0, failed: r.failed || 0 },
     }
+    aggHasGroups = next.groups.length > 0
     // 只缓存有分组的结果（见 cache 定义处的说明）
     if (next.groups.length) cache = next
     /*
@@ -676,7 +680,20 @@ async function load(force = false) {
   // tried=52 failed=52 groups=[]），但 config.lives 里的 IPTV 地址完全可用
   // （同一地址解析出 85 组 7085 频道）。不自动展开的话，用户进页面
   // 只看到"当前配置里没有可用的直播源"，就走了——功能其实在，只是没接上。
-  if (!groups.value.length && playlists.value.length) {
+  /*
+   * ★ 判据必须是"**这次聚合**有没有分组"，不能是 groups.value 有没有内容。
+   *
+   * 踩过（2026-11-11 用户加了几个国家源，直播页里没有它们）：
+   * 原来写的是 `!groups.value.length` —— 而进入页面时 groups 已经被
+   * 磁盘缓存/会话缓存填满了，条件恒假 → 后台合并永远不跑。
+   * 结果是"设置里加了源，直播页还是上次的老列表"，连面板的「刷新」
+   * 都救不回来（force 只重拉 /api/live，不重拉 m3u）。
+   *
+   * 现在：只要 /api/live 没给分组、而配置里有播放列表，就一定要合并
+   * （refreshMerged 是渐进式，缓存列表先留着，解析回来一条换一条，
+   * 不影响正在播的流）。单源模式同理，重开一次 preferPlaylist()。
+   */
+  if (!aggHasGroups && playlists.value.length) {
     /*
      * 有播放列表但没有站点分组（我们的 jar 里零个类实现 liveContent，
      * 所以这是常态）。两种模式：

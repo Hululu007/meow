@@ -8,6 +8,7 @@ on:
       - 'release-v[0-9]*'
       - 'tv-v[0-9]*'
       - 'pc-v[0-9]*'
+      - 'plugins-v[0-9]*'
       - 'tv-plugins-v[0-9]*'
   release:
     types: [published]
@@ -46,6 +47,7 @@ jobs:
       tv: ${{ steps.scope.outputs.tv }}
       pc: ${{ steps.scope.outputs.pc }}
       plugins: ${{ steps.scope.outputs.plugins }}
+      plugins_only: ${{ steps.scope.outputs.plugins_only }}
       docker: ${{ steps.scope.outputs.docker }}
       tvplugins: ${{ steps.scope.outputs.tvplugins }}
       release: ${{ steps.scope.outputs.release }}
@@ -69,8 +71,14 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF#refs/tags/}"
           VER="${{ steps.v.outputs.version }}"
-          EXPECT="${TAG##*-v}"
-          if [ "$EXPECT" != "$VER" ]; then
+          # 版本域不同：壳/全量 tag 必须等于 package.json；
+          # 模块与插件是独立版本线，tag 后缀不要求等于壳版本。
+          case "$TAG" in
+            tv-plugins-v[0-9]*) EXPECT="" ;;
+            plugins-v[0-9]*)    EXPECT="" ;;
+            *)                  EXPECT="${TAG##*-v}" ;;
+          esac
+          if [ -n "$EXPECT" ] && [ "$EXPECT" != "$VER" ]; then
             echo "::error::tag=$TAG 里的版本($EXPECT) 与 package.json 的 $VER 不一致"
             exit 1
           fi
@@ -85,15 +93,17 @@ jobs:
           set_out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             set_out tv true; set_out pc true; set_out plugins true; set_out release false
+            set_out plugins_only ''
             set_out docker '${{ inputs.docker }}'; set_out tvplugins '${{ inputs.tv_plugins }}'
             exit 0
           fi
           TAG="${GITHUB_REF#refs/tags/}"
           case "$TAG" in
-            release-v[0-9]*)    set_out tv true;  set_out pc true;  set_out plugins true;  set_out docker true;  set_out tvplugins true;  set_out release true ;;
-            tv-v[0-9]*)         set_out tv true;  set_out pc false; set_out plugins false; set_out docker false; set_out tvplugins false; set_out release true ;;
-            pc-v[0-9]*)         set_out tv false; set_out pc true;  set_out plugins true;  set_out docker false; set_out tvplugins false; set_out release true ;;
-            tv-plugins-v[0-9]*) set_out tv false; set_out pc false; set_out plugins false; set_out docker false; set_out tvplugins true;  set_out release true ;;
+            release-v[0-9]*)    set_out tv true;  set_out pc true;  set_out plugins true;  set_out docker true;  set_out tvplugins false; set_out release true;  set_out plugins_only apiserver ;;
+            tv-v[0-9]*)         set_out tv true;  set_out pc false; set_out plugins false; set_out docker false; set_out tvplugins false; set_out release true;  set_out plugins_only apiserver ;;
+            pc-v[0-9]*)         set_out tv false; set_out pc true;  set_out plugins true;  set_out docker false; set_out tvplugins false; set_out release true;  set_out plugins_only apiserver ;;
+            plugins-v[0-9]*)    set_out tv false; set_out pc false; set_out plugins true;  set_out docker false; set_out tvplugins false; set_out release true;  set_out plugins_only '' ;;
+            tv-plugins-v[0-9]*) set_out tv false; set_out pc false; set_out plugins false; set_out docker false; set_out tvplugins true;  set_out release true;  set_out plugins_only '' ;;
             *) echo "::error::无法识别的 tag：$TAG"; exit 1 ;;
           esac
 
@@ -160,17 +170,18 @@ jobs:
     secrets: inherit
 
   plugins:
-    name: apiserver 插件
+    name: 插件
     needs: plan
     if: ${{ needs.plan.outputs.plugins == 'true' }}
     uses: ./.github/workflows/_plugins.yml
     with:
-      plugins_only: apiserver
+      plugins_only: ${{ needs.plan.outputs.plugins_only }}
 
   publish:
     name: 建 draft Release
     needs: [plan, web, tv, pc, plugins, docker, tv_plugins]
     if: ${{ !cancelled() && github.event_name == 'push' && needs.plan.outputs.release == 'true'
+            && needs.web.result != 'failure' && needs.web.result != 'cancelled'
             && needs.tv.result != 'failure' && needs.tv.result != 'cancelled'
             && needs.pc.result != 'failure' && needs.pc.result != 'cancelled'
             && needs.plugins.result != 'failure' && needs.plugins.result != 'cancelled'
@@ -224,7 +235,7 @@ jobs:
 
   sync-packages:
     name: 生成 packages.json
-    if: github.event_name == 'release' && github.event.action == 'published'
+    if: ${{ github.event_name == 'release' && github.event.action == 'published' && !startsWith(github.event.release.tag_name, 'fpk-v') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -62,9 +62,13 @@ describe('release 端点解析只在页面层', () => {
     expect(src).toContain('export function isReleaseEndpoint')
     expect(src).toContain('export function pickManifestRelease')
     expect(src).toContain('export function manifestAssetUrlFrom')
-    // 且 fetchManifestText 里确实调用了它们
-    const i = src.indexOf('async function fetchManifestText')
-    const body = src.slice(i, i + 2000)
+    // 且清单解析链路里确实调用了它们
+    // （fetchManifestText 负责兜底，fetchManifestPrimary 负责主路径）
+    const i = Math.min(
+      src.indexOf('async function fetchManifestText'),
+      src.indexOf('async function fetchManifestPrimary'),
+    )
+    const body = src.slice(i, i + 5000)
     expect(body, 'fetchManifestText 没调 pickManifestRelease').toContain('pickManifestRelease')
     expect(body, 'fetchManifestText 没调 manifestAssetUrlFrom').toContain(
       'manifestAssetUrlFrom',

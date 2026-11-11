@@ -13,10 +13,10 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   DEFAULT_INDEX_URL,
   detectFpkShell,
-  fetchIndex,
+  fetchIndexes,
   fpkIndexUrl,
   humanReason,
-  pickLatest,
+  pickLatestFromIndexes,
   runFpkUpgrade,
   setFpkIndexUrl,
   waitForRestart,
@@ -103,8 +103,8 @@ async function refresh(): Promise<void> {
     installed = det.installed
     // 应用中心的已安装版本更权威（升级后重启期间 meowd 报的还是旧值）。
     current.value = det.installed?.version || det.info.version
-    const index = await fetchIndex()
-    const picked = pickLatest(index, det.info, current.value)
+    const indexes = await fetchIndexes(undefined, current.value)
+    const picked = pickLatestFromIndexes(indexes, det.info, current.value)
     if (disposed) return
     if (!picked) {
       target.value = null
@@ -172,7 +172,7 @@ async function start(): Promise<void> {
 
 <template>
   <div v-if="visible" class="set-sub mt-3 border-t border-line pt-3" data-fpk-upgrade>
-    <span class="font-medium text-ink-2">应用更新</span>
+    <span class="font-medium text-ink-2">fnOS 应用更新</span>
     <span class="text-[length:var(--fs-mini)] text-ink-3">
       当前 v{{ current || '…' }}
       <template v-if="upToDate">· 已是最新版本</template>
@@ -261,7 +261,7 @@ async function start(): Promise<void> {
         </button>
       </div>
       <p class="mt-1 text-ink-3/70">
-        默认 {{ DEFAULT_INDEX_URL }}。填完整 URL，留空保存即恢复默认；升级包地址按该索引解析。
+        默认 {{ DEFAULT_INDEX_URL }}；不可达或没有更高版本时自动回退主仓 `fpk-updates/fpk.json`。填完整 URL，留空保存即恢复默认；升级包地址按该索引解析。
       </p>
     </details>
   </div>

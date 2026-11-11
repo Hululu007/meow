@@ -83,6 +83,9 @@ deploy/
 │   ├── Dockerfile.web           ← nginx + 静态文件
 │   ├── Dockerfile.apiserver     ← JRE + classes + libs + ffmpeg
 │   ├── Dockerfile.drpy          ← Node 运行时
+│   ├── Dockerfile.sources       ← 源包静态服务（nginx，不含 jar/config）
+│   ├── docker-compose.sources.yml ← 源包独立编排（18080，只读挂载）
+│   ├── nginx.sources.conf       ← 源包 nginx 配置（禁止 SPA fallback）
 │   ├── nginx.conf.template      ← web 容器反代配置
 │   └── .env.example             ← 变量模板（复制成 .env 用）
 ├── units.json                   ← ★构建单元唯一真源（见下）
@@ -111,7 +114,7 @@ deploy/
 - `needs` → 前置文件（danmu 需要不入库的 （私有开发资料））
 - **订单顺序即执行顺序**（apiserver 最慢放最前）
 
-消费方：`release.ps1`、`build-plugins.ps1`、CI 的 `_plugins.yml`（Linux）与 `_pc_shell.yml`（Windows）。
+消费方：`release.ps1`、`build-plugins.ps1`、CI 的 `_plugins.yml`（Windows）与 `_pc_shell.yml`（Windows）。
 **不在 deploy/ 下的脚本仍在原目录**（`client/apps/tv/build-apk.ps1`、
 `client/apps/desktop/build-gnu.ps1`、`server/build-plugin*.ps1`）——
 它们依赖同目录的 gradle/Cargo/plugin-manifests 工程，搬走要重写路径。
@@ -364,11 +367,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/build-plugins
 | **`v1.0.10`**（无前缀） | **什么都不跑**——纯版本标记 | ❌ | — | 0 |
 | `release-v1.0.10` | docker + tv + pc_shell + plugins（**仅 apiserver**；不带模块） | ✅ draft | `meow-pc` `meow-tv` `plugins` | ~14 min |
 | `tv-v1.0.10` | tv（**不含模块**） | ✅ draft | `meow-tv` | 2.7 min |
-| `tv-plugins-v1.0.10` | tv_plugins（模块 ×3 ABI） | ✅ draft | `tv-module`（只模块三条） | 163 s |
+| `tv-plugins-v18.20.4.1`（示例） | tv_plugins（模块 ×3 ABI）；tag 用模块版本，不是壳版本 | ✅ draft | `tv-module`（只模块三条） | 163 s |
 | `pc-v1.0.10` | pc_shell + plugins（**仅 apiserver**） | ✅ draft | `meow-pc` `plugins` | 13 min（Windows ×2） |
-| `plugins-v1.0.10` | plugins（**全部 4 个**，Linux runner，无壳） | ✅ draft | `plugins` | 5 min+ |
+| `plugins-v1.0.10`（示例） | plugins（**全部 4 个**，Windows runner，无壳）；tag 可用插件批次版本 | ✅ draft | `plugins` | 5 min+ |
 | `docker-v1.0.10` | docker（三镜像推 Hub） | ❌ | — | 6 min |
-| `fpk-v1.0.10` | 另一 workflow：fpk plan + build(x86/arm) + 回写 FnDepot | ❌ | — | 6 min |
+| `fpk-v1.0.10` | 另一 workflow：fpk plan + build(x86/arm) + 回写 FnDepot + 主仓 prerelease + fpk-updates | ✅ prerelease | 不走 sync-packages | 6 min |
 | `workflow_dispatch`（release.yml） | 勾选 docker/tv/pc/plugins | ❌ | — | 按勾选 |
 | `tv-verify-1.0.10` | 什么都不跑——前缀后不是数字 | ❌ | — | 0 |
 
@@ -395,18 +398,19 @@ git tag docker-v0.9.17  && git push origin docker-v0.9.17    # 只镜像
    后者的 `*` 能匹配任意非斜杠字符，所以 `tv-verify-0.9.15`、`tv-version-test`
    这类名字会被一起吞进来（实测 2026-10-26 因此白跑了两次 TV 全链）。
    想临时验证请走 [§4.2 手动触发](#42-手动触发不动-git-历史)，不要另造 tag 名。
-3. **版本号永远取 `client/package.json`**，与 tag 里的数字无关。
+3. **壳版本号永远取 `client/package.json`**，与 tag 里的数字无关。
    > 踩过：用 tag 名推版本，导致找 `0.9.15-test3` 的安装包而产物叫 `0.9.15`。
+   > 例外：`tv-plugins-v*` / `plugins-v*` 是独立版本线，清单按资产名逐条取版本。
 4. **带前缀的构建 tag 都会建 draft Release**（`release-v*` / `tv-v*` / `pc-v*` /
    `plugins-v*` / `tv-plugins-v*`），**需人工 Publish**；`docker-v*` 只推镜像不建 Release；
-   `fpk-v*` 是独立 workflow，不建 GitHub Release（只回写 FnDepot 索引）。
+   `fpk-v*` 是独立 workflow，建 **prerelease**（主仓镜像）+ 回写 FnDepot，不参与 `packages.json`。
    **手动 dispatch 一律不建 Release**——它的 ref 是分支名，拿来当 `tag_name`
    会建出叫 `main` 的 Release（2026-10-26 就因此手工清理过）。要出正式版必须打 tag。
 
 **`pcplugins-v*` 已删除**（2026-11-06）。现在：
 - `pc-v*` = PC 壳 + apiserver（`plugins_only=apiserver`），不会构建 drpy/danmu/ffmpeg/node；
 - 要 PC 全插件：单独打 `plugins-v*`（或 dispatch 勾选插件），不要指望 `pc-v*` 全带；
-- 插件链已拆到 `_plugins.yml`（Linux runner，1× 计费），PC 壳在 `_pc_shell.yml`
+- 插件链已拆到 `_plugins.yml`（Windows runner，2× 计费），PC 壳在 `_pc_shell.yml`
   （Windows runner，2× 计费）；两者独立运行，互不等对方。
 
 **`publish` 在本次选中的链没有 failure 时建 Release**：
@@ -435,7 +439,7 @@ release.yml             主入口：plan 判定范围 → 按需 call → publis
 ├── _docker.yml         Docker 三镜像（可复用）
 ├── _tv.yml             TV APK（可复用）
 ├── _tv_plugins.yml     TV 运行时模块 APK ×3 ABI（可复用）
-├── _plugins.yml        插件包（Linux runner，可复用）
+├── _plugins.yml        插件包（Windows runner，可复用）
 └── _pc_shell.yml       PC 安装包（Windows runner，可复用）
 
 fpk.yml                 fnOS fpk（独立 workflow，tag fpk-v* / dispatch）
@@ -515,7 +519,7 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 
 | # | 事项 | 不做会怎样 |
 |---|---|---|
-| 1 | **除 `docker-v*` / `fpk-v*` 外，带前缀的构建 tag 都会建 Release**（`release-v*` / `tv-v*` / `pc-v*` / `plugins-v*` / `tv-plugins-v*`）；无前缀 `v*` 不建 | 单链 tag 也能补包；`docker-v*` 只推镜像，`fpk-v*` 走 FnDepot |
+| 1 | **除 `docker-v*` 外，带前缀的构建 tag 都会建 Release**（`release-v*` / `tv-v*` / `pc-v*` / `plugins-v*` / `tv-plugins-v*` 建 draft；`fpk-v*` 建 prerelease）；无前缀 `v*` 不建 | 单链 tag 也能补包；`docker-v*` 只推镜像；`fpk-v*` 同时回写 FnDepot 与 `fpk-updates` |
 | 2 | **建出来是 draft，必须去网页点 Publish** | draft 的资产对 API 不可见，`pickManifestRelease` 会跳过它 |
 | 3 | **`sync-packages` 只在 `release: published` 时跑** | 忘了点 Publish = 45 分钟额度白烧，且没有任何报错 |
 | 4 | **Publish 后还会把 `packages.json` force push 到 `updates` 分支** | 开源后客户端在 API 失败/限流时用 raw 静态清单兜底；不推只是少一条退路 |
@@ -599,7 +603,12 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 - **静态清单**：`sync-packages.ps1` 在 Publish 后把 `packages.json` force push 到 **`updates` 分支**，客户端在官方 API 失败/限流时可回退：
   `https://raw.githubusercontent.com/upchr/meow/updates/packages.json`
   （分支在下一次 release 后才会出现；开源前私有仓匿名不可读，属于预期）。
-- **fpk 不是这套协议**：FnDepot 的 `fnpack.json` 与 `packages.json` 分开配置，详见 [36 §11.1](../docs/36-Docker部署.md) 与 [33 §10](../docs/33-插件系统.md)。
+- **更新中心（2026-11-11）**：设置 → 维护 →「更新中心」聚合壳 / TV 运行时模块 / PC 插件 / fpk 的检查与状态；只合并入口，安装仍走各自通道。壳启动时自动检查；模块/插件/fpk 默认 24h 一次，可在面板逐项关闭。
+- **显式备用源**：应用更新支持填写「备用源」；主源失败才试，不会自动回落官方源。官方源失败另有 `updates` 分支静态清单兜底。
+- **插件源跟随应用源**：PC 插件源面板有「使用应用更新源」开关，默认把同一条 Release 的 `packages.json` 加为插件源；插件安装器仍独立（下载 zip / 解压 / 回滚）。
+- **fpk 双通道**：FnDepot 继续作为飞牛第三方源正式通道；`fpk-v*` 同时把包挂到主仓 **prerelease**，并把 `fpk.json` 推到 **`fpk-updates` 分支**。客户端先读 FnDepot；不可用或没有更高版本时读主仓镜像：
+  `https://raw.githubusercontent.com/upchr/meow/fpk-updates/fpk.json`
+- **版本线**：壳（`release/tv/pc`）与 fpk tag 必须等于 `client/package.json`；`tv-plugins-v*`（模块）与 `plugins-v*`（插件批次）是独立版本线，tag 后缀只要是数字即可，清单按资产名逐条取版本。
 
 #### 排查「客户端说没有更新」
 
@@ -664,7 +673,7 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 |---|---|---|---|
 | 前端任意代码（样式/bug） | `tv-v1.0.10` **+** `pc-v1.0.10` | TV APK、PC exe、apiserver | 插件其余三个、Docker、模块 |
 | TV 本地网关（`ApiServer`/`LocalSites`/routes） | `tv-v1.0.10` | TV APK | 其余全部 |
-| TV 侧插件（node 模块：载荷/桥/node 版本） | `tv-plugins-v1.0.10` | 模块 ×3 ABI | 壳、PC、Docker |
+| TV 侧插件（node 模块：载荷/桥/node 版本） | `tv-plugins-v18.20.4.1`（示例） | 模块 ×3 ABI | 壳、PC、Docker |
 | PC 壳 Rust（`src-tauri/`） | `pc-v1.0.10` | PC exe + apiserver | TV、Docker、模块 |
 | 后端 Java（`server/host/`） | `release-v1.0.10` 或 `docker-v*` + `plugins-v*` | 镜像 + apiserver 插件 | — |
 | drpy / danmu-api / ffmpeg 插件 | `plugins-v1.0.10` | 插件 4 个（无壳） | 其余全部 |
@@ -693,7 +702,8 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 - **唯一源** `client/package.json` 的 `version`；`bump-version.ps1` 一次改齐 **13 处**（含 TV `versionName`/`versionCode`、compose 兜底）
 - `versionCode = major*1000 + minor*100 + patch`（1.0.9 → 1009），Android 只增
 - **一次 bump 可以打多条 tag**（都指同一个 commit），版本号天然对齐
-- 已知缺口：`release.yml` **没有** tag 数字 == `package.json` 版本 的校验（只有 `fpk.yml` 有）；tag 是纯触发信号，别指望它表达版本
+- `release.yml` 已加 tag 版本校验：壳 tag（release/tv/pc/fpk）必须等于 `client/package.json`；
+  `tv-plugins-v*` / `plugins-v*` 是独立版本线，tag 后缀不要求等于壳版本（但仍必须是数字）
 
 ### 6.3 耗时与额度（实测）
 

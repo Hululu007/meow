@@ -90,6 +90,23 @@
     ' inset 0 0 0 3px var(--color-accent,#03dac5),' +
     ' 0 0 10px 1px var(--color-accent,#03dac5) !important}' +
     /*
+     * 密集网格（国家列表这类"格子在自己 overflow 容器里、四边都贴边"的
+     * 布局）用**内描边**焦点环。
+     *
+     * ★ 2026-11-11 用户报「聚焦圆环被切割显示不全」：国家网格的容器是
+     *   `max-h-56 overflow-y-auto`，外扩环（2px + 12px 辉光）在上下左右
+     *   都会被容器裁掉；滚动到贴边那一行时尤其明显。
+     *   这和弹层里的症状是同一个根因，解法也一样：画在元素内部就不会
+     *   越过任何裁切区。
+     *
+     *   2px accent + 1px 内白（不用 3px：网格行高只有 29px，3px 内环会把
+     *   国旗和文字挤成一条缝）+ 8px 外辉光（辉光允许被裁，破损不明显）。
+     */
+    '[data-tv-inset-focus] .meow-tv-focus{' +
+    'box-shadow:inset 0 0 0 1px var(--tv-focus-inner,rgba(255,255,255,.75)),' +
+    ' inset 0 0 0 2px var(--color-accent,#03dac5),' +
+    ' 0 0 8px 0 var(--color-accent,#03dac5) !important}' +
+    /*
      * 滚动停靠点（data-tv-scroll）的焦点框要更轻。
      *
      * 踩过（2026-10-30 统计面板截图）：给内容容器加 data-tv-first 后，

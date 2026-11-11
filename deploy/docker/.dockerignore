@@ -1,0 +1,5 @@
+# 源包镜像的 build context 只需要 nginx 配置；
+# 其余内容（data/、其他 Dockerfile、compose）都不进 context，
+# 避免 OECT 上把整个数据目录打包发给 docker daemon。
+*
+!nginx.sources.conf

@@ -100,7 +100,7 @@ describe('设置页分区归属', () => {
 
   it('搜索相关控件都在「搜索与源」区', () => {
     const b = blockOf('source')
-    for (const k of ['cacheTtlFields', 'searchLayout', 'searchThreads', 'sourceTiles', 'settings-sites']) {
+    for (const k of ['cacheTtlFields', 'searchLayout', 'searchThreads', 'healthTiles', 'cacheTiles', 'settings-sites']) {
       expect(b, `「搜索与源」区缺少 ${k}`).toContain(k)
     }
   })

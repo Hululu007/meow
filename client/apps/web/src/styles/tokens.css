@@ -995,6 +995,27 @@ html:not([data-tv='1']) *:focus-visible {
   outline-color: transparent !important;
 }
 
+/*
+ * 电视上同样不要**浏览器自带**的焦点轮廓。
+ *
+ * ★ 2026-11-11 用户报「第一个国家一直有边框，已经聚焦到别处了」：
+ *   那个白灰色小方框不是 tv-nav 的环（.meow-tv-focus 是 accent 色 +
+ *   外发光），而是元素的 **DOM 焦点**触发的 UA :focus-visible 轮廓。
+ *   电视上 tv-nav 只搬 `.meow-tv-focus` 类、几乎不 focus() 元素，
+ *   但个别路径（点击、页面自己的 focus()、WebView 的无障碍焦点）仍会给
+ *   某个按钮真实焦点 —— 于是它的 UA 环一直留在那儿，和真正的焦点环
+ *   同时出现，看起来像"残留框"。
+ *
+ * 表单控件不在名单里：电视上打字要有焦点反馈（与 legacy-css 里那条一致）。
+ * 上面 `html:not([data-tv='1'])` 那条只在非电视生效，所以不冲突。
+ */
+html[data-tv='1'] button:focus,
+html[data-tv='1'] a:focus,
+html[data-tv='1'] [tabindex]:focus,
+html[data-tv='1'] [role='button']:focus {
+  outline: none !important;
+}
+
 
 html,
 body,
