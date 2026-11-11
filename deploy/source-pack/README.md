@@ -113,9 +113,13 @@ Fongmi、猫窝 TV 和猫窝 JVM 都会按 jar URL 缓存。只替换服务器�
 
 ## 6. 源服务（nginx）
 
-`deploy/docker/Dockerfile.sources` + `nginx.sources.conf`：
+开源版只保留 `deploy/docker/docker-compose.sources.yml`：官方 nginx 镜像 +
+内联 `configs.content`，直接 `up -d` 即可；`Dockerfile.sources` /
+`nginx.sources.conf` / `.dockerignore` 是私仓构建资源，已在公开库 gitignore。
 
-- 只读挂载源包目录，不把 jar/config COPY 进公开镜像；
+规则一致：
+
+- 只读挂载源包目录，不把 jar/config COPY 进镜像；
 - 禁止 SPA fallback（找不到必须 404，不能返回 index.html）；
 - `.jar` 显式 `application/java-archive`；
 - 关闭目录列表，开启 `Cache-Control: no-cache` 和 CORS；
@@ -138,8 +142,9 @@ curl -fsS http://<HOST>:18080/source-pack.json
 curl -fsS http://<HOST>:18080/config.all.json
 ```
 
-只换文件不需要重启 nginx；改 `Dockerfile.sources` / `nginx.sources.conf` 才需要
-重建镜像。**不要**把源包放进 `meow-web` 的 web 根目录。
+只换文件不需要重启 nginx；开源版改 nginx 规则要改 compose 的内联
+`configs.content`，私仓版改 `nginx.sources.conf` 后重建镜像。
+**不要**把源包放进 `meow-web` 的 web 根目录。
 
 ## 8. Fongmi 兼容字段
 

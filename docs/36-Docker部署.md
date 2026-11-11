@@ -16,8 +16,9 @@
 > `nginx.conf.template`、`.env.example`。
 > （弹幕服务用官方镜像，没有自己的 Dockerfile。）
 >
-> **源包静态服务是独立编排**：`Dockerfile.sources`、`nginx.sources.conf`、
-> `docker-compose.sources.yml`，不包含在下面的四个容器里，部署见
+> **源包静态服务是独立编排**：开源版只保留 `docker-compose.sources.yml`
+>（官方 nginx + 内联配置，直接 `up -d`）；`Dockerfile.sources`、
+> `nginx.sources.conf`、`.dockerignore` 只在私仓维护。部署见
 > [`SOURCE_PACK.md`](../deploy/SOURCE_PACK.md)。
 >
 > **★ 所有 `docker compose` 命令都要先在 `deploy/docker/` 下执行**：两个 compose 的

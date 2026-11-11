@@ -63,26 +63,32 @@ cd /vol2/1000/docker-data/meow
 #   MEOW_SOURCES_DIR=/vol2/1000/meow-sources
 #   （可选）MEOW_SOURCES_PORT=18080
 
-docker compose -f docker-compose.sources.yml up -d --build
+# 开源版：只保留这个 compose，使用官方 nginx + 内联配置，直接启动
+docker compose -f docker-compose.sources.yml up -d
+
+# 私仓版：保留 Dockerfile.sources / nginx.sources.conf，可构建自定义镜像
+# docker compose -f docker-compose.sources.yml up -d --build
 ```
 
-`deploy/docker/` 里的三个文件：
+文件归属：
 
-| 文件 | 用途 |
-|---|---|
-| `Dockerfile.sources` | nginx 静态镜像（不含任何 jar/config） |
-| `nginx.sources.conf` | 监听 8080、禁止 SPA fallback、`.jar` 用 `application/java-archive` |
-| `docker-compose.sources.yml` | 独立编排，只读挂载源包目录 |
+| 文件 | 开源版 | 私仓版 |
+|---|---|---|
+| `docker-compose.sources.yml` | ✅ 唯一保留文件，官方 nginx + 内联配置 | ✅ 可为 build 版本 |
+| `Dockerfile.sources` | ❌ gitignore | ✅ 构建资源 |
+| `nginx.sources.conf` | ❌ gitignore | ✅ 构建资源 |
+| `.dockerignore` | ❌ gitignore | ✅ 构建资源 |
 
 要点：
 
-- **不要把源包 COPY 进镜像**：`Dockerfile.sources` 只装 nginx 配置，jar/config 通过
+- **不要把源包 COPY 进镜像**：nginx 配置与 jar/config 分离，源包通过
   `MEOW_SOURCES_DIR` 只读挂载；公开镜像不含第三方内容。
 - 健康检查同时要求 `source-pack.json` 和 `config.all.json` 可读；只有旧
   `config.all.json`、没有规范清单的目录会被判未规范化。
 - 找不到文件必须 404，不能回落 `index.html`（否则客户端把 HTML 当 JSON/jar）。
-- 只换源包文件不需要重启 nginx；改 `Dockerfile.sources`/`nginx.sources.conf` 才需要
-  `up -d --build`。
+- 开源版改 nginx 规则要改 compose 里的 `configs.content`；私仓版改
+  `nginx.sources.conf` 后 `up -d --build`。
+- 只换源包文件不需要重启 nginx。
 - 源包服务与主栈 `meow` 完全独立；重建 `meow-web` 不影响它。
 
 systemd 仅作无 Docker 环境备用，启动 `python3 -m http.server 18080` 即可；生产推荐

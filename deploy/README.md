@@ -83,9 +83,7 @@ deploy/
 │   ├── Dockerfile.web           ← nginx + 静态文件
 │   ├── Dockerfile.apiserver     ← JRE + classes + libs + ffmpeg
 │   ├── Dockerfile.drpy          ← Node 运行时
-│   ├── Dockerfile.sources       ← 源包静态服务（nginx，不含 jar/config）
-│   ├── docker-compose.sources.yml ← 源包独立编排（18080，只读挂载）
-│   ├── nginx.sources.conf       ← 源包 nginx 配置（禁止 SPA fallback）
+│   ├── docker-compose.sources.yml ← 源包独立编排（开源版唯一保留；官方 nginx + 内联配置）
 │   ├── nginx.conf.template      ← web 容器反代配置
 │   └── .env.example             ← 变量模板（复制成 .env 用）
 ├── source-pack/
@@ -99,6 +97,12 @@ deploy/
     ├── bump-version.ps1         ← 版本号 13 处一次改齐
     └── build-push-docker.ps1    ← 三镜像构建并推送
 ```
+
+> **源包服务（2026-11-11 拆分）**：开源版只保留
+> `docker-compose.sources.yml`（官方 nginx + 内联配置，直接 `up -d`）。
+> `Dockerfile.sources`、`nginx.sources.conf`、`.dockerignore` 属于构建资源，
+> 已 gitignore，只在私仓 `upchr/meow-private` 维护；源包规范见
+> [`source-pack/`](source-pack/README.md)。
 
 ### 1.1 ★ 构建单元的唯一真源：`deploy/units.json`
 
