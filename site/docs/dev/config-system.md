@@ -12,11 +12,12 @@
       ↓  确认后落盘
 data/config.sites.json          ← 站点表、parses、lives、rules…
       ↓  启动 / 导入后触发
-Jars.prepare()                  ← 读 spider / spiderJvm，下载 + md5 校验 + 缓存
+Jars.reload()（启动，JVM 专用）/ Jars.prepareForImport()（导入期，配合 Dex2Jvm）
+                                ← 读 spider / spiderJvm，下载 + md5 校验 + 缓存
       ↓
 Bridge.installClassLoaderIfAbsent()   ← 装 URLClassLoader（JVM）或 DexClassLoader（TV）
       ↓
-站点分派（csp_ → jar / .js → drpy / CMS → 直连）
+站点分派（csp_ → jar / .js → drpy / http → CMS 直连）
 ```
 
 ## 二、导入：三种模式与三个开关
@@ -92,18 +93,18 @@ TV 端只读 `spider`，Fongmi 也一样——它们不认 `spiderJvm`。
 `Bridge.installClassLoaderIfAbsent()` 名字里的 `IfAbsent` 是关键：**已经装过就不再覆盖**。
 TV 端有 DexClassLoader 钩子，重复安装会把钩子顶掉，导致 jar 站全部失效。
 
-## 五、站点分派：三种形态
+## 五、站点分派：四条路，顺序即正确性
 
 配置里每个站点的 `api` 决定走哪条路：
 
 | `api` 形态 | 走哪 | 实现位置 |
 |---|---|---|
-| `csp_XXX` | spider jar（反射 `crawler.Spider`） | 后端 `call()` 的 jar 分支 |
-| 以 `.js` 结尾 | drpy 运行时（Node） | 转发到 `policy.json` 的 `jsRuntime` |
-| `http(s)://...` 且 `type: 1` | 苹果 CMS 直连 | `CmsSource` |
-| 空 / 原生源 | 内置实现（如豆瓣） | `NativeSources` |
+| 站点名在 `NativeSources` | 内置实现（如豆瓣） | `NativeSources` |
+| `http(s)://...` 开头 | 苹果 CMS 直连（**不看 `type`**） | `CmsSource` |
+| 以 `.js`/`.py` 结尾、`js:`/`py:`/`node:` 开头 | drpy 运行时（Node） | 转发到 `policy.json` 的 `jsRuntime` |
+| 其余（`csp_XXX`） | spider jar（反射 `crawler.Spider`） | `call()` 的 jar 分支 |
 
-分派顺序是**原生源 → CMS → drpy → jar**，前一个能处理就不看后面的。
+分派顺序是**原生源 → CMS → drpy → jar**，前一个能处理就不看后面的（`call()`，`ApiServer.java:2229`）。
 
 ::: tip 为什么原生源排最前
 公开壳没有内置 jar，如果原生源排在 jar 后面，没有 jar 时整个后端会被判成「不可用」。
@@ -112,18 +113,23 @@ TV 端有 DexClassLoader 钩子，重复安装会把钩子顶掉，导致 jar �
 
 ## 六、站点级 `jar`（TV 专用）
 
-TV 端逐个站点构造 `DexClassLoader`，所以**每个 `csp_` 站点要有 `jar` 字段**（或顶层 `spider` 可用）。
-JVM 端则优先用顶层字段，站点级 `jar` 可选。
+TV 端逐个站点构造 `DexClassLoader`（`LocalSpiderHost`），所以**每个 `csp_` 站点要有
+`jar` 字段**（或顶层 `spider` 可用）。
+JVM 端 `Jars.collect()` 同时收顶层字段（`spiderJvm` 优先、回退 `spider`）与**每个站点的
+`jar` 字段**，各自挂独立 `URLClassLoader`——有就挂，没有就跳过（`Jars.java:132-153`）。
 
-这也是一份配置能同时给两端用的前提：顶层给 TV，`spiderJvm` 给 JVM，站点级 `jar` 只在需要多 jar 时写。
+这也是一份配置能同时给两端用的前提：顶层 `spider`（dex）给 TV，`spiderJvm`（class）给
+JVM，站点级 `jar` 在多 jar 场景按站点写。
 
 ## 七、多仓与探测
 
-导入 `{"urls": [...]}` 形式的多仓索引时：
+多仓索引（`{"urls": [...]}`）与单仓地址走同一个入口，两段行为不同：
 
-1. 逐个拉取子仓
-2. 单个仓失败 → 跳过，不阻断其他仓
-3. 全部失败 → 报错并保留原有配置
+- **探测**（`POST /api/config/depot`）：**并发**探测每个子仓，逐仓回
+  `{name,url,ok,sites,csp,inJar,direct,hint}`；单个仓失败不阻断其他仓。
+- **导入**（`POST /api/config/import`）：多仓索引**只取第一个子仓**，其余子仓作为
+  可选列表回给前端（`depot` 字段），用户挑中哪个再以该地址重新导入。
+  实际导入的那个仓拉取失败 → `502`，原配置不动。
 
 探测结果会写进 `site-health.json`，站点管理页的「可用 / 不可用」来自这里。
 

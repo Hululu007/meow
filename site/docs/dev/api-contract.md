@@ -1,8 +1,7 @@
-# API 契约与样例（权威定义）
+# API 契约
 
-> 版本：v1（2026-10-21）
-> 定位：**前后端契约的唯一权威来源**。所有样例均来自对 `127.0.0.1:9979` 的**真实抓取**（非虚构），
-> 目标态字段标注为 `[目标]`。
+> 定位：前后端契约的**唯一权威来源**。形状以 `server/host/src/shared/ApiServer.java`
+> 及 `routes/` 模块为准；本文只写代码当前会返回什么。行号仅供定位。
 > 配套：[三端架构](./architecture.md)、[前端手册](./frontend.md)、[TV 接入](./tv-integration.md)。
 
 ---
@@ -11,16 +10,15 @@
 
 - [第零章 使用方式](#第零章-使用方式)
 - [第一章 通用约定](#第一章-通用约定)
-- [第二章 现状端点真实样例](#第二章-现状端点真实样例)
-- [第三章 现状问题清单（抓取实证）](#第三章-现状问题清单抓取实证)
-- [第四章 目标契约：系统与配置](#第四章-目标契约系统与配置)
-- [第五章 目标契约：内容（7 方法）](#第五章-目标契约内容7-方法)
-- [第六章 目标契约：播放与解析](#第六章-目标契约播放与解析)
-- [第七章 目标契约：代理](#第七章-目标契约代理)
-- [第八章 目标契约：状态](#第八章-目标契约状态)
-- [第九章 错误码与降级](#第九章-错误码与降级)
-- [第十章 版本兼容策略](#第十章-版本兼容策略)
-- [附录 A 完整样例文件清单](#附录-a-完整样例文件清单)
+- [第二章 系统与配置](#第二章-系统与配置)
+- [第三章 内容接口](#第三章-内容接口)
+- [第四章 播放与解析](#第四章-播放与解析)
+- [第五章 代理与弹幕](#第五章-代理与弹幕)
+- [第六章 状态](#第六章-状态)
+- [第七章 运维与本地能力](#第七章-运维与本地能力)
+- [第八章 错误与降级](#第八章-错误与降级)
+- [第九章 版本兼容](#第九章-版本兼容)
+- [附录 A 端点全表](#附录-a-端点全表)
 
 ---
 
@@ -28,18 +26,18 @@
 
 ### 0.1 这份文档解决什么
 
-前端开发者不需要读后端源码，只看本文就能写出正确的请求与解析逻辑；
-后端开发者不需要猜前端要什么，按本文输出即可。
+前端按本文写请求与解析，后端按本文输出。样例是**形状**不是固定值；
+字段只增不改，前端必须容忍未知字段。
 
-**每一条契约都有真实样例**。样例来自 2026-10-21 对运行中的宿主抓取，
-不是设计稿。目标态字段单独标注。
+### 0.2 读取响应的四条规则
 
-### 0.2 三条铁律
-
-1. **字段只增不改**。新增字段必须有默认值，前端必须容忍未知字段。
-2. **`ok` 优先于 HTTP 状态码**。业务失败仍返回 200，靠 `ok: false` + `code` 区分。
-   （现状不满足，见第三章 P4）
-3. **所有时间戳是毫秒**。`position`/`start`/`end`/`at` 统一毫秒，不用秒。
+1. **先看 HTTP 状态码，再看 body。** 4xx/5xx 的错误信封固定为
+   `{"code":-1,"msg":"…"}`；`code` 恒为 `-1`，没有符号化错误码。
+2. **200 也可能是业务失败。** `/api/parse`、`/api/live/playlist`、`/api/lives`
+   靠 `ok:false` + `msg` 区分；`/api/{site}/{action}` 返回**裸 CatVod JSON**，没有 `ok` 包装。
+3. **时间单位不统一：** 毫秒是 `position` / `skips[].start,end` / `at` / `ep_at`；
+   秒是 `pos` / `dur`。
+4. **站点不存在不是 404。** 返回 200 + `{"code":-1,"msg":"该源在当前构建不可用…"}`。
 
 ---
 
@@ -47,1335 +45,585 @@
 
 ### 1.1 Base URL
 
+| 形态 | 地址 |
+|---|---|
+| JVM 宿主 | `http://127.0.0.1:9979`（`MEOW_PORT` / `MEOW_BIND` 可覆盖） |
+| TV 内嵌网关 | `http://127.0.0.1:9978`（jar 的 `Proxy` 从 9978 扫到 9999） |
+| Web 开发 | Vite 代理 `/api`，base 留空 |
+| PC 桌面 | 页面是 `file://` / `tauri.localhost`，用绝对地址；端口由插件协商 |
+
+前端 `api/index.ts` 的顺序：桌面端 `meow.api`（仅 `scope=desktop`）+ `backend_base`；
+Web 端 `meow.api`（设置页写入并带 scope，或 TV 壳引导）+ `VITE_API_BASE`；兜底同源空串。
+**桌面端没拿到确定地址时报错，绝不退化成同源请求**（否则会显示另一个后端的数据）；
+仍是单后端 + 手填覆盖，没有多后端列表。
+
+**站点 key 里的 `#` 必须百分号编码**：多实例 key 形如 `Bili#2`，直接拼 URL 会被当
+fragment 截掉。后端按 `/` 切段后 `URLDecoder.decode`，传 `Bili%232`。
+
+### 1.2 请求头、鉴权、限流
+
 ```
-默认：http://127.0.0.1:9979
-[目标] 支持多后端：[{ "name": "自建", "url": "http://..." }, ...]
+Content-Type: application/json      （POST 必带）
+X-Meow-Token: <token>               （可选；写操作）
 ```
 
-### 1.2 请求头
+- 令牌来源：`MEOW_AUTH_TOKEN` 优先，其次 `policy.authToken`；两处都空 = 关闭。
+- **GET/HEAD/OPTIONS 永不拦**；写端点（state、config/import、lives、policy、webdav、
+  library、cache、health 写、transcode、logs、posters、scrape、search/cache、
+  llm/relay、cast）需要令牌，也接受 `?token=`。
+  缺失/不匹配 → `401 {"code":-1,"msg":"unauthorized: X-Meow-Token required"}`。
+- **跨源写一律 403**（`cross-origin write blocked`），与是否配 token 无关；curl / 本机脚本
+  不带 Origin，放行。
+- 固定窗口限流（默认 10s）：`/api/parse` 30 次/窗口，`/api/proxy/*` 240 次/窗口；
+  `policy.rateLimit` 可调，设 0 关闭。超限 → `429 {"code":-1,"msg":"too many requests"}`。
+
+### 1.3 响应头
 
 ```
-Content-Type: application/json     （POST 必带）
-[目标] Authorization: Bearer <token>   （写操作端点）
-```
-
-### 1.3 响应头（现状实测）
-
-```
-Access-Control-Allow-Origin: *                                    ← 现状，[目标] 改为白名单
-Access-Control-Allow-Headers: Content-Type,Range
-Access-Control-Expose-Headers: Content-Length,Content-Range,Accept-Ranges
 Content-Type: application/json; charset=utf-8
+Access-Control-Allow-Origin: <请求的 Origin>      （无 Origin 时回 *）
+Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS
+Access-Control-Allow-Headers: Content-Type,Range,X-Meow-Token
+Access-Control-Expose-Headers: Content-Length,Content-Range,Accept-Ranges,X-Danmaku-*
+Cache-Control: no-store, no-cache, must-revalidate
 ```
 
-### 1.4 错误信封（目标态统一）
+- **CORS 默认放行任何来源**（`MEOW_CORS` 未设置或 `*`）；设逗号分隔白名单才收紧，
+  `none` 只放行本机与各端壳。下发**请求的 Origin**，不是 `*`；非 `*` 时带 `Vary: Origin`。
+- `no-store` 由 `ApiServer.sendText` 统一加；`routes/` 模块里用 `Api.sendJson` 的响应
+  **不带**这个头（`/api/state/*` 等）。
+- `Access-Control-Allow-Methods` 必须含 `DELETE`：浏览器对 DELETE 先发 OPTIONS，
+  漏了会让收藏删除卡在预检。
 
-```json
-{
-  "ok": false,
-  "code": "SPIDER_LOAD_FAILED",
-  "msg": "无法加载站点 NoSuchSite",
-  "detail": "ClassNotFoundException: com.github.catvod.spider.NoSuchSite"
-}
-```
+### 1.4 错误信封
 
-现状**不是**这个形状（见第三章），改造时向后兼容：保留顶层 `code`/`msg`。
+形如 `{"code":-1,"msg":"site and vod_id required"}`。
+只有 `code` 与 `msg`；没有 `error`/`detail`/符号化 `code`。`msg` 可能含内部异常
+（如 `cannot load spider X: ClassNotFoundException`），前端不要直接当用户文案。
+例外：`/api/llm/relay` 用 `{"ok":false,"error":"…","hint":"…"}`（§7）。
 
 ---
 
-## 第二章 现状端点真实样例
-
-> 以下全部为 2026-10-21 实测原文，未做修饰。
-> **这些是历史快照，其中 `health` / `sites` / `config` 的形状已随版本变化**——
-> 当前（0.9.15）的真实响应见 §2.4 末尾的「新增端点」与第三章末尾的 2026-10-26 复核表。
+## 第二章 系统与配置
 
 ### 2.1 `GET /api/health`
 
-**请求**
-```bash
-curl -s http://127.0.0.1:9979/api/health
-```
+`ok` 的判据是 `(spiderJar || nativeSources > 0) && configLoaded`——只有原生源也能为真。
+响应字段（`healthJson()`）：
 
-**响应（2026-10-21 实测原文）**
-```json
-{"ok":true}
-```
+| 字段 | 语义 |
+|---|---|
+| `version` / `sites` / `ext` / `configLoaded` / `spiderJar` / `nativeSources` | 版本、可见站点数、有 ext 的站点数、站点表非空、jar 可加载、原生源数 |
+| `capabilities` | 固定 `danmaku/search/proxy/webdav/dns/state/parse`，配外部弹幕时加 `danmakuExternal`。**没有** `live`/`multiDepot`/`progress`/`favorites` |
+| `degraded` / `unsupported` / `disabled` | 降级 / 环境不支持（缺类、运行时未接）/ 手动停用 的 key 列表（各带 `*Count`） |
+| `now` | 服务器毫秒。一批源用本机时间生成签名，偏差过大会「搜索静默为空」 |
+| `authRequired` / `authSource` | 是否要令牌；`env`/`policy`/`none`（**绝不回显令牌**） |
+| `danmakuApi` | `configured` 或 `builtin` |
+| `dataDir` / `uptime` / `heap*` / `jsRuntime*` | 运维诊断：数据目录、运行秒数、堆、drpy 熔断 |
+| `searchConcurrency` / `searchConcurrencyCapped` | 实际并发 / 是否被人为压低 |
 
-**问题（已修）**：无版本、无能力声明、无站点数。见 P1。
-
-**响应（2026-10-26，0.9.15 实测）**：
-```json
-{"ext":28,"configLoaded":true,
- "capabilities":["danmaku","search","proxy","webdav","dns","state","parse"],
- "dataDir":"…","sites":56,"degraded":[],"version":"0.9.15","danmakuApi":"builtin",
- "spiderJar":true,"uptime":17,"disabledCount":0,"disabled":[],"ok":true,"degradedCount":0}
-```
-
----
+**能力位只能按实际名字判断**：Web 目前只消费 `state`（`hasStateCapability()`）。
 
 ### 2.2 `GET /api/sites`
 
-**请求**
-```bash
-curl -s http://127.0.0.1:9979/api/sites
-```
-
-**响应（实测，截取前 2 条 + 1 条带 ext 的）**
 ```json
-{
-  "sites": [
-    {"key": "Douban",  "name": "豆瓣",     "api": "csp_Douban"},
-    {"key": "YGP",     "name": "豆瓣预告", "api": "csp_YGP"},
-    {"key": "Duopan",  "name": "闪电优汐", "api": "csp_Duopan",
-     "ext": "{\"site_urls\":[\"http://shandian.blog/\",\"http://sd.sduc.site/\"]}"},
-    {"key": "AppQi",   "name": "肥猫",     "api": "csp_AppQi",
-     "ext": "https://example.com/ext.txt|REDACTED"},
-    {"key": "AppDrama2","name": "干饭",    "api": "csp_AppDrama2",
-     "ext": "{\"appName\":\"小苹果\",\"publicKey\":\"REDACTED",\"dataKey\":\"S0VNDTJHOFHHCNMRAW5IV2TOS2PBPQ==\"}"}
-  ]
-}
+{"sites":[{"key":"Bili#2","name":"哔哩2","api":"csp_Bili","ext":"…",
+           "health":{"ok":3,"fail":0,"degraded":false,"lastCostMs":880}}]}
 ```
 
-**实测字段集**：`key` / `name` / `api` / `ext`（仅部分有）。**共 28 条**（2026-10-21）。
-
-**问题**：
-- 无 `searchable` / `changeable` / `hide` / `indexs` / `timeout` / `categories` / `header` / `style`
-- 无健康状态
-- `Bili` 只出现 1 次（应有 6 个 ext 变体）
-- `ext` 是已转义的 JSON 字符串（双重编码），前端需要 `JSON.parse` 两次
-
-见 P2、P3。
-
-> **2026-10-26 现状（0.9.15）**：字段变成 `key/name/api/ext/health`（**仍没有**
-> `searchable/timeout/categories` 等，P2 未修）；条数 **56**（播种 40 条配置后，
-> `Bili` 有 `Bili`~`Bili#6` 六个），`ext` 仍是双重编码（P8 未修）。
-> 健康状态已加到每条（`health.{ok,fail,degraded,disabled,lastError}`）。
-
----
+- 只有 `key`/`name`/`api`/`ext?`/`health?`；**没有** `searchable`/`timeout`/`categories`。
+- `ext` 是**已转义的 JSON 字符串**（双重编码），前端 `tryParse` 一次。
+- `health` 仅在有过记录时出现，字段：`ok/fail/degraded/disabled/unsupported/
+  unsupportedReason/lastCount/lastCostMs/slowEmpty/timeoutStreak/lastTimeoutAt/
+  lastOkAt/lastFailAt/skippedTimeout/skippedFailed/lastError`。
+- 已按「有实现 + 被配置承认」过滤（`siteVisible`），没有实现的基线名不会出现。
 
 ### 2.3 `GET /api/config`
 
-**响应（实测，与 /api/sites 几乎相同，仅多 `type:3`）**
+`{"sites":[{"key":"Douban","name":"豆瓣","api":"csp_Douban","type":3}],"lives":[…]}`。
+仅 `{sites,lives?}`；`type` 固定 3、`api` 固定 `csp_<key>`。
+**这是旧兼容端点，不是 CatVod 配置**；CatVod 客户端用 `/config.json`。
+
+### 2.4 `GET /config.json`（CatVod 出口）
+
 ```json
-{
-  "sites": [
-    {"key": "Douban", "name": "豆瓣", "api": "csp_Douban", "type": 3},
-    {"key": "AppQi",  "name": "肥猫", "api": "csp_AppQi", "type": 3, "ext": "..."}
-  ]
-}
+{"spider":"http://<host>:9979/spider-latest.jar;md5;<实际下发文件的 md5>",
+ "sites":[{"key":"干饭","name":"干饭","type":3,"api":"csp_AppDrama2",
+           "ext":"com.juechufsh.android.xpg1","jar":"./spider-latest.jar"}],
+ "parses":[],"lives":[],"rules":[],"ads":[],"proxy":[],"hosts":[],"doh":[],"headers":[]}
 ```
 
-**问题**：**只有 `sites` 一项**。CatVod config 需要九项（`spider`/`sites`/`parses`/`lives`/
-`rules`/`ads`/`proxy`/`hosts`/`doh`）。缺 `spider` 意味着 **Fongmi 无法直接使用**。
-见 P5。
+- `sites` 来自数据目录的 `config.sites.json`，**不是** `/api/sites` 的表；没有配置文件时为空数组。
+- `type` 原样透传。`type=1` 的 api 是 http 地址，写成 3 会让客户端按 `csp_` 找类，整站消失。
+- `ext` 可能是字符串或对象，**不能转 String**（会破坏 `{"json":…}`）。
+- `csp_` 站点没写 `jar` 时补 `"./spider-latest.jar"`（相对路径，客户端按配置地址补全）。
+- 只下发 **8 张数组表**；`wallpaper`/`logo`/`danmaku` 三个字符串字段**不下发**。
+- `spider` 的 md5 必须是**这份响应实际给出的 jar** 的 md5；取不到 jar 时不写 `;md5;` 段。
+- Base URL 由 `Host`/`Origin`/`Referer`/`X-Forwarded-Proto` 推导，并拼 `X-Forwarded-Prefix`；
+  反代子路径部署（如 `/app/meow`）依赖它。
 
-> **2026-10-26 现状（0.9.15 实测）**：`GET /api/config` **仍然只有 `sites` 一项**（P5 未修，
-> 多出了每条站点的 `health` 字段）。CatVod 出口是**另一个端点** `GET /config.json`，
-> 已输出 `ads/proxy/headers/lives/hosts/sites/rules/parses/doh/spider` 九项 +
-> `spider` 的 `;md5;`。两者刻意并存、形状不同，**不要合并**。
+### 2.5 `GET /spider-latest.jar`
 
----
+优先发 **dex 形态**（jar 内有 `classes.dex`），没有才回落 class 版。`ETag` = 文件 md5
+（带引号），`If-None-Match` 命中 → `304`；不存在 → `404 {"code":-1,"msg":"spider jar not found"}`。
 
-### 2.4 `GET /api/policy`
+### 2.6 `GET/POST /api/policy`
 
-**响应（实测）**
+- `GET` 返回 policy 全量但**摘掉 `authToken`**、补 `authRequired`；`POST` 浅合并
+  （只覆盖传入的键），返回完整 policy（**含 `authToken`**）。坏 JSON → 400。
+常用键：`authToken`、`corsOrigins`、`rateLimit{parse,proxy,windowSec}`、`filterAds`、
+`safeDns`、`dnsProvider`、`jsRuntime`、`danmakuApi`、`trustProxy`、`cacheQuotaGb`、
+`cacheEvictMode`、`cacheDir`、`llmRelay.enabled`。
+
+### 2.7 `GET/POST /api/config/import`
+
 ```json
-{"safeDns": true, "dnsProvider": "dnspub"}
+{"url":"http://host/config.json","mode":"replace|merge","onConflict":"keep|replace|both",
+ "dryRun":false,"replaceSpider":false,"proxies":["http://127.0.0.1:7890"]}
 ```
 
-**语义**：后端持久化的键值对，`POST` 为**浅合并**（只覆盖传入的 key）。
-
-**缓存相关键**（`core/VideoCache` 每次读）：
-
-| 键 | 形状 | 默认 | 生效时机 |
-|---|---|---|---|
-| `cacheQuotaGb` | 数字，`<=0` = 不限 | `8` | 立即 |
-| `cacheEvictMode` | `"lru"` \| `"off"` | `"lru"` | 立即 |
-| `cacheDir` | 字符串 | 空 = `<data>/cache/video` | **需重启后端** |
-
-`cacheDir` 为相对路径时按**数据目录**解析（不是进程 cwd）；
-不可写则安全回落到默认目录。缓存根在进程内只解析一次，
-所以改完必须重启；`GET /api/cache` 的 `cacheDirReloadRequired`
-会告诉你是否还没生效。
-
-**新增（2026-10-26）健康度与缓存端点**：
-
-```
-POST /api/health/probe    {"sites":["A","B"]}?           → {ok,probed,results:[{site,ok,ms,error}]}
-POST /api/health/degrade  {"site":"A","disabled":true}   → {ok,disabled,updated[],unknown[],state{}}
-                          {"sites":["A","B"],"disabled":false} 也可
-GET  /api/health/state                                   → {degraded[],disabled[],sites:{...}}
-POST /api/cache/batch     {"site","vodId","items":[{ep,name,url}]}
-                          → {ok,batch,ids[],count,skipped[],items[],statusUrl}
-GET  /api/cache/status?batch=<id>                        → {ok,state,total,done,failed,pending,percent,bytes,items[]}
-                          state ∈ running|done|partial|failed
-                          不带 batch → {ok,batches:[...]}（全部批次概览，实测）
-GET  /api/cache/tasks                                    → {ok,items:[{id,ep,state,percent,resumable,...}]}
-POST /api/cache/resume    {"id":"..."} 或 {"ids":[...]}  → {ok,resumed[],failed[]}
-GET  /api/cache/export?id=<id>[&format=ts]               → 单个文件（流），无分片时 404
-                          有 ffmpeg → .mp4（-c copy），无则 .ts；
-                          头 X-Meow-Export-Format 说明实际格式
-POST /api/cache/export-to {"id","dir","name"?}           → {ok,path,format,bytes}
-                          **仅回环地址**可用（其余 403），PC 端本机直存
-GET/DELETE /api/logs                                    → GET {ok,stats{...},items[]}（默认 500 条，
-                          参数 level/tag/since/limit，上限 2000）；DELETE → {ok:true} 清空缓冲
-```
-
-实测（0.9.15，本机临时实例）：
-
-```bash
-curl -s localhost:19980/api/health/probe -X POST -d '{"sites":["Douban"]}'
-# {"ok":true,"probed":1,"results":[{"site":"Douban","ms":880,"ok":true,"error":""}]}
-curl -s localhost:19980/api/cache/status        # {"batches":[],"ok":true}
-curl -s localhost:19980/api/logs               # {"stats":{"total":0,...,"capacity":2000},"ok":true,"items":[]}
-curl -s 'localhost:19980/api/cache/export?id=x' # 404 {"code":-1,"msg":"这一集还没有缓存分片；先下载完成再导出"}
-```
-
-`GET /api/cache` 额外回 `cacheDirReloadRequired` 与 `cacheDirPolicy`。
-所有 `/api/health/*` 与 `/api/cache/*` 的写操作在设了 `authToken` 时要求 `X-Meow-Token`。
-
-**其余已实现、此前未登记的固定端点**（同属显式路由表，均不走站点分派）：
-
-| 端点 | 作用 | 关键约束 |
+| 字段 | 默认 | 说明 |
 |---|---|---|
-| `GET/POST /api/library` | 片库配置读写、列目录（`?lib=&path=`）、`POST ?action=test` 连通测试 | 与 `/api/proxy/*` 刻意分离：只访问配置里声明的根；`path` 是**相对库根**的路径 |
-| `GET /api/library/stream` | 片库文件流 | **必须支持 Range**，否则大文件不能 seek |
-| `POST /api/transcode`、`GET /api/transcode/*` | MKV/HEVC 现转 HLS，产物写后端缓存目录 | 首次响应 `state=running` 且清单为空，**不能据此判失败** |
-| `POST /api/live` | 聚合各站 `liveContent` + `config.lives` 播放列表 | 不校验 method（GET 也回 200，body 为空即全站聚合）；12s 总预算 |
-| `POST /api/live/playlist` | 解析一条 m3u / txt IPTV 列表 | body 里缺 `url` 回 `{"ok":false,"msg":"url required"}`；认 `group-title` 与 `#genre#` |
-| `POST /api/scrape` / `GET /api/scrape` | 批量刮削（POST，body 需 `groups[]`）/ 单片查（GET，需 `title`，可带 `year`）；`DELETE` 清缓存 | 无 `groups` 时 400 `groups required`；无 `title` 时 400 `title required` |
-| `GET /api/cast` / `POST /api/cast` | DLNA 发现渲染器（GET）→ AVTransport 控制（POST） | POST 的 body 需 `device{controlUrl,…}`；投的 url 走 `isSafeMediaUrl` 白名单 |
-| `POST /api/webdav` | WebDAV 备份读写 | 凭据只留在后端 |
-| `GET /api/dns/resolve` | DoH 解析 | — |
+| `mode` | `replace` | `merge` 保留现有站点再并入 |
+| `onConflict` | `keep` | 仅 merge 生效；`both` 另起 `key#N` |
+| `dryRun` | `false` | 只算 diff，不写盘 |
+| `replaceSpider` | `false` | 用导入配置的顶层 `spider` 覆盖本地；装源包时必须 true |
+| `proxies` | — | 拉配置时依次尝试的 HTTP 代理 |
+
+成功响应：`{"ok":true,"imported":true,"url":"…","mode":"replace","sites":40,
+"totalSites":56,"skipped":[{"api":"csp_X","reason":"…"}],"depot":[],"dex2jvm":{},
+"diff":{"toAdd":[],"toUpdate":[],"conflicts":[],"unchanged":0,"removed":[],
+"total":40,"healthLost":[],"mode":"replace","onConflict":""},
+"backup":{"exists":true,"at":0,"bytes":0,"sites":0}}`。
+
+`GET` 回最近一次摘要；从未导入 → `{"ok":true,"imported":false}`。
+坏 JSON / 缺 url / 非 http(s) → 400；拉取失败 / 非 JSON → 502。
+
+### 2.8 `POST /api/config/depot`（多仓探测，只读）
+
+```json
+{"url":"https://…/tvboxmuti.json"}
+→ {"ok":true,"entries":[{"name":"仓1","url":"…","ok":true,"sites":151,"csp":96,
+   "inJar":96,"direct":0,"hint":"可用 96 站"}]}
+```
+
+只读：不写 `config.sites.json`、不重建站点表。单仓地址也接受（回一条 `name:"当前地址"`）。
+`inJar + direct` 才是「导入后真能用几站」，排序按它，不按 `sites`。
+非 POST → 405；非 http(s) → 400；拉取失败 → 502。
+
+### 2.9 `GET/POST/DELETE /api/config/backup`
+
+`GET` → `{"ok":true,"backup":{"exists":bool,"at":ms,"bytes":N,"sites":N}}`；
+`POST` 用备份覆盖并重建站点表（没有备份 → 404）；`DELETE` 删除备份。
+全新安装不产生空备份（否则「恢复」按钮看起来可用、点了却清空一切）；
+恢复前先解析一次 JSON，坏备份不写回。
+
+### 2.10 `GET/DELETE /api/logs`
+
+`GET` 参数 `level`/`tag`/`since`/`limit`（默认 500，上限 2000）。
+响应 `{"ok":true,"stats":{…,"capacity":2000},"items":[…]}`；
+`DELETE` → `{"ok":true}`。高频路径（`/api/health`、`/api/logs`、`/api/proxy/*`、
+`/api/cache/*`、`/api/library/stream`、`/api/transcode/*`）不写入缓冲。
 
 ---
 
-### 2.5 `POST /api/Douban/home`
+## 第三章 内容接口
 
-**请求**
-```bash
-curl -X POST http://127.0.0.1:9979/api/Douban/home \
-  -H 'Content-Type: application/json' -d '{}'
+### 3.1 统一入口
+
 ```
-**响应**：HTTP 200，`filters` 恒为空对象。
+POST /api/{site}/{action}
+```
+
+- `{site}` 是站点 **key**（多实例含 `#N`，需百分号编码），不是类名。
+- `{action}`：`home|category|detail|search|play|live|action`。
+- 响应是 spider 的 CatVod JSON **原样透传**（`play` 经 `normalizePlay`），没有 `ok` 包装。
+- 站点不存在 / 类加载失败 → **200** + `{"code":-1,"msg":"该源在当前构建不可用（缺少 X）"}`；
+  未知 action → 500（`IllegalArgumentException` 冒到最外层）。
+
+**空结果兜底**（`emptyFallback`）：`home` → `{"class":[],"filters":{}}`；
+`category`/`detail`/`search` → `{"list":[]}`；
+`play` → `{"parse":0,"url":"","msg":"该源未提供播放地址"}`；`action` → 空 body。
+
+### 3.2 `home`
+
+请求里的 `filter` 被忽略：后端恒调 `homeContent(true)`。
 
 ```json
-{
-  "class": [
-    {"type_id": "tv_hot",                "type_name": "热播剧集"},
-    {"type_id": "show_hot",              "type_name": "热播综艺"},
-    {"type_id": "movie_hot",             "type_name": "热播电影"},
-    {"type_id": "tv_real_time_hotest",   "type_name": "剧集榜"},
-    {"type_id": "movie_real_time_hotest","type_name": "电影榜"},
-    {"type_id": "tv_chinese_best_weekly","type_name": "华语口碑剧"},
-    {"type_id": "tv_global_best_weekly", "type_name": "全球口碑剧"},
-    {"type_id": "movie_weekly_best",     "type_name": "一周口碑电影"},
-    {"type_id": "tv_domestic",  "type_name": "国产剧"},
-    {"type_id": "tv_american",  "type_name": "欧美剧"},
-    {"type_id": "tv_japanese",  "type_name": "日剧"},
-    {"type_id": "tv_korean",    "type_name": "韩剧"},
-    {"type_id": "tv_animation",  "type_name": "动画"},
-    {"type_id": "tv_documentary","type_name": "纪录片"},
-    {"type_id": "movie_scifi",  "type_name": "科幻片"},
-    {"type_id": "movie_comedy", "type_name": "喜剧片"},
-    {"type_id": "movie_action", "type_name": "动作片"}
-  ],
-  "filters": {}
-}
+{"class":[{"type_id":"tv_hot","type_name":"热播剧集"}],
+ "list":[{"vod_id":"1","vod_name":"…","vod_pic":"…","vod_remarks":"…"}],
+ "filters":{"tv_hot":[{"key":"class","name":"类型","value":[{"n":"全部","v":"全部"}]}]}}
 ```
 
-**注意**：
-- `type_id` 是**字符串**；首页默认铺第一个分类（`tv_hot`）。
-- **Douban 由宿主自己实现**（`server/host/src/shared/sources/DoubanSource.java`），
-  不依赖 `spider.jar`——没有 jar 时它仍然能出榜单/分类/详情，这是"纯壳也能用"的基线。
-- 清单以代码为准（`DoubanSource.TABS`）；上面这些 id 全部实测有数据（2026-11-04）。
+`filters` 是 `{type_id:[{key,name,value:[{n,v}]}]}`；筛选值用 `n`/`v`，不是 `name`/`value`。
+
+### 3.3 `category`
+
+`{"id":"tv_hot","page":1,"filters":{"class":"喜剧"}}`；`page` 可为数字或字符串。
+响应字段完全由 spider 决定：`{"page":1,"pagecount":11,"limit":20,"total":219,"list":[…]}`。
+**后端不做分页推算**：spider 不给 `pagecount`，响应里就没有；前端不能靠它以外的字段猜下一页。
+
+### 3.4 `detail`
+
+`{"id":"1292052"}`。`id` 以 `{`/`[` 开头时**整串传给 spider**，不按逗号拆——SP360 的 id
+本身是 JSON；其余按逗号拆成 `List<String>` 批量详情。线路字段（前端侧）：`from` 用 `$$$`
+分线路；`url` 线路间 `$$$`、集间 `#`、每集 `名称$地址`（用**最后一个** `$` 分割）。
+豆瓣原生源的 `vod_play_from` 恒为空串（只有元数据没有线路），这是有意行为。
+
+### 3.5 `search`
+
+`{"wd":"兰香如故","pg":"1","quick":false}`；`quick` 被忽略。响应由 spider 决定，通常是
+`{"list":[…],"page":1,"pagecount":1}`；空结果统一成 `{"list":[]}`，不会 200 + 空 body。
+单站不聚合；聚合走 `POST /api/search`。
+
+### 3.6 `live`
+
+`POST /api/{site}/live` body `{"url":"…"}`，调 `liveContent(url)`，经 `normalizeLive` 归一
+为数组（非数组当空）：`[{"name":"央视","channel":[{"name":"CCTV1","urls":["…"]}]}]`。
+`urls` 里的 `$备用名` 原样保留，前端按 `$` 拆成同频道多线路。
+
+### 3.7 `POST /api/search`（聚合）
+
+请求 `{"wd":"…","threads":12,"sites":["A","B"]}`。
+
+- `threads` 夹在 1–32；低内存设备按堆再压一层，`searchConcurrencyCapped` 说明被压低了。
+- `sites` 省略 = 全站；跳过手动停用、环境不支持、连续超时、已失效的源，
+  并保留至少 `MIN_ALIVE_SITES` 个源保底。
+- 响应：`{"groups":[{"vod_name":"片名","vod_pic":"…","vod_remarks":"…",
+  "sources":[{"site":"AppRJ","site_name":"潮流","vod_id":"123","remarks":"…"}]}],
+  "skippedDegraded":3}`。
+- **不按片名合并**：每源一条，否则详情页会丢线路；同名分组由前端做。
+  噪音词命中时条目带 `"noise":true` 或被剔除。
+
+**异步**：body 含 `"async":true` → 立即回 `{"taskId":"…","done":false,"returned":0,
+"total":0,"noiseFiltered":0,"noiseDowngraded":0,"wd":"…"}`。
+轮询 `GET /api/search/task/{id}`，`done:true` 时追加 `groups` 与 `count`；
+任务保留最近 3 个、至少 60 秒。
+
+**缓存**：`GET /api/search/cache` → `{size,max,fresh,stale,ttlHitSec,ttlMissSec}`；
+`DELETE` → `{ok,cleared}`。默认命中 TTL 2 小时，空结果 180 秒。
 
 ---
 
-### 2.6 `POST /api/AppRJ/home`（带 filters 的形态）
+## 第四章 播放与解析
 
-**响应（实测，节选）**
-```json
-{
-  "class": [
-    {"type_id": "10", "type_name": "内地"},
-    {"type_id": "1",  "type_name": "电影"},
-    {"type_id": "2",  "type_name": "韩剧"}
-  ],
-  "list": [],
-  "filters": {
-    "10": [
-      {"key": "class", "name": "类型", "value": [
-        {"n": "全部", "v": "全部"},
-        {"n": "青春", "v": "青春"},
-        {"n": "古装", "v": "古装"}
-      ]}
-    ]
-  }
-}
-```
+### 4.1 `POST /api/{site}/play`
 
-**关键结构**：
-- `filters` 是 **`{ type_id: [ {key, name, value:[{n,v}]} ] }`**，键是分类 id
-- 筛选值用 `n`（显示名）/ `v`（实际值），**不是** `name`/`value`
-
----
-
-### 2.7 `POST /api/Douban/category`
-
-**请求**
-```json
-{"id": "tv_hot", "page": 1, "filters": {}}
-```
-`page` 传数字或字符串都可以（原生实现两种都认）。
-
-**响应（实测，节选）**
-```json
-{
-  "page": 1,
-  "pagecount": 11,
-  "limit": 20,
-  "total": 219,
-  "list": [
-    {
-      "vod_id": "36675942",
-      "vod_name": "小城良方",
-      "vod_pic": "https://img2.doubanio.com/view/photo/s_ratio_poster/public/p2936709341.jpg",
-      "vod_remarks": "29集全",
-      "vod_year": "2026"
-    }
-  ]
-}
-```
-
-**三个必须知道的点**：
-
-1. **`vod_pic` 是裸 URL**，不要在客户端拼 `@Referer=`：后端 `/api/proxy/image`
-   按域名自动补豆瓣 Referer（裸请求豆瓣图床回 418，见 `defaultRefererFor`）。
-2. **分页信息是真的**：`pagecount = ceil(total/20)`。首页补屏靠它停——
-   恒为 0 时前端会一路补到第 20 页。
-3. **`hot_gaia` 已下线**（豆瓣返回 404 `traversal_error`）。原生层把它别名到
-   `movie_hot`，老客户端传旧 id 也不会得到空列表。
-
-**同源的 `POST /api/Douban/detail`**（`{"id": "1292052"}`，兼容 `msearch:` 前缀）：
+请求 `{"flag":"线路1","id":"http://a"}`（后端只读 `flag`/`id`，其余 body 键忽略）；响应是
+spider 对象经 `normalizePlay` 的结果，**不是** `{ok,data}` 包装：
 
 ```json
-{"list": [{"vod_id": "1292052", "vod_name": "肖申克的救赎", "vod_pic": "https://…",
-           "vod_content": "一场谋杀案使银行家安迪…", "vod_year": "1994",
-           "vod_area": "美国", "vod_actor": "蒂姆·罗宾斯 摩根·弗里曼",
-           "vod_director": "弗兰克·德拉邦特", "vod_play_from": "", "vod_play_url": ""}]}
+{"parse":0,"url":"https://cdn.example/hls/index.m3u8",
+ "header":"{\"Referer\":\"https://site/\",\"User-Agent\":\"…\"}",
+ "qualities":[{"name":"1080P","url":"https://…/1080.m3u8"}],
+ "subs":[{"url":"https://…/zh.srt","name":"简体","lang":"zh","format":"srt"}],
+ "skips":[{"type":"opening","start":0,"end":95000},{"type":"ending","start":1380000}],
+ "position":120000,
+ "danmaku":"http://127.0.0.1:9979/api/proxy/danmaku?name=…&episode=1","jx":0}
 ```
 
-`vod_play_from` 恒为空串是**有意**的：豆瓣只有元数据没有线路。前端据此显示
-「该片暂无播放源」，但海报/简介/年份照常渲染（这就是没 jar 时详情页也有内容的原因）。
-
----
-
-### 2.8 `POST /api/AppRJ/search`（失败态：静默空）
-
-**请求**
-```json
-{"wd": "兰香如故"}
-```
-
-**响应（实测）**
-```
-http=200  size=0
-```
-**body 完全为空**。
-
-**这是当前最严重的契约缺陷之一**：HTTP 200 + 空 body，前端 `res.json()` 会抛
-`Unexpected end of JSON input`，但错误信息完全无法定位原因。见 P4。
-
----
-
-### 2.9 `POST /api/{site}/detail`（Douban 失败态：静默空）
-
-**请求**
-```json
-{"id": "msearch:37191789"}
-```
-**响应**：空 body。
-
-（同一 id 在 `category` 里能返回，说明 detail 对 `msearch:` 前缀的 id 处理有缺口。
-属于 spider 层问题，非宿主问题。）
-
----
-
-### 2.10 `POST /api/{site}/play`（空参数）
-
-**请求**
-```json
-{"flag": "", "id": ""}
-```
-**响应（实测）**
-```json
-{}
-```
-
-**问题**：返回空对象而非明确错误。前端拿不到原因。见 P4。
-
----
-
-### 2.11 `POST /api/NoSuchSite/home`（站点不存在）
-
-**请求**
-```bash
-curl -X POST http://127.0.0.1:9979/api/NoSuchSite/home -d '{}'
-```
-
-**响应（实测）**
-```
-http=500
-```
-```json
-{"code": -1, "msg": "java.lang.RuntimeException: cannot load spider NoSuchSite: java.lang.ClassNotFoundException: com.github.catvod.spider.NoSuchSite"}
-```
-
-**问题**：
-- 暴露内部类名与完整异常链（信息泄露）
-- 用 500 而非 404
-- 错误文案对用户无意义（见 P6）
-
----
-
-### 2.12 `GET /api/proxy/danmaku/search`
-
-**请求**
-```bash
-curl "http://127.0.0.1:9979/api/proxy/danmaku/search?name=%E5%85%B0%E9%A6%99%E5%A6%82%E6%95%85"
-```
-
-**响应（实测）**
-```json
-{"name": "兰香如故", "items": []}
-```
-
-**语义**：`items` 为空表示 6 个弹幕域全部失败。**未区分"没找到"与"全部超时"**。见 P7。
-
----
-
-## 第三章 现状问题清单（抓取实证）
-
-| # | 问题 | 实测证据 | 影响 | 优先级 |
-|---|---|---|---|---|
-| **P1** | `health` 无能力声明 | 只回 `{"ok":true}` | 前端无法判断后端是否支持 parse/state，无法降级 | **P0** |
-| **P2** | `sites` 缺 12 个能力字段 | 只有 key/name/api/ext | 前端无法按能力渲染；无法过滤不该搜索的站 | **P0** |
-| **P3** | `Bili` 只 1 条（应 6 条） | `/api/sites` 实测 | 6 个分区全丢 | **P0** |
-| **P4** | **业务失败返回 200 + 空 body** | `AppRJ/search` http=200 size=0 | 前端 JSON 解析崩溃且无原因 | **P0** |
-| **P5** | `config` 只有 `sites` | 缺 spider/parses/lives/rules/ads/proxy/hosts/doh | **Fongmi 无法直接使用** | **P0** |
-| **P6** | 错误泄露内部异常 | `cannot load spider X: ClassNotFoundException` | 安全问题 + 用户体验差 | P1 |
-| **P7** | 弹幕失败不区分原因 | `items: []` 无原因 | 无法区分"没资源"与"全超时" | P1 |
-| **P8** | `ext` 是双重编码字符串 | `"{\"site_urls\":[...]}"` | 前端需二次 parse，易错 | P1 |
-| **P9** | `play` 空参数回 `{}` | 实测 | 无法区分"无此线路"与"参数错" | P1 |
-| **P10** | CORS `*` 且无鉴权 | 响应头实测 | 后端对外即开放代理 | **P0**（若对外） |
-| **P11** | 无 `parse` / `live` / `state` 端点 | 端点清单实测 | 三个能力全缺 | **P0** |
-| **P12** | `category` 无分页信息 | Douban 响应无 page/pagecount | 前端无法判断"还有没有下一页" | P1 |
-
-**P4 是最应该先修的**：它让所有失败都变成"不知道发生了什么"。
-`AppRJ/search` 返回 200 + 0 字节，前端只会看到 `Unexpected end of JSON input`。
-
-> **2026-10-26 复核（基线 0.9.15，本机临时实例 `--port=19980`）**：上表是 2026-10-21 的抓取快照，
-> 逐条重测后**已修 P1 / P3 / P4 / P10 / P11 / P12**，其证据：
->
-> | # | 现状 | 复核命令与输出 |
-> |---|---|---|
-> | P1 | 已修：返回版本/能力/站点数 | `curl /api/health` → `{"version":"0.9.15","capabilities":["danmaku","search","proxy","webdav","dns","state","parse"],"sites":56,…}` |
-> | P2 | **仍在**：`/api/sites` 每条只有 `key/name/api/ext/health`，没有 `searchable/timeout/categories` | `python -c "…print(list(d['sites'][0].keys()))"` → `['name','health','api','key']` |
-> | P3 | 已修：播种 `config.sites.json` 后 `Bili` 出现 6 次 | `/api/sites` 的 key 含 `Bili, Bili#2 … Bili#6`（共 56 条） |
-> | P4 | 已修：失败不再回 0 字节 | `POST /api/AppRJ/search -d '{"wd":"x"}'` → `http=200 size=973` |
-> | P5 | **仍在**（`/api/config` 只有 `sites`），但 CatVod 出口已另开 `GET /config.json`（十项齐全） | `curl /api/config` → 顶层键只有 `sites`；`curl /config.json` → `ads/proxy/headers/lives/hosts/sites/rules/parses/doh/spider` |
-> | P6 | **仍在**：仍回 `cannot load spider NoSuchSite: … ClassNotFoundException` | `POST /api/NoSuchSite/home` |
-> | P7 | 部分修：响应已带 `sources:[{label,count,direct,aggregator}]` 与 `fixed[6 平台]` | `GET /api/proxy/danmaku/search?name=…` |
-> | P8 | **仍在**：`ext` 仍是转义后的 JSON 字符串 | `/api/sites` 的 `"ext":"{\"site_urls\":[…]}"` |
-> | P9 | **仍在**：`play` 空 body 回 `{}` | `POST /api/Douban/play -d '{}'` → `{}` |
-> | P10 | 已修：来源白名单 + 可选 `authToken`（见 §7、§8） | — |
-> | P11 | 已修：`/api/parse`、`/api/live`、`/api/state/*` 均已实现 | 见 §6.2、§8 |
-> | P12 | 已修：`category` 回 `page`/`pagecount`/`limit`/`total` | `POST /api/Douban/category -d '{"id":"movie","page":"1"}'` → 顶层含 `page:1`、`pagecount` |
-
----
-
-## 第四章 目标契约：系统与配置
-
-### 4.1 `GET /api/health` `[目标]`
-
-```json
-{
-  "ok": true,
-  "version": "0.2.0",
-  "capabilities": ["parse", "live", "progress", "favorites", "state", "multiDepot", "depot"],
-  "sites": 28,
-  "sitesHealthy": 18,
-  "uptime": 3600,
-  "configLoadedAt": 1792550000000
-}
-```
-
-**`capabilities` 是前后端协商的核心**。前端逻辑：
-
-```ts
-const caps = new Set(health.capabilities)
-const hasParse    = caps.has('parse')
-const hasState    = caps.has('state')   // 注意：实际名字是 state，不是 progress
-// 不支持的按钮不渲染，而不是点了才报错
-```
-
-**约定**：后端**绝不能**声称有但实际不可用的能力。遗漏优于虚报。
-
-> **2026-10-26 现状（0.9.15 实测，`curl /api/health`）**：实际输出的能力只有
-> **7 项** `["danmaku","search","proxy","webdav","dns","state","parse"]`
-> （配置了外部弹幕服务时再加 `danmakuExternal`）。**没有 `live` / `multiDepot` / `depot` /
-> `progress` / `favorites`** —— `healthJson()` 的注释写得很明确：
-> 「尚未实现的能力：live / multiDepot（前端据此隐藏 UI，别虚报）」。
-> 前端确实只消费 `state` 一项（`api/index.ts:639` 的 `hasStateCapability()`）。
-> 上面的 `[目标]` 列表里 `progress`/`favorites` 是**早期设计名**，落地时合并成了 `state`，
-> 写新代码请按实际名字判断。
-
----
-
-### 4.2 `GET /api/sites` `[目标]`
-
-```json
-{
-  "sites": [
-    {
-      "key": "AppDrama2",
-      "name": "干饭",
-      "api": "csp_AppDrama2",
-      "ext": "{\"appName\":\"小苹果\",...}",
-      "type": 3,
-      "searchable": 1,
-      "changeable": 1,
-      "quickSearch": 1,
-      "danmaku": 1,
-      "hide": 0,
-      "indexs": 1,
-      "timeout": 20,
-      "categories": [],
-      "header": {},
-      "style": "rect",
-      "health": "ok",
-      "failCount": 0,
-      "lastCheckAt": 1792550000000
-    }
-  ]
-}
-```
-
-**字段语义（三态开关必须严格遵守）**：
-
-| 字段 | 值 | 含义 |
-|---|---|---|
-| `searchable` | `0` | **强制关闭**，用户不可开启 |
-| | `1` | 开启 |
-| | `2` | 用户手动关闭，**可被上游配置恢复** |
-| `changeable` | 同上 | 控制"换源"按钮是否出现 |
-| `hide` | `0/1` | 1=隐藏（不删配置就下线） |
-| `indexs` | `0/1` | 1=进首页 |
-| `health` | `unknown\|ok\|degraded\|dead` | 运行时状态，**不来自配置** |
-
-**`ext` 的处理**：保持字符串（与 CatVod 一致），但**不再双重转义**。
-若 `ext` 本身是 JSON，前端用 `tryParse(ext)` 兜底。
-
----
-
-### 4.3 `GET /config.json` `[目标]`（CatVod 出口）
-
-这是 TV 端唯一需要的端点。
-
-```json
-{
-  "spider": "http://192.0.2.10:9979/spider-latest.jar;md5;<md5>",
-  "sites": [ "...同 4.2 但去掉 health 等运行时字段..." ],
-  "parses": [
-    {"name": "Json聚合", "type": 3, "url": "Demo"},
-    {"name": "示例解析", "type": 1, "url": "http://xxx/jx.php?id=2&url=",
-     "ext": {"flag": ["qq","腾讯","qiyi","爱奇艺","youku","优酷","mgtv","芒果"]}}
-  ],
-  "lives": [
-    {"name": "Gather「果」", "type": 3, "url": "https://tv.tmxk.kdns.fr/yplrnuc7",
-     "epg": "https://material.1989.click/epg.xml.gz",
-     "ua": "okhttp/3.8.1", "timeout": 10, "playerType": 2}
-  ],
-  "rules": [
-    {"name": "♻️量非", "hosts": ["lz","vip.lz","ffzy"],
-     "regex": ["#EXT-X-DISCONTINUITY\\r*\\n*#EXTINF:6.666667,[\\s\\S]*?#EXT-X-DISCONTINUITY"]}
-  ],
-  "ads": ["static-mozai.4gtv.tv", "vip.ffzyad.com"],
-  "proxy": ["raw.githubusercontent.com", "googlevideo.com", ".*nivod.*"],
-  "hosts": ["hlsztemgsplive.miguvideo.com=hlsztemgsplive.miguvideo.com.b.cdn.chinamobile.com"],
-  "doh": [{"name": "Google", "url": "https://dns.google/dns-query", "ips": ["8.8.8.8","8.8.4.4"]}],
-  "headers": [{"host": "hlsztemgsplive.miguvideo.com", "header": {"User-Agent": "okHttp/Mod-1.5.0.0"}}],
-  "wallpaper": "https://www.loliapi.com/acg/",
-  "logo": "http://w.junce.dpdns.org/fm.gif"
-}
-```
-
-**`spider` 字段的 MD5 语义（硬约束）**：
-
-- 格式：`<url>;md5;<md5>`
-- MD5 必须是**该 URL 实际返回文件的 MD5**
-- 当前我们的 jar：`1,728,688` B，MD5 = `<md5>`（2026-10-26 `md5sum` 实测）
-- **不是**上游的 `<upstream-md5>`
-- 不一致时 Fongmi 会重新下载（不会报错，但会白下载一次）
-
----
-
-### 4.4 `GET /config-upstream.json` `[目标]`
-
-同 4.3 结构，仅 `spider` 指向：
-
-```json
-{"spider": "https://example.com/spider.php;md5;<md5>"}
-```
-
-用途：我们的 jar 出问题时的后备。
-
----
-
-### 4.5 `GET /depot.json` `[目标]`（多仓）
-
-```json
-{
-  "urls": [
-    {"url": "http://192.0.2.10:9979/config.json", "name": "🚀1-自建"},
-    {"url": "http://192.0.2.10:9979/config-upstream.json", "name": "🚀2-上游"}
-  ]
-}
-```
-
-**Fongmi 的行为**：只激活第一个（`VodConfig.parseDepot` → `configs.get(0)`），
-其余进历史列表。**不要设计成并发聚合。**
-
-### 4.6 `POST /api/config/depot` `[已实现]`（探测多仓，只读）
-
-给一个多仓索引地址，返回每个仓**我们能不能用**。用于设置页的「多仓探测」。
-
-**请求**：`{"url":"https://.../tvboxmuti.json"}`
-
-**响应**：
-```json
-{"ok":true,"entries":[
-  {"name":"🚀1-心魔在线","url":"https://...","ok":true,
-   "sites":151,"csp":96,"inJar":96,"direct":0,"hint":"可用 116 站"},
-  {"name":"🚀13-南风","url":"https://...","ok":false,
-   "error":"返回的不是 JSON（可能是加密/二进制内容）"}
-]}
-```
-
-| 字段 | 含义 |
+| `url` 输入 | 处理 |
 |---|---|
-| `ok` | 拉取 + 解析成功（**不代表今天搜得到**） |
-| `sites` | 配置里的站点总数 |
-| `csp` | `api` 以 `csp_` 开头的站数 |
-| `inJar` | `csp` 里我们的 jar 有对应类的数量 —— **决定"导入后真能用几站"** |
-| `direct` | `type=1` 苹果CMS 直连站（不需要 jar） |
-| `hint` | 给人看的一句话结论 |
+| 字符串 `"http://…"` | 原样 |
+| 成对数组 `["标清","http://a","高清","http://b"]` | 取第一对地址，`qualities` 带标签 |
+| 对象 `{"values":[{"n":"1080P","v":"http://h"}],"position":0}` | 取 `position` 指向项，`qualities` 全量 |
 
-**三条约束**：
+- 成对判定要求「奇数位是 http **且** 偶数位不是 http」；否则纯地址数组
+  `["http://a","http://b"]` 会被误读成「标签=http://a」。纯地址数组按无标签处理，取第一个。
+- `header` 统一成 **JSON 字符串**（spider 给对象时 `toString()`）。
+- `position` / `skips` 单位**毫秒**；`skips[].type` 是 `opening|middle|ending`。
+- `playerContent` 抛异常时返回 `{"parse":1,"url":"","msg":"该线路暂不可用：<Exception>"}`，
+  不让整个请求 500。
 
-1. **只读**：不写 `config.sites.json`、不重建站点表。理由是不能为了"看看有哪些仓"
-   就把现有配置冲掉。
-2. **必须按 `inJar + direct` 排序**，不能按 `sites` 排：实测有的仓 298 站里只有
-   8 站能加载，站数最多 ≠ 最有用。
-3. **单仓地址也接受**（没有 `urls` 时返回一条 `name:"当前地址"`），
-   前端不必为两种形态写两套流程。
+### 4.2 `POST /api/parse`
 
-### 4.7 `GET/POST/DELETE /api/config/backup` `[已实现]`（导入前备份）
+请求 `{"url":"https://www.iqiyi.com/v_x.html","flag":"线路1","name":"可选"}`。
+成功 `{"ok":true,"url":"https://cdn.example/parsed.m3u8",
+"header":"{\"Referer\":\"https://jx.example/\"}","from":"解析器名"}`；
+失败 `{"ok":false,"msg":"所有解析器都没返回可用地址","tried":4}`。
 
-导入是**整表替换 `sites`**，所以每次导入前自动把旧配置存成
-`config.sites.json.bak`（只留一份，语义是"撤销刚才那一次"）。
+- `url` 先过**严格档 SSRF**（拒私网/回环），否则这端点就是「读内网 JSON」的探测口。
+- 候选来自 `parses` 表；`flag` 是**优先适配**不是白名单：过滤后为空会退回全部可用解析器。
+- 服务端支持 type 0/1/2/3，并发跑、先成功者胜（即 type 4 语义），
+  总超时 `PARSE_TIMEOUT_MS = 15s`。
+  - type 0 是**近似**：抓 HTML 按 `player_aaaa` / JSON 里的 m3u8 找地址；纯 JS 计算的拿不到。
+  - type 2/3 反射 jar 里的 `parser.JsonXxx` / `parser.MixXxx`。
+- `from` 是命中的解析器名，必须回传。`header` 合并解析器响应里的 `ua`/`referer`/`cookie`
+  与配置头。解析器返回 `jx` 时原样带回，表示「还需再解析一次」。
+- **没有 `skippedBrowser` 字段**：type 0 现在也会尝试。
+- URL 是字符串直拼（`{parse.url}` + 播放页地址），不是 URL 编码——与上游一致。
 
-| 方法 | 行为 |
+---
+
+## 第五章 代理与弹幕
+
+### 5.1 `GET /proxy`（jar 端口握手）
+
+不是 `/api/proxy`，是 jar 内 `com.github.catvod.spider.Proxy` 的探测端点：
+
+- `?do=ck` → 纯文本 `ok`；其他 `do` → 反射 `Proxy.proxy(Map)`，把
+  `(status, contentType, InputStream)` 原样回传；反射失败 / 无该类 → `501`，
+  jar 内部抛异常 / 无 body → `502`。必须排在 `/api/proxy/` 兜底之前。
+
+**为什么必须回 `ok`**：`Proxy` 的端口初值是 `-1`，首次 `getPort()` 从 9978 扫到 9999
+请求 `{origin}/proxy?do=ck`，正文为 `ok` 才记住；否则 Hxq/Bili 会产出
+`http://127.0.0.1:-1/proxy?...`。
+
+### 5.2 `GET /api/proxy/stream`
+
+```
+/api/proxy/stream?url=<urlencoded>&referer=<urlencoded>&ua=<urlencoded>&headers=<JSON>
+```
+
+| 参数 | 说明 |
 |---|---|
-| `GET` | `{"ok":true,"backup":{"exists":true,"at":<ms>,"bytes":N,"sites":N}}` |
-| `POST` | 用备份覆盖回来 + 重建站点表 → `{"ok":true,"sites":N}` |
-| `DELETE` | 删掉备份（确认新配置没问题了） |
+| `url` | 必填 |
+| `referer` / `ua` | 留空时回退 `headers` 表；UA 最终兜底 `Mozilla/5.0` |
+| `headers` | 额外请求头，JSON 对象；**最多 24 个**、序列化 **≤2048 字符**，超限整体丢弃 |
 
-**两条约束**：
+**禁用头**：`host`、`connection`、`content-length`、`content-type`、`transfer-encoding`、
+`range`、`accept-encoding`、`te`、`upgrade`、`proxy-authorization`、`proxy-connection`。
+值含 `\r`/`\n` 的条目丢弃（防注入）。分片 URL 继承同一份 `headers`，否则首片拿到、
+后续分片又 403。
 
-- **全新安装不产生空备份**：没有旧文件时跳过，否则「恢复」按钮看起来可用、
-  点了却清空一切。
-- **恢复前先 `new JSONObject(txt)` 解析一次**：坏掉的备份写回去等于把配置彻底弄没。
+**行为：** SSRF 入口宽松档（允许局域网，拒回环/链路本地），重定向逐跳严格档、最多 5 跳
+（超限 502）；Range 回 `206` + `Content-Range` + `Accept-Ranges: bytes`；同时最多 8 个分片
+代理，超限 `503 {"code":-1,"busy":true,"msg":"分片代理繁忙，请重试"}`。m3u8 重写：
+`/` 开头 → `origin + uri`，相对路径 → 当前清单目录 + uri，分片基准用**最终** URL。
+`ads`/`rules` 默认关闭，`policy.filterAds=true` 才生效：`ads` 命中 host 丢弃；`rules`
+按条目删时长或正则替换；护栏是「分片清零或删掉超过 50% 时长 → 回退原清单」。
+
+### 5.3 `GET /api/proxy/image`
+
+`/api/proxy/image?url=<urlencoded>[&referer=…][&ua=…]`。
+
+- `url` 支持 `图片地址@Referer=…@User-Agent=…` 内嵌尾巴，也接受独立 `referer`/`ua`。
+- 入口宽松档 SSRF；回环与云元数据仍拒绝。
+- **先查磁盘海报缓存**：命中零网络请求，`Cache-Control: public, max-age=604800`，
+  `X-Meow-Poster: disk`。
+- 未命中：按魔数判真实格式，不信任 `Content-Type`；能识别就按 `jpeg/png/gif/webp` 下发，
+  识别不出退回上游类型。**AVIF/HEIC 一律 415**（老 TV 内核解不了）。响应
+  `Cache-Control: public, max-age=86400`，并顺手落盘。
+
+### 5.4 `GET /api/proxy/danmaku`
+
+```
+/api/proxy/danmaku?name=片名&episode=1[&fresh=1]
+/api/proxy/danmaku?url=<urlencoded>
+```
+
+- `name` 模式：多个弹幕源**并发**抓取、先命中先用（不再按顺序串行）。源集合与顺序由
+  `policy.danmakuOrder` 配置，缺省 `iqiyi,tencent,aggregator`；配了自建 danmu_api 时
+  默认顺序变为 `aggregator,iqiyi,tencent`（aggregator 桶 = `policy.danmakuApi` + 内置镜像）。
+  30 分钟 TTL 缓存；`fresh=1` 跳过缓存强制重抓。`url` 模式：自家 `/xml?id=…` 就地解析、
+  不做 HTTP 自调用，否则直接抓取。
+- 响应 `text/xml`：`<i><d p="时间,模式,字号,颜色,时间戳,池,用户ID,弹幕ID">文本</d></i>`。
+- 空结果也返回合法 XML `<?xml version="1.0"?><i></i>`，**不返回空 body**。
+- 响应头：`X-Danmaku-Source`（命中的源）、`X-Danmaku-Count`（`<d ` 数量）、
+  `X-Danmaku-Empty: 1`（这集没有弹幕）。
+
+### 5.5 弹幕候选与两段式
+
+**`GET /api/proxy/danmaku/search?name=…`**
+
+```json
+{"name":"片名","fixed":["爱爱","腾疼","悠悠","哔哔","…"],
+ "sources":[{"label":"腾疼","count":197,"direct":130,"aggregator":67}],
+ "items":[{"name":"片名 第1集","url":"/api/proxy/danmaku/xml?id=tencent:xxx:1",
+           "source":"tencent","label":"腾疼","episode":1,"via":"direct"}]}
+```
+
+`name` 空 → `{"items":[],"sources":[],"fixed":[]}`（200）。上限 3000 条；
+`sources[].count` 统计**截断后**的条数，保证「胶囊数字 == 能翻到的条数」。
+排序：`episode` 升序 → `via`（direct 先）→ 源优先级 → name。
+
+**`/list`** → 裸数组 `[{"name":"… 第N集","url":"/api/proxy/danmaku?name=…&episode=N"}]`，
+无候选回 `[]`。**`/xml?id=源:资源ID:集数`** → `text/xml`，未知/空 id 也返回空 XML；
+id 由我们自己的 `/list` 或 `/search` 生成，不依赖上游临时地址。
+**`/prefetch`**（POST）立即返回 `{"ok":true,"queued":true|cached:true|disabled:true}`，
+后台抓取；走与主请求**同一条降级链**（含用户配的 danmu_api，其默认限流 3 次/分钟——
+预取一集只用 1 次额度，打不满）。开关：`policy.danmakuPrefetch`，默认开。
+
+### 5.6 直播
+
+**`POST /api/live`**（不校验 method，GET 空 body 也回 200）：
+`{"groups":[{"site":"Xxx","site_name":"…","group":"央视",
+"channels":[{"name":"CCTV1","urls":["…"]}]}],"tried":55,"failed":12,
+"playlists":[{"name":"源名","url":"http://…/live.m3u"}]}`。总预算 12s；`urls` 可能带
+`$备用名`，原样透传；`playlists` 只列直连地址，**不解析内容**。
+
+**`POST /api/live/playlist`** body `{"url":"…"}` → `{"ok":true,"groups":[…],
+"channels":42,"updated":"<Last-Modified>"}`；失败始终 200
+`{"ok":false,"msg":"url required"|"url not allowed"|"HTTP 404"|"parse failed: …"}`。
+认 `group-title` 与 `#genre#`；BOM/CRLF 会被清掉。
+
+**`GET/POST/DELETE /api/lives`**：
+
+- `GET` → `{ok,lives:[{name,url}],builtin:[url…]}`；`builtin` 是尚未被删的内置源 URL。
+- `POST {name,url,verify?}` → 同 url 已存在只更新名字并回 `duplicate:true`；`verify:true`
+  真拉一遍，失败回 `{ok:false,verified:false,msg}`（不写盘）。
+- `DELETE {url}` → 删该 url 全部条目；不存在 → 404；缺 url → 400。删内置源时写
+  `builtinLiveOff` 逐条禁用标记，否则下次读表又会补回默认值。
 
 ---
 
-## 第五章 目标契约：内容（7 方法）
+## 第六章 状态
 
-### 5.1 `POST /api/{site}/home` `[目标]`
+存储 `state-progress.json` / `state-favorites.json` / `state-prefs.json`；
+写入用 `STATE_LOCK` 串行化；文件缺失/损坏一律当空，不 500。
 
-**请求**
-```json
-{"filter": true}
-```
+### 6.1 `GET/POST /api/state/progress`
 
-**响应**
-```json
-{
-  "ok": true,
-  "class": [{"type_id": "1", "type_name": "电影"}],
-  "list": [{"vod_id": "123", "vod_name": "片名", "vod_pic": "https://...", "vod_remarks": "HD"}],
-  "filters": {
-    "1": [{"key": "class", "name": "类型", "value": [{"n": "全部", "v": "全部"}]}]
-  }
-}
-```
+**GET 单条** `?site=…&vodId=…`（`vod_id` 也认）→ `{"ok":true,"item":{"site":"AppRJ",
+"vod_id":"123","pos":1421,"dur":2700,"flag":"线路1","ep":"第3集","ep_url":"…",
+"ep_at":1792550000000}}`。无记录 → `{"ok":true,"item":null}`；只带一个键 → 400。
+**GET 全量**（一个键都不带）→ `{"ok":true,"items":[…最多 500 条，按 ep_at 倒序…]}`。
 
-**兼容**：现有前端直接读顶层 `class`/`list`/`filters`。为兼容，**顶层字段保留**，
-`ok` 作为附加字段。前端应优先读顶层（现状），新代码读 `ok`。
+**POST**（并集写）：`{"site":"AppRJ","vod_id":"123","ep":"第3集","pos":1421,
+"dur":2700,"ep_at":1792550000000}` → `{"ok":true,"merged":true}`。
 
----
-
-### 5.2 `POST /api/{site}/category` `[目标]`
-
-**请求**
-```json
-{"id": "1", "page": "1", "filters": {"class": "喜剧"}}
-```
-
-**响应**
-```json
-{
-  "ok": true,
-  "list": [{"vod_id": "123", "vod_name": "...", "vod_pic": "...", "vod_remarks": "..."}],
-  "page": 1,
-  "pagecount": 20,
-  "limit": 20,
-  "total": 400
-}
-```
-
-**`pagecount` 语义（现状缺失，必须补）**：
-- spider 提供则透传
-- spider 不提供（如 Douban）→ **后端推算**：`pagecount = list.length < limit ? page : page + 1`，
-  并在响应里加 `"pagecountEstimated": true`
-- 前端只信 `page < pagecount` 判断是否还有下一页
-
----
-
-### 5.3 `POST /api/{site}/detail` `[目标]`
-
-**请求**
-```json
-{"id": "123"}
-```
-
-**响应**
-```json
-{
-  "ok": true,
-  "list": [{
-    "vod_id": "123",
-    "vod_name": "片名",
-    "vod_pic": "https://...",
-    "vod_year": "2026",
-    "vod_area": "韩国",
-    "vod_actor": "...",
-    "vod_director": "...",
-    "vod_content": "简介...",
-    "vod_remarks": "更新至24集",
-    "vod_play_from": "线路1$$$线路2",
-    "vod_play_url": "第1集$http://a#第2集$http://b$$$第1集$http://c#第2集$http://d"
-  }]
-}
-```
-
-**`vod_play_from` / `vod_play_url` 的解析规则（前后端必须一致）**：
-
-```
-vod_play_from:  线路名用 $$$ 分隔
-vod_play_url:   线路之间用 $$$，线路内集数用 #，每集为 名称$地址
-```
-
-边界情况（实测遇到过）：
-- 名称里可能含 `$` → 用**最后一个** `$` 分割（`lastIndexOf('$')`）
-- 地址里可能含 `#` 或 `$$$`（源站把整条 URL 塞进 id）→ 先按 `$$$` 切线路，再按 `#` 切集
-- 空线路 → 跳过，不产生空数组
-
----
-
-### 5.4 `POST /api/{site}/search` `[目标]`
-
-**请求**
-```json
-{"wd": "兰香如故", "pg": "1", "quick": false}
-```
-
-**响应**
-```json
-{
-  "ok": true,
-  "list": [{"vod_id": "123", "vod_name": "兰香如故", "vod_pic": "...", "vod_remarks": "..."}],
-  "page": 1,
-  "pagecount": 1
-}
-```
-
-**必须修掉 P4**：无结果时返回 `{"ok": true, "list": []}`，**不能返回空 body**。
-
----
-
-### 5.5 `GET /api/{site}/live` `[目标]`（新增）
-
-**请求**
-```bash
-curl "http://127.0.0.1:9979/api/AAAA/live?url=<可选>"
-```
-
-**响应**
-```json
-{
-  "ok": true,
-  "groups": [{
-    "name": "央视",
-    "channels": [{
-      "name": "CCTV1",
-      "urls": ["http://.../cctv1.m3u8"],
-      "logo": "https://...",
-      "epg": "https://.../epg.xml"
-    }]
-  }]
-}
-```
-
-**注意**：多数 spider 的 `liveContent` 返回 CatVod 私有格式，需要转换成本结构。
-
----
-
-## 第六章 目标契约：播放与解析
-
-### 6.1 `POST /api/{site}/play` `[已实现 —— 字段为透传，不是 wrapper]`
-
-**请求**
-```json
-{"flag": "线路1", "id": "http://a", "vipFlags": []}
-```
-
-**实际响应形状**：spider 的 JSON 原样返回（不包 `{ok,data}`），后端只做
-`normalizePlay()` 归一化——把三种 `url` 形状折成一个字符串地址，其余字段
-（`parse`/`header`/`msg`/`skips`/`subs`/`position`/`danmaku`）**原样透传**。
-下面是各形状的实测样本。
-
-**响应（成功，直链）**
-```json
-{
-  "parse": 0,
-  "url": "https://cdn.example.com/hls/index.m3u8",
-  "header": "{\"Referer\":\"https://site.com/\",\"User-Agent\":\"...\"}",
-  "jx": 0
-}
-```
-
-**`header` 是字符串**，不是对象——spider 本来给对象，后端 `normalizePlay`
-统一 `toString()`（前端 `proxyStream()` 按字符串解析，两种都吃）。
-
-**响应（成功，需解析）**
-```json
-{"parse": 1, "url": "https://site.com/v/123.html", "msg": "..."}
-```
-
-**响应（成功，多画质）**
-```json
-{
-  "parse": 0,
-  "url": "https://.../720.m3u8",
-  "qualities": [
-    {"name": "1080P", "url": "https://.../1080.m3u8"},
-    {"name": "720P",  "url": "https://.../720.m3u8"}
-  ]
-}
-```
-
-**`url` 的三种输入形状**（都在 `normalizePlay` 里处理，均输出上面这条）：
-
-| 输入 | 来源 | 处理 |
-|---|---|---|
-| `"url": "http://..."` | 绝大多数 spider | 原样 |
-| `"url": ["标清","http://a","高清","http://b"]` | 老式成对写法 | 取第一对的地址；`qualities` 带标签 |
-| `"url": {"values":[{"n":"1080P","v":"http://h"}],"position":0}` | CatVodSpider 现行画质形状 | 取 `position` 指向项；`qualities` 全量 |
-
-> 纯地址数组 `["http://a","http://b"]` 按"无标签列表"处理（取第一个）——
-> 判定要求**偶数位不是 http**才算成对，否则会被误读成"标签=http://a"。
-
-**响应（含字幕/跳过/起播点）**
-```json
-{
-  "parse": 0,
-  "url": "https://.../index.m3u8",
-  "subs": [
-    {"url": "https://.../zh.srt", "name": "简体", "lang": "zh", "format": "srt"},
-    {"url": "https://.../en.vtt", "name": "English", "lang": "en"}
-  ],
-  "skips": [
-    {"type": "opening", "start": 0,     "end": 95000},
-    {"type": "ending",  "start": 1380000}
-  ],
-  "position": 120000,
-  "danmaku": "http://127.0.0.1:9979/api/proxy/danmaku?name=片名&episode=1"
-}
-```
-
-**`skips[].type`**：`opening`（片头，**要求 `start===0`**）/ `middle`（插播）/
-`ending`（片尾，`end` 可省略表示到结尾）。取自 `SkipSegment.java` 的
-`isValid()`，不是自创的 `intro`。
-
-**前端落地**（2026-10-23）：
-- `opening` → 复用既有「跳过片头」提示条（与手动画的标记共用，手动的优先）；
-- `ending` → 「跳过片尾」，`outroAt = start`（手动画的 `outro` 仍按"距结尾秒数"换算）；
-- `middle` 本轮不处理；
-- `subs` → 经本代理取文本，SRT 转 VTT 后用 `blob:` 喂 `<track>`
-  （**不设 `<video crossorigin>`**，否则媒体请求全变 CORS 模式，少一个头就整片播不了）；
-- `position` 与本地续播取**较大值**（与 Fongmi `VodSkipPolicy` 一致）。
-
-**`position` 单位**：**毫秒**（与 CatVod `Response.position(long)` 一致）。
-
-### 6.2 `POST /api/parse` `[已实现 —— type 1 / type 4 的服务端部分]`
-
-**请求**
-```json
-{"url": "https://www.iqiyi.com/v_x.html", "flag": "线路1", "name": "可选，指定解析器"}
-```
-
-**响应（成功）**
-```json
-{"ok": true, "url": "https://cdn.example/parsed.m3u8",
- "header": "{\"Referer\":\"https://jx.example/\",\"User-Agent\":\"JX-Agent/1.0\"}",
- "from": "能用的"}
-```
-
-**响应（失败）**
-```json
-{"ok": false, "msg": "解析失败：ConnectException", "from": "死的",
- "tried": 1, "skippedBrowser": 1}
-```
-
-`tried` 是实际尝试的解析器数量，`skippedBrowser` 是配置里**需要浏览器**、
-本次未尝试的数量——前端据此给出"能力不足"而不是"地址坏了"的文案。
-
-**实现的语义**（读 Fongmi `ParseJob` 确认，不是推测）：
-
-| type | 实现 | 我们 |
-|---|---|---|
-| 1 | `GET {parse.url}{webUrl}`，取 JSON 的 `url` 或 `data.url` | ✅ 已实现 |
-| 4 | 并行跑所有 type1 + type0，先成功者胜 | ✅ 只跑 type1 那一半 |
-| 0 | WebView 嗅探 | ❌ 需要浏览器内核 |
-| 2 / 3 | 站点类 `jsonExt` / `jsonExtMix` | ❌ 依赖按 api 路由（G2） |
-
-**三条容易写错的细节**：
-
-1. **URL 是字符串直拼**，不是 URL 编码：`{parse.url}` + 播放页地址，上游就是这么写的。
-2. **`ext.flag` 是"优先适配"不是白名单**：命中就用命中的，一条都没命中才退回全部 type1。
-3. **响应里的 `ua`/`referer`/`cookie` 要带回播放器**：解析出的地址通常要求同样的 Referer，丢了会 403。
-
-**SSRF**：入口与 `/api/proxy/stream` 一样走严格档（拒私网/回环），
-否则这个端点会变成"能读内网 JSON"的探测口。
-
-**前端**（`PlayView.vue`）：`needsParse()` 同时看 `parse===1` 与非 http 的 url；
-解析成功用 `{...play, parse:0, url, header}` 整体替换并提示
-「已通过「X」解析」；失败按线路级失败处理（先试自动换线，再给文案）。
-
-**失败响应（必须携带原因）**
-```json
-{"ok": false, "code": "PARSE_REQUIRED", "parse": 1, "url": "https://site.com/v/123.html",
- "msg": "该线路需要解析器，已自动转入解析流程"}
-```
-
-```json
-{"ok": false, "code": "LINE_UNAVAILABLE", "msg": "该线路暂不可用：ArrayIndexOutOfBoundsException"}
-```
-
----
-
-### 6.2 `POST /api/parse` `[目标]`（新增，parse=1 的正解）
-
-**请求**
-```json
-{"url": "https://site.com/v/123.html", "flag": "qq", "site": "DuoDuoTv"}
-```
-
-**响应（成功）**
-```json
-{
-  "ok": true,
-  "url": "https://cdn.example.com/hls/index.m3u8",
-  "headers": {"Referer": "https://site.com/"},
-  "from": "肥猫最可爱",
-  "elapsedMs": 820,
-  "triedCount": 4
-}
-```
-
-**响应（失败）**
-```json
-{
-  "ok": false,
-  "code": "PARSE_ALL_FAILED",
-  "msg": "所有解析器均失败（尝试 4 个，耗时 15s）",
-  "tried": ["Json聚合", "肥猫最可爱", "qiyi[官源]", "Web聚合"]
-}
-```
-
-**行为约定**：
-- `flag` 用于**过滤解析器**（按 `parses[].ext.flag` 匹配）
-- `flag` 为空 → 用全部 type=1 解析器
-- 总超时 **15 秒**
-- 返回**第一个成功**的结果，其余请求继续但不等待
-- `from` 必须返回命中的解析器名（便于用户排查）
-
-**`parse=2/3`（聚合/混合）**：由 spider 内部处理，本端点不涉及。
-
----
-
-### 6.3 前端失败重试链（契约配合）
-
-`docs/25` 的 F3 要求"3 跳内播上"。这条链依赖以下契约：
-
-| 跳 | 调什么 | 判定 |
-|---|---|---|
-| 1 | `POST /api/{site}/play` | `ok && parse===0` → 播 |
-| 2 | 同线路下一集 | 同上 |
-| 3 | 同站另一条线路 | 需要**全部线路数据**（见下） |
-| 4 | `POST /api/parse` | `ok` → 播 |
-| 5 | `POST /api/search` 同名片 → 换站 | 重复 1–4 |
-
-**第 3 跳的前提**：前端必须持有全部线路。
-现在 `DetailView` 只传当前选中线路给 `PlayView`（见 `DetailView.vue:41-52`），
-**必须改成传全部 `lines`**。这是 P0 前端改动。
-
----
-
-## 第七章 目标契约：代理
-
-### 7.1 `GET /api/proxy/stream`
-
-**请求**
-```bash
-curl -H "Range: bytes=0-1023" \
-  "http://127.0.0.1:9979/api/proxy/stream?url=<urlencoded>&referer=<urlencoded>&ua=<urlencoded>"
-```
-
-**可选参数**
-
-| 参数 | 用途 |
+| 约束 | 说明 |
 |---|---|
-| `referer` / `ua` | 源站防盗链；留空时回退 `headers` 表 |
-| `headers` | 额外请求头，JSON 对象（≤2KB）。Cookie / Origin / 自定义 token 走这里。`Host`、`Range`、`Connection`、`Content-Length` 等由代理自己决定，传了也忽略；分片 URL 会继承同一份（否则首片拿到、后续分片又 403） |
+| `pos`/`dur` 单位 | **秒** |
+| 合并键 | `site + vod_id`；只有 `ep_at` **严格大于**旧值才覆盖，否则 `merged:false` |
+| `ep_at` / `pos` | `ep_at` 缺省或 ≤0 填服务端时间；`pos` 非有限数或 <0 → 400，`0` 合法 |
+| 字段沿用 | 未带 `flag`/`ep`/`ep_url` 沿用旧值（显式空串可清空）；`dur=0` 不覆盖已知时长 |
+| 容量 | 2000 条，超限按 `ep_at` 静默淘汰最旧 |
 
-**响应头（实测已支持）**
-```
-HTTP/1.1 206 Partial Content
-Content-Range: bytes 0-1023/12345678
-Accept-Ranges: bytes
-Access-Control-Allow-Origin: *
-Access-Control-Expose-Headers: Content-Length,Content-Range,Accept-Ranges
-```
+### 6.2 `GET/POST/PUT/DELETE /api/state/favorites`
 
-**当前实现（2026-11-04）**：
-1. **SSRF 防护**：入口走宽松档（允许局域网，拒回环/链路本地），重定向目标逐跳走严格档（最多 5 跳）
-2. **`ads` 表**：分片 host 命中即丢弃（默认关闭，`policy.filterAds` 才生效）
-3. **`rules` 表（播放器语义）**：按 m3u8 host 或分片 host 选组
-   - 纯数字条目 = 删该时长的 `#EXTINF` + 紧跟的那条 URI（容差 ±0.02s）
-   - 含 `#EXT` 的条目 = 对整份清单做 DOTALL 正则替换
-   - 护栏：分片清零或删掉超过 50% 时长 → 回退原清单（日志 `tag=ads`）
-   - ★ 与嗅探链路的 `ruleVerdict`（`contains` 否决）是**两套语义**，不要合并
-4. **并发闸门**：同时最多 8 个分片代理，超出直接 `503 {"busy":true}`，避免慢源占满 HTTP 线程把 `/api/health` 一起拖死
+**GET** → `{"ok":true,"items":[{site,vod_id,vod_name,vod_pic?,at}]}`，按 `at` 倒序，上限 5000。
 
-**m3u8 重写规则（实测已实现，勿改）**：
-```
-uri 以 "/" 开头  → origin + uri
-uri 是相对路径   → base 去掉 query 后截到最后一个 "/" + uri
-```
+**POST/PUT** `{"site":"AppRJ","vod_id":"123","vod_name":"片名"}` → `{"ok":true,"count":1}`。
+幂等：同 `site+vod_id` 只更新元信息、**保留首次 `at`**；缺 `site`/`vod_id` → 400。
+**DELETE** `?site=…&vodId=…` → `{"ok":true,"count":0}`；不存在也回 200（幂等），
+且**不写盘**。其它方法 → 405。
 
-### 7.2 `GET /api/proxy/image`
+### 6.3 `GET/POST/PUT /api/state/prefs`
 
-```bash
-curl "http://127.0.0.1:9979/api/proxy/image?url=<urlencoded>"
-```
+**GET** → `{"ok":true,"at":1792737523880,"prefs":{"homeCols":8,"themeMode":"light"}}`。
+从未写过 → `at=0`、`prefs={}`；前端据此判断「没有远端设置」，**不能拿空对象覆盖本地**。
 
-**特殊处理（实测必需）**：`vod_pic` 形如
-`https://img.jpg@Referer=https://api.douban.com/@User-Agent=Mozilla/5.0 ...`
-
-后端必须解析这个内嵌格式，把 `@Referer=` / `@User-Agent=` 提取成真实请求头，
-并把 URL 部分作为目标。
-
-### 7.3 `GET /api/proxy/danmaku`
-
-**请求（两种模式）**
-```bash
-# 模式 A：按名称搜索（后端自动多源）
-curl "http://127.0.0.1:9979/api/proxy/danmaku?name=片名&episode=1"
-
-# 模式 B：直接指定弹幕 URL
-curl "http://127.0.0.1:9979/api/proxy/danmaku?url=<urlencoded>"
-```
-
-**响应**：`text/xml`
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<i>
-  <d p="0.0,2,25,14463824,1751533608,0,0,65848331275">弹幕内容</d>
-</i>
-```
-
-**`p` 字段**：`时间,模式,字号,颜色,时间戳,池,用户ID,弹幕ID`
-（模式 1=滚动 2=顶部 3=底部；颜色是十进制 RGB）
-
-**`[目标]` 改进（P7）**：失败时返回**带原因**的空结果，而非裸空：
-
-```xml
-<i>
-  <!-- failed: all 6 hosts timeout -->
-</i>
-```
-或改用 JSON 端点 `/api/proxy/danmaku/search` 返回：
-
-```json
-{"name": "片名", "items": [], "failed": true, "reason": "all_hosts_timeout", "tried": 6}
-```
-
----
-
-## 第八章 目标契约：状态
-
-> **2026-10-23 实现状态**：8.1 进度与 8.2 收藏**已实现并实测**（24/24 断言通过）。
-> 8.3 设置、8.4 历史仍是 `[目标]`。
->
-> **字段口径按实际实现记录**（与本节早期的草案有差异，以实现为准）：
-> - 用下划线 `vod_id` / `pos` / `dur` / `ep_url` / `ep_at`，与前端 `HistoryItem` 对齐；
->   同时**接受**驼峰 `vodId` 作为入参别名（兼容早期草案）。
-> - `pos` / `dur` **单位是秒**（不是早期草案写的毫秒）——前端 `history.ts` 全程用秒，
->   换算只会在边界处制造精度问题。
-> - 合并键是 `ep_at`（毫秒），不是 `at`：`at` 会被"点一下封面"刷新，
->   用它判断新旧会让 PC 的进度被手机清掉（这是 `history.ts` 注释里记录的实测坑）。
-
-### 8.1 进度 `GET/POST /api/state/progress` `[已实现]`
-
-**GET 单条**
-```bash
-curl "http://127.0.0.1:9979/api/state/progress?site=AppRJ&vodId=123"
-```
-
-```json
-{
-  "ok": true,
-  "item": {
-    "site": "AppRJ", "vod_id": "123", "ep": "第3集",
-    "pos": 1421, "dur": 2700,
-    "flag": "线路1", "ep_url": "…", "ep_at": 1792550000000
-  }
-}
-```
-无记录 → `{"ok": true, "item": null}`
-
-**GET 全量**（前端启动时拉一次）
-```json
-{"ok": true, "items": [ …最多 500 条，按 ep_at 倒序… ]}
-```
-
-**POST**（并集写，返回是否被采纳）
-```json
-{"site":"AppRJ","vod_id":"123","ep":"第3集","pos":1421,"dur":2700,"ep_at":1792550000000}
-→ {"ok": true, "merged": true}
-```
-
-**约定（实测确认）**：
-- **只有新 `ep_at` 严格大于已存的才覆盖**，否则 `merged: false` 且旧值保留。
-  这是跨端并集的核心：两台设备各自推进度，时间戳新的赢。
-- `ep_at` 缺省填服务端当前时间；`ep_at ≤ 0` 也按缺省处理
-- `pos` 非有限数或 `< 0` → `400`；`pos = 0` 合法
-- 未带 `flag`/`ep`/`ep_url` 时沿用旧值；`dur = 0` 不覆盖已知时长
-- 写入节流由前端负责（≥5s 一次，或 pause / pagehide 时）
-- 上限 2000 条，超限按 `ep_at` 静默淘汰最旧
-
-### 8.2 收藏 `GET/POST/DELETE /api/state/favorites` `[已实现]`
-
-**GET**
-```json
-{"ok": true, "items": [
-  {"site":"AppRJ","vod_id":"123","vod_name":"片名","vod_pic":"https://…","at":1792550000000}
-]}
-```
-
-**POST**（幂等：同 key 只更新元信息，**保留首次 `at`**）
-```json
-{"site":"AppRJ","vod_id":"123","vod_name":"片名","vod_pic":"https://…"}
-→ {"ok": true, "count": 1}
-```
-
-**DELETE**
-```bash
-curl -X DELETE "http://127.0.0.1:9979/api/state/favorites?site=AppRJ&vodId=123"
-→ {"ok": true, "count": 0}
-```
-不存在也返回 `ok:true`（幂等），且**不写盘**（否则一次对不存在项的 DELETE 会凭空造出空文件）。
-
-> ⚠️ `Access-Control-Allow-Methods` 必须含 `DELETE`：浏览器对 DELETE 一定先发 OPTIONS 预检，
-> 不加则收藏删除在预检阶段就被挡（已修，`ApiServer.java:293`）。
-
-**前端用法（`stores/favorites.ts`）**：localStorage 是权威来源，本端点只作跨端同步通道——
-后端不可用（老版本 / 离线 / 容器没起）时收藏仍能加删，只是不跨端。变更事件
-`meow:favorites-changed` 带 `{action: 'add'|'remove'|'clear', site?, vod_id?, item?}`，
-同步层据此决定调 POST 还是 DELETE（本端点没有批量替换，只能单条增删；
-`clear` 会先 GET 再逐条 DELETE，上限 200 条，超过则只清本地并打日志）。
-
-### 8.3 设置 `GET/POST /api/state/prefs` `[已实现]`
-
-**只同步 account 级字段**（见 docs/25 §4.4）。实现在 `ApiServer.handleStatePrefs`，
-白名单 `STATE_PREFS_SYNC` / 黑名单 `STATE_PREFS_SKIP`，存 `state-prefs.json`。
-
-**GET**
-```json
-{
-  "ok": true,
-  "at": 1792737523880,
-  "prefs": {"homeCols": 8, "themeMode": "light", "searchThreads": 20}
-}
-```
-服务端从未写过时 `at = 0`、`prefs = {}`——**前端据此判断"没有远端设置"，
-不能拿空对象去覆盖本地**（这是最常见的覆盖事故）。
-
-**POST**（增量合并，两种写法都接受）
-```json
-{"prefs": {"homeCols": 8, "danmaku": false}}
-// 或摊平：{"homeCols": 8}
-→ {"ok": true, "applied": 2, "at": 1792737523880, "prefs": {...合并后全量...}}
-```
-
-**约定（实测 19/19 + 两设备模拟通过）**：
+**POST/PUT** 两种写法都收：`{"prefs":{…}}` 或字段摊在顶层。
+响应 `{"ok":true,"applied":N,"prefs":{…合并后全量…},"at":…}`。
 
 | 行为 | 说明 |
 |---|---|
-| **白名单才落盘** | 不在 `STATE_PREFS_SYNC` 里的一律丢弃（含未知新字段），防止前端以后加设备级字段就悄悄开始同步 |
-| `applied: 0` 不写盘 | 整份全是不可同步字段时返回 200 + `applied:0`，且 `at` 不变 |
-| 空 body → 400 | 与"只发了不可同步字段"区分开，避免排查时混淆 |
-| 增量合并 | 只更新提交的键，未提交的保留 |
-| 方法 | 只接受 `GET`/`POST`/`PUT`，其余 405 |
+| 白名单才落盘 | 只接受 `STATE_PREFS_SYNC` 的 19 个键，未知键静默丢弃 |
+| `applied:0` / 空 body | 全是不可同步字段 → 200 不写盘；空 body 或空 `prefs` → 400 |
+| 增量合并 / 方法 | 只更新提交的键（`null` 删除）；只接受 GET/POST/PUT，其余 405 |
 
-**可同步（`STATE_PREFS_SYNC`，19 项）**：
-`homeCols`、`searchThreads`、`searchLayout`、`cacheDays`、`historyLimit`、
-`danmaku`、`danmakuDensity`、`danmakuOpacity`、`danmakuScale`、`danmakuDuration`、`danmakuArea`、
-`autoNextMode`、`autoNextDelay`、`skipIntro`、`skipOutro`、`skipMiddle`、`skipCountdown`、
-`themeStyle`、`themeMode`
+**可同步（19 项）**：`homeCols`、`searchThreads`、`searchLayout`、`cacheDays`、
+`historyLimit`、`danmaku*`（6 项）、`autoNext*`（2 项）、`skip*`（4 项）、
+`themeStyle`、`themeMode`。**不同步**：`volume`/`muted`/`rate`/`videoFit`、`wallpaper*`、
+`webdavUrl`/`webdavPass`/`webdavUser`（**凭据绝不上传**）。
 
-> 逐项核对来源：后端 `routes/StateRoutes.java:47-55` 与前端 `api/index.ts:751` 的
-> `SYNCED_PREF_KEYS` 必须一致（改一处要改两处）。2026-10-26 实测两边都是 19 项。
-
-**明确不同步（`STATE_PREFS_SKIP`）**：
-`volume`、`muted`、`rate`、`videoFit`（每台设备自己的听感/画面状态，同步会互相打架）、
-`wallpaper`、`wallpaperBlur`、`wallpaperOpacity`（本地资源 + 屏幕比例不同）、
-`webdavUrl`、`webdavPass`、`webdavUser`（**凭据绝不上传**）。
-
-> **前端防回环**（`main.ts`）：应用远端设置时会派发 `meow:prefs`（主题/列数要刷新），
-> 而该事件的监听器会把"设置变了"当用户改动再推回后端——拉取立刻变上传，
-> 两台设备同时启动就会互相覆盖。用一个 `applyingRemotePrefs` 标记在同步派发期间跳过。
-> 另用 `localStorage['meow.prefs.syncedAt']` 记录上次对齐的服务端 `at`，
-> 远端 `at` 不比它新就不覆盖本地。
-
-### 8.4 历史 `GET/POST /api/state/history` `[目标]`
-
-```json
-{"ok": true, "items": [
-  {"site":"AppRJ","vodId":"123","vodName":"片名","vodPic":"...","ep":"第3集","at":1792550000000}
-]}
-```
-
-**语义**：流水数据，**按 `at` 倒序读，不需要合并策略**（用户已明确）。
+**没有 `/api/state/history`**：观看历史由 progress 派生。
 
 ---
 
-## 第九章 错误码与降级
+## 第七章 运维与本地能力
 
-### 9.1 错误码表
+按域分组的骨架；字段细节以代码为准，只列调用方必须知道的形状与约束。
 
-| code | HTTP | 含义 | 前端动作 |
-|---|---|---|---|
-| `SPIDER_LOAD_FAILED` | 404 | 站点不存在/类加载失败 | 从列表移除该站 |
-| `SPIDER_TIMEOUT` | 504 | spider 超时 | 标记 degraded，建议换站 |
-| `SPIDER_EXCEPTION` | 500 | spider 抛异常 | 提示 + 记日志 |
-| `SITE_EMPTY` | 200 | 站点返回空数据 | 提示"源可能失效" |
-| `PARSE_REQUIRED` | 200 | 需要 parse=1 | 自动调 `/api/parse` |
-| `PARSE_ALL_FAILED` | 200 | 所有解析器失败 | 换线路/换站 |
-| `LINE_UNAVAILABLE` | 200 | 线路不可用 | 换线路 |
-| `NO_PLAY_URL` | 200 | 无播放地址 | 换源 |
-| `PROXY_BLOCKED` | 403 | SSRF 拦截或广告域 | 提示不可播放 |
-| `STATE_UNAUTH` | 401 | 写操作未鉴权 | 提示配置 token |
-| `BAD_REQUEST` | 400 | 参数错误 | 修参数 |
+| 端点 | 作用 | 关键约束 |
+|---|---|---|
+| `GET/POST /api/library`、`GET /api/library/stream` | 片库配置、列目录、流 | `path` 是**相对库根**的路径，服务端拼接；`stream` 必须透传 Range |
+| `POST /api/webdav` | WebDAV 转发（PUT/GET/DELETE/MKCOL/PROPFIND） | **始终 200** + `{ok,status,body}`；传输失败 `ok:false,status:0,msg`；`PROPFIND` 默认 `Depth: 1`；body 截断 200KB |
+| `/api/cache*`（10 条） | 离线缓存：批次、状态、续传、导出 | `GET /api/cache` 带 `cacheDirReloadRequired`；导出格式由 `X-Meow-Export-Format`（mp4/ts）说明；`export-to` 仅回环可用 |
+| `POST/GET/DELETE /api/transcode` | MKV/HEVC 现转 HLS | 不带 `src` 回 `{available,bytes}`（探测 ffmpeg）；首次 `state=running` 且清单为空**不能判失败** |
+| `GET/POST/DELETE /api/scrape` | 刮削 | 缺 `groups` / `title` → 400 |
+| `GET/POST /api/cast` | DLNA 发现 / 控制 | POST 需 `device{controlUrl,…}`；投的 url 走宽松档 SSRF |
+| `GET /api/dns/resolve?host=&provider=` | DoH A 记录 | provider 默认 `ali`，缓存 5 分钟；失败也 200，`ip:""` + `msg` |
+| `GET/DELETE /api/posters` | 海报缓存统计 / 清空 | 清空回 `{ok:<删除数>}` |
+| `POST /api/llm/relay` | 纯 Web 环境转发模型请求 | 默认 **403**，需 `policy.llmRelay.enabled=true`；body `{baseUrl,apiKey,body}` |
 
-### 9.2 降级矩阵（前端按 `capabilities`）
+---
 
-| 后端缺什么 | 前端行为 |
+## 第八章 错误与降级
+
+### 8.1 HTTP 状态码
+
+| 状态 | 什么时候 | body |
+|---|---|---|
+| `200` | 正常；也可能业务失败 | 领域 JSON / `{"code":-1,"msg"}` / `{"ok":false,…}` |
+| `400` | 坏 JSON、缺必填参数、参数超范围 | `{"code":-1,"msg":"…"}` |
+| `401` | 写操作缺令牌 / 不匹配 | `unauthorized: X-Meow-Token required` |
+| `403` | SSRF 拒绝、跨源写、`export-to` 非回环、relay 未启用 | `{"code":-1,"msg":"…"}` 或 `{ok:false,error}` |
+| `404` | 未知端点、任务/备份/缓存导出/jar 不存在 | `{"code":-1,"msg":"…"}` |
+| `405` | 方法不允许 | `{"code":-1,"msg":"…"}` |
+| `415` | 图片是 AVIF/HEIC | `upstream image format not supported: …` |
+| `429` | 限流 | `too many requests` |
+| `500` | 未知 action、未捕获异常、配置/状态写失败 | `{"code":-1,"msg":"<异常>"}` |
+| `501` | `/proxy` 无 jar 能力 / 未知 `/api/proxy/*` | `{"code":-1,"msg":"…"}` |
+| `502` | 上游拉取失败、重定向过多、代理无 body | `{"code":-1,"msg":"…"}` |
+| `503` | 分片代理并发满 | `{"code":-1,"busy":true,"msg":"分片代理繁忙，请重试"}` |
+| `304` | jar 的 `If-None-Match` 命中 | 无 body |
+
+**站点不可用不是错误状态**：`/api/{site}/{action}` 类加载失败仍回 200 +
+`{"code":-1,"msg":"该源在当前构建不可用（缺少 X）"}`。前端按 `code:-1` 处理。
+
+### 8.2 业务失败的形状
+
+| 场景 | 形状 |
 |---|---|
-| 无 `parse` | 不显示"解析"按钮；`parse=1` 直接提示"该线路不可播" |
-| 无 `live` | 隐藏"直播"入口 |
-| 无 `progress` | 不显示续播提示，进度只存本地 |
-| 无 `favorites` | 收藏按钮置灰 + tooltip"后端不支持" |
-| 无 `state` | 设置只存本地，不显示同步状态 |
-| 无 `multiDepot` | 只显示单一后端，不显示仓切换器 |
+| 解析失败 | 200 `{"ok":false,"msg":"…","tried":N}` |
+| 线路不可用 | 200 `{"parse":1,"url":"","msg":"该线路暂不可用：…"}` |
+| 站点返回空 | 200 `{"list":[]}` / `{"class":[],"filters":{}}` / play 兜底 |
+| 搜索无词 | 200 `{"groups":[]}` |
+| 直播列表失败 | 200 `{"ok":false,"msg":"…"}` |
+| 片库单库连不上 | 200 `{"ok":false,"msg":"…"}`（其它库仍渲染） |
+| WebDAV 传输失败 | 200 `{"ok":false,"status":0,"msg":"…"}` |
+| 缓存导出无分片 | 404 `{"code":-1,"msg":"这一集还没有缓存分片；先下载完成再导出"}` |
 
-**原则**：**能力缺失时隐藏，而不是点击后报错**。
+### 8.3 降级
 
----
-
-## 第十章 版本兼容策略
-
-### 10.1 兼容三原则
-
-1. **只增字段**：新增字段必须有默认值，删除/改名字段 = 破坏性变更
-2. **顶层字段保留**：`home`/`category`/`detail`/`search` 的现有顶层字段（`class`/`list`/`filters`）
-   在 v2 前不移除，`ok` 只作为附加字段
-3. **`/api/policy` 保留**：新状态端点与它并存，不替换
-
-### 10.2 前端检测
-
-```ts
-// 判断后端版本能力
-async function boot() {
-  const health = await request<Health>('/api/health')
-  // 老后端没有 capabilities
-  const caps = new Set(health.capabilities ?? [])
-  if (!health.capabilities) {
-    // 老后端：按已知端点探测
-    caps.add('parse')  // 不确定 → 保守不加
-  }
-  store.capabilities = caps
-}
-```
-
-**不要**用 `version` 字符串比较（版本号可能不带语义）。
+`capabilities` 是**声明**不是承诺：后端只报实际可用的能力。前端不应根据 `version`
+猜能力（版本号不带语义）。当前 Web 只消费 `state` 一位。
 
 ---
 
-## 附录 A 完整样例文件清单
+## 第九章 版本兼容
 
-实测抓取的原始响应存于 `artifacts/api-samples/`（如未生成，可用附录中的内联样例）。
-
-| 端点 | 内联样例位置 |
-|---|---|
-| `GET /api/health` | §2.1 |
-| `GET /api/sites` | §2.2 |
-| `GET /api/config` | §2.3 |
-| `GET /api/policy` | §2.4 |
-| `POST /api/Douban/home` | §2.5 |
-| `POST /api/AppRJ/home` | §2.6 |
-| `POST /api/Douban/category` | §2.7 |
-| `POST /api/AppRJ/search`（失败） | §2.8 |
-| `POST /api/{site}/detail`（失败） | §2.9 |
-| `POST /api/{site}/play`（空参） | §2.10 |
-| `POST /api/NoSuchSite/home`（错误） | §2.11 |
-| `GET /api/proxy/danmaku/search` | §2.12 |
-
-### 复现命令
-
-```bash
-# 启动（按用户约束：不常驻）
-cd server/host && build.bat && run.bat
-
-# 若端口占用说明已有实例
-curl -s http://127.0.0.1:9979/api/health
-```
+1. **只增字段**：新增字段必须有默认值；删除/改名字段 = 破坏性变更。
+2. **站点接口的顶层字段保留**：`home`/`category`/`detail`/`search` 直接透传
+   `class`/`list`/`filters`/`page`，不额外包 `ok`。
+3. **`/api/policy` 与 `/api/config` 保留**：新状态端点、`/config.json` 与它们并存。
+4. 前端判断能力只看 `/api/health.capabilities`（缺失按空集合处理），不比较 `version`。
 
 ---
 
-**本文档的权威性**：所有"现状"样例均为 2026-10-21 实测；所有"目标"字段标注 `[目标]`。
-实施时如与其他文档冲突，**以本文为准**（契约层）。
+## 附录 A 端点全表
+
+`equals(path)` 显式路由 50 条 + 少量前缀兜底。路径即契约。
+
+| 域 | 方法 | 路径 |
+|---|---|---|
+| 系统 | GET | `/api/health`、`/api/sites`、`/api/config`、`/config.json`、`/spider-latest.jar` |
+| 系统 | GET/POST | `/api/policy`、`/api/config/import` |
+| 系统 | POST | `/api/config/depot` |
+| 系统 | GET/POST/DELETE | `/api/config/backup` |
+| 系统 | GET/DELETE | `/api/logs`、`/api/posters` |
+| 内容 | POST | `/api/{site}/{home\|category\|detail\|search\|play\|live\|action}`、`/api/search` |
+| 内容 | GET | `/api/search/task/{id}` |
+| 内容 | GET/DELETE | `/api/search/cache` |
+| 内容 | GET/POST/DELETE | `/api/lives` |
+| 内容 | POST | `/api/live`、`/api/live/playlist` |
+| 解析 | POST | `/api/parse` |
+| 代理 | GET | `/proxy`、`/api/proxy/stream`、`/api/proxy/image`、`/api/proxy/danmaku`、`/api/proxy/danmaku/search`、`/api/proxy/danmaku/list`、`/api/proxy/danmaku/xml` |
+| 代理 | POST | `/api/proxy/danmaku/prefetch` |
+| 状态 | GET/POST | `/api/state/progress` |
+| 状态 | GET/POST/PUT/DELETE | `/api/state/favorites` |
+| 状态 | GET/POST/PUT | `/api/state/prefs` |
+| 健康 | POST | `/api/health/probe`、`/api/health/degrade`、`/api/health/reset` |
+| 健康 | GET | `/api/health/state` |
+| 本地 | GET/POST | `/api/library`、`/api/cast` |
+| 本地 | GET | `/api/library/stream`、`/api/dns/resolve`、`/api/transcode/status`、`/api/transcode/{id}/index.m3u8`、`/api/transcode/{id}/{seg}` |
+| 本地 | POST | `/api/webdav`、`/api/llm/relay` |
+| 本地 | GET/POST/DELETE | `/api/cache`、`/api/transcode`、`/api/scrape` |
+| 本地 | POST/GET | `/api/cache/batch`、`/api/cache/status`、`/api/cache/tasks`、`/api/cache/resume`、`/api/cache/control`、`/api/cache/grouped`、`/api/cache/poster` |
+| 本地 | GET/POST | `/api/cache/export`、`/api/cache/export-to` |
+
+**兜底：** `/api/search/task/*`、`/api/library/*`、`/api/cache/*`、`/api/state/*`、
+`/api/health/*` 未知子路径 → 404；`/api/proxy/*` 未知 → 501 `proxy not implemented`；
+其余 `/api/*` 按 `{site}/{action}` 分派，段数不足 → 404。

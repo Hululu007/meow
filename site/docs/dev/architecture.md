@@ -1,28 +1,25 @@
-# 三端统一架构实施指南
+# 三端统一架构
 
-> 版本：v1（2026-10-21）
-> 定位：**后续应用改造的指导文档**。不是调研，是决策与施工图。
-> **⚠️ 架构决策与 ADR 长期有效；文内 23 处 `文件:行号` 会随重构漂移**，
-> 定位代码请按符号名 grep，不要直接用行号。
+> 定位：**当前架构与决策记录**。写代码里已经成立的结构、边界与约束，不写改造过程。
+> 「当前」陈述以 `server/host/src/shared/` 与 `client/apps/web/src/api/index.ts` 为准；
+> 生态占比一类外部事实来自早期抽样，本仓库无法复核，标「待确认」；行号只是定位辅助，按符号名 grep。
+> 相关：[API 契约](./api-contract.md)、[配置系统](./config-system.md)、[TV 接入](./tv-integration.md)、[播放](./playback.md)、[测试](./testing.md)。
 
 ---
 
 ## 目录
 
 - [第零章 结论先行](#第零章-结论先行)
-- [第一章 现状核准](#第一章-现状核准)
-- [第二章 架构骨架](#第二章-架构骨架)
-- [第三章 内核设计](#第三章-内核设计)
-- [第四章 三端协作模型](#第四章-三端协作模型)
-- [第五章 功能矩阵与优先级](#第五章-功能矩阵与优先级)
-- [第六章 生态覆盖策略](#第六章-生态覆盖策略)
-- [第七章 安全与运维](#第七章-安全与运维)
-- [第八章 实施路线](#第八章-实施路线)
-- [第九章 验收标准](#第九章-验收标准)
-- [第十章 决策记录与不做清单](#第十章-决策记录与不做清单)
-- [附录 A 数据结构定义](#附录-a-数据结构定义)
-- [附录 B 端点全清单](#附录-b-端点全清单)
-- [附录 C 术语表](#附录-c-术语表)
+- [第一章 分层与目录](#第一章-分层与目录)
+- [第二章 站点注册与分派](#第二章-站点注册与分派)
+- [第三章 三个出口](#第三章-三个出口)
+- [第四章 运行时与解析](#第四章-运行时与解析)
+- [第五章 三端协作](#第五章-三端协作)
+- [第六章 安全与运维](#第六章-安全与运维)
+- [第七章 已知坑与约束](#第七章-已知坑与约束)
+- [第八章 决策记录](#第八章-决策记录)
+- [附录 A 关键数据结构](#附录-a-关键数据结构)
+- [附录 B 术语表](#附录-b-术语表)
 
 ---
 
@@ -32,1350 +29,608 @@
 
 > **一个内核（JVM 宿主）+ 一份配置（CatVod 语义）+ 一套状态（后端持久化）+ 三个渲染出口（TV/PC/Web）。**
 
-### 0.2 三条不可动摇的判断
+内核只有一份实现：`shared/ApiServer.java`（13064 行）+ `routes/` 7 个、`core/` 13 个、
+`sources/` 4 个模块。TV 壳把同一份 `shared/` 编译进去，两端分叉压在 `platform/` 五个类里。
+
+### 0.2 四条判断
 
 **判断一：统一的是配置与内核，不是客户端代码。**
 
-TV 用 Fongmi（原生 Android，自带宿主），Web/PC 用自研 Vue + 我们的宿主。
-两者共享的是 **同一份 spider jar + 同一份 config 语义 + 同一套状态后端**，
-**不是同一份 UI 代码**。任何试图让 Fongmi 走我们 REST 的方案都是错的（GPL 传染 + 要重写它的 catvod 模块）。
+TV 是 Fongmi 派生代码（`com/github/catvod/`）加自有壳（`com.meow.tv`），Web/PC 是自研
+Vue + 我们的宿主。两端共享的是**同一份 spider jar + 同一份 config 语义 + 同一套状态后端**，
+不是同一份 UI 代码——让 Fongmi 改走 REST 等于重写 catvod 模块并引入 GPL 传染，收益为负。
 
-**判断二：我们的生态位是"上游"，不是"替代品"。**
+**判断二：我们的生态位是「上游」，不是「替代品」。**
 
-```
-Fongmi（客户端内执行 DexClassLoader）  ──┐
-zyfun（客户端内解释 13 类适配器）       ──┼──> 都需要一个"能跑 jar 又能跨端"的服务
-我们的 JVM 宿主                        ──┘        ↑ 我们在这里
-```
-
-zyfun 的 `T4_CATVOD` 适配器本来就是为"外部 CatVod 服务"设计的。
-我们把宿主做好，zyfun 用户配个 `type: 8` 就能用我们的后端——**这是零成本的分发渠道**。
+Fongmi（客户端内 DexClassLoader）与 zyfun（客户端内解释适配器）都需要一个
+「能跑 jar 又能跨端」的服务——我们在这里。zyfun 的 `T4_CATVOD` 本来就是为
+「外部 CatVod 服务」设计的：指向我们的 `/{site}/{action}` 即可。零成本分发，
+入口要选对（「影视配置」加站点，不是「数据导入」，见 §5.4）。
 
 **判断三：源是单位，运行时是插件，配置是唯一接口。**
 
-我们在旧理念里把"最小变化边界"划在了**类**上（改一个类、不碰其他 882 个）。
-生态的实际情况是划在**源**上：心魔在线 151 个源，一个 `XBPQ` 类覆盖 94 个（62%）；
-高天流云 298 个源，一个 `drpy2.min.js` 覆盖 221 个（74%）。
+生态里一个适配器覆盖几十到上百个源（早期抽样：`XBPQ` 覆盖 94 个、`drpy2.min.js` 覆盖
+221 个，**待确认**）。所以抽象层落在「源」上：站点以 `key` 寻址、`ext` 是每站参数、
+实现可以是 jar 类、drpy 脚本、苹果CMS 直连或宿主原生源——调用方只看 `/api/{site}/{action}`，不关心背后是谁。
 
-**1 个适配器 = 94~221 个源**，而我们 1 个类 = 1 个源。这个抽象层必须上移。
+**判断四：同一份宿主源码，两端编译。**
 
-### 0.3 四层架构（记这一张图）
+`client/apps/tv/app/build.gradle` 只往 `java.srcDirs` 加 `server/host/src/shared` 一个目录，
+不需要任何 `exclude`。代价是平台差异（HTTP 传输、类加载、Context、日志）必须全部收进
+`platform/` 注入点，见 §1.4。
+
+### 0.3 四层骨架
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │  L4 渲染层（三套，不统一）                                            │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │ TV (Fongmi)  │  │ PC (Tauri)   │  │ Web (Vue)    │              │
-│  │ 遥控器/D-pad  │  │ 鼠标键盘     │  │ 触摸/鼠标     │              │
-│  │ Exo/mpv      │  │ WebView2     │  │ hls.js       │              │
+│  │ TV/遥控器     │  │ PC (Tauri 2) │  │ Web (Vue)    │              │
+│  │ ExoPlayer    │  │ WebView2     │  │ hls.js       │              │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘              │
 └─────────┼─────────────────┼─────────────────┼──────────────────────┘
           │ CatVod config   │ REST            │ REST
-          │ + jar           │                 │
+          │ + dex jar       │                 │
 ┌─────────┼─────────────────┼─────────────────┼──────────────────────┐
 │  L3 出口层（三种形状，一个来源）                                      │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │ 出口A        │  │ 出口B        │  │ 出口C        │              │
-│  │ /config.json │  │ /api/{site}/ │  │ /api/state/  │              │
-│  │ CatVod 形状  │  │ REST 形状    │  │ 状态         │              │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘              │
+│  /config.json + /spider-latest.jar │ /api/{site}/… │ /api/state/…   │
 └─────────┼─────────────────┼─────────────────┼──────────────────────┘
-          └─────────────────┼─────────────────┘
-┌───────────────────────────┼───────────────────────────────────────┐
-│  L2 内核层（唯一真相来源）  │                                        │
-│  ┌───────────────┬─────────┴──┬──────────────┬───────────────┐    │
-│  │ SiteRegistry  │ ParseEngine│ ConfigTables │ ProxyRouter   │    │
-│  │ 站点注册表     │ 解析器     │ 七张配置表    │ 代理路由      │    │
-│  └───────────────┴────────────┴──────────────┴───────────────┘    │
+┌─────────┴─────────────────┴─────────────────┴──────────────────────┐
+│  L2 内核层（唯一真相来源）                                            │
+│  ApiServer：站点表 + 分派 + 归一化 + 代理/弹幕/离线缓存               │
+│  routes/ 7 模块 · sources/ 4 模块 · core/ 13 模块                    │
 └───────────────────────────┬───────────────────────────────────────┘
-                            │
-┌───────────────────────────┼───────────────────────────────────────┐
-│  L1 执行层（运行时插件）    │                                        │
-│  ┌─────────┬─────────┬────┴────┬─────────┬─────────┐              │
-│  │ Java    │ JS      │ Python  │ Node    │ 协议直连 │              │
-│  │ (jar)   │ (drpy)  │         │         │ (苹果CMS)│              │
-│  │ 54.5%   │ 40.9%   │ 少量    │ 极少    │ 新增     │              │
-│  └─────────┴─────────┴─────────┴─────────┴─────────┘              │
+┌───────────────────────────┴───────────────────────────────────────┐
+│  L1 执行层（按 api 形态分派，顺序敏感）                                │
+│  Java jar(csp_*) │ drpy(.js/.py) │ 苹果CMS 直连 │ 宿主原生源          │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
----
-
-## 第一章 现状核准
-
-### 1.1 代码基线（2026-10-21 **16:30 重新核实**）
-
-> ⚠️ 本节前后更新过两次，**下面这版是 2026-10-24 实测**（路径已改为合并后的统一根目录）。
-> 旧的 `feimao-spider-re/host/`、`feimao-player/apps/web/` 是 2026-10-22 合并前的布局，已不存在。
-> **缺口状态别看旧表**：G1–G15 大部分已修，逐条状态见 §1.3。
-> **2026-10-26 复核**：`ApiServer.java` 已降到 **6265 行**（五个域拆到 `routes/`，6 文件共 2369 行）；
-> 前端 **51 个 .vue/.ts / 13 条路由**；`EXT.put("…")` 实际 **11 处**（137 行一行写了两个）。
-> 下表其余数字未重测。
-
-| 组件 | 位置 | 规模 | 状态 |
-|---|---|---|---|
-| **JVM 宿主** | `server/host/` | `ApiServer.java` **10361 行**（2026-11-04 核对，含 `shared/routes/` 7 个模块）+ `SpiderHost.java` 451 行 + 51 个 `android.*` stub + `shared/core/`（10 个模块） | 可运行，端口 9979 |
-| **Web 前端** | `client/apps/web/` | **80** 个 .vue/.ts、约 36,600 行（2026-11-04 核对）；`VideoPlayer.vue` 5179 行、`danmaku.ts` 1139 行、`sync.ts` 508 行 | **14 条路由**（2026-11-04 核对），三端共用 |
-| **PC 壳** | `client/apps/desktop/` | Tauri 2，productName「猫窝」 | 插件全外置，内置 MCP |
-| **TV 壳** | `client/apps/tv/` | Android WebView + `tv-nav.js` 遥控导航 + 端上 ExoPlayer + 本地 jar 执行层 | 47 个 java 文件 |
-| **spider jar** | 源包（公开壳不含） | 主产物 dex 约 0.8MB；class 版 1.7MB 仅旧 JVM/兼容 profile | dex 版是 ZIP 内 `classes.dex`；JVM 导入时由 `Dex2Jvm` 转 class 并缓存 |
-| **上游配置** | 源包（公开壳只带 `config.sites.example.json`） | 私有全量构建 40 站点 / 29 唯一 api / 八张能力表 | 统一 `config.all.json`；Fongmi/TV 直接吃 dex，JVM 走 dex2jvm |
-| **静态注册** | `ApiServer.java` | `SITES.put` **44 处** / `EXT.put` **11 处**（`grep -o` 计数） | 其余靠 `loadMultiInstances()` 动态补 |
-
-> **2026-11-09 纯壳剥离**：公开仓库/公开产物不再包含 `server/host/libs/spider.jar`、
-> dex jar、真实 `config.sites.json`。上表“源包（公开壳不含）”一行指用户导入后；
-> 私有全量构建才把 jar 放回 `libs/`/assets、把真实配置作为 seed。
->
-> **2026-11-11 源包规范**：唯一入口 `config.all.json`，顶层 `spider` 必须是 dex；
-> Fongmi/TV 原生加载，JVM 没有 `spiderJvm` 时用 `Dex2Jvm` 导入期转换。
-> 规则/校验见 [`deploy/source-pack/`](https://github.com/upchr/meow/blob/main/deploy/source-pack/README.md)。
-
-**本轮新增能力（弹幕线，已达 ~85%）**：
-- 弹幕源从 6 个域名扩展到 **22 个平台标签**（爱奇艺/腾讯/优酷/B站/芒果/咪咕/搜狐/乐视/
-  西瓜/人人/韩剧/巴哈/弹弹/Animeko/采集站/自建/聚合）
-- 新增两段式端点 `/api/proxy/danmaku/list` + `/api/proxy/danmaku/xml`
-- 爱奇艺官方三级路径（`search.video.iqiyi.com` → `cmts/bullet` → zlib 解压）
-- TTL 缓存 + 关键词变体兜底
-
-**但播放线仍停在原点**：`parse=1` 直接丢弃、~~失败零重试~~（2026-10-23 已修，见 G14）、无字幕/跳过/画质。
-
-### 1.2 已实现的端点（14 条示例；2026-11-04 核对：显式 `equals(path)` 路由 49 条）
-
-```
-GET  /api/health             → 只回 {ok:true}（无 version/capabilities）
-                              ⚠️ 2026-10-23 更正：现已回 version + capabilities + sites/ext/spiderJar
-GET  /api/sites              → 只回 {key, name, api, ext}
-GET  /api/config             → 只回 {sites}
-GET  /api/policy             → 后端持久化键值对（GET 读 / POST 合并写）
-GET  /api/dns/resolve
-POST /api/search             → 聚合搜索（threads 1–32）
-POST /api/{site}/{home|category|detail|search|play|action}
-GET  /api/proxy/danmaku      → 旧协议（6 域 × 3 轮）
-GET  /api/proxy/danmaku/search  → 候选搜索（22 平台）
-GET  /api/proxy/danmaku/list    → 两段式第一段（新增）
-GET  /api/proxy/danmaku/xml     → 两段式第二段（新增）
-GET  /api/proxy/stream       → 视频代理，已支持 Range
-GET  /api/proxy/image        → 图片代理
-POST /api/webdav             → java.net.http.HttpClient（必须，见坑 5.4）
-```
-
-**⚠️ 更正（三次）**：
-1. 早期清单里列的 `GET /api/proxy/hxq` **不存在实现**，只在 `ApiServer.java:48` 的**注释**里出现。
-2. 端点计数从 12 改为 **14**（新增 `danmaku/list` 与 `danmaku/xml`）。
-3. **2026-10-26（0.9.15）实测：显式 `equals(path)` 路由已是 39 条**（另 13 处前缀兜底）。
-   这 14 条之外的增量包括 `/config.json`、`/spider-latest.jar`、`/proxy`、`/api/parse`、
-   `/api/live` + `/api/live/playlist`、`/api/library` ×2、`/api/cache` 及 6 个子路径、
-   `/api/logs`、`/api/scrape`、`/api/cast`、`/api/transcode` ×2、`/api/state/*` ×3、
-   `/api/health/{probe,degrade,state}`。完整表见 docs/26 §2.4 与 AGENTS §4.3。
-   `Hxq` 走 `127.0.0.1:-1/proxy` 的问题已由 `/proxy` 握手修掉（G7）。
-
-### 1.3 关键缺口（精确到行 + 截至 **2026-10-23** 的状态）
-
-> 本表是 2026-10-23 的历史快照；已修项以本文件 §1.3 为准。
-
-> **状态列是逐项 grep / 实测的**。原版（2026-10-21 16:30）14 项全部未修；
-> 2026-10-23 复核后 **G14 已修、G15 后端已修（前端未接）**，其余未变。
-> 每行的"证据"列写的是复核时实测到的位置，行号以 2026-10-23 的代码为准。
-
-| # | 缺口 | 证据 | 影响 | 状态 |
-|---|---|---|---|---|
-| G1 | **不读 `config.json`** | `SITES`/`EXT` 硬编码静态 Map | 改站点要重编译 | ❌ 未修（`loadMultiInstances()` 读的是不存在的 `config.sites.json`，空转） |
-| G2 | **路由按类名** | `Class.forName("...spider." + cls)`（290 行） | `Bili` 6 ext 塌缩成 1 | ❌ 未修 |
-| G3 | **ext 只注册 11/16** | 缺 `Bili`(6)、`Kugou`、`MiSou`、`PanSearch`、`Push` | 上述站点全不可用 | ⚠️ 部分（机制写了但文件缺失） |
-| G4 | ~~8 张表零实现~~ | 7 张数组表已有消费点；`proxy` 只随 `/config.json` 下发，宿主不读 | — | ✅ 已修（2026-11-04 核对） |
-| G5 | **`parse=1` 直接丢弃** | 351 行 `.put("parse", 1)` 后不管 | SP360/SaoHuo/DuoDuoTv 永不可播 | ❌ 未修 |
-| G6 | ~~无 `liveContent`~~ | 后端已实现 `live` 动作与 `/api/live` 聚合、`/api/live/playlist`（m3u/txt）；**但 jar 内 72 个类零个实现 `liveContent`**，实际直播靠 `config.lives` 播放列表 | 直播可用（列表路径） | ✅ 已修（2026-10-23） |
-| G7 | **`/proxy` 无宿主承载 → 端口探测锁死 `-1`** | 宿主无 `/proxy` 路由（`grep -c '"/proxy"' ApiServer.java` = 0），jar 的端口探测逐端口 GET `/proxy?do=ck` 全部失败 | 8 个类经 `Proxy.getUrl()` 拼出 `127.0.0.1:-1/...`：`Hxq` `Bili` `WangPan` `App3Q` `AppQi` `AppGet` `AppRJ` `Jpys`，全部走不到实现 | ❌ 未修（归因已更正，见下） |
-| G8 | **无 `/config.json`（CatVod 形状）** | `configJson()` 只输出 sites | TV 端只能靠 `serve_tv.py` 手工服务 | ❌ 未修 |
-| G9 | ~~CORS `*` 且无鉴权~~ | 白名单（localhost / tauri / policy.corsOrigins）+ 可选写操作 token | — | ✅ 已修（2026-10-23） |
-| G10 | ~~SSRF 无防护~~ | `core/UrlSafety.java` 双档校验 + `handleStream` 手动重定向逐跳复核 | — | ✅ 已修（2026-10-23 实测 19/19，见 §7.1） |
-| G11 | **前端 `apiBase` 单一字符串** | `backends` grep 0 | 无法多仓 | ❌ 未修 |
-| G12 | **无进度/收藏** | `history.ts` 只有 `at` 时间戳 | 无法跨端续播、无收藏 | ❌ 未修 |
-| G13 | ~~丢弃 `subs`/`skips`/多画质/`position`~~ | `normalizePlay` 折三种 url 形状并输出 `qualities`；前端 `api/playExtras.ts` 统一换算 | — | ✅ 已修（2026-10-23，见 docs/26 §6.1） |
-| G14 | **失败无重试链** | `PlayView.vue` 676 行：`nextLineCandidate`（:328）自动换线 + `FAILED_KEY`（:305）防横跳；`VideoPlayer.vue:646-652` 20 秒起播看门狗 | 单跳零重试 | ✅ 已修（2026-10-23 实测） |
-| G15 | **`capabilities` 缺失** | `ApiServer.java:384` `o.put("capabilities", caps)`（`danmakuExternal`/`danmaku`/`search`/`proxy`/`webdav`/`dns`） | 前端仍不消费（`grep capabilities client/apps/web/src` = 0） | ✅ 后端已修，前端未接（2026-10-23 实测） |
-
-**已完成的能力（不在缺口表里）**：弹幕链路达 ~85%（22 平台 + 两段式 + 缓存 + 爱奇艺官方三级路径）。
-详见本节完成度表。
-
-**⚠️ G7 归因更正（2026-10-23，原表述不准确）**
-
-原版把 G7 写成"`proxy` 只有 `do=` 一级、`siteKey` grep 0"，把问题定位在**参数层级不够**。
-真正的因果链是**端口注入 + 宿主路由**，与 `siteKey` 无关：
-
-1. jar 内 `com.github.catvod.spider.Proxy` 的静态字段 `a` 初值是 `-1`，
-   只在 `static void a()` 里探测赋值：从 9978 逐端口走到 9999，对
-   `http://127.0.0.1:<port>/proxy?do=ck` 发请求，回 `ok` 才写入 `a`、否则一直
-   停在 `-1`（（私有开发资料），
-   探测循环在 `:24-33`，赋值在 `:30`）。
-   `javap -p -classpath server/host/libs/spider.jar com.github.catvod.spider.Proxy`
-   的方法表只有 `a()` / `getOriginUrl()` / `getPort()` / `getUrl()` / `proxy(Map)`
-   —— **这个类没有 `set(int)`**，端口只能靠探测。
-2. 官方 Fongmi 的做法是宿主侧注入：`Server.start(int)` 起 `Nano` 成功后立刻
-   调 `Proxy.set(port)`（（私有开发资料），
-   注入点在 `:55`）；被注入的是**另一个类** `com.github.catvod.Proxy`
-   （`catvod/src/main/java/com/github/catvod/Proxy.java:9`），不是 spider 包里的那个。
-   它的 `/proxy` 由 `server/process/Proxy.java:26` 的 `url.startsWith("/proxy")` 接住，
-   再交给 `BaseLoader.proxy()` 按 `siteKey` / `do=js|py` / jar 兜底分派
-   （`BaseLoader.java:150-154`）。
-3. 我们的宿主**两件事都没做**：`ApiServer.java` 里 `grep -c '"/proxy"'` = 0（只有
-   `/api/proxy/*`），也从不注入端口（jar 无 `set` 可注入，探测又没人应答）。
-   于是 `a` 永远停在 `-1`；`getUrl()` 拼出的就是 `http://127.0.0.1:-1/proxy?do=xxx`。
-
-因此修 G7 的正确动作是**在宿主补 `/proxy` 路由，并让 `/proxy?do=ck` 回 `ok`**
-（等价于 Fongmi 的"注入端口"效果——因为 jar 只能靠探测发现端口），
-**而不是**去补 `siteKey` 参数层级——后者是 Fongmi 自己的多站点分派约定，
-与 `-1` 这个症状无因果关系。
-
-### 1.4 已做对的事（不要推翻）
-
-| 项 | 位置 | 说明 |
-|---|---|---|
-| 弹幕位图缓存 | `danmaku.ts` | 60.3 fps / 0 长帧 / 最大间隔 16.9ms |
-| m3u8 相对 URI 解析 | `ApiServer.java:896` | 以 `/` 开头 → `origin + uri`；否则取目录 |
-| WebDAV 用 `HttpClient` | `ApiServer.java` | `HttpURLConnection` 不支持 PROPFIND/MKCOL |
-| 不用 ofetch | `api/index.ts` | Tauri 下 `location[0]` 会抛异常 |
-| 设置项用下拉 | `TileSelect.vue` | 用户明确要求，不要点击循环 |
-| Range 透传 | `ApiServer.java` | 拖进度条的前提 |
+**⚠️ L2 里没有 `SiteRegistry` / `ParseEngine` / `ConfigTables` / `ProxyRouter` 这四个类。**
+实际落地的是「一个 `ApiServer` + 路由/核心/源三个包」，不要按老名字找；
+对应能力见 §2.1、§2.3、§3.2、§4.4。
 
 ---
 
-## 第二章 架构骨架
+## 第一章 分层与目录
 
-### 2.1 分层职责（严格边界）
+### 1.1 分层职责（严格边界）
 
-| 层 | 职责 | 允许依赖 | 禁止 |
+| 层 | 职责 | 实际实现 | 禁止 |
 |---|---|---|---|
-| **L1 执行层** | 把源站数据转成标准 JSON | 网络、无状态 | 不碰 UI、不碰配置解析 |
-| **L2 内核层** | 站点注册、解析调度、配置表、代理路由 | L1 | 不碰 HTTP 细节、不碰 JSON 序列化形状 |
-| **L3 出口层** | 按消费者习惯转换形状 | L2 | 不含业务逻辑 |
-| **L4 渲染层** | UI、播放器、交互 | L3（HTTP） | 不直连源站 |
-
-**一条硬规则：L2 只依赖接口，不依赖具体运行时。**
-内核调 `Runtime.load(site)`，不关心背后是 `DexClassLoader` 还是 QuickJS。
-
-### 2.2 目录结构（改造后）
-
-> **这是设计目标，不是现状。** 实际的 `core/` 目前有六个类（共 1855 行）：
-> `DataPaths`(160) / `UrlSafety`(116) / `Library`(452) / `Scrape`(281) /
-> `VideoCache`(536) / `Transcode`(310)。它们是功能模块，**不是**下面这套 L2 抽象——
-> `SiteRegistry` / `ParseEngine` / `ConfigTables` / `ProxyRouter` / `runtime/`
-> 至今尚未落地，业务逻辑仍集中在 `ApiServer.java` 单文件里。
-> 下面树里的 `feimao-spider-re/` 是合并前路径，现在是仓库根的 `server/`。
-
-```
-feimao-spider-re/                  ← 现为 server/
-├── host/                          ← L2 + L3（JVM 宿主）
-│   ├── src/
-│   │   ├── core/                  ← L2 内核
-│   │   │   ├── SiteRegistry.java      站点注册表（按 key 索引）
-│   │   │   ├── Site.java              站点模型（20 字段）
-│   │   │   ├── ParseEngine.java       解析器调度（type 0/1/2/3/4）
-│   │   │   ├── ConfigTables.java      8 张表
-│   │   │   ├── ProxyRouter.java       代理路由（siteKey 四级）
-│   │   │   └── runtime/               运行时插件
-│   │   │       ├── RuntimeLoader.java     接口
-│   │   │       ├── JarRuntime.java        Java jar（现有）
-│   │   │       ├── JsRuntime.java         drpy（待做）
-│   │   │       └── ProtocolRuntime.java   苹果CMS 直连（待做）
-│   │   ├── http/                  ← L3 出口
-│   │   │   ├── ApiServer.java         REST 出口（现有，重构）
-│   │   │   ├── CatVodExport.java      /config.json 出口（新增）
-│   │   │   └── StateApi.java          状态出口（新增）
-│   │   ├── android/               ← Android stubs（现有）
-│   │   └── Main.java
-│   └── libs/                      ← 现有依赖
-├── dist/                          ← jar 产物
-└── docs/
-```
-
-### 2.3 启动序列（必须按此顺序）
-
-```
-1. 读 config.json（或远程 URL）        → 原始 JSON
-2. 构建 SiteRegistry                     → 40 条 / 28 key / 16 ext
-3. 加载 ConfigTables（8 张表）            → 内存对象
-4. 解析 spider 字段                     → jar 地址 + md5
-5. 校验 md5 → 不一致则下载              → 本地 jar
-6. 初始化 JarRuntime                     → 可选：预加载（懒加载为默认）
-7. 启动 HTTP 服务                        → 两个出口就绪
-```
-
-**注意**：第 6 步默认**懒加载**（首次访问某站点时才 `Class.forName`）。
-理由是 28 个类里有 10 个左右是死的，全量初始化会拖慢启动且报一堆错。
-
----
-
-## 第三章 内核设计
-
-### 3.1 SiteRegistry（核心中的核心）
-
-#### 为什么必须重做
-
-现状：`SITES` 是 `Map<String,String>`（类名 → 中文名），`EXT` 是 `Map<String,String>`（类名 → ext）。
-后果是"一个类只能有一个 ext"，而 `Bili` 需要 6 个。
-
-#### 数据来源
-
-直接读 `artifacts/config.json` 的 `sites` 数组（40 条），**不做硬编码**。
-
-#### 模型（对齐 Fongmi `Site` 的 20 字段，按需裁剪）
-
-```java
-public class Site {
-    // 标识
-    String key;            // 站点唯一 ID（config 里的 key）
-    String name;           // 展示名
-    String api;            // csp_Xxx / xxx.js / xxx.py / node:xxx / 苹果CMS URL
-    String ext;            // 站点参数
-    String jar;            // 可覆盖全局 spider
-    int    type;           // CatVod type（3=spider, 1=苹果CMS, ...）
-
-    // 能力开关（三态：0=强制关，1=开，2=用户关但可恢复）
-    int searchable = 1;
-    int changeable = 1;
-    int quickSearch = 1;
-    int danmaku = 1;
-    int hide = 0;
-    int indexs = 0;        // 是否进首页
-
-    // 行为参数
-    int    timeout;        // 每站独立超时（秒），默认取全局
-    List<String> categories;   // 分类白名单，空=全显示
-    Map<String,String> header; // 每站请求头
-    String style;          // rect / oval / list
-    String click;          // 点击 selector（WebView 场景）
-
-    // 运行时状态（不来自 config）
-    transient Health health = Health.UNKNOWN;
-    transient long   lastCheckAt;
-    transient int    failCount;
-}
-```
-
-#### 接口
-
-```java
-public interface SiteRegistry {
-    List<Site> all();                 // 全量（含隐藏）
-    List<Site> visible();             // hide=0 且 health != DEAD
-    List<Site> indexable();           // indexs=1 且 health != DEAD
-    List<Site> searchable();          // searchable=1 且 health != DEAD
-    Site byKey(String key);           // ← 唯一寻址方式，不是类名
-    String resolveApi(String key);     // csp_Xxx
-    String resolveExt(String key);     // 该 key 对应的 ext
-    String resolveJar(String key);     // 站点级 jar 覆盖，否则全局
-    void   reportResult(String key, boolean ok);  // 健康状态上报
-    void   reload(String configUrl);   // 热重载
-}
-```
-
-#### 关键设计：`key` 是唯一标识
-
-**必须禁止按类名寻址**。理由：
-- 一个类服务多站点（`Bili` 6 个、`AppDrama2` 4 个、`AppGet` 3 个、`AppQi` 2 个）
-- 按类名寻址必然塌缩
-
-`key` 的取值：config 里 `sites[].key`。如果上游配置的 key 是中文（如 `暴風`），
-**保持原样**，但内部生成一个安全的 slug 用于 URL 路径。
-
-### 3.2 RuntimeLoader（运行时插件）
-
-#### 接口定义
-
-```java
-public interface RuntimeLoader {
-    /** 运行时标识：java / js / py / node / protocol */
-    String id();
-
-    /** 该运行时是否准备好（依赖是否就位） */
-    boolean available();
-
-    /** api 字符串是否由本运行时处理 */
-    boolean accepts(String api);
-
-    /** 加载一个站点实例 */
-    SiteRuntime load(Site site, String ext) throws Exception;
-
-    /** 释放（热重载时调用） */
-    void release(String siteKey);
-
-    enum Type { JAVA, JS, PY, NODE, PROTOCOL }
-}
-
-public interface SiteRuntime {
-    String home(boolean filter) throws Exception;
-    String category(String tid, String pg, boolean filter, Map<String,String> extend) throws Exception;
-    String detail(List<String> ids) throws Exception;
-    String search(String key, boolean quick, String pg) throws Exception;
-    String play(String flag, String id, List<String> vipFlags) throws Exception;
-    String live(String url) throws Exception;
-    String action(String action) throws Exception;
-    Object[] proxy(Map<String,String> params) throws Exception;
-    void destroy();
-}
-```
-
-#### 分派规则（抄 Fongmi `BaseLoader`）
-
-```java
-// 顺序重要：先具体后笼统
-if (api.startsWith("csp_"))          → JarRuntime
-else if (api.contains(".js"))        → JsRuntime
-else if (api.contains(".py"))        → PyRuntime
-else if (api.startsWith("node:"))    → NodeRuntime
-else if (isAppleCms(api))            → ProtocolRuntime
-else                                 → NullRuntime（空对象，不抛异常）
-```
-
-**`NullRuntime` 是必须的**：所有方法返回空 JSON，`destroy()` 空实现。
-现状是 `throw new RuntimeException("cannot load spider")`，一个站点配错就 500。
-
-#### 各运行时的实现路径
-
-| 运行时 | 实现方式 | 难度 | 覆盖 |
-|---|---|---|---|
-| **Java** | 现有 `Class.forName` + `DexClassLoader`（Android）/ 直接加载（JVM 已转 class） | 已完成 | 54.5% |
-| **Protocol** | 纯 HTTP 客户端，按苹果 CMS V10 协议拉 `api.php/provide/vod` | **低** | 新增覆盖 |
-| **JS** | QuickJS（参考 `refs/Fongmi-TV/quickjs/` 14 个文件）或 GraalJS | **高** | 40.9% |
-| **Python** | 无合适 JVM 方案；可走子进程 + JSON over stdio | 中 | 少量 |
-| **Node** | J2V8 / 子进程 | 中 | 极少 |
-
-**优先级：Protocol > Java 修复 > JS > Python > Node。**
-理由：Protocol 成本最低且存活率最高（正规建站程序），JS 成本最高但覆盖最大。
-
-### 3.3 ParseEngine（parse=1 的正解）
-
-#### 五种类型（抄 Fongmi `ParseJob`）
-
-| type | 名称 | 服务端可行性 | 实现 |
-|---|---|---|---|
-| 0 | WebView 嗅探 | ⚠️ 需无头浏览器 | 暂不做（成本高） |
-| 1 | JSON 直连 | ✅ **完全可行** | `GET parseUrl + targetUrl`，读 `{url}` 或 `{data.url}` |
-| 2 | JSON 聚合 | ✅ 可行 | 所有 type1 组成 map，交给 jar 的 `Json<Key>.parse` |
-| 3 | JSON 混合 | ✅ 可行 | 交给 jar 的 `Mix<Key>.parse` |
-| 4 | **超级解析** | ✅ **完全可行** | 并发所有 type1，取最快成功 |
-
-#### type=1 实现细节
-
-```
-输入：targetUrl（需要解析的播放页地址）、parseItem（含 url、ext.header）
-流程：
-  1. 拼 URL：parseItem.url + targetUrl   （配置里 type:1 的 url 已含 ?url= 之类）
-  2. GET（带 parseItem.header，或站点 header）
-  3. 解析 JSON：先取 object.url，空则取 object.data.url
-  4. 校验结果必须是 http(s) 开头且不是播放页
-输出：{url, headers}
-```
-
-#### type=4 实现细节（关键）
-
-```java
-public ParseResult superParse(String targetUrl, String flag) {
-    List<Parse> candidates = configTables.parses()
-        .filter(p -> p.type == 1 && acceptsFlag(p, flag));   // ← 按 flag 过滤
-    if (candidates.isEmpty()) return ParseResult.fail();
-
-    CountDownLatch latch = new CountDownLatch(candidates.size());
-    AtomicReference<ParseResult> winner = new AtomicReference<>();
-    AtomicBoolean done = new AtomicBoolean(false);
-
-    for (Parse p : candidates) {
-        POOL.submit(() -> {
-            try {
-                ParseResult r = jsonParse(p, targetUrl);
-                if (r.ok() && done.compareAndSet(false, true)) winner.set(r);
-            } catch (Throwable ignored) {
-            } finally {
-                latch.countDown();
-            }
-        });
-    }
-    latch.await(timeoutMs, MILLISECONDS);   // 必须有超时
-    return winner.get() != null ? winner.get() : ParseResult.fail();
-}
-```
-
-**三个必须做对的点**：
-
-1. **按 `ext.flag` 过滤**：每条解析器声明它支持的线路标识（`qq`/`qiyi`/`youku`/`mgtv`…）。
-   不加过滤会把腾讯的源送给爱奇艺解析器，浪费请求且可能返回错误结果。
-2. **`compareAndSet` 保证只采纳第一个成功**：其余结果丢弃，已发出的请求可以继续跑完（不必取消，
-   取消会增加复杂度；但要有总超时）。
-3. **必须有超时**：Fongmi 用 `Constant.TIMEOUT_PARSE_DEF`。我们取 15 秒。
-
-#### 输出契约（对前端）
-
-```json
-POST /api/parse
-{ "url": "https://xxx.com/v/123.html", "flag": "qq", "site": "DuoDuoTv" }
-
-→ { "ok": true, "url": "https://cdn.xxx.com/hls/xxx.m3u8", "headers": {"Referer":"..."}, "from": "肥猫最可爱" }
-→ { "ok": false, "msg": "所有解析器均失败（尝试 4 个）" }
-```
-
-### 3.4 ConfigTables（8 张数组表 + 3 个字符串字段）
-
-> 8 张数组表为 `parses / lives / rules / ads / proxy / hosts / doh / headers`，另 3 个字符串字段是 `wallpaper / logo / danmaku`。
-> 其中 7 张有消费点；`proxy` 只随 `/config.json` 下发，宿主不读（2026-11-04 核对）。
-
-#### 表定义
-
-```java
-public interface ConfigTables {
-    List<Parse>   parses();    // 解析器
-    List<Live>    lives();     // 直播源（含 epg）
-    List<Rule>    rules();     // HLS 分片广告过滤（host 匹配 + 正则）
-    List<String>  ads();       // 整域广告屏蔽
-    List<String>  proxy();     // 强制代理的 host 列表（支持 .* 正则）
-    List<String>  hosts();     // DNS 改写 "a.com=b.com"
-    List<Doh>     doh();       // DoH 提供商
-    List<Header>  headers();   // 按 host 注入请求头
-    String        wallpaper(); // 壁纸源
-    String        logo();
-    String        danmaku();   // 弹幕模板
-}
-```
-
-#### 各表的使用位置
-
-| 表 | 用在哪 | 具体行为 |
-|---|---|---|
-| `parses` | `ParseEngine` | 解析器候选集 |
-| `lives` | 直播出口 | 源地址 + EPG + UA + 超时 |
-| `rules` | `/api/proxy/stream` | 命中 host 后用正则删 `#EXTINF` 段 |
-| `ads` | `/api/proxy/stream` | 命中域直接 403 |
-| `proxy` | `ProxyRouter` | 命中则强制走服务端代理 |
-| `hosts` | 请求层 | 域名改写（CDN 直连/绕墙） |
-| `doh` | 请求层 | DNS 解析 |
-| `headers` | 请求层 | 按 host 附加头 |
-
-#### 与现状的差距
-
-现在这 8 项中 **7 张已消费、`proxy` 仅透传**（2026-11-04 核对）。`artifacts/config.json` 里全都有实际数据
-（`rules` 14 条、`proxy` 17 条、`lives` 1 条、`parses` 4 条、`hosts` 5 条、`doh` 5 条、`ads` 1 条）。
-
-**这些不是"要设计的东西"，是"要读进来的东西"**。
-
-> 站点 `type=1`（苹果 CMS 直连）只在导入时打 `_direct` 展示标记，运行期不生效（仍按 `csp_` 类名加载）；TV 导入直接丢弃。解析器 `type=1` 是另一回事，已完整实现。
-
-### 3.5 ProxyRouter（代理路由）
-
-#### 现状与目标
-
-现状：`/api/proxy/{do}`，`do` 是全局命名空间（`bili`/`hxq`/`danmaku`）。
-目标：四级路由（抄 Fongmi `BaseLoader.proxy`）：
-
-```java
-public Object[] proxy(Map<String,String> params) {
-    // 1. 站点级（最高优先级）
-    if (params.containsKey("siteKey"))
-        return registry.runtime(params.get("siteKey")).proxy(params);
-    // 2. JS 运行时
-    if ("js".equals(params.get("do"))) return jsRuntime.proxy(params);
-    // 3. Python 运行时
-    if ("py".equals(params.get("do"))) return pyRuntime.proxy(params);
-    // 4. Java jar（默认）
-    return jarRuntime.proxy(params);
-}
-```
-
-**为什么 `siteKey` 必须最高优先级**：肥猫的 `Proxy.java` 用 `do=hxq/bili/danmaku`
-是全局命名空间。站点一多，两个站点都想用 `do=xxx` 就会撞名。
-`siteKey` 让它变成"每个站点自己的代理命名空间"。
-
-#### 视频代理的三项加固（必须）
-
-现状 `/api/proxy/stream` 对任意 URL 转发，等于开放代理。
-
-```java
-// 1. 禁自动重定向 + 逐跳校验（最多 5 跳）
-OkHttpClient client = base.newBuilder()
-    .followRedirects(false)
-    .followSslRedirects(false)
-    .dns(new FilteringDns())        // 2. DNS 层过滤（防 rebinding TOCTOU）
-    .build();
-
-// 3. 每跳校验目标地址
-private void assertAllowed(String url) {
-    // 只允许 http/https
-    // 拒绝 127/8, 10/8, 172.16/12, 192.168/16, 169.254/16, ::1, fc00::/7
-    // 拒绝 .internal / .local / localhost
-}
-```
-
-**为什么必须在 DNS 层过滤**：先检查 URL 字符串、再交给 HTTP 客户端解析域名，
-中间存在"域名被 rebind 到私有地址"的时间窗（TOCTOU）。
-`refs/motao123-webtv/.../WebResourceGateway.java` 的注释明确写了这一点。
-
-#### Range 透传（已有，保持）
-
-`ApiServer.java:773, 791, 861-865` 已实现：透传 `Range`，回写 `Content-Range` 和
-`Accept-Ranges: bytes`。**这是拖进度条的硬前提，不要动。**
-
----
-
-## 第四章 三端协作模型
-
-### 4.1 三端各自的接入方式
-
-| 端 | 接入对象 | 协议 | 谁执行 spider |
-|---|---|---|---|
-| **TV（Fongmi）** | 我们的 `/config.json` | CatVod config | **Fongmi 自己**（DexClassLoader） |
-| **PC（Tauri）** | 我们的 REST | HTTP | 我们的后端 |
-| **Web（Vue）** | 我们的 REST | HTTP | 我们的后端 |
-
-**关键：TV 不经过我们的 REST，PC/Web 不加载 jar。**
-
-### 4.2 出口 A：`/config.json`（给 TV）
-
-#### 输出样例（完整九项）
-
-```json
-{
-  "spider": "http://192.0.2.10:9979/spider-latest.jar;md5;<md5>",
-  "sites": [
-    {
-      "key": "干饭",
-      "name": "干饭",
-      "type": 3,
-      "api": "csp_AppDrama2",
-      "ext": "com.juechufsh.android.xpg1",
-      "searchable": 1,
-      "changeable": 1,
-      "timeout": 20
-    }
-  ],
-  "parses": [
-    {"name":"Json聚合","type":3,"url":"Demo"},
-    {"name":"肥猫最可爱","type":1,"url":"http://xxx/jx.php?id=2&url=",
-     "ext":{"flag":["qq","腾讯","qiyi","爱奇艺","youku","优酷","mgtv","芒果"]}}
-  ],
-  "lives": [
-    {"name":"Gather「果」","type":3,"url":"https://...","epg":"https://.../epg.xml.gz",
-     "ua":"okhttp/3.8.1","timeout":10,"playerType":2}
-  ],
-  "rules": [
-    {"name":"♻️量非","hosts":["lz","vip.lz","ffzy"],
-     "regex":["#EXT-X-DISCONTINUITY\\r*\\n*#EXTINF:6.666667,[\\s\\S]*?#EXT-X-DISCONTINUITY"]}
-  ],
-  "ads": ["static-mozai.4gtv.tv","vip.ffzyad.com"],
-  "proxy": ["raw.githubusercontent.com","googlevideo.com"],
-  "hosts": ["hlsztemgsplive.miguvideo.com=hlsztemgsplive.miguvideo.com.b.cdn.chinamobile.com"],
-  "doh": [{"name":"Google","url":"https://dns.google/dns-query","ips":["8.8.8.8"]}],
-  "headers": [{"host":"hlsztemgsplive.miguvideo.com","header":{"User-Agent":"okHttp/Mod-1.5.0.0"}}],
-  "wallpaper": "https://www.loliapi.com/acg/",
-  "logo": "http://w.junce.dpdns.org/fm.gif"
-}
-```
-
-#### `spider` 字段的 MD5 语义（重要）
-
-```
-"spider": "<url>;md5;<md5-of-that-exact-file>"
-```
-
-- MD5 必须是**我们实际提供的那份 jar** 的 MD5（当前 `<md5>`，2026-10-26 实测）
-- **不是**上游的 `<upstream-md5>`
-- 用户已明确否定"与上游逐字节一致"的说法。我们重打包的包本来就和原包不同
-
-#### 双配置策略（推荐）
-
-同时提供两份，用户自选：
-
-| 端点 | `spider` 指向 | 用途 |
-|---|---|---|
-| `/config.json` | 我们的 jar | 三端源完全一致（默认） |
-| `/config-upstream.json` | `example.com/spider.php;md5;<md5>` | 万一我们的 jar 出问题，用户有退路 |
-
-实现：同一份模板，替换 `spider` 字段即可。
-
-### 4.3 出口 B：REST（给 PC/Web）
-
-#### 契约扩展（现状 → 目标）
-
-| 端点 | 现状 | 目标 |
-|---|---|---|
-| `GET /api/health` | `{ok}` | `{ok, version, capabilities:[...], uptime}` |
-| `GET /api/sites` | `{key,name,api,ext}` | 完整 20 字段 + health |
-| `GET /api/config` | `{sites}` | 保留（兼容），指向出口 A |
-| `POST /api/{site}/play` | 原样返回 spider JSON | 归一化 + `parse` 检测 + `subs/skips/url.values` 解析 |
-| `POST /api/parse` | **无** | 新增（type 1/4） |
-| `GET /api/{site}/live` | **无** | 新增（liveContent） |
-| `POST /api/state/progress` | **无** | 新增 |
-| `POST /api/state/favorites` | **无** | 新增 |
-
-#### `capabilities` 协商（关键设计）
-
-前端必须能识别后端能力，才能在"连别人的后端"时降级。
-
-```json
-GET /api/health
-{
-  "ok": true,
-  "version": "0.2.0",
-  "capabilities": ["parse", "live", "progress", "favorites", "state", "multiDepot"],
-  "sites": 28,
-  "uptime": 3600
-}
-```
-
-前端逻辑：
-
-```ts
-const caps = new Set(health.capabilities)
-if (!caps.has('parse'))  hide('换源解析')   // 不显示这个按钮
-if (!caps.has('progress')) hide('续播')     // 不显示进度条
-```
-
-**这个设计让同一份前端既能吃我们完整后端，也能吃别人的残缺后端**——
-正是用户要求的"接入方式并存"的实现方式。
-
-### 4.4 出口 C：状态（三端共享）
-
-#### 状态分类（按用户已明确的原则）
-
-| 类别 | 例子 | 存储 | 同步语义 |
-|---|---|---|---|
-| **account.*** | 安全DNS、搜索线程数、弹幕开关、首页列数 | 后端 | 三端一致，覆盖式 |
-| **device.*** | 窗口尺寸、解码器、渲染方式、DPI、遥控器键位 | 各端本地 | **不同步** |
-| **progress** | 每部剧每集的播放位置 | 后端 | 写多读多 → 并集 + 时间戳取最新 |
-| **favorites** | 收藏列表 | 后端 | 写少读多 → 增删 + 并集 |
-| **history** | 观看记录 | 后端 | 流水 → 按顺序读，无需合并策略 |
-| **credentials** | WebDAV 地址/密码 | **各端本地，绝不上传** | 不参与同步 |
-
-**`credentials` 这条是硬约束**：用户明确要求"WebDAV 地址/密码必须排除在备份内容之外"。
-
-#### 端点设计
-
-```
-GET  /api/state/progress?site=&vodId=
-POST /api/state/progress        { site, vodId, ep, position, duration, at }
-GET  /api/state/favorites
-POST /api/state/favorites       { action: "add"|"remove", item: {...} }
-GET  /api/state/history?limit=30
-POST /api/state/history         { item }
-GET  /api/state/prefs           → account.* 部分
-POST /api/state/prefs           → 合并写 account.*
-```
-
-#### 存储实现（分阶段）
-
-| 阶段 | 方案 | 适用 |
-|---|---|---|
-| P1 | 单文件 JSON（`~/.feimao/state.json`） | 单用户自用 |
-| P2 | SQLite | 记录量大（history 上千条） |
-| P3 | 可插拔（Redis/Postgres） | 多用户部署 |
-
-**先做 P1**。理由：`/api/policy` 已经是"后端持久化键值对"，扩展到 JSON 文件成本最低。
-
-#### TV 端的状态怎么同步
-
-**这是唯一一处需要跨协议对齐的地方，必须说清**：
-
-Fongmi 用自己的 Room DB 存历史/收藏，我们不直接写它的数据库。三条可能路径：
-
-| 方案 | 做法 | 评价 |
-|---|---|---|
-| A. 各自独立 | TV 状态不进我们的后端 | 三端不统一，**不满足目标** |
-| B. Fongmi 的备份文件双向同步 | 解析它的 `Backup` JSON，转成我们的格式 | 可行，需逆向它的格式 |
-| C. 只同步"进度"这一项 | TV 通过 `playerContent` 的 `position` 字段回传起播点 | **最小可行** |
-
-**建议先做 C，中期再做 B**。
-C 的实现：`play` 接口返回时带上 `position`（spider 若提供）；Fongmi 支持 `position` 字段作为起播位置。
-TV 上的进度从哪里来？——由我们的后端在 `play` 时"注入"到返回 JSON 里（后端知道 Web/PC 的进度）。
-
-**注意**：这依赖Fongmi 是否读取 `position`。需实测确认（`CatVodSpider` 文档里 `Response.position(long)` 存在，
-说明协议支持）。若Fongmi 不读，则 B 是唯一路径。
-
----
-
-## 第五章 功能矩阵与优先级
-
-### 5.1 后端功能矩阵
-
-| # | 功能 | 现状 | 优先级 | 依赖 | 工作量 |
-|---|---|---|---|---|---|
-| B1 | SiteRegistry（配置驱动 + key 寻址） | ❌ | **P0** | — | 2d |
-| B2 | `/config.json`（CatVod 出口） | ✅ 已落地（九项齐，顶层 `spider`，每 csp_ 站补站点级 `jar`） | — | — | — |
-| B3 | ConfigTables（8 张表读入） | ⚠️ 部分：`loadConfigSites` 按表名读入并用（parses/lives/rules/ads/proxy/hosts/doh/headers），无独立类 | P1 | B1 | — |
-| B4 | `/api/parse`（type 1 + 4） | ✅ 已落地（`ApiServer.java` 显式路由 + 限流） | — | — | — |
-| B5 | `play` 归一化（subs/skips/values/position） | ✅ 已落地 | — | — | — |
-| B6 | `liveContent` | ⚠️ 宿主侧已实现；无源实现 | P1 | B1 | — |
-| B7 | ProxyRouter 四级 + SSRF 加固 | ⚠️ SSRF 已做；`/proxy?do=*` 反射分派 + `/api/proxy/{image,stream,danmaku}` 七条路由已落地；`siteKey` 四级仍缺 | P1 | B1 | 1d |
-| B8 | 源健康状态机 | ❌ | P1 | B1 | 1d |
-| B9 | `/api/state/*`（进度/收藏/设置） | ✅ 已落地（`/api/state/progress|prefs|favorites` + `capabilities.state`） | — | — | — |
-| B10 | `capabilities` 协商 | ⚠️ 后端已发；前端只消费 `state` 一位 | P1 | — | 0.5d |
-| B11 | ProtocolRuntime（苹果CMS 直连） | ❌ | P1 | — | 1.5d |
-| B12 | JsRuntime（drpy） | ⚠️ 代码已通（外挂 Node + 按站规则文件）；**引擎已缓存时 9/10，站点走远程规则时 80s/站 → 实测可用 ≈0**，见 B16 | — | — | — |
-| B13 | 多仓（Depot） | ✅ 已落地（`{"urls":[…]}` 取首仓导入，其余回前端当可选列表） | — | — | — |
-| B14 | rules/ads 在代理层生效 | ❌ | P2 | B3, B7 | 1d |
-| **B15** | **下发 jar 的形态（dex vs class）** | ❌ **`findSpiderJar()` 走 classpath 拿到 883 个 `.class`，DexClassLoader 读不了** → Fongmi 拿到也跑不了 | **P0** | — | 0.5d |
-| **B16** | **drpy 运行时的吞吐（不是"能不能跑"）** | ⚠️ 运行时**是通的**、`DRPY_STRIP_REMOTE=1` 也早已配好。卡在 `fetchScript`/`fetchText` 无磁盘缓存 → 单站冷启动 80s，后端 30s 超时必掐断 → 227 站实际可用 ≈0。见 §6.9 | **P0** | — | 1d |
-| **B17** | **配置解码：Hex+AES（`2423` 开头）** | ❌ 明文/BOM/杂内容/Base64/Depot 均已支持，只差这一种 | P2 | — | 0.5d |
-
-### 5.2 前端功能矩阵
-
-| # | 功能 | 现状 | 优先级 | 依赖 | 工作量 |
-|---|---|---|---|---|---|
-| F1 | `apiBase` → 多后端列表 | ❌ | **P0** | B10 | 1d |
-| F2 | 站点列表展示 health / 能力字段驱动 UI | ❌ | **P0** | B1 | 1d |
-| F3 | **失败重试链**（换线→换站→解析→聚搜） | ❌ | **P0** | B4 | 2d |
-| F4 | 详情页传全部线路给播放页 | ❌ | **P0** | — | 0.5d |
-| F5 | 进度续播 | ❌ | **P0** | B9 | 1d |
-| F6 | 收藏 | ❌ | P1 | B9 | 1d |
-| F7 | 字幕轨（外部 `subs`） | ✅ SRT→VTT + blob track（仅同类格式；ASS 不支持） | — | B5 | — |
-| F8 | 片头尾跳过（`skips`） | ✅ opening/ending 已接；middle 未做 | — | B5 | — |
-| F9 | 多画质选择（`url.values`） | ⚠️ 后端已输出 `qualities`，前端无切换 UI | P1 | B5 | 0.5d |
-| F10 | 音轨切换（hls.js `audioTracks`） | ❌ | P1 | — | 0.5d |
-| F11 | 弹幕请求代际控制 | ❌ | P1 | — | 0.5d |
-| F12 | 直播页（M3U + EPG 只读） | ❌ | P2 | B6 | 3d |
-| F13 | PC 外挂播放器 | ❌ | P2 | — | 2d |
-| F14 | PC sidecar（内嵌后端） | ❌ | P2 | B1–B7 | 3d |
-
-### 5.3 为什么这个优先级
-
-**P0 全部指向同一个目标：让"能播"这件事成立。**
-
-现状最痛的不是"功能少"，而是 `PlayView.vue:95` 那句：
-
-```ts
-error.value = r.msg || '未获取到播放地址（可能该线路需要解析器 parse=1）'
-```
-
-**它准确诊断了原因，然后什么都不做。** 用户的感受是"这个 App 播不了"。
-
-P0 的组合（B1+B2+B3+B4+B5+B7 + F1+F2+F3+F4+F5）正好覆盖：
-- 配置驱动（改源不发版）
-- parse 有解（三个死源复活）
-- 失败有出路（重试链）
-- 进度不断（续播）
-
-**P1 是"补齐能力"，P2 是"扩展生态"。**
-
----
-
-## 第六章 生态覆盖策略
-
-### 6.1 覆盖现状（docs/24 实测）
-
-1376 个站点条目的类型分布：
-
-| 类型 | 占比 | 我们 |
-|---|---|---|
-| Java jar (`csp_`) | **54.5%** | 部分（28 类，其中 15 私有） |
-| JS (drpy) | **40.9%** | ❌ |
-| PHP | 4.4% | ❌ |
-| 苹果CMS 直连 | 0.1%（type=1 的 49 条） | ❌ |
-
-**注意**：`type=1` 的 49 个站点 api 全是 `xxx/api.php/provide/vod`——苹果 CMS 标准，
-不需要 spider 也不需要 parse，**客户端直接按协议拉即可**。
-
-### 6.2 三条覆盖路径（按 ROI 排序）
-
-#### 路径一：ProtocolRuntime（苹果CMS 直连）—— ROI 最高
-
-**为什么**：
-- 成本最低（纯 HTTP + JSON 解析，无需任何运行时）
-- 存活率最高（正规建站程序，不会像私有 App 那样改协议）
-- 覆盖面广：`XBPQ`/`XYQHiker` 这类适配器本质就是干这个
-
-**协议要点**（苹果 CMS V10）：
-
-```
-列表：GET {api}?ac=videolist&pg=1&t={type_id}      → {list:[{vod_id,vod_name,vod_pic,...}]}
-详情：GET {api}?ac=videolist&ids={id}               → {list:[{vod_play_from, vod_play_url}]}
-搜索：GET {api}?wd={keyword}&ac=videolist          → {list:[...]}
-分类：GET {api}?ac=list                             → {class:[{type_id,type_name}]}
-```
-
-`vod_play_url` 的格式就是 CatVod 的 `线路$$$线路` + `集名$地址#集名$地址`，
-**天然同构，几乎不用转换**。
-
-#### 路径二：修 Java 类 —— 中等 ROI
-
-现状 28 类里有约 10 个失效（`Jpys`/`Gulu`/`AppFQ`/`DuoDuoTv` 等）。
-
-按 `server/host/src/shared` 的分层实现：
-- **多数只需改 config 的 `ext`**（域名变了）→ 零代码
-- 少数需要 smali 单类替换 → 只动 1 个类，其余 882 个不变
-- 极少数需要重新逆向 → 成本最高，收益最低
-
-**注意"私有类"的定位**：`AppYQK`/`AppRJ`/`Gulu`/`Hxq` 等 15 个是私有逆向成果，
-在公共多仓里一个都没有。**差异化是真的，但没有社区共同维护。**
-建议保留但**降低维护优先级**，把精力投向通用件。
-
-#### 路径三：JsRuntime（drpy）—— ROI 最低但覆盖面最大
-
-**占比 40.9%，但成本最高**。
-
-实现路径：
-- 方案 A：QuickJS（参考 `refs/Fongmi-TV/quickjs/` 14 个 Java 文件）—— 需 JNI
-- 方案 B：GraalJS（纯 JVM，但体积大、启动慢）
-- 方案 C：子进程 Node + JSON over stdio（最重，但隔离性最好）
-
-**建议排在最后**。理由：做完路径一和路径二，覆盖率已经能到"能用的程度"；
-路径三是"从能用到全"的差异，不是"从不能用到能用"。
-
-### 6.3 覆盖率的现实预期
-
-| 阶段 | 覆盖 | 说明 |
-|---|---|---|
-| 现在 | ~10/28 类可用 | 约 36% 的 Java 部分 |
-| 做完 B1–B7 | 28 类全可用 + 苹果CMS 直连 | **约 70% 生态** |
-| 加 JsRuntime 后 | +40.9% 的 drpy | **约 95% 生态** |
-
-**★ 上表的 95% 是"代码跑通"的估算，不是"可用"的实测。** 2026-10-28 实测：drpy 引擎
-已缓存时 9/10，但从远程拉规则时 80s/站 → 实际可用 ≈0（见 §6.9）。
-**覆盖率要按"能真的出数据"算，不是按"代码路径存在"算。**
-
-### 6.4 实测：drpy 站点数由「导入哪份配置」决定，存活率由运行时决定
-
-2026-10-28 在两套部署上对账 `/api/health` 与 `/api/sites`：
-
-| 部署 | 版本 | 总站 | drpy 站（存活） | csp_ 站（存活） |
-|---|---|---|---|---|
-| OECT（当前发版） | **0.9.23** | 56 | 1（**0**） | 55（**39 = 71%**） |
-| 本机 Docker（旧部署） | 0.9.2 | 270 | 226（**0**） | 44（37 = 84%） |
-
-**两件事必须分开看，混起来会得出错误结论：**
-
-1. **站点数量 = 导入的配置内容**。导入是**替换**不是追加——`rebuildSites()` 先
-   `SITES.putAll(sitesBaseline)` 再 `loadMultiInstances()`，所以最后一次导入哪份配置，
-   站点构成就是那份。OECT 那份是 jar 为主（55 `csp_` + 1 drpy），旧部署那份是
-   `gaotianliuyun/gao/js.json`（227 drpy / 71 jar）。**"之前 200 多个 drpy" 就是后者。**
-2. **存活率 = 运行时**。两边当时都是 0，但**原因不是"缺 Node 进程"**——
-   实测 OECT 的 drpy 容器活着（`http://…:30013/` → `{"ok":true,"service":"meow-drpy"}`），
-   `MEOW_JS_RUNTIME` 也配好了（compose 默认 `http://drpy:9330`）。
-
-真正阻塞在运行时实现的三处 bug，已修：
-
-| # | 现象 | 根因 | 修法 |
-|---|---|---|---|
-| 1 | `Cannot find module '\x61\x73\x73…'` | 规则文件把 import 说明符写成十六进制转义，`convertEsm` 抓到的原文未解码，`startsWith('assets://')` 恒假 | `decodeSpecifier()` 在 `requireModule` 入口统一解码 |
-| 2 | `Unexpected token 'export'` | `evalModule` 没过 ESM 转换，而自托管库 `gbk.js` 本身是 ES 模块 | `evalModule` 内先 `convertEsm(source)` |
-| 3 | `assets not found: assets://js/lib/gbk.js` | `lib/` 是空目录 | vendor 上游 `gbk.js`（56KB）进 `server/drpy/lib/` |
-
-**修完本地实测 9/10 成功**（`tmp/2026-10-28-tv三形态/test-drpy.mjs`，两轮稳定）：
-豆瓣 6.3s / 磁力熊 1.5s / 荐片 1.5s / 酷云77 4.2s / 快看 10.8s / 爱看 6.5s / 低端 4.2s / lf_p2p / lf_live。
-剩 1 个 `lf_js_search`（364KB 混淆引擎）报 `Cannot read properties of undefined (reading 'match')`，
-属单站宿主函数缺口。
-
-**★ 两个容易误判的中性现象**：
-- `{"ok":true,"service":"meow-drpy","spiders":0}` 的 `spiders:0` **是正常值**——
-  站点按 `X-DRPY-Api` 请求时惰性加载，不预注册
-- 改过 `server/drpy/` 后**不重建镜像等于没改**（源码不进镜像层）
-
-**判据**（不要只看 health 的 `ok`）：
-
-```bash
-curl -s localhost:30011/api/health | jq '.degraded|length'
-# 再对 /api/sites 数一下 drpy 站占多少，就知道这条源路开着多少门
-```
-
-**★ 还有一处独立 bug**：OECT 上那个唯一的 js 站（`key: 儿童`）报
-`ClassNotFoundException: com.github.catvod.spider.儿童`，不是运行时的问题——
-`call()` 只查 `API` 表（仅 `loadMultiInstances()` 在 line 230 填充），
-而 `rebuildSites()` 只清 `SITES`/`EXT` **不清 `API`**。见私有库待办 P0-6。
-
-### 6.5 出口兼容矩阵（我们给别人供配置 / 别人连我们）
-
-这份矩阵区分三个**方向不同**的事，混在一起会得出错误结论：
-
-| 方向 | 机制 | 状态 | 卡点 |
-|---|---|---|---|
-| **我们 Web/PC → 我们后端** | `/api/*`（44 个路径） | ✅ | — |
-| **我们 TV → 我们后端** | 同上 | ✅ | drpy 站同 Web（不是 TV 的问题） |
-| **Fongmi → 我们后端** | `/config.json` + `/spider-latest.jar` | ⚠️ **配置能读、jar 跑不了** | 下发的是 883 个 `.class`，`DexClassLoader` 读不了（B15） |
-| **zyfun → 我们后端** | 站点配 `type: 8`（T4_CATVOD）→ `/{site}/{action}` | ⚠️ 待复核 | 要在「影视配置」里加站点，**不是**「数据导入」；本轮未复核（无 zyfun 源码） |
-| **zyfun 导入我们 `/config.json`** | 它的 `tvboxToStandard` / `catvodToStandard` | ❌ **设计不兼容** | 见下 |
-| **我们 TV 本机执行** | `LocalSites` + `LocalSpiderHost` + **内嵌 `ApiServer`** | ✅ 41 条路由 | 见 §6.6 |
-
-**zyfun 为什么导不进我们的配置**（读 `app.asar` 反查得出，不是推测）：
-
-```js
-// tvboxToStandard：只保留这几种站
-config.sites.filter(item =>
-  [0, 1, 4].includes(item.type) ||
-  item.type === 3 && (["csp_XBPQ","csp_XYQHiker"].includes(type2)
-                      || item.api.endsWith(".js") || item.api.endsWith(".py")))
-
-// catvodToStandard：要另一个形状
-if (!config?.video?.sites?.length) return {}
-```
-
-我们下发的站全是 `type: 3` + `api: csp_Xxx` → **被 filter 全部丢掉** → 空数组 → `Dirty data to import`。
-另外 `catvodToStandard` 要的是 `config.video.sites`，而 CatVod 标准是 `config.sites`。
-
-**结论**：zyfun 没有 `DexClassLoader`，天生跑不了 jar。它要用我们的源，只有「把整个后端当
-一个 CatVod 服务」这条路（`type: 8`）。这不影响我们，只是它的用法要选对入口。
-
-### 6.6 TV 三种运行形态的距离
-
-| 形态 | 站点表来源 | jar 来源 | 现状 | 缺口 |
-|---|---|---|---|---|
-| A 自建后端直连 | 后端 `/api/sites` | 后端 `Class.forName` | ✅ 可用 | — |
-| B 自建后端发配置 | 后端 `/config.json` | TV `DexClassLoader` | ✅ 导入 39/40 + 41 路由全通 | 部分源站搜索无结果（源站问题） |
-| C 肥猫链接 | 肥猫 `/tv` | 肥猫 `spider.php`（dex） | ✅ 导入 37/38 | 同上 |
-| B/C 共用 | — | — | ✅ **内嵌 `ApiServer`，41 条路由** | 见下 §6.6.1 |
-
-#### 6.6.1 TV 网关复用 apiserver（2026-10-28 完成）
-
-**原来的问题**：TV 有一份手抄的 `LocalGateway`（945 行、8 条路由），而后端 41 条。
-两份代码最实际的代价不是重复劳动，是**修一处漏一处**——m3u8 的 `EXT-X-KEY` 改写
-后端早就有，TV 那份没有，表现就是同一个源在 Web 能播、在 TV 黑屏。
-
-**现在的做法**：TV 直接编译 apiserver 的源码，`LocalGateway` **整个删除**。
+| **L1 执行层** | 把源站数据转成 CatVod JSON | jar 类（`csp_*`）、drpy（外部 Node）、`sources/CmsSource`、`sources/NativeSource` | 不碰 UI、不碰配置解析 |
+| **L2 内核层** | 注册、分派、归一化、代理路由 | `ApiServer` + `routes/` + `core/` + `sources/` | 不直接拼 UI 形状 |
+| **L3 出口层** | 按消费者习惯转换形状 | `/config.json`、`/api/*`、`/api/state/*` | 不含业务逻辑 |
+| **L4 渲染层** | UI、播放器、交互 | TV / PC / Web 三套 | 不直连源站 |
+
+**硬规则：L2 只依赖接口，不依赖具体运行时。** `call()` 按 `api` 形态决定交给原生源、
+CMS 直连、脚本运行时还是 jar；具体类加载走 `platform.Bridge.loadClass`，
+内核里不出现 `DexClassLoader`。
+
+### 1.2 目录实况
 
 ```
 server/host/src/
-├── shared/          ← 两端共用（TV 也用这份）
-│   ├── ApiServer.java      49 路由（默认包，2026-11-04 核对）
-│   ├── platform/           HTTP 抽象：HttpExchange / Headers / HttpServer / Bridge
-│   ├── core/               10 个模块（2026-11-04 核对）
-│   └── routes/             7 个路由模块
-├── jvm/             ← 仅 JVM：JvmHttpServer（包装 com.sun.net.httpserver）
-├── android/         ← 仅 JVM：51 个 android.* stub（给 jar 内代码用）
-├── Main.java / Test.java / SpiderHost.java   ← JVM 启动类
+├── shared/                      ← TV 也编译这一份
+│   ├── ApiServer.java           入口 + 路由表 + 分派 + 归一化（13064 行）
+│   ├── platform/                5 个类：HttpServer / HttpExchange / Headers /
+│   │                            ServerProvider / Bridge（两端差异的唯一注入点）
+│   ├── core/                    13 个：DataPaths / ConfigText / Doh / UrlSafety /
+│   │                            Jars / Dex2Jvm / Library / PosterStore / Scrape /
+│   │                            Transcode / VideoCache / Cast / LogBuffer
+│   ├── routes/                  7 个：Api / StateRoutes / LibraryRoutes / CacheRoutes /
+│   │                            HealthRoutes / LogRoutes / LlmRelay
+│   └── sources/                 4 个：CmsSource / DoubanSource / NativeSource(s)
+├── jvm/                         JvmHttpServer（包装 com.sun.net.httpserver）
+├── android/                     52 个 android.* stub（给 jar 内代码编译用）
+├── com/github/catvod/           bean / crawler / net 等编译桩
+├── Main.java / Test.java / SpiderHost.java
 ```
 
-TV 的 `app/build.gradle` 只挂 `shared/` 一个 srcDir，**不需要任何 exclude**
-（排除规则写错会连带干掉 TV 自己的 `com.meow.tv`）。
+| 组件 | 位置 | 规模（实测） |
+|---|---|---|
+| **Web 前端** | `client/apps/web/` | 90+ 个 `.vue`/`.ts`，14 条路由 |
+| **PC 壳** | `client/apps/desktop/` | Tauri 2，`productName`「猫窝」 |
+| **TV 壳** | `client/apps/tv/` | 70 个 java 文件，`minSdk 26`，Media3 ExoPlayer 1.4.1 |
 
-**三个必须绕过的平台差异**：
+### 1.3 启动序列
+
+```
+1. DataPaths：-Dmeow.data > MEOW_DATA > --data-dir=... > ./data
+2. boot()
+   snapshotBaseline()    ← 必须在 loadMultiInstances 之前拍
+   loadMultiInstances()  ← 读 data/config.sites.json，叠加多实例
+   Jars.reload()         ← 外部 spider jar
+   载入健康表 / 搜索缓存 / 弹幕磁盘清单
+3. listen(bind, port, threads)
+   platform.ServerProvider.autoDetect() → jvm.JvmHttpServer / SocketHttpServer
+   JVM：0.0.0.0:9979，16 线程（MEOW_PORT / MEOW_BIND 可覆盖）
+   TV ：127.0.0.1:9978，24 线程（见 §5.3）
+```
+
+**四个约束：**
+
+1. **基线必须在 `loadMultiInstances()` 之前拍。** 它会把多实例塞进 `SITES`，晚拍就会把
+   「配置导入的站」当内置基线，替换式导入后永远删不掉。
+2. **站点懒加载。** 首次访问才建实例（按站点加锁）；全量初始化会拖慢启动并刷一屏错误。
+3. **端口先开、预热异步。** TV 真机实测：同步预热 94 秒且期间端口不监听，预热也不避免崩溃。
+4. **jar 缺失不是「服务没起来」。** `health.ok` 的判据是 `(spiderJar || nativeSources > 0) && configLoaded`；
+   只有原生源时也能出榜单/详情，`ok` 必须为真，否则前端会把整个后端判成离线。
+
+### 1.4 平台差异（改这块之前必须知道）
 
 | 差异 | 为什么要绕 | 怎么绕 |
 |---|---|---|
-| `com.sun.net.httpserver` | Android 没有（android.jar 实测 0 条）；JVM 上又不许自带同名包（javac 报「程序包已存在于另一个模块中: jdk.httpserver」） | 两端都向 `platform.HttpExchange` 适配：JVM 用 `jvm.JvmHttpServer` 包装 JDK 的，Android 用 `SocketHttpServer`（ServerSocket + 手写报文解析） |
-| `java.net.http` | android.jar 里 **0 条** | 全仓换成 OkHttp（后端 `libs/okhttp-3.14.9.jar`，TV 依赖 4.12.0，API 兼容） |
-| `Class.forName` / `DexClassLoader` | JVM 从类路径找 spider，ART 只认 jar 里的 `classes.dex` | `platform.Bridge.installClassLoader` 注入；TV 侧实现遍历 `DexClassLoader` |
-| `ProcessHandle` | android.jar 里 **0 条** | `CacheRoutes` 的临时文件名改用随机串（原意只是"并发不互踩"） |
-| `java.nio.file.*` | 需要 **API 26**，desugaring 覆盖不到 | TV `minSdk 23 → 26`（实测设备：极米 API 28 / MuMu API 30+） |
+| `com.sun.net.httpserver` | Android 没有；JVM 又不许自带同名包（javac 报「程序包已存在于另一个模块中: jdk.httpserver」） | 两端都向 `platform.HttpServer` / `HttpExchange` 适配：JVM 用 `JvmHttpServer`，Android 用 `SocketHttpServer`（ServerSocket + 手写报文解析） |
+| `java.net.http` | `android.jar` 里 0 条 | 全仓 OkHttp（后端 `okhttp-3.14.9.jar`，TV 4.12.0） |
+| `Class.forName` / `DexClassLoader` | JVM 从类路径找，ART 只认 `classes.dex` | `platform.Bridge.installClassLoader` 注入 |
+| `android.content.Context` | 真实 `Context` 是抽象类、构造器 protected，反射 `newInstance()` 抛 `InstantiationException` | `platform.Bridge.ContextProvider` 注入；仅 JVM 退化成 stub |
+| `java.nio.file.*` | 需要 API 26，desugaring 覆盖不到 | TV `minSdk 26`（实测设备：极米 API 28 / MuMu API 30+） |
 
-**数据目录**：`--data-dir` 指到 `filesDir/gateway`（`DataPaths.MainArgs.set(...)` 是
-`public static`，`DataPaths` 一个字没改）。`config.sites.json` 由
-`GatewayServer.syncConfigFile()` 从 SharedPreferences 落盘——后端 `loadConfigSites()`
-直接读那个文件，不写它就只能看到空表（`parses` / `lives` / `doh` / `hosts` 全丢）。
+**数据目录**：TV 的 `--data-dir` 指向 `filesDir/gateway`；`config.sites.json` 由
+`GatewayServer.syncConfigFile()` 落盘，后端直接读它——不写就是空表。
 
-**弹幕**：内置 7 个聚合站实测全部失效（404/402/000/503）。`GatewayServer.ensureDanmakuApi()`
-在启动时把 `policy.json` 的 `danmakuApi` 指向用户配的后端
-（`{base}/api/proxy/danmaku?name={name}&episode={episode}`），复用后端的 danmu_api。
-**用户没配后端时不会注入**——纯本机模式接受没有弹幕。
+**日志**：JVM 写 stdout，Android 走 logcat；两边同时进 `core.LogBuffer` 的 2000 条环形缓冲。
+TV 另有 `crash.log`（只留最近 64KB），因为部分电视读不到 logcat。
 
-**已实测（MuMu，Android 15 / x86_64）**：
+---
 
-| 项 | 结果 |
-|---|---|
-| `/api/health` | `capabilities` 含 `parse`/`state`/`dns`/`webdav`，`sites=44`（旧网关只有 3 站 + `["proxy","proxy-jar"]`） |
-| `/api/search` | 49~51 组，来自真实 jar 站点 |
-| `/api/{site}/detail` | 返回剧集表 |
-| `/api/{site}/play` | 返回真实 mp4 地址 |
-| `/api/proxy/stream` | **HTTP 206 + 2MB 真实数据 + `video/mp4`** |
-| `/api/proxy/danmaku` | 庆余年 **42291 条** / 我的女孩 9530 条（与后端一致） |
+## 第二章 站点注册与分派
 
-**仍然做不到的**（不是代码问题）：
-`/api/transcode` 依赖 ffmpeg 可执行文件，Android 进程模型起不了；TV 侧本来走
-`CacheDownloader` + SAF 另一条路。
+### 2.1 三张表与真源
 
-### 6.7 配置格式与解码能力（实测）
+```
+SITES : key → 展示名     API : key → api（csp_Xxx / xxx.js / http 地址）     EXT : key → 每站参数
+```
 
-| 形态 | 例子 | 我们后端 | Fongmi |
+**真源是数据目录的 `config.sites.json`，不是源码静态表。** 静态表只提供基线
+（`SITES.put` 49 处、`EXT.put` 12 处，`grep -o` 计数），启动时先 `snapshotBaseline()`
+再 `loadMultiInstances()` 叠加配置。
+
+**站点身份 = `key + api`：**
+
+- 同 key 同 api = 重复条目，跳过；同 key 不同 api = 并列，后者变成 `key#2`、`key#3`……；
+- `csp_` 站点的实例类名 = key 去掉 `#N`：`AppDrama2#2` → `com.github.catvod.spider.AppDrama2`，
+  ext 用 `EXT.get("AppDrama2#2")`。这就是「一个类服务多站点」的落地方式。
+
+**可见性有两道闸**（`siteImplemented` / `siteVisible`，`ApiServer.java:12851`）：
+
+1. 有实现：原生源、`spiderClassPresent(key)`、或 api 不是 `csp_`；
+2. 被配置承认：配置里已有站点时，基线里没进配置的条目不再下发。
+
+第 2 条必需：`rebuildSites()` 每次都把基线灌回 `SITES`，否则替换式导入重启后又会冒出
+跑不起来的基线站，用户删不掉、列表里永远有 500。
+
+**约束：改站点不要加硬编码。** 新增内置站走原生源或配置基线；能用 `ext` 解决的不要改代码。
+
+### 2.2 分派顺序（顺序即正确性）
+
+`call(site, action, body)`（`ApiServer.java:2229`）按以下顺序判定，**先后不能换**：
+
+| 序 | 判据 | 交给谁 | 为什么必须在这个位置 |
 |---|---|---|---|
-| 明文 `{sites}` / `{spider,sites,…}` | 肥猫 `/tv`、君迪、kstore | ✅ | ✅ |
-| Depot 多仓 `{"urls":[…]}` | `tvboxmuti.json` | ✅ 取首仓 + 其余回前端 | ✅ 全部登记，只激活首个 |
-| 前有杂内容（PNG 伪装） | 从第一个 `{` 起裁 | ✅ | ✅ |
-| Base64 伪装（`**` 前缀） | 南风等 | ✅（任意 Base64 都试） | ✅ |
-| UTF-8 BOM | `szyyds.cn/tv/x.json` | ✅ | — |
-| **Hex+AES（`2423` 开头）** | `南风 XC.json` | ❌ **B17** | ✅ |
+| 1 | 站点名在 `NativeSources` | `NativeSources.invoke` | 同名站只能有一个实现者。放后面会被 `csp_Douban` 抢走（它没有 `detailContent`），详情页永远空 |
+| 2 | `API.get(site)` 以 `http` 开头 | `sources.CmsSource` | 苹果CMS 直连；放后面会撞 `ClassNotFoundException`，每站烧满超时还污染健康分 |
+| 3 | `isScriptApi`：`.js` / `js:` / `node:` / `.py` / `py:` | 外部 Node 运行时 | 放 `instance()` 前，否则先撞类找不到 |
+| 4 | 其余 | jar 实例（`Bridge.loadClass`） | 默认路径 |
 
-解码实现位置：后端 `ApiServer.parseJsonLoose()`；
-TV 本机是另一份 `LocalSites.importFrom()`，**没有任何解码，连明文都要先修字段名**。
+原生源返回 `null` 表示「本源不实现这个 action」（目前只有 search）：有 jar 就继续往下，
+没有就给空结构，**不能变成 500**——否则搜索结果里这个站显示「出错」而不是「没结果」。
 
-### 6.8 兼容性总账（2026-10-28 实测 + 反查源码）
+**action 映射：**
 
-把"缺多少"拆成两张表，因为**方向不同、卡点完全不同**，合在一起会得出错误结论。
+| action | jar 方法 | 备注 |
+|---|---|---|
+| `home` | `homeContent(true)` | |
+| `category` | `categoryContent(tid, pg, true, filters)` | filters 来自 body |
+| `detail` | `detailContent(List ids)` | id 像 JSON（`{`/`[` 开头）就整串传，不按逗号拆——SP360 的 id 本身含逗号 |
+| `search` | `searchContent` 系 | 见 `invokeSearch` |
+| `play` | `playerContent(flag, id, [])` | 抛异常时降级成 `{parse:1,url:"",msg:"该线路暂不可用：…"}`，不让整个请求 500 |
+| `live` | `liveContent(url)` | 结果经 `normalizeLive` 归一 |
+| `action` | `action(String)` | |
 
-#### 表一：三端能吃下多少种源形态
+### 2.3 配置表（8 张数组 + 3 个字符串）
 
-源形态与我们的实际支持度（✅ 可用 / ⚠️ 有条件 / ❌ 不可用）：
+CatVod 语义：`parses / lives / rules / ads / proxy / hosts / doh / headers`，
+另有 `wallpaper / logo / danmaku` 三个字符串字段。
 
-| # | 源形态 | 生态占比 | Web/PC（连后端） | TV 连后端 | TV 纯本机 |
-|---|---|---|---|---|---|
-| 1 | Java jar（`csp_Xxx`） | 54.5% | ✅ | ✅ | ⚠️ 需 dex 形态 |
-| 2 | drpy `.js` | 40.9% | ⚠️ 慢，见 P0-0 | 同左 | ❌ 无 Node |
-| 3 | 苹果CMS 直连（`type:1`） | 0.1% | ⚠️ 有 `_direct` 标记，列表可用 | 同左 | ⚠️ 同左 |
-| 4 | PHP `.php` | 4.4% | ❌ 运行时不支持 | ❌ | ❌ |
-| 5 | `type:4` 超级解析（parses 表） | — | ✅ `POST /api/parse` | ✅ | ❌ 无 `/api/parse` |
-| 6 | Depot 多仓 `{urls:[…]}` | — | ✅ 取首仓 | ✅ | ❌ |
-| 7 | Hex+AES 伪装（`2423`） | — | ❌ B17 | ❌ | ❌ |
+**关键事实：`/config.json` 只下发 8 张数组表，不下发三个字符串字段。**
+表由 `loadConfigSites()` 每次读文件，带 5 秒快照（`CFG_SNAPSHOT`），
+导入/写入时 `invalidateConfigTables()` 失效。
 
-**关键结论**：形态 1、2 合计占 **95.4%**。所以"完整兼容各种形态"的门槛只有两条——
-**dex 形态 jar（B15）+ drpy 能跑快（P0-0）**。PHP 那 4.4% 不是性价比问题，是
-Fongmi 自己也不支持（它没有 PHP 运行时），属于整个生态的共同盲区。
+| 表 | 宿主消费点 | 实际行为 |
+|---|---|---|
+| `parses` | `handleParse` | 解析器候选集；type 0–3 都能在服务端跑（§4.4） |
+| `lives` | `/api/live`、`/api/lives` | 内置源 + 用户 IPTV 列表，聚合成频道 |
+| `rules` | 页面嗅探 + 播放清单改写 | 嗅探用 `hosts/regex/exclude/click`；删分片**只在 `policy.filterAds=true` 时生效** |
+| `ads` | `buildProxiedPlaylist` / `isAdHost` | **默认关闭**。开启后按 host 子串或 `/正则/` 丢弃分片 |
+| `proxy` | **仅透传** `/config.json` | 宿主代理决策不看这张表；白/黑名单靠 `UrlSafety` + CORS |
+| `hosts` | `mapHost` | `a.com=b.com`，**只对 http 生效**；https 换 IP 会破坏 SNI |
+| `doh` | `dohProviderFromTable` | 取第一个 http(s) 的 DoH 地址，优先于硬编码公共 DoH |
+| `headers` | `defaultHeader` | 全局兜底请求头；spider 自带的 Referer/UA 优先 |
 
-#### 表二：别人用我们后端（反向兼容）
+**`ads` / `rules` 的两条护栏**：一个分片都不剩、或删掉超过一半时长 → 回退原清单。
+没有护栏时用户看到的是 hls.js「没有可播档位」，根本不会想到是去广告规则干的。
 
-| 客户端 | 入口形态 | 状态 | 卡点 |
-|---|---|---|---|
-| **Fongmi / TVBox / motao** | 填配置地址 → `/config.json` | ⚠️ 配置能读，**jar 跑不了** | 下发的是 883 个 `.class`，Fongmi 用 `DexClassLoader` 只认 `classes.dex`（B15） |
-| **zyfun** | 「影视配置」加站点 `type:8` → `/{site}/{action}` | ⚠️ 待复核 | 本条来自既有调研，本轮未复核（（私有开发资料） 无 zyfun 源码） |
-| **zyfun** | 「数据导入」填我们 `/config.json` | ❌ 设计不兼容 | `tvboxToStandard` 把 `type:3 + csp_Xxx` 全过滤掉；`catvodToStandard` 要 `config.video.sites` |
-| **我们 Web/PC** | `/api/*`（44 个路径） | ✅ | — |
-| **我们 TV** | 同上 | ✅ | drpy 站同 Web |
+### 2.4 导入与备份
 
-**Fongmi 这条是最高优先级**：`/config.json` 早就实现了（`catVodConfigJson()`），站点级
-`jar` 也补了（line 5908），**只差 jar 的文件形态**。改 `findSpiderJar()` 让它优先挑
-dex 形态（`server/build/dist/spider-complete-latest-patched.jar` 已有 886 类、dex 形态），
-Fongmi 就能直接吃我们的配置。这是**一个函数的改动**，收益是打通整个 Fongmi 生态。
+导入是**整表替换或合并**，不是追加。`planSites` 的冲突键是 `key + api`，
+`onConflict` 三选一：`keep` / `replace` / `both`（`both` 另起 `key#N`）。
 
-### 6.9 drpy 性能现状（2026-10-28 实测，这是当前最大瓶颈）
+- 预览结果只留最近一次、60 秒过期；导入前把旧配置写到 `CONFIG_BACKUP`，
+  `/api/config/backup` 支持查、恢复（POST）、丢弃（DELETE），恢复失败不覆盖现有配置。
 
-导入官方 `gaotianliuyun/gao/js.json`（298 站）实测：
+---
 
-| 项 | 数字 |
-|---|---|
-| 导入成功 | **235**（227 js + 8 `csp_`），skip 63（全为缺类） |
-| 导入后总站 | **270** |
-| **js 站真实可用** | **≈0** |
-| 单站冷启动耗时 | **80 秒**（绕过后端直打运行时） |
-| 后端超时 | **30 秒**（`callScriptRuntime` 的 `readTimeout`）→ 必然被掐断 |
+## 第三章 三个出口
 
-**根因不是"drpy 不能用"，是三件事叠加**：
-
-1. `host.js` 的 `fetchScript(api)` 和 `fetchText(ext)` **都没有磁盘缓存**——
-   每次请求都重新从 `raw.githubusercontent.com` 拉引擎（66KB）+ 规则文件
-2. `server.js` 的 `cache` 只在加载**完全成功**后留住，失败就 `delete`，
-   所以永远等不到第二次命中（第一次 80s 成功仅是偶然）
-3. 国内直拉 GitHub 本身就慢，80s 是常态不是异常
-
-**已修的三处**（让运行时从"完全不工作"变成"能用但慢"）：转义说明符解码、
-`evalModule` 过 ESM 转换、vendor `gbk.js`。修完后**用已缓存引擎的配置**实测 9/10。
-
-**还没做的两件（决定 227 个站能不能真用）**：
-- 给 `fetchScript`/`fetchText` 加磁盘缓存（带 TTL）→ 第二次起毫秒级
-- 把 `lib/drpy2.min.js` 和常用 `js/*.js` 预置进插件包自托管 → 摆脱 GitHub
-
-### 6.10 多仓（Depot）
-
-格式（`tvboxmuti.json` 实测）：
+### 3.1 出口 A：`/config.json`（给 CatVod 客户端）
 
 ```json
-{"urls": [{"url": "http://host/config.json", "name": "🚀1-自建"}]}
+{ "spider": "http://<host>:9979/spider-latest.jar;md5;<实际下发文件的 md5>",
+  "sites": [{ "key": "...", "name": "...", "type": 3, "api": "csp_Xxx",
+              "ext": "...", "jar": "./spider-latest.jar" }],
+  "parses": [], "lives": [], "rules": [], "ads": [],
+  "proxy": [], "hosts": [], "doh": [], "headers": [] }
 ```
 
-**Fongmi 的行为**（`VodConfig.parseDepot`）：只 `load(configs.get(0))`，
-其余进"历史配置列表"供手动切换。
+**实现要点（`catVodConfigJson()`，`ApiServer.java:11540`）：**
 
-**结论**：多仓 = **收藏夹 + 切换器**，不是并发聚合。我们照此实现，不要过度设计。
+- `sites` 来自 `config.sites.json`，**不是** `SITES` 静态表；没有配置文件时是空数组。
+- `type` 用配置原值。`type=1` 的 api 是 http 地址，写成 3 会让客户端按 `csp_` 找类，整站消失。
+- `ext` 原样透传（可能是字符串也可能是对象），转 String 会破坏 `{"json":...}` 结构。
+- `csp_` 站点没写 `jar` 时补 `"./spider-latest.jar"`（相对路径，客户端按配置地址补全）；
+  不补的话 TV 的 `LocalSites.importFrom` 会跳过这些站（「填了地址什么都不加载」）。
+- 8 张表整表透传，空表也发 `[]`。
 
----
+**`spider` 的 MD5 语义**是 `"<url>;md5;<md5-of-that-exact-file>"`：
 
-## 第七章 安全与运维
+- md5 是**我们实际下发的那份 jar** 的 md5（`spiderJarMd5()` 按文件路径 + mtime 缓存）；
+- 取不到 jar 时不写 md5 段——Fongmi 对空 md5 会「总是下载」，比写错稳；
+- `ETag` 用同一 md5 并加引号（RFC 7232），配合 `If-None-Match` 回 304；
+- 优先发 **dex 形态**（判据：jar 里有 `classes.dex`），没有才回落 class 版；
+  启动日志会打印是哪种形态。
 
-### 7.1 安全加固清单
+**`/api/config` 不是 CatVod 出口。** 它给自家前端做旧兼容，只输出 `{sites, lives?}`，
+api 一律拼成 `csp_<key>`、type 固定 3。CatVod 客户端必须用 `/config.json`。
 
-| # | 项 | 现状 | 目标 |
-|---|---|---|---|
-| S1 | **SSRF 防护** | ✅ 已落地（2026-10-23） | — |
-| S2 | **写操作鉴权** | ✅ 可选 token（`policy.json` 的 `authToken`） | — |
-| S3 | **CORS 收紧** | ✅ 白名单（localhost 任意端口 / tauri / `policy.corsOrigins`） | — |
-| S4 | **DNS rebinding** | ⚠️ 部分（连接前校验，有窗口） | 钉 IP 或改 `Dns` 接口层过滤 |
-| S5 | **路径遍历** | ✅ 已审计（2026-10-23 之后）：结论「无请求可控文件路径」；片库另有 normalize+toRealPath 白名单 | — |
-| S6 | **限流** | ✅ 已落地：`/api/parse` 与 `/api/proxy/*` 固定窗口（`policy.rateLimit` 可调/可关） | — |
+### 3.2 出口 B：`/api/*`（给 PC/Web/TV）
 
-#### S1/S4 实现说明（`core/UrlSafety.java`）
+路由是**逐条 `equals` + 少量前缀兜底**（显式 50 条，`grep -c 'equals(path)'`）。
+顺序是正确性的一部分：所有 `/api/xxx/yyy` 形式的专用端点必须排在 `/api/{site}/{action}`
+兜底之前，否则会被当成 `site=xxx, action=yyy` 去加载不存在的类。
 
-**两档，不是一档**——这是关键设计，写成单档会把合法场景一起封死：
+| 类别 | 路径 |
+|---|---|
+| 系统 | `GET /api/health`、`GET /api/sites`、`GET /api/config`、`GET /config.json`、`GET /spider-latest.jar` |
+| 站点 | `POST /api/{site}/{home\|category\|detail\|search\|play\|action}` |
+| 搜索 | `POST /api/search`（`async:true` 建任务）、`GET /api/search/task/{id}`、`GET/DELETE /api/search/cache` |
+| 解析 | `POST /api/parse` |
+| 直播 | `POST /api/live`、`GET/POST/DELETE /api/lives`、`POST /api/live/playlist` |
+| 代理 | `GET /api/proxy/stream`、`/api/proxy/image`、`/proxy`（jar 端口探测与站点代理，不是 `/api/proxy`） |
+| 弹幕 | `GET /api/proxy/danmaku`、`/search`、`/list`、`/xml`、`/prefetch` |
+| 数据 | `POST /api/webdav`、`GET/POST /api/policy`、`GET /api/dns/resolve`、`/api/library*`、`/api/cache*`、`/api/state/*`、`GET/DELETE /api/posters` |
+| 配置 | `POST /api/config/import`、`GET/POST/DELETE /api/config/backup`、`POST /api/config/depot` |
+| AI | `POST /api/llm/relay`（LLM 中继，`policy.llmRelay.enabled` 显式打开才生效） |
+| 运维 | `GET /api/logs`、`/api/health/{probe,degrade,state,reset}`、`/api/scrape`、`/api/cast`、`/api/transcode` |
 
-| 档位 | 方法 | 允许 | 拒绝 | 用在哪 |
-|---|---|---|---|---|
-| 宽松 | `isSafeMediaUrl` | 局域网 `10/8` `172.16/12` `192.168/16` | 回环 / 链路本地 `169.254` / 未指定 `0.0.0.0` / 非 http(s) | `handleStream` / `handleImage` **入口** |
-| 严格 | `isSafeHttpUrl` | 仅公网 | 宽松档全部 + 私网 + CGNAT `100.64/10` + benchmark `198.18/19` + NAT64 `64:ff9b::/96` | **每一跳重定向目标** |
+**`/proxy` 是 jar 的端口握手，不是普通代理**：`Proxy` 的端口初值是 `-1`，首次 `getPort()`
+从 9978 扫到 9999 请求 `/proxy?do=ck`，正文为 `ok` 才记住。所以 `do=ck` 必须回 `ok`，
+其余原样反射给 `Proxy.proxy(Map)`；否则 Hxq/Bili 会产出 `http://127.0.0.1:-1/proxy?...`。
 
-为什么入口要宽松：自建片源、本地 NAS、内网 Jellyfin 都是真实场景，封了就等于"自己的片子看不了"。
+**所有 API JSON 响应一律 `Cache-Control: no-store`**（`sendText` 统一加）。踩过：TV WebView
+用 `LOAD_CACHE_ELSE_NETWORK` 把 `/api/...` 的 JSON 也缓存住，弹幕搜索永远返回第一次那一条。
+中间层缓存防不住，只能从源头声明（图片代理与分片流不走这个函数）。
 
-为什么重定向目标要严格：公网主机没有任何理由 302 到内网。这是 SSRF 最经典的打点
-（`http://evil.com/x` → `302 → http://169.254.169.254/latest/meta-data/` 读云凭据）。
-容忍它换不来任何功能。
+### 3.3 `capabilities` 协商
 
-配套改动：
+`/api/health` 当前返回（`healthJson()`，`ApiServer.java:1643`）：
+`ok, version, capabilities, sites, ext, spiderJar, nativeSources, configLoaded, danmakuApi,
+authRequired, authSource, disabled, disabledCount, degraded, unsupported, dataDir,
+now, uptime, heapMaxMB, dalvikHeapLimitMB, searchConcurrency, heapUsedMB, heapPeakMB,
+searchConcurrencyCapped, jsRuntimeBreaker, jsRuntimeFails`。
 
-- `handleStream` 改 `setInstanceFollowRedirects(false)` + 手动循环（`MAX_PROXY_REDIRECTS = 5`），
-  每跳 `resolveUrl` 后用严格档复核，通过才继续；
-- m3u8 的相对分片基准（`lower` / `baseUrl`）改用**最终** URL `current`，不是原始入参——
-  否则经过跳转的清单会把分片解析到错误的域；
-- `handleImage` 同样关自动跟随（单跳，不跟）。
+`capabilities` 取值：`danmaku`、`search`、`proxy`、`webdav`、`dns`、`state`、`parse`，
+配置了外部弹幕 API 时多一个 `danmakuExternal`。**刻意不含 `live` / `multiDepot`**
+（代码注释写明「尚未实现 / 别虚报」），设计意图是让前端据此隐藏 UI。
 
-**实测 19/19**：回环 / `localhost` / `169.254.169.254` / `[::1]` 全 403；
-`file:` `ftp:` `gopher:` 全 403；局域网入口不被策略层拒（放行）；
-重定向到 `169.254` / `127.0.0.1` / `10.x` 全 403；公网直连与公网跳转仍 200（没误杀）。
-另有 23/23 的 Java 判定矩阵（含 CGNAT / benchmark / NAT64 边界值）。
+`now` 不是装饰字段：一批源（Jpys / Gulu / AppRJ / Gz360 / AppDrama2 / MiSou）用
+`System.currentTimeMillis()` 生成签名，服务端会拒掉偏差过大的请求，表现是
+「搜索静默返回空、不报错」。设备时间不准时，`/api/health.now` 与前端时钟相减即可定位。
 
-**残留风险（未封死，是刻意的）**：只做"连接前解析 + 校验"，校验完到真正 `connect()`
-之间仍有 DNS rebinding 窗口。彻底封死要把合法 IP 钉进连接（自己解析、直连 IP、Host 头保留），
-但那样会毁掉依赖 SNI 做路由的 CDN——本仓库实测 `code == 421`（Misdirected Request）
-就是这个原因，`handleStream` 里已有对应的 safeDns 退回逻辑。留窗口而不是留故障，是这里的取舍。
+**前端消费现状**：Web 只用它判断 `/api/state/*` 是否可用（`hasStateCapability()`，
+`api/index.ts:850`），另在 AI 工具里透传能力列表；其余能力位没有驱动 UI——
+后端发、前端不全用，不要按「已协商」写文档。
 
-### 7.2 运维能力（P1）
+### 3.4 出口 C：`/api/state/*`（三端共享）
 
-| # | 项 | 说明 |
+| 端点 | 存储文件 | 语义 |
 |---|---|---|
-| O1 | 源健康状态机 | ✅ 连续 3 次失败降级、任意成功复亮；持久化 `site-health.json`；`/api/health` 出 `degraded`；搜索跳过 30 分钟内降级源 |
-| O2 | 结构化日志 | 每次 spider 调用记：`site`/`method`/耗时/结果/错误类型 |
-| O3 | 源审计面板 | 参考 FreeBox：每站请求/响应/失败原因（Web 端做成 `/admin` 页面） |
-| O4 | 配置热重载 | `POST /api/config/reload`，不重启进程 |
-| O5 | 健康探针 | `GET /api/health` 返回各源状态摘要 |
+| `GET/POST /api/state/progress` | `state-progress.json` | 每剧每集播放位置；上限 2000，pull 上限 500 |
+| `GET/POST /api/state/favorites` | `state-favorites.json` | 收藏；上限 5000 |
+| `GET/POST /api/state/prefs` | `state-prefs.json` | account 级设置（白名单键） |
 
-**O1 的重要性**：现状 40 个源里约 10 个是死的，每次首页都撞。
-硬编码黑名单不行（源站行为会变，`AppDrama2` 从直链变加密串就是活例），必须是状态机。
+**没有 `/api/state/history`。** 观看历史由 `progress` 派生。
 
-### 7.3 数据安全
+**两条容易改错的语义**（`StateRoutes.java:24`）：裁剪 progress 用 `ep_at`（最近观看），
+不是 `at`（创建时间），用错会删掉「早收藏、最近在看」的进度；同步 prefs 时丢弃
+`STATE_PREFS_SKIP`（音量/倍速/比例、壁纸、WebDAV 凭据），本机专属值推到别的机器只会制造故障。
 
-| 项 | 约束 |
-|---|---|
-| WebDAV 凭据 | **绝不上传**，只存各端本地 |
-| 备份内容 | prefs（account.* 部分）+ history + favorites；**不含 credentials** |
-| 备份导入 | **先校验后原子替换**，失败不覆盖（学 webtv） |
-| 日志脱敏 | URL 里的 `token`/`sign`/`key` 参数打码 |
+**凭据是硬约束：WebDAV 地址/密码只存各端本地，绝不上传、不进备份。**
+并发写用 `STATE_LOCK` 串行化；读文件失败/损坏一律当空列表——首次启动本来就没有文件，
+断电写坏也不该让前端整片 500。
 
-### 7.4 已知坑（施工时必看）
+---
 
-| # | 坑 | 出处 |
+## 第四章 运行时与解析
+
+### 4.1 Java jar（默认路径）
+
+`core/Jars` 负责外部 jar：配置里的 `spider` / 站点级 `jar` 会被下载、校验、缓存，
+再由 `platform.Bridge.loadClass` 加载。TV 侧是 `DexClassLoader`，JVM 侧是 `Class.forName`。
+
+两种形态：**dex**（jar 内有 `classes.dex`，Android/Fongmi 的 `DexClassLoader` 只认它）与
+**class**（只有 `.class`，JVM 类路径用）。
+
+JVM 在**导入配置时**由 `core/Dex2Jvm` 把只有 `classes.dex` 的 jar 转成 class jar，
+写回 `spiderJvm` / 站点 `jar`（实验性，需 `MEOW_DEX2JAR`；失败保留原配置并返回原因）。
+**不要把 okhttp 打进 dex**（重复类 + 方法数爆）；**不要用 `d8` 覆盖同名类**（必须走 smali）。
+
+### 4.2 drpy（外部 Node 运行时）
+
+`api` 以 `.js` / `js:` / `node:` / `.py` / `py:` 开头时转发到外部 Node 服务
+（`policy.jsRuntime` 或 `MEOW_JS_RUNTIME`）：
+
+```
+POST {base}/{urlencode(site)}/{urlencode(action)}
+X-DRPY-Api: urlencode(api)     X-DRPY-Ext: urlencode(ext)（有才带）     body: 原样的 action body
+```
+
+**读超时按运行时健康度动态给（不写死）：**
+
+| 状态 | 读超时 | 理由 |
 |---|---|---|
-| 1 | **`HttpURLConnection` 不支持 PROPFIND/MKCOL**，必须 `java.net.http.HttpClient` | 已验证 |
-| 2 | **m3u8 相对 URI**：以 `/` 开头要 `origin + uri`，不能 `base + uri` | `ApiServer.java:896` |
-| 3 | **ofetch 在 Tauri 下会挂**（`location[0]`），用原生 fetch | 已验证 |
-| 4 | **Tauri 协议是 `http://tauri.localhost`**，不是 `tauri://`；判断桌面端用 `'__TAURI_INTERNALS__' in window` | 已验证 |
-| 5 | **`android-json` 的 `JSONObject.put` 抛受检异常**，新方法要 `throws Exception` | 已验证 |
-| 6 | **`python -c` 在 Git Bash 下被注入垃圾**，一律写脚本文件 | 已验证 |
-| 7 | **vue-router 会自动编码 query**，不要手动 `encodeURIComponent`（会变 `%253A`） | 已验证 |
-| 8 | **Teleport + Vue Transition 类不移除**（菜单停在 opacity:0），用 `@keyframes` + 非 scoped style | 已验证 |
-| 9 | **`d8` 不能覆盖同名类**，替换类必须走 smali | 已验证 |
-| 10 | **不要把 okhttp 打进 dex**（重复类 + 方法数爆） | 已验证 |
+| 正常 | 8s（`SCRIPT_RUNTIME_TIMEOUT_MS`） | 多数源 1–2s 返回，8s 不误杀 |
+| 熔断期 / 该站慢 | 3s（`SCRIPT_RUNTIME_FAST_TIMEOUT_MS`） | 容器挂了时快速失败，12 个并发槽也能扫完 200+ 源 |
+
+连续失败打开熔断（`jsRuntimeBreaker`），`/api/health` 直接暴露开合状态；
+单站慢进 `SCRIPT_SLOW_TTL_MS`（10 分钟）。
+
+**为什么必须开 worker**：drpy 的 `req()` 走 `sync-fetch`，用
+`SharedArrayBuffer + Atomics.wait` 阻塞线程。在主线程跑会把整个事件循环钉死，连
+`/health` 都超时（容器报 unhealthy 但 CPU 只有 2.3%）。每个源请求在 `worker_threads`
+里跑，阻塞只影响那个 worker。
+
+**当前吞吐瓶颈（`server/drpy/host.js`，未修）：** `fetchScript(api)` 与 `fetchText(ext)`
+都没有磁盘缓存，每次重新拉引擎和规则文件（`fetchText` 另有 3 次重试 + 15s 超时）。
+国内直连 GitHub 单站冷启动可达 80 秒，远超 8s 读超时 → 后端必然掐断。运行时侧已有三处
+必要修正（转义说明符解码、`evalModule` 过 ESM 转换、vendor `gbk.js`），但只保证「能跑」。
+要真用 200+ 个 drpy 站，必须加带 TTL 的磁盘缓存并自托管常用引擎。
+
+**两个中性现象：** `spiders:0` 是正常值（站点按 `X-DRPY-Api` 惰性加载）；改过
+`server/drpy/` 后不重建镜像等于没改。
+
+### 4.3 苹果CMS 直连
+
+`api` 是 http 地址时走 `sources/CmsSource`，纯 HTTP + JSON，不需要任何运行时。
+**实际请求全部用 `ac=detail`，不是文档常写的 `ac=videolist`**：
+
+```
+列表：GET {api}?ac=detail&pg={pg}（带探测出的分类参数）
+详情：GET {api}?ac=detail&ids={id}
+搜索：GET {api}?ac=detail&wd={keyword}&pg={pg}
+分类：GET {api}?ac=list&pg=1   ← 只用于取 class，不用于列表
+```
+
+两个实测坑决定了这个形状：`ac=list` 的条目**没有 `vod_pic`**，卡片是空色块，
+列表只能用 `ac=detail`；分类过滤参数**各站不统一**（`type_id`/`t` 认不认因站而异），
+所以启动时先探一次「这个站认哪个参数」，结果缓存 10 分钟（失败只缓存 1 分钟），认不了分类的站只给「最新更新」一个 tab。
+
+`vod_play_url`（`线路$$$线路`、`集名$地址#集名$地址`）与 CatVod 天然同构，
+不发协议转换，原样透传。这是覆盖率/成本比最高的一条路径。
+
+### 4.4 解析器（type 0–4）
+
+`/api/parse` 请求 `{url, flag?, name?}`，响应 `{ok, url, header, from, msg?, tried?}`。
+`url` 先过严格档 SSRF 校验，不允许指向内网。
+
+| type | 语义 | 服务端实现 |
+|---|---|---|
+| 0 | WebView 嗅探 | **近似实现**：抓 HTML，按 `player_aaaa` / JSON 里的 m3u8 找地址；纯 JS 计算的地址拿不到 |
+| 1 | JSON 直连 | `GET {entry.url}{webUrl}`，读顶层 `url` 或 `data.url`，带回 ua/referer/cookie |
+| 2 | JSON 聚合 | 反射 jar 里的 `parser.JsonXxx` |
+| 3 | JSON 混合 | 反射 jar 里的 `parser.MixXxx` |
+
+**type 4（超级解析）不是服务端条目**：`serverSideParse()` 只收 0–3，配置里
+type 4 的解析器不进候选池。Fongmi 客户端的 type 4 语义是「并行跑 type 0/1 先成功者胜」；
+服务端把这条语义吃进了候选池本身——所有候选一视同仁并发（独立小池，最多 4 线程，
+不占 `POOL` 的 12 线程，否则一次解析就能把浏览请求挤住），先成功者胜，总 deadline `PARSE_TIMEOUT_MS = 15s`。
+
+**flag 过滤是「优先适配」不是白名单**：按 `ext.flag` 过滤后为空时退回全部可用解析器
+（与 Fongmi `getParses(type, flag)` 一致）。不加过滤会把腾讯的源送给爱奇艺解析器；
+过滤成硬白名单会让一条没配 flag 的线路全废。
+
+**type 0 的边界**：拿到的可能只是播放器初始化参数（下一层播放页或 base64）。不校验就
+`ok:true`，播放器会看到「manifest 解析失败」且**永远等不到换线**。所以只多跟一层
+`resolveSniffedMedia`，再深就是拿别人的站当爬虫代理。
 
 ---
 
-## 第八章 实施路线
+## 第五章 三端协作
 
-### 8.1 阶段划分（每阶段可独立验收）
+### 5.1 三种接入方式
 
-```
-阶段 0  基建（3d）
-├─ B1 SiteRegistry（配置驱动 + key 寻址）
-├─ B10 capabilities 协商
-└─ 验收：/api/sites 返回完整字段 + Bili 显示 6 个入口
-
-阶段 1  出口 A（2d）
-├─ B2 /config.json（CatVod 形状）
-├─ B3 ConfigTables（8 张表读入）
-└─ 验收：Fongmi 用我们的 /config.json 能直接跑，源码零改动
-
-阶段 2  能播（5d）  ← 用户感知最强
-├─ B4 /api/parse（type 1 + 4）
-├─ B5 play 归一化（subs/skips/values/position）
-├─ F3 失败重试链
-├─ F4 详情页传全部线路
-└─ 验收：60% 的直链失败能在 3 跳内播上
-
-阶段 3  跨端（3d）
-├─ B9 /api/state/*（进度/收藏）
-├─ F5 进度续播
-├─ F6 收藏
-└─ 验收：Web 上看到的进度，PC 打开能接着播（误差 < 5s）
-
-阶段 4  稳固（4d）
-├─ B7 ProxyRouter 四级（S1/S4 已完成）
-├─ B8 源健康状态机
-├─ B6 liveContent
-└─ 验收：无开放代理；死源自动折叠
-
-阶段 5  扩生态（10d+）
-├─ B11 ProtocolRuntime（苹果CMS）
-├─ B14 rules/ads 生效
-├─ F12 直播页
-└─ 验收：覆盖率从 36% 提到 70%
-
-阶段 6  全量（8d+）
-├─ B12 JsRuntime（drpy）
-└─ 验收：覆盖率到 95%
-```
-
-### 8.2 依赖关系（不能乱序）
-
-```
-B1 ──┬── B2 ── (阶段1 验收)
-     ├── B3 ── B4 ── F3      ← B3 必须先于 B4
-     ├── B7
-     └── B8
-
-B5 ──────── F7/F8/F9         ← 归一化必须先于字幕/跳过/画质
-
-B9 ──────── F5/F6
-```
-
-**硬依赖三条**：
-1. `B1` 是所有后端工作的前提（现在全是硬编码）
-2. `B3` 先于 `B4`（没有 parses 表就没有解析器候选）
-3. `B5` 先于 `F7/F8/F9`（不解析就没有数据给 UI）
-
-### 8.3 每阶段必须回答的三个问题
-
-| 问题 | 怎么答 |
-|---|---|
-| **能不能验收？** | 每阶段一个可演示的场景（见 8.1 的验收） |
-| **会不会破坏现有？** | 保持 `/api/{site}/...` 路径不变，只增不改 |
-| **能不能回滚？** | 配置驱动后，改 config 文件即可；jar 保留上一版 |
-
----
-
-## 第九章 验收标准
-
-### 9.1 五条硬指标
-
-| # | 指标 | 通过标准 | 怎么测 |
+| 端 | 接入对象 | 协议 | 谁执行 spider |
 |---|---|---|---|
-| V1 | **源覆盖对等** | Web/PC 能播的源数 ≥ TV(Fongmi) 的 95% | 同一份 config，两端各跑 matrix |
-| V2 | **失败有出路** | ≥60% 的"直链失败"能在 3 跳内自动播上 | 构造 20 个失败场景，统计 |
-| V3 | **跨端续播** | TV 进度 → Web/PC 接续，误差 < 5s | 手动 + 自动化 |
-| V4 | **配置驱动** | 改站点域名只需改 config + 重启，不重编译 | 改一个 ext，验证生效 |
-| V5 | **TV 零改造**（指**上游兼容线**） | Fongmi 用 `/config.json` 能直接跑，源码一行不改 | 装官方 Fongmi，填地址 |
+| **TV（Fongmi / 派生）** | `/config.json` + `/spider-latest.jar` | CatVod config | **客户端自己**（`DexClassLoader`） |
+| **PC（Tauri）** | 本地/远端 REST | HTTP | 我们的后端 |
+| **Web（Vue）** | 同源或手填 REST | HTTP | 我们的后端 |
 
-**V5 是最重要的一条**——它保证我们不会掉进"fork Fongmi 然后维护两份"的坑。
+**关键：TV 不经过我们的 REST，PC/Web 不加载 jar。**
 
-> **⚠️ V5 修订备注（2026-10-23）**
->
-> 用户已决定**后续基于 `motao123-webtv`（Fongmi 的 GPL-3.0 二开分支）做自己的
-> TV 客户端**，并优化样式。因此 V5 **不再是"TV 端唯一形态"，但承诺本身不取消**。
->
-> 两条线**并存**，各自的可验收目标不同：
->
-> | 线 | 是什么 | 验收标准 |
-> |---|---|---|
-> | **上游兼容线** | 官方 Fongmi / 其他 Fongmi 分支，装官方包填我们地址 | V5 原文不变：`/config.json` 能直接跑，源码零改 |
-> | **我们的发行版** | `motao123-webtv` 二开出的自有 TV 客户端 | 样式与交互按我们自己的标准验收；仍须吃同一份 `/config.json`，不得私有协议 |
->
-> 关键约束：**发行版不得以"我们改了客户端"为由放弃上游兼容**。任何新增能力
-> 优先走 `/config.json` + play 响应字段（`position` / `subs` / `skips`），
-> 这样两条线共用同一后端，不必为发行版单独维护服务端分支。
-> 该修订**只放宽"TV 端形态"**，不放宽 D1 的动机（不自研焦点/遥控器/播放内核）。
+### 5.2 Web/PC 的后端地址
 
-### 9.2 每阶段的技术验收
+`client/apps/web/src/api/index.ts` 的解析顺序：
 
-| 阶段 | 技术检查点 |
-|---|---|
-| 0 | `/api/sites` 含 `searchable/changeable/timeout/categories`；`Bili` 有 6 个 key |
-| 1 | `/config.json` 九项齐全；`spider` 的 md5 与实际文件一致；Fongmi 能加载 |
-| 2 | `/api/parse` 对 `SP360`/`SaoHuo`/`DuoDuoTv` 至少一个成功；前端失败链有日志 |
-| 3 | `GET /api/state/progress` 有数据；PC 打开能续播 |
-| 4 | `curl "http://host/api/proxy/stream?url=http://127.0.0.1:22"` 必须拒绝 |
-| 5 | 苹果CMS 源能列表+详情+搜索；`rules` 正则确实删掉了广告分片 |
-| 6 | drpy 源能出首页 |
+1. 桌面端：`localStorage['meow.api']`（仅 `scope === 'desktop'`）+ 插件协商的 `backend_base`；
+   回环手填地址在插件就绪后让位给协商地址。
+2. Web：`meow.api`（必须由设置页写入并带 scope，或 TV 壳自动引导）+ `VITE_API_BASE`。
+3. 兜底同源空串。
+
+**桌面端没有确定地址时必须报错，绝不退化成同源请求**（`backendUnavailable()`）。
+踩过：开发模式下页面从 `localhost:5173` 加载，插件未就绪时 `fetch('' + '/api/sites')`
+打到 Vite 代理，应用显示「已连接 · 39 源」——那其实是另一个独立后端。仍是单后端 + 手填覆盖，没有多后端列表。
+
+### 5.3 TV 内嵌网关
+
+TV 直接编译 `shared/` 的 `ApiServer`，`LocalGateway` 已删除。原来那份是手抄的第二份实现
+（8 条路由，后端 50 条）；代价不是重复劳动，是**修一处漏一处**——m3u8 的 `EXT-X-KEY`
+改写后端早就有，TV 那份没有，表现就是同一个源在 Web 能播、在 TV 黑屏。
+
+| 项 | JVM / PC | TV |
+|---|---|---|
+| 监听 | `0.0.0.0:9979` | `127.0.0.1:9978`（jar 的 `Proxy` 从 9978 扫到 9999） |
+| 连接线程 | 16 | **24**（12 个时连续两次全量搜索就能把端口打死） |
+| HTTP 传输 | `JvmHttpServer` | `SocketHttpServer` |
+| 类加载 | `Class.forName` | `DexClassLoader` |
+
+**TV 的三种形态：**
+
+| 形态 | 站点表来源 | jar 来源 | 状态 |
+|---|---|---|---|
+| A 连自建后端 | 后端 `/api/sites` | 后端加载 | 可用 |
+| B 导入自建后端配置 | `/config.json` | `DexClassLoader` | 可用；只收 `csp_` 且配了 jar 的站 |
+| C 导入肥猫配置 | 肥猫 `/tv` | 肥猫 `spider.php`（dex） | 可用 |
+
+B/C 共用内嵌网关，路由实现与后端同一份。
+
+**弹幕**：内置聚合站实测不可用（404/402/000/503），`GatewayServer.ensureDanmakuApi()` 启动时
+把 `policy.danmakuApi` 指向用户配的后端；没配后端时不注入（纯本机模式接受没有弹幕）。
+**做不到的**：`/api/transcode` 依赖 ffmpeg 可执行文件，Android 起不了；TV 走
+`CacheDownloader` + SAF 另一条路。
+
+### 5.4 与 zyfun 的兼容性
+
+- **zyfun → 我们后端**：在「影视配置」里加站点、类型选 `T4_CATVOD`（`type: 8`），
+  指向 `/{site}/{action}`。**不是**「数据导入」。
+- **zyfun 导入我们的 `/config.json`**：设计不兼容。它的 `tvboxToStandard` 只保留
+  `type 0/1/4`，或 `type 3` 且 `api` 是 `csp_XBPQ`/`csp_XYQHiker`/`.js`/`.py`；
+  我们的站是 `type 3 + csp_Xxx`，会被全部过滤成空数组，报 `Dirty data to import`。
+  另外它要 `config.video.sites`，CatVod 标准是 `config.sites`。
+
+**结论**：zyfun 没有 `DexClassLoader`，天生跑不了 jar；要用我们的源，只有「把整个后端
+当一个 CatVod 服务」这条路。
+
+### 5.5 TV 的进度回传
+
+Fongmi 读 `position`（毫秒）作为起播点，读 `subs` 挂字幕轨，读 `skips` 做片头尾跳过（上游源码结论，见 §8.4）。
+
+**关键约束：`position` 取 `Math.max`，只会往后推、不会往前提**，做不到回退；本地历史
+更靠后时本地值赢。**opening 段必须 `start == 0` 才会在起播时被自动跳过**；`start != 0`
+只会在播放中被 `activeSegment()` 命中，且要求用户没手动设过片头时长。
 
 ---
 
-## 第十章 决策记录与不做清单
+## 第六章 安全与运维
 
-### 10.1 已定决策（ADR）
+### 6.1 安全清单（以代码为准）
+
+| # | 项 | 现状 |
+|---|---|---|
+| S1 | **SSRF 防护** | 两档校验，见 §6.2 |
+| S2 | **写操作鉴权** | **可选** token：`MEOW_AUTH_TOKEN` 优先，其次 `policy.authToken`；未配 = 关闭。GET/HEAD 永不拦 |
+| S3 | **CORS** | **默认 `*`，不拦截**（用户明确要求）。`MEOW_CORS` 设为逗号分隔白名单才收紧；`none` 只放行本机与各端壳 |
+| S4 | **CSRF / 跨源写** | 所有非 GET/HEAD/OPTIONS 校验 Origin，不在允许列表就 403（与 token 是否配置无关） |
+| S5 | **路径遍历** | 片库只访问配置声明的根，路径由服务端拼接、只接受相对路径；`normalize + toRealPath` 白名单 |
+| S6 | **限流** | 固定窗口。`/api/parse` 默认 30 次/窗口，`/api/proxy/*` 默认 240 次，窗口默认 10s；`policy.rateLimit` 可调/可关 |
+| S7 | **DNS rebinding** | 部分：连接前校验，校验与 connect 之间仍有窗口（刻意取舍，见下） |
+
+**CORS 与鉴权的分工**：CORS 只防「浏览器里的第三方页面」；能直连端口的人本来就能用 curl 写，
+真正的访问控制是网络边界 + token。反过来，CORS 默认放开不等于写操作不设防——
+S4 与 token 无关，默认部署也生效。
+
+### 6.2 SSRF：两档，不是一档
+
+`core/UrlSafety.java` 的 `isSafeMediaUrl`（宽松）与 `isSafeHttpUrl`（严格）：
+
+| 档 | 允许 | 拒绝 | 用在哪 |
+|---|---|---|---|
+| 宽松 | 局域网 `10/8` `172.16/12` `192.168/16` | 回环 / 链路本地（含 `169.254.169.254`）/ `0.0.0.0` / 非 http(s) | `handleStream` / `handleImage` **入口** |
+| 严格 | 仅公网 | 宽松档全部 + 私网 + CGNAT `100.64/10` + benchmark `198.18/15` + NAT64 `64:ff9b::/96` | **每一跳重定向目标**、`/api/parse` 目标、播放页抓取 |
+
+**入口为什么宽松**：自建片源、本地 NAS、内网 Jellyfin 都是真实场景，封了就等于
+「自己的片子看不了」。**重定向为什么严格**：公网主机没有任何理由 302 到内网——
+SSRF 最经典的打点（`302 → 169.254.169.254` 读云凭据），容忍它换不来任何功能。
+
+配套实现：`handleStream` 关自动重定向 + 手动循环，最多 `MAX_PROXY_REDIRECTS = 5` 跳，
+每跳重校验；m3u8 分片基准改用**最终** URL（否则经过跳转的清单会把分片解析到错误的域）；`handleImage` 单跳、不跟随。
+
+**残留风险（刻意）**：校验完到 `connect()` 之间仍有 DNS rebinding 窗口。彻底封死要把 IP
+钉进连接，但会毁掉依赖 SNI 的 CDN（实测 `421` 就是这个原因，`handleStream` 有 safeDns 退回逻辑）。
+**留窗口而不是留故障**，是这里的取舍。
+
+**并发闸**：`/api/proxy/stream` 有 8 个信号量（`STREAM_SLOTS`）。一个慢分片能占住线程最长
+45 秒（connect 15s + read 30s）；超限直接 503，让播放器重试，而不是让整台后端排队。
+
+### 6.3 源健康状态机
+
+`routes/HealthRoutes` 维护每站的窗口计数与降档状态，`/api/sites` 与 `/api/health` 都从这里取状态：
+
+- 连续 `HEALTH_DEGRADE_STREAK = 3` 次失败 → 降级；任意成功立即复亮；
+- **超时跳过**：连续 2 次超时（`TIMEOUT_SKIP_STREAK`）→ 搜索跳过，TTL 10 分钟；
+- **失败跳过**：累计失败 ≥ 5 且最近 30 分钟没有成功 → 跳过；
+- 手动禁用（`disabled`）与「环境不支持」（`unsupported`）单独标记，不算源站故障。
+
+**判据必须区分「慢且失败」和「成功但没内容」**：drpy 超时返回空 body，`emptyFallback`
+会兜成 `{"list":[]}`，结构合法——用 `isErrorPayload` 判会把「慢且失败」记成成功，
+永不降档、每轮照样烧满超时。所以用 `hasRealPayload(action, out)` 判「有没有真的拿到条目」。
+
+**探活超时** `PROBE_SITE_TIMEOUT_MS = 8000`。`/api/health/reset` 清掉跳过/降档/降级标记，
+排查时不用重启后端（跳过 TTL 是 10 分钟，用户修好源也看不到效果）。
+
+### 6.4 日志与诊断
+
+`core.LogBuffer` 是 2000 条环形缓冲，`/api/logs` 可读，正文经 `scrub()` 对 query 里
+`url`/`token`/`authToken`/`password`/`pwd`/`pass` 这几个参数打码（其余原样保留，可读性优先）。
+`/api/health` 带堆诊断（`heapMaxMB`/`heapUsedMB`/`heapPeakMB`/`searchConcurrencyCapped`），
+排查「同配置同版本，投影仪必崩、模拟器正常」时唯一能看出差别的就是这几个量。
+
+---
+
+## 第七章 已知坑与约束
+
+### 7.1 平台与协议
+
+| # | 坑 | 依据 |
+|---|---|---|
+| 1 | **`HttpURLConnection` 不支持 PROPFIND/MKCOL**（抛 `ProtocolException`）；WebDAV 必须用支持自定义方法的客户端，当前是 OkHttp | `LibraryRoutes` |
+| 2 | **m3u8 相对 URI**：以 `/` 开头要 `origin + uri`，不能 `base + uri` | `resolveUrl` |
+| 3 | **ofetch 在 Tauri 下会挂**（`location[0]` 抛异常），用原生 fetch | `api/index.ts` |
+| 4 | **Tauri 页面是 `http://tauri.localhost`**，不是 `tauri://`；判断桌面端用 `'__TAURI_INTERNALS__' in window` | `api/index.ts` |
+| 5 | **`android-json` 的 `JSONObject.put` 抛受检异常**，新方法要 `throws Exception` | 全仓 |
+| 6 | **`com.sun.net.httpserver` 不能自带同名包**，共享代码只能经 `platform.*` 抽象 | `GatewayServer` |
+| 7 | **`sun.net.http.allowRestrictedHeaders` 必须在 HttpURLConnection 首次初始化前设**，否则 safeDns 的 Host 头被静默丢弃（豆瓣 0 条） | `ApiServer.boot()` |
+| 8 | **vue-router 会自动编码 query**，不要手动 `encodeURIComponent`（会变 `%253A`） | Web |
+| 9 | **`d8` 不能覆盖同名类**（走 smali）；**不要把 okhttp 打进 dex**（重复类 + 方法数爆） | 打包脚本 |
+
+### 7.2 数据与协议
+
+| # | 约束 |
+|---|---|
+| 10 | `config.sites.json` 是站点真源，`/config.json` 的 `sites` 也来自它；只改 `SITES.put` 不会出现在任何出口，没有配置文件时是空数组 |
+| 11 | `type` 必须原样透传；`ext` 可能是对象，不能 `String.valueOf` 后写回配置 |
+| 12 | 站点 class = key 去掉 `#N`。给多实例改 key 名会连带改到类名，站点直接加载失败 |
+| 13 | `rules`/`ads` 默认关闭（`policy.filterAds`）。网上来的正则很容易删空整集，不要默认打开 |
+| 14 | `hosts` 只对 http 生效；https 换 IP 会破坏 SNI，多数 CDN 直接 421/SSL 错误 |
+| 15 | 所有 API JSON 响应 `no-store`；不要给 `/api/*` 加缓存头，踩过弹幕「只有 1 条」 |
+| 16 | 请求线程池 12（TV 24 个连接线程）。同步搜索一次占 2–20 秒，12 个并发就能占满 |
+| 17 | 搜索线程上限 32，低内存设备按堆再压一层（`searchConcurrencyCapped`）；弹幕缓存 TTL 30 分钟，磁盘另有 TTL |
+
+---
+
+## 第八章 决策记录
+
+### 8.1 已定决策（ADR）
 
 | # | 决策 | 理由 | 日期 |
 |---|---|---|---|
@@ -1385,261 +640,104 @@ B9 ──────── F5/F6
 | D4 | **不内置 jar，运行时拉取** | 用户明确要求（内置违规） | 2026-10-20 |
 | D5 | **不 fork zyfun** | AGPL；且它是我们的下游消费者，不是竞品 | 2026-10-21 |
 | D6 | **`spider` 的 md5 写我们自己的** | 重打包产物与上游不同；用户已否定逐字节对齐 | 2026-10-19 |
-| D7 | **配置驱动而非硬编码** | 改源不发版；这是"能持续维护"的根本 | 2026-10-21 |
-| D8 | **源是单位，不是类** | 实测 1 个适配器覆盖 94–221 个源 | 2026-10-21 |
-| D9 | **私有逆向类降优先级** | 15 个私有类在公共多仓里一个都没有，无社区维护 | 2026-10-21 |
+| D7 | **配置驱动而非硬编码** | 改源不发版；这是「能持续维护」的根本 | 2026-10-21 |
+| D8 | **源是单位，不是类** | 一个适配器覆盖几十到上百个源 | 2026-10-21 |
+| D9 | **私有逆向类降优先级** | 私有类在公共多仓里一个都没有，无社区维护 | 2026-10-21 |
 | D10 | **设置分 account/device 两类** | 用户明确要求按数据语义分层 | 2026-10-21 |
 
-> **⚠️ D1 修订备注（2026-10-23，原决策保留不删）**
->
-> **D1 的"不自研"被收窄了适用范围，但理由与结论主体仍成立。** 用户已决定
-> **后续基于 `motao123-webtv`（Fongmi 的 GPL-3.0 二开分支）做自己的 TV 客户端
-> 并优化样式**——这是"二开上游分支"，不是"从零自研"，因此 D1 当初列的成本
-> （焦点管理 / 遥控器 / D-pad 打磨 1–2 月）依然被规避：那些代码直接继承自上游。
->
-> 修订后的事实状态是**两条线并存**：
->
-> | 线 | 来源 | 我们改什么 |
-> |---|---|---|
-> | **上游兼容线** | 官方 Fongmi / 任意 Fongmi 分支 | **不改**。靠 `/config.json` 兼容（V5） |
-> | **我们的发行版** | `motao123-webtv` 二开 | 样式与交互；须继续吃同一份 `/config.json` |
->
-> **兼容承诺不因发行版而取消**：发行版存在不等于可以放弃对官方 Fongmi 的配置兼容。
-> 任何新能力优先落在 `/config.json` 与 play 响应字段上，让两条线共用同一后端。
->
-> 与 §10.2 的"**fork Fongmi 改代码**：GPL + 双份维护"的关系：该条**仍然有效**，
-> 但它约束的是"随意 fork 官方主线、把改动写进主线代码再维护两份"。
-> `motao123-webtv` 是既有的 GPL-3.0 二开分支（仓库内 `LICENSE.md` 为 GPL v3），
-> 我们的改动集中在该分支内，属于**单一发行版**而非"两份主线"；
-> 代价是我们必须自行维护该分支相对上游的 diff —— 这是已知成本，不是遗漏。
->
-> 另注：D3"不在 TV 上走我们的 REST"与 D5"不 fork zyfun"**不受此修订影响**。
+### 8.2 D1 的修订：两条线并存
 
-### 10.2 不做清单
+D1 的「不自研」被收窄了适用范围，理由与结论主体仍成立。当前 TV 壳是**基于
+`motao123-webtv`（Fongmi 的 GPL-3.0 二开分支）二开**，不是从零自研：
+`client/apps/tv/app/src/main/java/com/github/catvod/` 是继承的上游代码，`com.meow.tv`
+是我们的壳。焦点管理/遥控器/D-pad 的成本依然被规避。
+
+| 线 | 来源 | 我们改什么 |
+|---|---|---|
+| **上游兼容线** | 官方 Fongmi / 任意 Fongmi 分支 | **不改**。靠 `/config.json` 兼容 |
+| **我们的发行版** | `motao123-webtv` 二开 | 样式与交互；仍须吃同一份 `/config.json` |
+
+**兼容承诺不因发行版而取消**：任何新能力优先落在 `/config.json` 与 play 响应字段
+（`position` / `subs` / `skips`）上，让两条线共用同一后端，不必为发行版单独维护服务端分支。
+
+「不做：fork Fongmi 改代码」约束的是「随意 fork 官方主线再维护两份」；`motao123-webtv`
+是既有分支、改动集中在该分支内，属于**单一发行版**，代价是自行维护相对上游的 diff。
+
+### 8.3 不做清单
 
 | 不做 | 理由 |
 |---|---|
-| **fork Fongmi 改代码** | GPL + 双份维护 |
-| **抄 LunaTV/MoonTV 代码** | **CC BY-NC-SA，禁商用** |
-| **支持 PNG 尾附加配置** | 技术上 5 行可解，但这是绕过平台审查，不适合进产品 |
-| **追 Hex 自定义加密源** | 无通用解法，必须内嵌具体算法，收益极低 |
+| **fork Fongmi 官方主线改代码** | GPL + 双份维护 |
+| **抄 LunaTV/MoonTV 代码** | CC BY-NC-SA，禁商用 |
+| **支持 PNG 尾附加配置** | 技术上几行可解，但这是绕过平台审查，不适合进产品 |
+| **追 Hex 自定义加密源** | 通用解法只覆盖 `2423` 一种；其余必须内嵌具体算法，收益极低 |
 | **WebHome 的 DOM 注入体系** | 自有 Vue 前端无此场景；只可移植 `fm.stat()` 协议 |
-| **自动片头尾识别** | 误判率高（影视仓有 `触发误操作` 兜底文案）；用 spider 给的 `skips` |
-| **投屏（DLNA）** | 浏览器无 UPnP；Web 端不可行 |
+| **自动片头尾识别** | 误判率高；用 spider 给的 `skips` |
+| **投屏（DLNA）** | 浏览器无 UPnP；Web 端不可行（PC/TV 走各自实现） |
 | **多用户/账号体系** | 单用户自用；多用户是 P3 之后 |
 | **自动弹幕/字幕识别** | 依赖人工词表，ROI 差 |
-| **Node/Python 运行时** | 占比 <5%，成本 >JS；JS 做完再说 |
+| **Python 运行时** | 占比低、成本高于 JS；`.py` 当前与 `.js` 同走 Node 运行时 |
 
-### 10.3 开放问题
+### 8.4 待确认
 
-> Q1 / Q2 已于 **2026-10-23** 从上游源码确认，不再是"待验证"；其余三条仍待验。
+| # | 问题 | 影响 | 状态 |
+|---|---|---|---|
+| Q1 | Fongmi 是否读 `position` | 决定 TV 进度同步方案 | **已确认：读**，单位毫秒，取 `Math.max` |
+| Q2 | Fongmi 是否支持 `subs` / `skips` | 决定 TV 端能否用这些字段 | **已确认：两者都支持**；opening 需 `start == 0` |
+| Q3 | `liveContent` 在 Fongmi 里走 spider 还是 config `lives` | 决定是否必须实现 liveContent | 待确认（jar 内无实现，实际直播靠 `lives` 列表） |
+| Q4 | drpy 脚本的最低兼容子集 | 决定 JS 运行时工作量 | 待确认 |
+| Q5 | Fongmi 的 Backup 格式 | 决定备份互导可行性 | 待确认 |
 
-| # | 问题 | 影响 | 怎么验证 | 状态 |
-|---|---|---|---|---|
-| Q1 | **Fongmi 是否读 `position` 字段做起播位置** | 决定 TV 进度同步走 C 还是 B 方案 | ~~装 Fongmi，play 返回带 position，看是否续播~~ 已改为读源码 | ✅ **已确认：读** |
-| Q2 | **Fongmi 对 `subs`/`skips` 的支持度** | 决定 TV 端是否也能用这些字段 | ~~同上~~ 已改为读源码 | ✅ **已确认：两者都支持** |
-| Q3 | **`liveContent` 在 Fongmi 里是走 spider 还是走 config `lives`** | 决定我们是否必须实现 liveContent | 读 Fongmi LiveConfig | ⏳ 待验证 |
-| Q4 | **drpy 脚本的最低兼容子集** | 决定 JsRuntime 的工作量 | 抽样 20 个 drpy 脚本，统计用到的 API | ⏳ 待验证 |
-| Q5 | **Fongmi 的 Backup 格式** | 决定 B 方案可行性 | 解一个备份文件 | ⏳ 待验证 |
-
-**Q1 结论（`hasPosition()` → 起播位置）**
-
-`VodSkipPolicy.startPositionMs()`（上游参考项目
-com/fongmi/android/tv/playback/vod/VodSkipPolicy.java:14-22`）第 **18 行**：
-
-```java
-if (result.hasPosition()) position = Math.max(position, result.getPosition());
-```
-
-`hasPosition()` 就是 `getPosition() != null`（`bean/Result.java:371-373`），
-字段在 `:97-98`（`@SerializedName("position")`，`Long position`）。
-该方法由 `VodPlaybackController.startPositionMs()`（同目录
-`VodPlaybackController.java:441-443`）调用，整条链最终进
-`startPlayback(result, startPositionMs(), episode)`（`:156`）。
-
-**单位是毫秒**：`VodSkipPolicy` 的方法名与参数就是 `startPositionMs` / `resumePositionMs`，
-且 `VodPlaybackController.java:174` 直接 `history.setPosition(request.getStartPositionMs())`。
-
-**关键约束：`position` 取 `Math.max`，只会往后推、不会往前提。**
-所以 play 响应里的 `position` 只能用来"把进度抬到某个点"，**做不到回退**。
-把它当作"从别的端带进度过来"时要清楚：若本地历史比它更靠后，本地值照样赢。
-
-**Q2 结论（`subs` 与 `skips` 都支持）**
-
-- `subs`：`bean/Result.java:76-77`（`@SerializedName("subs")`，`List<Sub>`），
-  经 `PlaySpec`（`player/media/PlaySpec.java:62` 构造时传入 `result.getSubs()`）
-  进 `MediaItemFactory` 的 `.setSubtitleConfigurations(buildSubtitleConfigs(spec.getSubs()))`
-  （`player/media/MediaItemFactory.java:65`）。即 **Fongmi 会真的挂字幕轨**。
-- `skips`：`bean/Result.java:78-80`（`@SerializedName("skips")`，
-  `@JsonAdapter(SkipAdapter.class)`，`List<SkipSegment>`），
-  由 `VodSkipPolicy` 消费。`SkipSegment` 有 **opening / middle / ending 三类**
-  （`bean/SkipSegment.java:14-24` 的 `isOpening()` / `isMiddle()` / `isEnding()`）。
-
-**★ opening 段必须 `start == 0` 才会被自动跳过。** 判据在
-`VodSkipPolicy.java:20`：
-
-```java
-for (SkipSegment segment : result.getSkipSegments())
-    if (segment != null && segment.isOpening() && segment.isValid() && segment.getStart() == 0)
-        position = Math.max(position, segment.getEnd());
-```
-
-注意三点：
-1. `start != 0` 的 opening 段**不会**在起播时被跳过（只会在播放过程中被
-   `activeSegment()` 命中，且还要 `History.isAutoSkip(opening)` 为真，见 `:31`）；
-2. 这一步只在 `autoSkip` 为真时执行（`:19` 的 `if (!autoSkip) return position;`），
-   而 `isAutoSkip` 的条件是 `value == C.TIME_UNSET || value == History.AUTO_SKIP(-1)`
-   （`bean/History.java:212-214`）——**用户手动设过片头时长就会关掉自动跳**；
-3. `middle`（片中广告）与 `ending`（片尾）走的是播放中的 `activeSegment()`，
-   不参与起播定位（`:24-35`）。
-
-因此我们若想让 TV 端开箱即跳片头，`skips` 里 opening 段的 `start` 必须写 `0`。
+Q1/Q2 来自读上游源码（`VodSkipPolicy` / `bean.Result` / `MediaItemFactory`），
+不是本仓库可复现的测试；升级 Fongmi 后需重新核对。
 
 ---
 
-## 附录 A 数据结构定义
+## 附录 A 关键数据结构
 
-### A.1 Site（完整）
+### A.1 Site（配置侧，按需字段）
 
-```typescript
+```ts
+// api: csp_Xxx | xxx.js | xxx.py | node:xxx | https://...api.php/provide/vod
 interface Site {
-  key: string
-  name: string
-  api: string          // csp_Xxx | xxx.js | xxx.py | node:xxx | https://...api.php/provide/vod
-  ext?: string
-  jar?: string
-  type: number         // 3=spider, 1=苹果CMS, ...
-  searchable?: 0|1|2   // 0=强制关 1=开 2=用户关可恢复
-  changeable?: 0|1|2
-  quickSearch?: 0|1
-  danmaku?: 0|1
-  hide?: 0|1
-  indexs?: 0|1
-  timeout?: number     // 秒
-  categories?: string[]
-  header?: Record<string,string>
-  style?: 'rect'|'oval'|'list'
-  click?: string
-  health?: 'unknown'|'ok'|'degraded'|'dead'   // 运行时
-  failCount?: number                           // 运行时
-  lastCheckAt?: number                         // 运行时
+  key: string; name: string; api: string; ext?: string | object; jar?: string
+  type?: number; searchable?: 0|1|2; filterable?: 0|1; changeable?: 0|1|2
+  playerType?: number; timeout?: number; style?: string
 }
 ```
 
-### A.2 PlayResult（归一化后）
+`/api/sites` 实际只回 `key` / `name` / `api` / `ext?` / `health?`，不要按 Fongmi 的完整 Site 字段写前端。
 
-```typescript
-interface PlayResult {
-  ok: boolean
-  url?: string
-  headers?: Record<string,string>
-  parse?: 0|1|2|3
-  format?: string              // 'application/dash+xml' | 'application/x-mpegURL' | ...
-  position?: number            // 起播毫秒
-  subs?: Array<{ url:string; name:string; lang?:string; format?:string; flag?:0|1|2 }>
-  skips?: Array<{ type:'intro'|'ending'; start:number; end?:number }>  // 毫秒
-  urls?: Array<{ name:string; url:string }>   // 多画质（values）
-  drm?: { key:string; type:string; header?:Record<string,string> }
-  danmaku?: string
-  from?: string                // 解析器名称
-  msg?: string                 // 失败原因
+### A.2 PlayResult（`normalizePlay` 之后）
+
+```ts
+interface PlayResult {   // position / skips 单位：毫秒
+  parse?: number; url?: string; header?: string; format?: string; position?: number
+  danmaku?: string; msg?: string
+  subs?: Array<{ url: string; name: string; lang?: string; format?: string }>
+  skips?: Array<{ type?: string; start: number; end?: number | null }>
+  qualities?: Array<{ name: string; url: string }>
 }
 ```
 
-### A.3 Health 状态机
-
-```
-UNKNOWN ──成功──> OK
-   │              │
-   │            失败
-   │              ↓
-   └────────> DEGRADED ──连续 N 次失败──> DEAD
-                  ↑                        │
-                  └────── 探活成功 ─────────┘
-
-N = 3（默认）
-探活间隔：DEAD 状态 24h，DEGRADED 状态 30min
-```
+`normalizePlay` 折三种 url 形状：`{values, position}` 对象、标签/地址成对数组、纯地址数组。
+成对判定必须同时要求「奇数位是 http」且「偶数位不是 http」，否则
+`["http://a","http://b"]` 会被误读成「标签=http://a，地址=http://b」。
 
 ---
 
-## 附录 B 端点全清单（目标态）
-
-### B.1 出口 A（CatVod）
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/config.json` | 完整九项（我们的 jar） |
-| GET | `/config-upstream.json` | 同形状，`spider` 指上游 |
-| GET | `/depot.json` | 多仓列表 |
-| GET | `/spider-latest.jar` | jar 本体（带 ETag/Last-Modified） |
-
-### B.2 出口 B（REST）
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/health` | `{ok, version, capabilities, sites, uptime}` |
-| GET | `/api/sites` | 完整 Site 列表 |
-| GET | `/api/config` | 兼容保留（等同 `/config.json`） |
-| POST | `/api/{site}/home` | — |
-| POST | `/api/{site}/category` | — |
-| POST | `/api/{site}/detail` | — |
-| POST | `/api/{site}/search` | — |
-| POST | `/api/{site}/play` | **归一化输出** |
-| POST | `/api/{site}/action` | — |
-| GET | `/api/{site}/live` | 新增 |
-| POST | `/api/search` | 聚合搜索 |
-| POST | `/api/parse` | 新增（type 1/4） |
-| GET | `/api/proxy/stream` | 视频代理（Range + SSRF 防护） |
-| GET | `/api/proxy/image` | 图片代理 |
-| GET | `/api/proxy/danmaku` | 弹幕（Fongmi 协议） |
-| GET | `/api/proxy/danmaku/search` | 弹幕候选 |
-| GET | `/api/proxy/{do}` | 站点级 proxy（`siteKey` 路由） |
-| POST | `/api/webdav` | WebDAV 转发 |
-| GET | `/api/dns/resolve` | DoH |
-| POST | `/api/config/reload` | 热重载 |
-
-### B.3 出口 C（状态）
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET/POST | `/api/state/progress` | 播放进度 |
-| GET/POST | `/api/state/favorites` | 收藏 |
-| GET/POST | `/api/state/history` | 观看历史 |
-| GET/POST | `/api/state/prefs` | account.* 设置 |
-| GET/POST | `/api/policy` | 兼容保留（旧接口） |
-
----
-
-## 附录 C 术语表
+## 附录 B 术语表
 
 | 术语 | 含义 |
 |---|---|
-| **spider** | 爬虫代码（猫影视/CatVod 规范），883 个类 |
-| **jar** | spider 的打包产物，`spider-latest.jar` |
-| **宿主** | 加载并运行 spider 的环境（Fongmi / 我们的 JVM 宿主） |
-| **config** | 声明式配置 JSON（sites/parses/lives/rules/...） |
+| **spider / jar** | 爬虫代码（猫影视/CatVod 规范）及其打包产物 `spider-latest.jar`（dex 或 class 形态） |
+| **宿主** | 加载并运行 spider 的环境（Fongmi / 我们的 JVM 宿主 / TV 内嵌网关） |
+| **config** | 声明式配置 JSON（sites/parses/lives/rules/…） |
 | **depot / 多仓** | 配置的列表容器（`{"urls":[...]}`），本质是收藏夹 + 切换器 |
-| **parse=1** | spider 表示"这是播放页地址，需要客户端解析出真实地址" |
-| **ext** | 站点参数（通常是域名或 `域名\|密钥`） |
-| **ext.flag** | 解析器支持的线路标识（qq/qiyi/youku/mgtv…） |
+| **parse=1** | spider 表示「这是播放页地址，需要解析出真实地址」 |
+| **ext / ext.flag** | 站点参数（通常是域名或 `域名\|密钥`）/ 解析器优先适配的线路标识（qq/qiyi/…），不是白名单 |
 | **T4_CATVOD** | zyfun 的适配器类型，通过 HTTP 访问外部 CatVod 服务 |
-| **XBPQ** | 苹果CMS → CatVod 的通用适配器（1 个类覆盖 94+ 源） |
-| **drpy** | 声明式 JS 爬虫脚本（占生态 40.9%） |
-| **account.* / device.*** | 设置分类：需同步 / 仅本地 |
+| **XBPQ** | 苹果CMS → CatVod 的通用适配器 |
+| **drpy** | 声明式 JS 爬虫脚本，由外部 Node 运行时执行 |
+| **account / device** | 设置分类：需同步 / 仅本地 |
 | **capabilities** | 后端能力声明，前端据此降级 |
-
----
-
-## 变更记录
-
-| 版本 | 日期 | 变更 |
-|---|---|---|
-| v1 | 2026-10-21 | 初版。基于 docs/20 理念、docs/23 源码级吸收、docs/24 生态实测，结合三端接入讨论形成 |
-| v1.1 | 2026-10-23 | 状态与归因更正：① G7 改为「`/proxy` 无宿主承载 → 端口探测锁死 `-1`」（原"`siteKey` 缺失"归因不准）；② G14/G15 标记为已修（G15 仅后端）；③ Q1/Q2 从上游源码确认，补充 opening 必须 `start==0`；④ V5 与 ADR-D1 增加修订备注（TV 发行版 `motao123-webtv` 与上游兼容并存）。架构分层与 ADR 结论未变 |
-
----
-
-**本文件是施工指南，不是调研报告。**
-所有"现状"结论均有代码行号或文档出处；所有"目标"设计均可验收。
-实施时如与本文冲突，以本文的**决策记录（10.1）**和**不做清单（10.2）**为准。

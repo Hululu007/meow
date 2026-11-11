@@ -1,430 +1,310 @@
 # 插件系统
 
-> 面向三类读者：**普通用户**（怎么装插件）、**插件作者**（怎么写 manifest）、
-> **源站维护者**（怎么发插件源）。
->
-> 代码位置：`apps/desktop/src-tauri/src/installer.rs`（下载/校验/安装）、
-> `plugins.rs`（进程管理）。设计讨论见 `docs/32 §4`。
+PC 端把「影视后端 / 弹幕聚合 / 脚本运行时」做成可独立启停的 sidecar 进程。
+插件本体不进安装包，运行时从插件源下载、校验、解压到用户数据目录。
+本文只写 PC（Tauri）端；fnOS 的 `meowd` 与 TV 运行时模块是另外的实现。
+
+| 关注点 | 代码 |
+|---|---|
+| manifest、进程启停、端口协商、健康检查、孤儿清理 | `client/apps/desktop/src-tauri/src/plugins.rs` |
+| 清单拉取、下载、校验、解压、原子替换、回滚、插件源与令牌 | `client/apps/desktop/src-tauri/src/installer.rs` |
+| Tauri 命令与启动顺序 | `client/apps/desktop/src-tauri/src/lib.rs` |
+| apiserver / danmu-api / drpy 的 manifest | `server/plugin-manifests/*.manifest.json` |
+| 「本机插件」面板 | `client/apps/web/src/views/SettingsView.vue` |
+
+`inject` 写进 `policy.json` 的键如何被后端消费，见 [配置系统](./config-system.md)；
+弹幕链路见 [弹幕](./danmaku.md)。
 
 ---
-
-## drpy 运行时插件（capability: runtime）
-
-把 `.js`（drpy）源接到 Node 里执行。与 `danmu-api` 同一套插件机制，区别是它**注入 `jsRuntime`**：
-
-```json
-"inject": { "target": "{appData}/data/policy.json", "key": "jsRuntime", "value": "http://127.0.0.1:{port}" }
-```
-
-后端看到 `policy.json` 有 `jsRuntime` 后，把所有 api 以 `.js` 结尾的站点转发到
-`POST {jsRuntime}/{site}/{action}`（附 `X-DRPY-Api` / `X-DRPY-Ext` 头）。
-
-源码在 `server/drpy/`（可入库），发布前用 `server/build-plugin-drpy.ps1` 复制到
-`build/plugins/drpy/` 并装依赖——`build/` 与 `plugins/` 都在 .gitignore 里，别把源码放那儿。
-
-**远程模块三档策略**（`DRPY_STRIP_REMOTE` / `DRPY_ALLOW_REMOTE`）见 `server/drpy/README.md`。
-默认只报错不执行，因为实测 `drpy2.min.js` 会纯副作用 import 五个第三方 CDN 上的混淆脚本。
 
 ## 一、整体模型
 
+### 1.1 组件与职责
+
+- `PluginManager`（`plugins.rs`）：扫描 `plugins/`、启停进程、协商端口、轮询健康、
+  写 `enabled.json`、清孤儿。不下载、不校验包。
+- `Installer`（`installer.rs`）：拉清单、解析源、下载、SHA256、解压、原子替换、
+  回滚、记 `installed.json`。不决定进程怎么跑。
+- 前端：展示插件清单与状态、发起安装、轮询进度、拼 API 基地址。插件清单不由页面读字节或下载。
+- `plugin_install`（`lib.rs`）：停旧进程 → 装 → 启用并启动验证 → `finalize`。
+
+**插件全部外置**：安装包不带 `plugins/`，默认首开是「后端未连接」。
+插件根只有两个来源（`resolve_plugins_root`）：`MEOW_PLUGINS` 环境变量（开发，路径必须已存在），
+或 `%APPDATA%/com.meow.player/plugins`（正式安装唯一位置）。
+不保留 `resource_dir()/plugins`：dev 下那就是 `target/debug/`，
+残留会让「清空 `%APPDATA%` 的裸安装」仍然"发现有插件"。
+主位置必须是 `%APPDATA%`——`C:\Program Files` 不可写，下载完没法解压。
+
+### 1.2 目录布局
+
 ```
-┌──────────────────────────────────────────────────────────┐
-│  猫窝 exe（6MB，只有壳 + 前端 + 插件管理器）                │
-│                                                          │
-│  插件管理器（Rust）                                        │
-│   ├─ 读插件源 → 拿到 fnpack.json                          │
-│   ├─ 下载 zip → 校验 SHA256 → 解压 → 原子替换              │
-│   └─ 启停 sidecar 进程（Job Object 随主进程清理）           │
-└──────────────────────────────────────────────────────────┘
-              ↓ 下载
-   %APPDATA%/com.meow.player/plugins/
-   ├── apiserver/    宿主后端（必需才有后端 API）
-   ├── danmu-api/    弹幕多源聚合（可选）
-   └── node/         Node 运行时（工具型，被 danmu-api 依赖）
+%APPDATA%/com.meow.player/
+├── plugins/<id>/          ← 生效目录（只读这里）
+├── plugins.d/             ← installed.json / download-cache / <id>.tmp / <id>.bak
+│                            / local-manifest-<ms>.json / import-<s>.tmp
+├── enabled.json           ← {id: bool}
+├── plugin-sources.json    ← {current, items:[{id,name,url}]}
+├── plugin-token.txt       ← 私有仓令牌（独立文件，不进会回传前端的源列表）
+├── git-proxies.json       ← 加速前缀
+├── plugin-source.txt      ← 旧版遗留的单源地址，启动时仍兼容读一次
+└── data/                  ← policy.json
 ```
 
-**关键设计**：插件全部外置。安装包不带插件，避免"只用后端却要下 100MB"。
+### 1.3 改这块之前要知道
+
+- **只有 Windows 实现完整**：下载用系统 `curl.exe`、解压用 `tar.exe`；
+  Job Object 与 Toolhelp 孤儿清理都是 Windows API，非 Windows 下是空实现。
+- **刻意零新增依赖**：健康检查是手写 HTTP/1.1 GET + `TcpStream`，进程用
+  `std::process::Command`，校验用 `sha2`。引 `reqwest`/`tokio` 会拖进异步栈。
+- **sidecar 的 stdout/stderr 被丢弃**（`Stdio::null`）。插件日志拿不到，
+  排障只能照 manifest 的命令行手工跑一遍。
+- **单实例必须先于 `PluginManager::new`**：`new` 会按插件目录清孤儿，第二实例
+  先构造就会杀掉第一实例的后端。**控制台子进程一律走 `crate::proc::quiet`**——
+  curl / tar / 插件都是控制台程序，漏一处就弹黑框（installer 与 appupdate 曾各漏过）。
 
 ---
 
-## 二、普通用户：怎么装插件
+## 二、普通用户视角
 
-### 2.1 首次使用（两步）
+### 2.1 首次使用是两步
 
-应用安装包里**不含任何插件**，第一次打开一定是「后端未连接」。这是设计如此，
-不是安装失败。
+Rust 侧默认不预置插件源（`SourceList::default` 为空）——写死一个不存在的"官方源"
+会让首开就 404 红条。但 PC 设置页默认勾选「使用应用更新源」（`pluginUseAppSource`
+默认 true）：会把应用更新源（内置默认是 GitHub repo 端点 `…/releases/latest`）
+落成一条名为「应用更新源」的插件源；取不到地址时才退回空列表 + 分步引导。
 
-**第一步：配插件源**
+1. **配源**（通常可跳过）：已有「应用更新源」就能直接下载；也可「添加」自建源，
+   或点「填入本机测试源」（`http://127.0.0.1:9000/packages.json`）。
+2. **下载**：点「下载 <大小>」。流程固定为：停旧进程（仅当在运行）→ 清孤儿 →
+   下载校验解压 → 原子替换 → `set_enabled(true)` → 启动 → 健康检查通过 `finalize`
+   删备份，失败则回滚。
 
-进入「设置 → 本机插件」，如果还没配源，区块里会出现一段引导：
+端口从 manifest 的 `port` 开始协商（apiserver 是 9979），占用就顺延。首页恢复
+不用手动刷新：`initBackend()` 每 600ms 问一次 `boot_info`，最多 60 秒；后端未装、
+被禁用或启动失败时立刻返回，错误态下 `App.vue` 每 5 秒重试。
 
-```
-第一步：配置插件源
-  插件源是一份 JSON 清单，列出可下载的插件（id、版本、下载地址、校验值）。
-  应用本身不含任何插件，必须先从插件源拉到清单才能下载安装。
-  [填入本机测试源]  http://127.0.0.1:9000/fnpack.json
-```
+### 2.2 依赖与工具型插件
 
-- 自建/官方源：点「添加」，填 `https://你的域名/fnpack.json`
-- 本机测试：点「填入本机测试源」一步到位（需先起文件服务器，见 5.3）
-- 无网络：点「粘贴 JSON」，把清单内容贴进去 → 直接变成 `file://` 源
+- `requires` 递归安装（本地版本与远端不同就重装）；`hidden: true` 只在可安装
+  列表隐藏，**不阻止**它作为依赖被装上。
+- Node 运行时装成工具型（`tool: true`）：只提供文件，不常驻。列表显示「已就绪」，
+  没有启停按钮，开关也禁用（4.6）。FFmpeg 转码器同理，且默认 `hidden`——
+  体积约 80MB，装不装都不影响在线播放。
 
-配好后清单会自动拉取，「第二步」提示会变成「点下方插件的『下载』按钮」。
+### 2.3 离线两条通道
 
-**第二步：下载插件**
+| 通道 | 做什么 | 校验 |
+|---|---|---|
+| 粘贴 JSON | 清单存成 `plugins.d/local-manifest-<ms>.json`，源变成 `file://…` | 只要求 `schema_version == 1` |
+| 导入本地包 | 直接选 zip 安装，不经过插件源 | 不校验远端 SHA256，把实际文件 hash 记进 `installed.json` |
 
-在列表里找到「影视后端」，点「下载 37.0MB」。进度条走完后：
+**粘贴 JSON 后 `url` 写相对路径会从清单所在目录复制**（`resolve_download_url`
+的 `file://` 分支 + `download` 的本地复制分支），zip 要和清单放同一目录，
+否则写绝对 `http(s)` 地址。**导入本地包只要求包内有可解析的 `manifest.json`
+且能读出 `id`**，`exec` 不校验，缺了要到扫描/启动阶段才报错。
 
-1. 解压到 `%APPDATA%\com.meow.player\plugins\apiserver\`
-2. 校验 SHA256（不匹配则删除并报错，不会装坏）
-3. 自动启用（写 `enabled.json`）并启动进程
-4. 端口从 9979 开始协商，被占用就顺延到 9980、9981…
-5. 健康检查通过后，首页**自动恢复**（前端每 5s 重试一次后端连接）
+### 2.4 改用远端后端与地址显示
 
-不需要重启应用。装完弹幕默认走爱奇艺直连，不需额外插件。
+| 场景 | 操作 | 界面 |
+|---|---|---|
+| 连别人跑好的服务 | 「后端地址」填 `http://192.0.2.10:9979` → 保存 | 可编辑，有「保存」+「用插件」 |
+| 用本机插件 | 点「用插件」清掉手填地址 | 只读，显示协商端口，无「保存」 |
 
-> **为什么首次打开什么都没有？** 后端是 Java 服务（含 44 个 spider 类 + JRE），
-> 打进入安装包会让体积从 4.5MB 涨到 40MB+，而且大部分用户用不到全部插件。
-> 所以安装包只保留壳子和基础运行环境，插件按需下载。
+关掉本机后端（关开关或点「停止」）是合法形态，不算错误。
 
-### 2.2 想要更多弹幕源
+两个易误解点：**手填回环地址不压过插件**——插件顺延到 9980 时优先用插件地址，
+要连本机另一个服务（如 Docker 的 30011）先把插件关掉；**未运行时列表里的端口
+不可信**——`discover()` 回退显示 `manifest.port`，那只是首选值，不代表已监听。
 
-装「弹幕增强」（10.8MB）——它会**自动连带下载 Node 运行时**（31.1MB），
-总下载约 42MB。装完弹幕源从 1 个变成 20+ 个。
+---
 
-Node 运行时在远端清单里 `hidden: true`，所以列表里看不到它，
-但它会作为「弹幕增强」的依赖自动装上。
+## 三、插件源（索引清单）
 
-### 2.3 没有网络 / 内网环境
+### 3.1 源地址写法
 
-两个离线通道，都需要先有 zip 包：
+插件源文件名是 **`packages.json`**，不是 `fnpack.json`
+（后者是 fpk 应用索引，属于另一条链路）。
 
-1. **粘贴 JSON**：设置页点「粘贴 JSON」，把 fnpack 清单内容贴进去，
-   应用以 `file://` 保存为源。适合清单在手上但没服务器的情况。
-2. **导入本地包**：点「导入本地包」选 `.zip`。这条路径**完全不依赖插件源**，
-   也不校验清单，只校验 zip 内的 manifest。
-
-### 2.4 改用别人的后端
-
-不想用本机后端？两个办法：
-
-| 办法 | 操作 |
+| 写法 | 行为 |
 |---|---|
-| 连别人跑好的服务 | 设置页「后端地址」填 `http://192.0.2.10:9979`，点「保存」 |
-| 关掉本机后端 | 插件列表里把「影视后端」开关关掉，或点「停止」 |
+| `http://host:8099/` | 依次试 `packages.json`、`index.json`，取第一个能取到的 |
+| `http://host:8099/packages.json` | 直接用 |
+| `https://api.github.com/repos/<o>/<r>/releases/latest` | 取 release JSON，再取其中名为 `packages.json` 的资产 |
+| `file:///…/local-manifest.json` | 直接读本地文件（「粘贴 JSON」生成） |
 
-改过手填地址后，输入框右侧会出现「用插件」按钮——点它清掉手填地址，
-恢复由插件托管（重新问插件要端口，不用记端口号）。
+`normalize_source`：空地址、非 `http(s)` 且非 `file://` 拒绝；`.json` 结尾
+**不补斜杠**（否则拼成 `xxx.json/index.json` 404）；release 端点**去掉尾斜杠**
+（`/releases/latest/` 直接 404）；其余补 `/`。目录地址同时接受 `index.json`
+是兼容旧源，新源一律写 `packages.json`。
 
-**关掉本机后端不算错误**，应用不会报警，只是没数据。
+### 3.2 清单结构
 
-### 2.5 后端地址显示规则
-
-设置页「后端地址」这一行有两种状态，必须分清楚：
-
-| 状态 | 输入框 | 右侧 | 含义 |
-|---|---|---|---|
-| 插件托管 | 只读，显示实际端口 | 无「保存」 | 地址由插件协商决定，不用管 |
-| 手填远端 | 可编辑 | 有「保存」+「用插件」 | 连的是你自己指定的服务 |
-
-插件托管时下方会有一行小字说明端口会顺延（9979→9980…），
-所以不要写死端口号。
-
----
-
-## 三、插件源 JSON 规则
-
-### 3.1 文件位置与命名
-
-插件源是一个 JSON 文件，通常叫 `fnpack.json`（也接受 `index.json`）。
-
-应用支持三种源地址写法：
-
-```
-http://host:8099/                           → 自动拼 index.json
-http://host:8099/fnpack.json                → 直接用
-https://gitee.com/user/repo/raw/main/fnpack.json  → 直接用
-```
-
-**末尾是否带斜杠**：以 `.json` 结尾时不补斜杠，否则会变成
-`xxx.json/index.json` 而 404。其他情况自动补 `/`。
-
-### 3.2 完整结构
+顶层 key 是插件 id，**不要用数组**：手写时一眼看出装了哪个，
+数组漏个括号整份配置就废了（示例里的 `size` 数值仅示意）。
 
 ```json
 {
   "schema_version": 1,
-  "generated_at": "2026-10-22T03:20:15Z",
-  "author": { "name": "feimao", "url": "https://github.com/feimao-player" },
-  "min_app_version": "0.6.0",
   "packages": {
     "apiserver": {
-      "display_name": "影视后端",
-      "version": "0.7.0",
-      "platform": ["windows-x64"],
-      "desc": "宿主后端：搜索 / 详情 / 播放 / 弹幕代理",
-      "author": "feimao",
-      "homepage": "",
-      "size": 38843935,
-      "sha256": "0f8a60aafa93...",
-      "url": "apiserver-0.7.0.zip",
-      "requires": [],
-      "hidden": false,
-      "lasttime": "2026-10-22",
-      "api_version": 1,
-      "min_app_version": "0.6.0"
+      "display_name": "影视后端", "version": "1.1.6", "platform": ["windows-x64"],
+      "size": 1234567, "sha256": "0f8a60aa…",
+      "url": "apiserver-1.1.6.zip", "requires": [], "hidden": false
     }
   }
 }
 ```
 
-### 3.3 字段说明
+### 3.3 字段：哪些真正生效
 
-**顶层**
+结构上所有字段都有 `#[serde(default)]`，缺字段不报解析错（`requires` 还把 `null`
+容错成空数组——PowerShell 的 `ConvertTo-Json` 会把空数组写成 `null`）；
+缺 `url` / `sha256` 会在下载或校验阶段失败。
 
-| 字段 | 必填 | 说明 |
-|---|---|---|
-| `schema_version` | ✅ | 固定 `1`。其他值应用直接拒绝（提示升级应用） |
-| `packages` | ✅ | **对象**，key 就是插件 id（不是数组） |
-| `generated_at` | | 生成时间，仅展示 |
-| `author` | | `{name, url}`，显示在连通性测试结果里 |
-| `min_app_version` | | 整份清单的最低应用版本要求 |
+| 字段 | 生效方式 |
+|---|---|
+| `schema_version` | 只认 `1`；拉取与导入两处都拒绝其他值 |
+| `packages` / `author.name` | key = 插件 id / 显示在「测试」结果里 |
+| 顶层 `min_app_version` | **解析但不参与判定**，安装只看条目级 |
+| `version` / `url` / `sha256` / `size` | 比较「可升级」/ 地址 / 强校验 / 进度条总量（写错会让百分比失真） |
+| `display_name` / `desc` / `hidden` | 展示名（缺省 id）/ 未安装条目说明 / 只隐藏列表，依赖照装 |
+| `requires` | 递归安装，**无环检测**，清单不要写环 |
+| `platform` / `api_version` / `lasttime` / `author` / `homepage` | 解析或有元数据，但不校验、不过滤；PC 插件列表不展示 |
 
-**为什么用「顶层 key = id」而不是数组**：用户手写自定义源时一眼能看出装了哪个，
-改起来不容易错位；数组方案漏个括号整份配置就废了。
+条目级 `min_app_version` 在 `install_from_index` 校验：低于要求直接拒绝。
+应用版本取 `boot_info.app_version`（Rust 编译期包版本），**不能用前端
+`__APP_VERSION__`**——那是 Web 应用自己的版本号，两套号混用会把够版本误判成不够。
 
-**packages 里的每一项**
+### 3.4 `url` 的四种写法
 
-| 字段 | 必填 | 说明 |
-|---|---|---|
-| `version` | ✅ | 插件版本，用于判断有无更新（语义化版本比较） |
-| `url` | ✅ | zip 下载地址。**相对路径**相对于清单文件所在目录 |
-| `sha256` | ✅ | zip 的 SHA256（小写 hex），下载后校验，不匹配拒绝安装 |
-| `size` | ✅ | zip 字节数，用于下载进度显示 |
-| `display_name` | | 展示名，缺省用 id |
-| `desc` | | 一句话说明 |
-| `author` / `homepage` | | 作者与主页 |
-| `requires` | | 依赖的其他插件 id 数组，安装时自动级联下载 |
-| `hidden` | | `true` 表示不在列表单独展示（只作为依赖被拉起） |
-| `platform` | | 如 `["windows-x64"]`，当前不做强制过滤 |
-| `api_version` | | manifest 结构版本，固定 `1` |
-| `min_app_version` | | 单个插件的最低应用版本 |
-| `lasttime` | | 更新日期 |
+| 写法 | 解析（源 = `http://h:9000/plugins/packages.json`） |
+|---|---|
+| 相对同级（推荐） | `x.zip` → `http://h:9000/plugins/x.zip` |
+| 子目录 / 上跳 | `sub/x.zip` → `…/plugins/sub/x.zip`；`../x.zip` → `…/plugins/../x.zip` |
+| 绝对 / 协议相对 | `https://cdn.example.com/x.zip` 原样使用；`//cdn.example.com/x.zip` 补源的协议 |
 
-### 3.4 url 的四种写法（都可，实测过）
+拼接基准是**用户填的源地址去掉文件名后的目录**，不是重定向后的地址，
+所以 GitHub Release 的 302 不影响解析。
 
-| 写法 | 示例 | 解析结果（源 = `http://h:9000/plugins/fnpack.json`） |
-|---|---|---|
-| **相对同级**（推荐） | `"apiserver-0.7.0.zip"` | `http://h:9000/plugins/apiserver-0.7.0.zip` |
-| **相对上跳/子目录** | `"../apiserver.zip"` / `"sub/x.zip"` | `http://h:9000/apiserver.zip` / `http://h:9000/plugins/sub/x.zip` |
-| **绝对地址** | `"https://cdn.example.com/x.zip"` | 原样使用 |
-| **协议相对** | `"//cdn.example.com/x.zip"` | 补上源的协议 → `http://cdn.example.com/x.zip` |
+**两个坑**：协议相对必须显式识别 `//`（否则拼成 `http://source///host/path`，
+宽容的测试服务器 200、nginx / GitHub 404）；缓存文件名必须带下载地址哈希——
+只用 `{id}-{文件名}` 时两个源的同名 zip 会互相命中，切到一个配置错误的源会拿
+上个源的包"安装成功"。现在是 `{id}-{sha256(url)前8位}-{文件名}`。
+私有仓的标准链接带 token 也是 404，下载前会用 token 查一次资产列表换成
+`releases/assets/<id>`（9.4）。
 
-拼接基准是**用户填的源地址**（去掉文件名后的目录），不是重定向后的地址。
-所以 GitHub Releases 的 302 跳到 `objects.githubusercontent.com` 不影响解析。
+### 3.5 版本比较与拉取行为
 
-**T1–T5 五组实测结果**（源地址各不相同，含子目录与 `../`）：
+只比前三段数字（`1.2.10 > 1.2.9`）；`-` 后缀忽略（`1.2.3-test` 等于 `1.2.3`）；
+Rust `parse_ver` 与前端 `compareVer` 一致。远端版本高于 `installed.json` 记录 →
+显示「可升级」。应用、apiserver、danmu-api、drpy、Node 是**各自独立的版本线**，
+不要为了整齐强行对齐——对齐意味着每次改前端都要重发大插件包。
 
-| # | 清单 url | 实际下载地址 | 结果 |
-|---|---|---|---|
-| T1 | `tiny-root.zip` | `http://127.0.0.1:9200/tiny-root.zip` | ✅ |
-| T2 | `../tiny-root.zip`（源在 `/sub/`） | `http://127.0.0.1:9200/sub/../tiny-root.zip` | ✅ |
-| T3 | `http://127.0.0.1:9200/tiny-abs.zip` | 原样 | ✅ |
-| T4 | `//127.0.0.1:9200/tiny-root.zip` | `http://127.0.0.1:9200/tiny-root.zip` | ✅ |
-| T5 | `deep/a/b/tiny-deep.zip` | `http://127.0.0.1:9200/deep/a/b/tiny-deep.zip` | ✅ |
-
-**推荐用相对同级**：同一份清单放到 nginx、GitHub、Gitee、对象存储都不用改。
-
-**绝对地址**适合 zip 托管在别处（如 CDN），或「粘贴 JSON」本地清单场景
-——本地清单没有可拼的相对目录。
-
-**关于 `../` 上跳**：应用只做朴素拼接，`../` 交给 HTTP 客户端按 RFC 3986 规范化。
-实测 Python http.server 和 nginx 都能正确处理；极少数老服务器可能拒绝含 `..` 的路径，
-所以**生产建议把 zip 和清单放同一目录**，不要依赖上跳。
-
-### 3.4.1 两个实测踩出来的坑
-
-**① 协议相对（`//`）曾被拼成畸形地址**
-
-旧实现只判断 `http://` / `https://` 前缀，`//host/path` 会被当相对路径，
-拼成 `http://source///host/path`。
-
-这个坑很阴：测试服务器会自动规范化多余斜杠 → 返回 200 →
-**看起来正常**，但真实 nginx / GitHub 上是 404。
-已修：显式识别 `//` 前缀并补协议。
-
-**② 缓存 key 没带下载地址，不同源会串包**
-
-旧实现缓存文件名是 `{id}-{文件名}`，所以 A 源和 B 源里同名的 `tiny.zip`
-会互相命中——切到一个配置错误的源时，明明该 404 却"安装成功"，
-因为用的是上一个源留下的包。
-
-已修：文件名改为 `{id}-{url哈希前8位}-{文件名}`，不同地址永不串。
-
-
-### 3.5 锁定的插件 id
-
-| id | 作用 | 说明 |
-|---|---|---|
-| `apiserver` | 宿主后端 | 提供 `/api/*`。前端靠 `capability: "backend"` 认它 |
-| `danmu-api` | 弹幕聚合 | 提供 `/api/v2/fongmi/danmaku` |
-
-这两个 id 是应用内置识别的。**其他 id 也能装**，应用当普通 sidecar 进程管理，
-但不知道它们的用途（不会自动接线）。
-
-### 3.6 版本规则
-
-- 版本比较用语义化版本：`1.2.3` 逐段比数字
-- 远端 `version` > 本地已装版本 → UI 显示「可升级」
-- `min_app_version` 不满足 → 拒绝安装并提示"需要应用 X 或更高"
-
-**本应用与插件版本独立**：应用 `0.7.2`、apiserver 插件 `0.7.1`、
-danmu-api 插件 `1.0.0`（跟随上游）、node `22.18.0`（跟随上游）。
-
-三者独立演进，请按各自的上游版本号走，不要为了"看起来整齐"强行对齐——
-对齐会导致每次改前端都要重新发一遍 37MB 的插件包。
+- **索引缓存**：成功 60 秒、失败 20 秒。失败也缓存，否则「设置页 ↔ 插件页」
+  来回点会反复起 curl 子进程（黑框连闪、界面卡顿）。
+- **单地址重试 3 次**，退避 1s / 2s；外层已有候选地址与缓存两层保护，再加到
+  5 次会让最坏情况变成 10 个子进程。
+- 没配源时给可操作提示，不抛 404；测试源只拉清单回报包数与可见数。
+  清单解析容忍 BOM（PowerShell 5.1 会写），不 strip 会报
+  `expected value at line 1 column 1`。
 
 ---
 
-## 三·五、故障排查：幽灵后端（★ 最隐蔽的一类）
+## 三·五、故障排查：幽灵后端
 
-**症状**：桌面应用设置页显示「已连接 · 39 源 · 22 带 ext」，
-但本机插件列表里「影视后端」是「未安装」。数据能看，但不知道从哪来的。
+**症状**：设置页显示「已连接 · N 源」，但「本机插件」里后端是「未安装」。
+数据能看，却不知道从哪来。
 
-**根因**：不是插件在跑，也不是配置残留，而是 **HTTP 请求退化成了同源相对路径**。
-
-链路是这样的：
+**根因**：不是插件在跑，而是 HTTP 请求退化成了同源相对路径。
 
 ```
-1. 桌面端开发模式下，页面从 http://localhost:5173 加载（tauri devUrl）
-2. __TAURI_INTERNALS__ 已注入 → isTauri() 为真
-3. 但插件还没就绪，desktopBase 是空串
-4. resolveBase() 返回 '' 
-5. fetch('' + '/api/sites')  →  相对路径  →  请求打到 5173
-6. Vite 的 server.proxy['/api'] 把请求转发到 127.0.0.1:9979
-7. 而 9979 上正好有个独立跑着的后端（命令行 `java -cp classes;libs/* ApiServer 9979`）
-8. → 应用"连上了"，显示那个后端的 39 个源
+页面来自 http://localhost:5173；isTauri() 为真但 desktopBase 是空串
+  → fetch('' + '/api/sites') 变成相对地址，打到 5173
+  → Vite 的 /api 代理转发到 127.0.0.1:9979（手工启动的独立后端）
 ```
 
-**为什么极难发现**：
+应用状态是绿的、插件列表却显示未安装；生产构建是 `tauri://localhost`，
+没有 Vite 代理，**只在开发模式复现**。
 
-- 应用本身没有任何报错，状态是绿的
-- 插件列表还是"未安装"，与"已连接"自相矛盾，但两个区块相隔较远
-- 那个后端是本机另外启动的（开发调试遗留），跟应用完全无关
-- 生产构建（`tauri build`）下页面是 `tauri://localhost`，没有 Vite 代理，
-  这个问题不出现 → **只在开发模式复现**，很容易被当成"改坏了"
-
-**修复**（`apps/web/src/api/index.ts`）：
-
-桌面端只要还没拿到确定地址，`request()` 直接抛错，绝不发同源请求：
-
-```ts
-function backendUnavailable(): boolean {
-  return isTauri() && !resolveBase()
-}
-
-async function request(path, options) {
-  if (backendUnavailable()) {
-    throw new Error('后端尚未就绪：请稍候，或到「设置 → 本机插件」检查影视后端是否已安装并启动')
-  }
-  // …
-}
-```
-
-**通用教训**：桌面端的一切 HTTP 请求都必须带**绝对地址**。
-`base()` 返回空串在 Web 端是同源（正确），在桌面端是"打到错误的地方"（危险）。
-同一段代码在两种环境下语义不同，必须显式区分。
-
-**排查这类问题的快速办法**：
+修复在 `client/apps/web/src/api/index.ts`：桌面端只要还没拿到确定地址，
+`request()` 直接抛错，绝不发同源请求（`backendUnavailable()` = `isTauri() && !resolveBase()`）。
+**通用教训**：桌面端所有请求都必须带绝对地址；`base()` 返回空串在 Web 端是同源（正确），
+在桌面端是"打到错误的地方"（危险）。排查时先确认端口归属：
 
 ```bash
-# 看 9979 到底是谁在听
 netstat -ano | grep LISTENING | grep ":9979"
-# 拿到 PID 后看命令行
 powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=<PID>').CommandLine"
 ```
 
-如果是 `java … ApiServer 9979`，那就是个独立后端，与应用无关；
-应用的插件后端命令行里带 `-jar …\plugins\apiserver\…` 或 `-cp …plugins\apiserver\libs\*`。
+命令行是 `java … ApiServer 9979` → 独立后端，与应用无关；应用的插件后端
+命令行里带 `plugins\apiserver` 路径。
 
 ---
 
 ## 四、插件作者：manifest 规范
 
+`manifest.json` 放在插件 zip 内。安装器允许 zip 多包**一层**目录
+（`find_plugin_root` 只向下找一层），再深就找不到。
+apiserver / danmu-api / drpy 的 manifest 在 `server/plugin-manifests/`，由各打包脚本（`server/build-plugin*.ps1`）复制成
+插件目录里的 `manifest.json`；改字段改那里，不要直接改 `build/` 下的产物。
+node 的 manifest 内联在 `server/build-release.ps1` 里手工拼（PS 5.1 的
+`ConvertTo-Json` 会把中文写成乱码、嵌套空数组写成 `{}`）。
+
 ### 4.1 最小示例
 
 ```json
-{
-  "id": "my-plugin",
-  "name": "我的插件",
-  "version": "1.0.0",
-  "exec": "server.exe",
-  "args": ["--port", "{port}"],
-  "port": 9400,
-  "health": "/health",
-  "healthExpect": "ok"
-}
+{ "id": "my-plugin", "name": "我的插件", "version": "1.0.0",
+  "exec": "server.exe", "args": ["--port", "{port}"],
+  "port": 9400, "health": "/health", "healthExpect": "ok" }
 ```
 
-插件目录里放：`manifest.json` + `server.exe`。打成 zip（manifest 在根层级）。
+### 4.2 字段
 
-### 4.2 完整字段
+| 字段 | 说明 |
+|---|---|
+| `id` / `name` / `version` | 唯一标识（也是目录名，包内必须一致）/ 展示名 / 可升级比较 |
+| `exec` / `execFallback` | 可执行文件（Windows 自动补 `.exe/.bat/.cmd`）/ 备选数组，支持 `../node/node.exe` |
+| `args` / `env` | 命令行参数 / 环境变量，值都支持占位符（4.3） |
+| `port` / `portFallback` | 首选端口 / 占用时的候选；工具型可省略（0 = 不监听） |
+| `health` / `healthExpect` / `health*Ms` | 健康路径 / 响应体需包含的串 / 超时默认 45000、间隔默认 500（下限 100）；各插件可在 manifest 覆盖 |
+| `dataDir` / `cwd` | 数据目录（支持 `{appData}`，缺省 `{appData}/data`）/ 默认插件目录 |
+| `capability` | `backend` / `danmaku` / `runtime`，见 4.6、4.7 |
+| `required` / `fatal` | 事实标记：不禁止停止、不强制自启 / 透传前端，当前不参与判定 |
+| `autostart` | 默认是否随应用启动；用户开关（`enabled.json`）优先 |
+| `inject` / `tool` | 就绪后写配置（4.5）/ 工具型插件（4.6） |
 
-| 字段 | 必填 | 说明 |
-|---|---|---|
-| `id` | ✅ | 唯一标识，也是目录名 |
-| `name` | ✅ | 展示名 |
-| `version` | ✅ | 版本 |
-| `exec` | ✅ | 可执行文件，相对插件目录。Windows 会自动补 `.exe` |
-| `execFallback` | | 备选可执行文件数组，如 `["../node/node.exe", "node"]` |
-| `args` | | 命令行参数，支持占位（见 4.4） |
-| `port` | | 首选端口。工具型插件可不填 |
-| `portFallback` | | 端口被占用时的备选端口数组 |
-| `health` | | 健康检查路径，如 `/api/health` |
-| `healthExpect` | | 期望响应里包含的字符串，如 `"ok":true` |
-| `healthTimeoutMs` | | 启动超时，默认 45000 |
-| `healthIntervalMs` | | 轮询间隔，默认 500 |
-| `dataDir` | | 数据目录，支持 `{appData}` |
-| `cwd` | | 工作目录，默认插件目录 |
-| `env` | | 环境变量（值也支持占位） |
-| `capability` | | `backend` / `danmaku`，决定应用怎么用它 |
-| `tool` | | `true` = 工具型（只提供文件，不作为进程启动） |
-| `autostart` | | 默认是否随应用启动（用户可在设置页覆盖） |
-| `inject` | | 启动后自动写配置（见 4.5） |
+Rust 只消费 `capability == "backend"`（`is_backend`）；没写时按 `id == "apiserver"`
+兜底。`danmaku` / `runtime` 是描述性标记，真正接线靠 `inject` + 后端读 `policy.json`。
+
+`required` 只表示"没有它应用就没有后端"这个事实：用户可以随时停掉 apiserver
+改连远端地址，这是合法使用形态。所以它不禁止手动停止、也不强制 autostart；
+前端只在 required 插件**本应运行却没起来**时提示降级。
 
 ### 4.3 占位符
 
-`args` 和 `env` 的值里可用：
+`args` 与 `env` 的值里可用 `{port}`、`{dataDir}`、`{appData}`
+（`%APPDATA%/com.meow.player`）。工具型插件的 `inject` 额外支持 `{pluginDir}`。
 
-| 占位 | 含义 |
-|---|---|
-| `{port}` | 端口协商后的实际端口 |
-| `{dataDir}` | 数据目录的绝对路径 |
-| `{appData}` | `%APPDATA%/com.meow.player` |
+danmu-api 的端口走环境变量而不是命令行：`"env": { "DANMU_API_PORT": "{port}" }`。
 
-**danmu-api 的端口就是通过环境变量传的**（它读 `DANMU_API_PORT` 而非命令行）：
-
-```json
-"env": { "DANMU_API_PORT": "{port}" }
-```
+`{script}` **不是**占位符，也不会被替换。它只是"这是运行时、需要别人指定脚本"
+的标记，命中即按工具型处理（4.6），这类插件永远不会被真正启动。
 
 ### 4.4 可执行文件查找顺序
 
-**重要**：先在插件目录里找，最后才退回系统 PATH。
+**先在插件目录里找，最后才退回 PATH**：
 
 ```
-1. <插件目录>/<exec>，自动补 .exe/.bat/.cmd
-2. <插件目录>/<execFallback 每一项>，支持 ../ 跨插件引用
-3. PATH 里找（只对裸命令名生效，如 "java"）
+1. <插件目录>/<exec>（无扩展名时试 .exe/.bat/.cmd）
+2. <插件目录>/<execFallback 每一项>（支持 ../ 跨插件引用）
+3. PATH 里找 exec 与 fallback 的裸命令名
 ```
 
-**为什么这个顺序重要**：danmu-api 的 `exec: "node"` 如果先查 PATH，
-会命中系统装的 node，导致我们下载的 `plugins/node/node.exe` 永远用不上——
-用户机器没装 node 时直接失败，装了的机器"看起来正常"但走了错误的解释器。
+顺序反了会踩坑：danmu-api 的 `exec: "node"` 若先查 PATH 会命中系统 node，
+随插件下载的 `node.exe` 永远用不上。另外 Windows 的 `PathBuf` 不会自动补 `.exe`；
+直接 `is_file()` 永远 false，表现为插件永远 `installed=false`。
 
 ### 4.5 自动接线（inject）
-
-插件启动成功后，把实际地址写进指定配置文件：
 
 ```json
 "inject": {
@@ -434,851 +314,305 @@ powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessI
 }
 ```
 
-**不会覆盖用户手填的值**：目标字段已有非空值且不等于本插件地址时，跳过写入。
-这样用户配了 NAS 上的 danmu_api，插件启动不会把它改回 127.0.0.1。
+语义是"让用户零配置"，不是"强制改成我这里"：
+
+- 目标字段已有**非空且不等于本次值**的内容时跳过写入：用户配了 NAS 上的 danmu_api，
+  插件启动不会把它改回 `127.0.0.1`。反过来说，**上次插件自己写的旧端口也算
+  "已有值"**——端口从 9321 顺延到 9322 时不会自动更新，要跟随新端口得先清空该字段。
+- 读-改-写保留其他字段；先写 `.tmp` 再 rename。写失败不算启动失败，
+  只在状态里附 `已启动，但写配置失败: …`。
 
 ### 4.6 工具型插件
 
-只提供文件、不需要常驻进程的（运行时、二进制工具集）：
+判据两个（满足其一）：`"tool": true`，或 `args` 里带 `{script}`（如 node 运行时
+的 `{ "tool": true, "exec": "node.exe", "args": [], "autostart": false }`）。
+
+- `start()` **不 spawn 进程**，直接返回 `phase = ready`、`port = 0`、`base = ""`。
+- 若声明了 `inject`，此时顺手接线：`target` 展开 `{appData}`，`value` 展开
+  `{pluginDir}` 与 `{port}`（后者替换成 `"0"`）。不这么做的话，没有进程的工具插件
+  永远走不到"健康检查后 inject"那段，结果是"装好了但后端不知道路径"
+  （FFmpeg 就是靠这个把 `{pluginDir}/ffmpeg.exe` 写进 `policy.json` 的 `ffmpegPath`）。
+- 前端按 `tool` 隐藏启停按钮、禁用开关，状态标签显示「已就绪」。
+
+### 4.7 drpy 运行时插件（capability: runtime）
+
+把 `.js`（drpy）源接到 Node 里执行。manifest 事实来源是
+`server/plugin-manifests/drpy.manifest.json`（节选，省略 `id` / `name` / `version` /
+`autostart`）：
 
 ```json
-{
-  "id": "node",
-  "name": "Node 运行时",
-  "version": "22.18.0",
-  "tool": true,
-  "exec": "node.exe",
-  "args": [],
-  "autostart": false
-}
+"capability": "runtime", "exec": "node",
+"execFallback": ["../node/node.exe", "../node/node", "node.exe"],
+"args": ["server.js"], "port": 9330,
+"health": "/health", "healthExpect": "\"ok\":true", "healthTimeoutMs": 20000,
+"env": { "DRPY_PORT": "{port}", "DRPY_STRIP_REMOTE": "1" },
+"inject": { "target": "{appData}/data/policy.json", "key": "jsRuntime",
+            "value": "http://127.0.0.1:{port}" }
 ```
 
-表现：UI 显示「已就绪」而非「运行中」，没有启停按钮，状态保持 Stopped 但不算失败。
+danmu-api 用同一套机制，健康端点就是一个真实弹幕查询
+（`/api/v2/fongmi/danmaku?name=test`），超时给到 90 秒（首次要拉聚合源）。
+
+后端接线（`server/host/src/shared/ApiServer.java`）：
+- 运行时地址取 `policy.json` 的 `jsRuntime`；容器可用 `MEOW_JS_RUNTIME` 兜底。
+- `.js` 站点的动作转发到 `POST {jsRuntime}/{site}/{action}`，请求体原样，另带
+  `X-DRPY-Api`（脚本地址）与 `X-DRPY-Ext`（ext 的 URL 编码）。运行时不需要
+  反查站点表。
+- 健康探测 `/health`，结果缓存 15 秒；失败只影响本轮要不要提交脚本源，jar 源
+  照常跑。超时按健康度给：正常 8 秒、熔断期 3 秒（试过 1 秒已回滚——drpy 源
+  要多跳一层容器，压到 1 秒等于必然超时）。写死 30 秒会让 200 多个
+  脚本源逐个耗尽预算，把 jar 源饿死。
+
+**远程模块三档策略**（`server/drpy/host.js`）：`DRPY_STRIP_REMOTE=1` 当空模块跳过
+（打包清单默认）；`DRPY_ALLOW_REMOTE=1` 才真正拉取执行（供应链风险）；
+两者都不设则抛错拒绝执行。实测 `drpy2.min.js` 会纯副作用 import 三个第三方 CDN
+上的混淆脚本，所以默认跳过。源码在 `server/drpy/`（可入库），`build/` 与
+`plugins/` 都在 `.gitignore` 里。
 
 ---
 
-## 五、源站维护者：发布流程
+## 五、安装、升级与回滚
 
-### 5.1 一条命令产出全部资产
+### 5.1 安装顺序
 
-```bash
-cd p:/workspace/ai-projects/meow
+`install_from_index` 的实际顺序：
 
-# 1. 装配插件（含依赖裁剪）
-powershell -File build-plugin.ps1          # apiserver
-powershell -File build-plugin-danmu.ps1    # danmu-api
+1. 取条目并校验条目级 `min_app_version`；没有该 id 报"插件源里没有 X"。
+2. 递归装 `requires`：本地没装、或本地版本与远端不同就重装。
+3. 下载到 `download-cache`（命中缓存且 hash 对得上则跳过），校验 SHA256
+   （不匹配删包并失败）。
+4. 解压到 `plugins.d/<id>-<ver>.tmp/`。
+5. `find_plugin_root` 找 manifest，`validate_manifest` 校验 id 一致且 `exec` 非空。
+6. `preserve_plugin_dist` 把旧 `dist/` 里新包缺失的文件补进新包（5.4）。
+7. 旧目录 rename 成 `plugins.d/<id>.bak/`（失败重试，仍失败报"文件被占用"），
+   新目录 rename 到 `plugins/<id>/`（失败把 `.bak` 改回来）。
+8. 写 `installed.json`（install 结束）。随后 `plugin_install` 调 `set_enabled(true)`
+   → `start()` → `finalize(started)`；启动失败会把 `.bak` 改回正式目录并报"已回滚"。
 
-# 2. 生成发布资产
-powershell -File build-release.ps1
+**为什么用 rename 不用复制**：同盘 rename 原子，中断不会留半截目录；
+复制中途断电会留下损坏插件，下次启动直接加载坏包。
 
-# 3. 本地验证
-powershell -File serve-release.ps1
-```
+**文件被占用的重试**：Windows 下 kill 进程后句柄不是瞬间释放，旧目录改名最多试
+6 次（首次失败等 800ms，之后每次 300ms）。仍失败时把 `os error 32` 翻译成
+可操作提示（先停止或重启应用），原始错误附在括号里。
 
-> 本节脚本名是 2026-10 合并前的流程；现行脚本在 `deploy/scripts/`：`build-plugins.ps1`（装配）、
-> `release.ps1` / `sync-packages.ps1`（发版与清单）。按现行脚本执行（2026-11-04 核对，正文未改）。
+### 5.2 回滚
 
-`release/` 产出：
+`finalize(id, true)` 删 `.bak`；`finalize(id, false)` 删新目录、把 `.bak` rename
+回 `plugins/<id>` 并返回"新版本启动失败，已回滚到上一版本"。安装中途失败时，
+`lib.rs` 若发现旧版本来在运行，会重新 `start` 旧版，避免"升个级反而没后端"。
 
-```
-release/
-├── fnpack.json              ← 清单（应用读这个）
-├── index.json               ← 别名（兼容旧版）
-├── apiserver-0.7.0.zip      37.0 MB
-├── danmu-api-1.0.0.zip      10.8 MB
-└── node-22.18.0.zip         31.1 MB
-```
+### 5.3 升级前必须先停进程
 
-### 5.2 上线到静态服务器
+安装前做两件事：若插件当前 `ready`，`stop()` 并等 800ms 释放句柄；
+无论是否在跑，都 `kill_orphans(id)` 按插件目录扫一遍。
 
-任何能公开访问 `fnpack.json` 的地方都行：
+只做第一步不够：`stop()` 只能停本实例托管的子进程，而升级失败最常见的原因是
+**不是自己起的**旧进程（应用被安装器替换、上一轮异常退出）还占着文件。
 
-**GitHub Releases**
-```
-https://github.com/<org>/<repo>/releases/download/<tag>/fnpack.json
-```
-把 `release/` 下所有文件作为 release 资产上传。
+### 5.4 纯壳插件升级保留 `dist/`
 
-**Gitee**
-```
-https://gitee.com/<user>/<repo>/raw/main/fnpack.json
-```
-把文件推到仓库，用 raw 链接。仓库要公开。
+新包不再带 `spider.jar` 时，整目录替换会让用户原来能用的 jar 站全部
+`ClassNotFoundException`。安装前把旧包 `dist/` 里**新包缺失**的文件复制进新包
+（新包已有的优先，不覆盖）；失败静默，最坏结果是让用户重新导入源包。
 
-**自建对象存储 / Nginx**
-```
-https://cdn.example.com/plugins/fnpack.json
-```
-同目录放 zip 即可。
+### 5.5 导入本地包与卸载
 
-### 5.3 本地测试服务器
-
-`serve-release.ps1` 用 .NET HttpListener 实现，支持：
-- 打印每个请求（确认应用真的在下载）
-- **Range 请求**（断点续传测试需要）
-
-```bash
-powershell -File serve-release.ps1 -Port 8099
-# 应用里填 http://127.0.0.1:8099/fnpack.json
-```
-
-### 5.3.1 nginx 形态实测（子目录部署）
-
-**测试拓扑**（模拟真实生产）：
-
-```
-webroot/
-└── plugins/
-    ├── fnpack.json            ← 应用读这个
-    ├── apiserver-0.7.0.zip    37.0 MB
-    ├── danmu-api-1.0.0.zip    10.8 MB
-    └── node-22.18.0.zip       31.1 MB
-```
-
-应用源填 `http://127.0.0.1:9000/plugins/fnpack.json`（注意**子目录**）。
-
-**清单里 url 保持相对路径**：
-
-```json
-"url": "apiserver-0.7.0.zip"
-```
-
-**实测下载地址**（应用日志 `[plugin] download` 打出来的真实 URL）：
-
-```
-apiserver <- http://127.0.0.1:9000/plugins/apiserver-0.7.0.zip
-danmu-api <- http://127.0.0.1:9000/plugins/danmu-api-1.0.0.zip
-node      <- http://127.0.0.1:9000/plugins/node-22.18.0.zip
-```
-
-相对路径被正确解析到**清单所在目录**，不是域名根。这是子目录部署能工作的前提。
-
-**实测矩阵**：
-
-| 检查项 | 结果 |
-|---|---|
-| 连通测试 | ✅ `可达，3 个插件（2 个可见），发布者 feimao` |
-| 清单拉取 | ✅ 3 个包（apiserver 0.7.0 / danmu-api 1.0.0 / node 22.18.0） |
-| 子目录相对路径 | ✅ 解析为 `/plugins/*.zip` |
-| 37MB HTTP 下载 | ✅ SHA256 通过，自动启动在 9980 |
-| 级联依赖 | ✅ 装 danmu-api 自动拉 node |
-| danmu-api 可用 | ✅ 650 条候选（繁花）/ 2.3s |
-| **Range 206** | ✅ `Content-Range: bytes 0-99/38843962` |
-| **断点续传** | ✅ 缓存截断到 10MB → 重装补齐到 38843962 字节 |
-| 卸载后重装 | ✅ 无文件锁问题 |
-
-**Range 依赖服务器支持**。实测对比：
-
-| 服务器 | Range | 结果 |
-|---|---|---|
-| Python `http.server` | ❌ 返回 200 全量 | 下载能成功，但**无法续传** |
-| 自建 Node 静态服务（模拟 nginx） | ✅ 206 | 续传生效 |
-| nginx（生产） | ✅ 默认支持 | 续传生效 |
-
-所以**生产环境请用 nginx / Caddy / 对象存储**，别用 Python 的临时服务器。
-
-**nginx 最小配置**：
-
-```nginx
-server {
-    listen 80;
-    server_name plugins.example.com;
-    root /var/www/feimao-plugins;
-
-    location /plugins/ {
-        # zip 较大，给足超时
-        send_timeout 300s;
-        # 默认就支持 Range，不用额外配
-        add_header Accept-Ranges bytes;
-    }
-}
-```
-
-目录结构与上面 `webroot/plugins/` 一致，源地址填
-`http://plugins.example.com/plugins/fnpack.json`。
-
-
-### 5.4 发新版流程
-
-```bash
-# 1. 改插件代码，升 manifest 里的 version
-# 2. 重新装配 + 打包
-powershell -File build-plugin.ps1
-powershell -File build-release.ps1
-
-# 3. 上传到服务器，覆盖 fnpack.json + 新增 zip（旧 zip 可保留）
-```
-
-应用点「检查更新」→ 发现远端版本更高 → 显示「可升级」→
-点升级会：下新版 → 校验 SHA256 → 停旧进程 → 原子替换 → 启动验证 →
-成功删备份，失败回滚到旧版。
-
-> **2026-11-09 纯壳升级**：原子替换前会把旧插件 `dist/` 里新包缺失的文件补进新包
-> （`installer.rs` 的 `preserve_plugin_dist`，新包已有的优先）。这样「全量插件 → 纯壳
-> 插件」升级时旧的 `dist/spider.jar` 不会丢，jar 站不会突然失效。
+**导入**：解压 → 找 manifest → 读 id/version → 旧目录进 `.bak` → 新目录落位 →
+写 `installed.json`，成功返回 id 并立刻 `start`（同样保留 `dist/`）。
+**卸载**：先 `stop()` 再删 `plugins/<id>/`、清 `installed.json`；`data/` 与
+`enabled.json` 里的条目不动。
 
 ---
 
-## 六、安装与回滚机制
+## 六、进程管理
 
-### 6.1 目录布局
+### 6.1 状态机与扫描
 
-```
-%APPDATA%/com.meow.player/
-├── plugins/                        ← 生效目录
-│   ├── apiserver/
-│   ├── danmu-api/
-│   └── node/
-├── plugins.d/
-│   ├── installed.json              ← {id: {version, sha256, installedAt}}
-│   ├── download-cache/             ← zip 缓存（重装免重复下载）
-│   ├── <id>-<ver>.tmp/             ← 解压中的临时目录
-│   └── <id>.bak/                   ← 升级前的旧版
-├── enabled.json                    ← 每个插件的启停开关
-├── plugin-sources.json             ← 插件源列表 + 当前选中
-└── data/                           ← 后端数据（policy.json 等）
-```
+`Phase`：`stopped → starting → ready | failed`。
 
-### 6.2 安装流程
+`discover()` 扫描 `plugins/` 下所有含 `manifest.json` 的目录，跳过 `.bak` /
+`.tmp` / `.old` 结尾、`.` 开头、以及 `download-cache`。判断必须在"是不是目录"
+之后、"有没有 manifest"之前：早期版本把 `.bak` 放在 `plugins/` 根下，残留里
+也有完整 manifest，于是列表出现两个同名插件。解析失败仍产出一行 `failed`
+并带错误；排序为已安装 → `required` → id。
 
-```
-1. 拉 fnpack.json
-2. 检查 min_app_version
-3. 递归装 requires（如 danmu-api 需要 node）
-4. 下载 zip 到 download-cache（curl -C - 支持续传；命中缓存且 hash 对则跳过）
-5. 校验 SHA256 —— 不匹配直接拒绝并删包
-6. 解压到 plugins.d/<id>-<ver>.tmp/
-7. 校验 manifest（id 匹配、有 exec）
-8. ★ 停掉旧进程（不停会因文件锁导致 rename 失败）
-9. 旧目录 rename → plugins.d/<id>.bak/
-10. tmp rename → plugins/<id>/
-11. 启动新版 + 健康检查
-12. 成功删 .bak；失败把 .bak 改回来并重启旧版
-```
+### 6.2 端口协商
 
-**为什么用 rename 不用复制**：同盘 rename 是原子的，中断不会留半截目录。
+`pick_port` 依次 `bind("127.0.0.1", port)`：首选空闲就用，否则按 `portFallback`
+取第一个空闲；全占满报"端口 X 及备用端口全部被占用"。
 
-### 6.3 回滚
+`discover()` 对没启动的插件返回 `manifest.port` 作显示值——**那不是预留**；
+真正的端口只用 `start()` 的返回值，不能用循环里的旧状态。
 
-升级失败（启动不起来）时自动回滚：
+### 6.3 健康检查
 
-```
-plugins.d/<id>.bak/  →  plugins/<id>/
-```
+- `health` 为空：固定睡 1500ms，视为就绪；否则轮询 `GET {health}`
+  （单次超时 1200ms），间隔 `max(healthIntervalMs, 100)`，直到 `healthTimeoutMs`。
+- `healthExpect` 为空 → 有响应即通过；否则响应体必须包含该子串（apiserver 用
+  `"ok":true`，比裸 `ok` 更不容易误判）。超时标记 `failed`、写"启动超时：
+  {port} {timeout}ms 内未通过健康检查"并 kill 子进程。
 
-同时把旧版重新启动，避免"升个级反而没后端"。
+### 6.4 `enabled.json` 与启动
 
-**升级前如果旧版在运行，安装失败后也会把它拉起来。**
+- 是否随应用启动：`enabled.json` 的显式值 > manifest 的 `autostart`（原子写）。
+- `plugin_set_enabled` 要求目录里已有 `manifest.json`，否则报"未安装"；启动线程
+  只处理 `installed && enabled`，工具型也进入 `start()` 但不 spawn。
+- `boot_info.fatal_reason` 只在 `required && enabled && phase == failed` 时给出。
+  用户主动关掉（`enabled=false`）或手动停止（`stopped`）都不算故障。
+
+### 6.5 Job Object 与孤儿进程
+
+`RunEvent::ExitRequested` 只在正常退出时触发；任务管理器强杀、崩溃、
+`Stop-Process -Force` 都不触发，sidecar 会残留。所以：
+
+- **Job Object**：`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`。主进程无论怎么死，
+  句柄关闭时内核杀掉整个 job。spawn 后立刻 `AssignProcessToJobObject`。
+- **按路径清孤儿**：`kill_orphans_in` 用 Toolhelp 快照取 exe 路径，在插件目录下
+  就终止。判据必须带**分隔符边界**：裸 `starts_with` 会让 `plugins\api` 命中
+  `plugins\apiserver\jre\bin\java.exe`，升级 apiserver 时误杀 api 插件。
+- **启动与停止都扫**：`PluginManager::new` 清所有插件目录；`start()` 在没有本实例
+  托管子进程时扫一次（不清的话孤儿占着 9979，`pick_port` 顺延到 9980，新旧两个
+  后端同时跑、端口一轮轮往上漂）；`stop()` 在 kill 直接子进程后再扫一次
+  （manifest 若改成包装器启动，服务进程会留下）。
+- **退出与重启**：`ExitRequested` 调 `shutdown_all()`，所以"退出应用"必须走
+  `app.exit(0)`。`restart_backend` 顺序固定 discover → stop → 等 500ms → start，
+  按 `capability=backend` 找插件；start 的健康检查可长达数十秒，必须放独立线程。
 
 ---
 
 ## 七、常见问题
 
-**Q: 插件源连不上怎么办？**
-设置页「插件源」里点「测试」，会显示具体错误。常见原因：
-地址写错（缺 `/fnpack.json`）、服务器不通、清单 JSON 格式错。
+**插件源连不上？** 先点「测试」看具体错误：地址写错、服务器不通、
+JSON 格式错、`schema_version` 不是 1。
 
-**Q: 能不能只装弹幕不装后端？**
-可以，但没后端就没有数据。后端是必需的。
+**弹幕装了还是没多源？** 看 `policy.json` 的 `danmakuApi` 是否被手填地址占着——
+非空值优先，插件不会覆盖（4.5）。清空后重启插件即可。
 
-**Q: 卸载插件会丢数据吗？**
-只删插件文件。`data/` 目录（含 policy.json、观看记录）不动。
+**能手工导入吗？** 能。「粘贴 JSON」建本地清单，「导入本地包」直接装 zip。
+前者生成的清单没有服务器，zip 要和清单同目录，否则 `url` 写绝对地址。
 
-**Q: 为什么弹幕装了还是没多源？**
-检查 `policy.json` 里 `danmakuApi` 是否被之前手填的地址占着（非空值优先）。
-要么改成插件地址，要么清空让它自动填。
-
-**Q: 安装后重启应用，插件还在吗？**
-在。`plugins/` 和 `enabled.json` 都会保留，`enabled=true` 的会自动启动。
-
-**Q: 想用自己搭的镜像？**
-设置页「插件源」→「添加」，填你的 `fnpack.json` 地址，然后选中它。
-可以保留多个源随时切换。
-
-**Q: 没有服务器，能手工导入吗？**
-能。用「粘贴 JSON」把 fnpack 内容贴进去，存成本地清单。
-注意这种模式下清单里的 `url` 必须是**绝对地址**。
-
-**Q: 设置页显示「已连接 · N 源」，但插件列表说"未安装"，怎么回事？**
-这是「幽灵后端」，见第三·五节。99% 是开发模式下请求退化成了同源相对路径，
-连到了本机另一个独立启动的后端。生产安装包不会出现。
-
----
-
-## 七·五、只验证 PC 插件形态的干净流程
-
-想确认"应用确实不依赖任何预装后端，完全靠插件提供"，按这个流程走一遍。
-关键是**先把所有相关进程停干净**，否则残留后端会造成假象。
-
-### 7.5.1 先停干净
-
-```bash
-# 1) 看哪些进程跟本应用有关
-powershell -NoProfile -Command "
-Get-CimInstance Win32_Process | Where-Object {
-  \$_.CommandLine -match 'meow-player|apps.web.*vite|ApiServer|static-server'
-} | Select-Object ProcessId, Name, CommandLine | Format-List
-"
-
-# 2) 确认端口是否被占（这几个都应该是空闲）
-for p in 9979 9980 9321 5173 30010; do
-  netstat -ano | grep LISTENING | grep -qE ":$p\s" && echo "占用: $p" || echo "空闲: $p"
-done
-```
-
-要停的三类：
-
-| 进程 | 怎么识别 | 说明 |
-|---|---|---|
-| 应用主进程 | `meow-player.exe` | 装好的应用或 `target\...\meow-player.exe` |
-| 开发服务器 | `vite.js`（5173/5176/30010） | 只在开发模式存在；**留着它就会造成幽灵后端** |
-| 独立后端 | `java … ApiServer 9979` | 手动调试遗留，跟应用无关，必须停 |
-
-一个命令全停（只杀自己的，不碰系统进程）：
-
-```bash
-# 按端口杀（最准）
-for p in 9979 9980 9321 5173 5176 30010; do
-  pid=$(netstat -ano | grep LISTENING | grep -E ":$p\s" | awk '{print $5}' | head -1)
-  [ -n "$pid" ] && taskkill //PID $pid //T //F
-done
-# 应用主进程
-taskkill //IM meow-player.exe //T //F 2>/dev/null
-```
-
-**注意**：插件文件服务器（默认 9000）**要留着**——它是插件下载源，
-不是应用进程。停了就没法下载插件了。
-
-### 7.5.2 从零验证
-
-1. 确认 `%APPDATA%\com.meow.player\plugins` **不存在**（或删掉）
-   —— 这一步保证是"全新未装插件"状态
-2. 启动安装好的应用
-3. **预期**：首页显示「后端未连接」，文案是
-   "影视后端未就绪：插件还没安装或还没启动完成"，按钮「去设置页安装」
-4. 点「去设置页安装」→ **必须能进设置页**（进不去就是导航 bug，见下）
-5. 设置页「后端地址」显示「（插件启动后填充）」+ 灰字「等待插件启动」
-6. 「本机插件」区块显示「第一步：配置插件源」引导
-7. 点「填入本机测试源」→ 清单拉取成功 → 出现「影视后端 未安装 37.0MB [下载]」
-8. 点「下载」→ 进度条 → 装完自动启动
-9. 回首页 → **5 秒内自动恢复**（不用手动刷新），显示站点列表
-10. 回设置页 → 「后端地址」变成 `127.0.0.1:9979`（或顺延端口），只读，
-    「已连接 · N 源」
-
-第 9 步的自动恢复靠前端 5s 轮询（`App.vue` 里 watch `store.error`）。
-
-### 7.5.3 三个曾经验证失败的检查点
-
-| 检查点 | 曾经的错误表现 | 现在 |
-|---|---|---|
-| 点「设置」是否进得去 | URL 变了但页面还是红框 —— 因为 `<main v-else>` 让 RouterView 在 error 时不渲染 | 路由始终渲染，红卡只在首页 |
-| 后端地址显示什么 | 桌面端显示「同源 /api」，用户以为是 Web | 插件托管时显示实际地址并注明"由插件决定" |
-| 空插件源显示什么 | 红色「拉取插件列表失败: 404」—— 因为预置了一个不存在的官方源 | 空列表 + 分步引导，不报红 |
-
-### 7.5.4 判定标准
-
-满足以下全部，才算"插件形态真的可用"：
-
-- [ ] 删掉 `plugins/` 后重开应用，**没有任何数据**（0 源，不是"39 源"）
-- [ ] `netstat` 确认 9979/9980 上**没有** java 进程
-- [ ] 装插件后端口是插件自己协商的（看设置页只读地址）
-- [ ] 强杀应用（任务管理器结束进程）后，`netstat` 确认 java 也跟着没了
-      （Windows Job Object 保证）
-- [ ] 卸载插件后 `plugins/apiserver/` 消失，`data/` 保留
+**显示「已连接」但插件未安装？** 见「三·五、幽灵后端」，只在开发模式出现。
 
 ---
 
 ## 八、已知限制
 
-1. **仅 Windows**：下载用系统 `curl.exe` + `tar.exe`（Win10 1803+ 自带）。
-   更老的系统会提示"找不到 curl"，此时只能用「导入本地包」。
-
-2. **SHA256 是唯一校验**：清单本身靠 HTTPS 保护。如果源站被入侵，
-   攻击者可以同时改清单和 zip——这时 SHA256 拦不住。
-   第一版先依赖 HTTPS + 固定域名，未来可加清单签名（公钥内置）。
-
-3. **平台字段不强制**：`platform: ["windows-x64"]` 只作展示，
-   应用不会据此拒绝安装其他平台的包（当前只发 Windows 包）。
-
-4. **不支持增量更新**：每次升级下载完整 zip。apiserver 37MB 尚可接受，
-   未来包更大时需要实现差分。
+1. **仅 Windows 10 1803+**：下载依赖系统 `curl.exe`、解压依赖 `tar.exe`，
+   两者缺任一则在线安装和「导入本地包」都不可用。
+2. **SHA256 是唯一内容校验**：清单没有签名，只校验 schema（且允许 http 源）。
+   源站被入侵时可以同时改清单和 zip，SHA256 拦不住。
+3. **平台与更新粒度**：`platform` 不参与过滤、不拒绝安装；每次升级下载完整
+   zip，没有增量更新。
+4. **有些字段只解析不生效**：顶层 `min_app_version`、`api_version`、
+   包级 `author` / `homepage`。
+5. **插件日志被丢弃**（`Stdio::null`）；**`requires` 没有环检测**。
 
 ---
 
-## 九、清单规则：插件 + 应用版本统一控制
+## 九、清单：插件与应用条目共用
 
-**一份清单同时管两件事**：插件版本，和应用自身（PC / TV）的版本。
-文件名 `packages.json`，**做成 Release 资产，不进 git**（理由见 9.0）。
+### 9.1 为什么清单挂 Release 资产
 
-### 9.0 放哪里、地址怎么填
+一份 `packages.json` 同时管插件条目和应用自身（PC / TV）的条目，作为 Release
+资产发布、**不进 git**：否则每次发版都要往 `main` 提交并处理 pull/push 冲突
+（发版侧由 `sync-packages` 上传资产，见 [构建与发版](./build-release.md)）。
 
-**插件源和应用更新源是两个入口**（格式相同，但不要互相假设）：
+release 端点返回的是描述 release 的 JSON，清单是其中名为 `packages.json` 的
+资产，要再取一层。**解析必须两边一致**，否则症状是"插件源填对了却拉不到清单"
+（把 `.../releases/latest` 当目录拼 `.../latest/packages.json`，必然 404）：
 
-- 应用更新源：设置 → 维护 → 应用更新 → 更新源；**留空 = 内置**
-  `https://api.github.com/repos/upchr/meow/releases/latest`。
-- 插件源：设置 → 本机插件 → 插件源（可多源）。
-- 私有仓在 **设置 → 网络与加速 → GitHub 加速 → 访问令牌** 填只读 PAT；
-  插件源与应用更新共用这一份（PC 写 `plugin-token.txt`）。
-- 公开源不需要 token；GitHub 加速与候选回退见 §10。
+- **插件安装器**（`installer.rs`）：`is_github_release_endpoint` + `manifest_asset_from`，
+  拉该端点的 release JSON 直接取资产，有单元测试钉住判定规则。
+- **应用更新**（前端 `appUpdate.ts`）：`isReleaseEndpoint` + `pickManifestRelease`，
+  解析统一收口在前端——原生两层解析会把已取回的清单再当 release JSON 解析一遍
+  而报错；`appupdate.rs` 留有同规则的 Rust 参考实现（`pick_release_with_manifest`），
+  当前 `#[allow(dead_code)]` 故意保留。
 
-| 用途 | 位置 |
-|---|---|
-| 清单 | Release 里的 `packages.json` **资产**（**不进 git**） |
-| 安装包 / 插件 zip | 同一个 Release 的其它资产 |
+### 9.2 清单结构（含应用条目）
 
-**★ 为什么清单不放进 git**：进 git 的话每次发版都要往 main 提交一次，
-本地每次都得先 `git pull` 才能 `git push`——发版越频繁摩擦越大。
-挂 Release 后 git 完全不碰，本地零影响。
-
-**★ 为什么客户端仍只需配一次**：填的是 **repo 级**端点，不是资产地址。
-客户端先取 release JSON，从资产列表里找 `packages.json` 的 id，再拉内容。
-地址里没有 asset id，所以永远不用改。
-
-（`github.com/.../releases/latest/download/packages.json` 这种固定地址
-私有仓打不开——实测 000，只能走 API。）
-
-**★ 三处必须同源**：这个端点判定写在
-前端 `isReleaseEndpoint` / `appupdate.rs` `is_github_release_endpoint` /
-`installer.rs` `is_github_release_endpoint` 三处。
-踩过：只改前端时插件安装器把 `.../releases/latest` 当成目录去拼
-`.../latest/packages.json`，必然 404，症状是"插件源填对了却拉不到清单"。
-
-### 9.0.1 私有仓 vs 公开仓（实测差异）
-
-| 地址形式 | 匿名 | 带 token | 说明 |
-|---|---|---|---|
-| `raw.githubusercontent.com/...` | 404 | **200** | 清单走这条 |
-| `github.com/.../releases/download/...` | 404 | **404** | ❌ 私有仓**根本不可用** |
-| `api.github.com/repos/.../releases/assets/<id>` | 404 | **200** | 私有仓唯一可用路径 |
-
-**这是最反直觉的一条**：私有仓的标准下载链接**带 token 也是 404**。
-所以客户端在有 token 时，会先查一次 API 把标准链接换成 `assets/<id>` 端点
-（`toDownloadableUrl()`）。代价是多一次 API 往返；仓库转公开后这步自动跳过。
-
-清单里**始终写人类可读的标准链接**，不要写 API 端点——这样将来开源
-不用改清单。
-
-### 9.0.2 GitHub 加速代理（内置预设 + 自动回退）
-
-实测从本机直连 `github.com` 经常 TLS 握手超时（`gh` 命令连续两次
-`net/http: TLS handshake timeout`）。同一份 ~15MB 资产：
-
-| 代理 | 3 次状态 | 耗时 | Range |
-|---|---|---|---|
-| `gh.llkk.cc`（**默认首选**） | 200/200/200 | **0.6–1.3s** | 206 ✅ |
-| `gh-proxy.com` | 200/200/200 | 0.8–15.9s（抖动大） | 206 ✅ |
-| `ghproxy.net`（兜底） | 200/**000**/**000** | 超时 | 实测不稳，仅留作兜底 |
-
-候选顺序：**直连 → gh.llkk.cc → gh-proxy.com → ghproxy.net**。
-原生侧逐个尝试，第一个能下通的胜出（`downloadCandidates()` /
-`download_with_fallback()`）。
-
-两条硬规则：
-
-- **只对 `releases/download` 链接加代理**。API 资产端点不加——公共代理
-  不转发 `Authorization`，中转反而必失败。
-- **sha256 不匹配时不换线路重试**。内容错了换地址下同一份还是错的，
-  而且可能是投毒，必须硬失败。
-
-（这三个代理实测都不代理 `raw`，所以清单仍走直连。）
-
-### 9.0.3 清单结构
+与 3.2 同构，只是多出应用条目：
 
 ```json
-{
-  "schema_version": 1,
-  "generated_at": "2026-10-29T03:00:00Z",
-  "author": { "name": "meow", "url": "https://github.com/upchr/meow" },
-  "min_app_version": "0.6.0",
-  "source_tag": "release-v0.9.30",
-  "packages": {
-    "meow-pc": {
-      "display_name": "PC 安装包",
-      "version": "0.9.30",
-      "platform": ["windows-x64"],
-      "desc": "启动 5 秒后自动检查新版本…（多行，客户端弹框按行渲染）",
-      "size": 4865624,
-      "sha256": "4e834009…",
-      "url": "https://github.com/upchr/meow/releases/download/release-v0.9.30/meow-setup-0.9.30.exe",
-      "requires": [],
-      "hidden": true,
-      "lasttime": "2026-10-29"
-    },
-    "meow-tv": { "…": "同上，platform 写三个 android-*" },
-    "apiserver": { "version": "0.9.28", "url": "…/apiserver-0.9.28.zip", "hidden": false }
-  }
+"packages": {
+  "meow-pc": {
+    "display_name": "PC 安装包", "version": "1.2.3", "platform": ["windows-x64"],
+    "size": 1234567, "sha256": "4e834009…",
+    "url": "https://github.com/upchr/meow/releases/download/release-v1.2.3/meow-setup-1.2.3.exe",
+    "hidden": true
+  },
+  "apiserver": { "version": "1.1.6", "url": "apiserver-1.1.6.zip", "hidden": false }
 }
 ```
 
-**`desc` 是给用户看的更新说明**（客户端弹框正文，多行按行渲染）。
-来源三档：`CHANGELOG.md` 的 `## <版本>` 小节 → `git log` 的 feat/fix/perf
-→ 模板串。**发版前写 `CHANGELOG.md` 那一节**是唯一能让用户看懂改了什么的方式，
-写法见 [deploy/README.md §4.7](https://github.com/upchr/meow/blob/main/deploy/README.md)。
-
-**保留 id 用品牌名**：`meow-pc` / `meow-tv`（不是 `app-pc`/`app-tv`）。
-清单是给人看的（用户可能手写、也可能在浏览器里直接打开排查），
-品牌名一眼知道是什么，且与 `apiserver` / `danmu-api` / `drpy` 一致。
-
-**两条应用条目都必须 `hidden: true`**：否则会出现在「本机插件」的可安装
-列表里（那边只过滤 `hidden`），用户点了会走插件安装器、解压找不到
-`manifest.json` 而失败。
-
-旧的 `app` / `app-pc` / `app-tv` 仍能读（`LEGACY_APP_IDS`），是升级路径，
-**新清单不要再写它们**；`sync-packages.ps1` 会自动清掉。
-
-### 9.0.4 版本怎么定（客户端不看 GitHub 的 "latest"）
-
-```
-客户端：拉清单 → 读 packages['meow-pc'].version
-        → isNewer(清单版本, 自己构建时的版本) → 有更新才提示
-```
-
-**清单是唯一信息源**。发新版只需更新这一个 JSON，客户端下次检查就知道。
-
-为什么不跟 `releases/latest` 走：
-
-- `latest` 按**发布时间**挑，不是按版本号（给旧版补 hotfix 会让 latest 回退）
-- `draft: true` 的 Release **不参与 `latest` 计算**——`release.yml` 就是
-  draft，忘了点 Publish 的话 latest 永远停在旧版
-
-版本比较按数字逐段（`isNewer` 单测锁定）：`0.9.10 > 0.9.9` 字符串比较是错的；
-`0.9.30-test` 与 `0.9.30` 视为相同（忽略 `-` 后缀）。
-
-### 9.0.5 ★★ 客户端**不用** `/releases/latest`，自己挑
-
-上面那些坑不是理论。实测（2026-10-29）：我补发了一个 `release-v0.9.20`
-（时间更晚、版本更低）之后，GitHub 的 `latest` **立刻退到了 0.9.20**——
-不做处理的话所有客户端会被"降级"。
-
-所以客户端填的地址虽然是 `.../releases/latest`，**实际行为是**：
-
-```
-1. 拉 /releases?per_page=30
-2. 过滤：非 draft、非 prerelease、资产里**有 packages.json**
-3. 按 tag 里的数字段比大小，取版本最大的
-4. 拉那个 tag 的 release 详情 → 取 packages.json 资产 → 拉内容
-```
-
-实测对比（同样的仓库状态）：
-
-| 方式 | 选中 |
-|---|---|
-| GitHub `/releases/latest` | `release-v0.9.20` ❌ 会降级 |
-| 我们的挑选逻辑 | `release-v0.9.35` ✅ |
-
-另外它还顺带解决了"latest 落到没有清单的 release 上"——那种情况客户端会报
-"该 release 里没有 packages.json"，**整个更新链路**（不只插件）都瘫痪。
-实测当前仓库里有 4 个无清单/draft 的 release，全部被跳过。
-
-实现：前端 `pickManifestRelease`、Rust `pick_release_with_manifest`。
-两边都有单测锁定「跳过 draft/prerelease/无清单」和「补发旧版不降级」两个判据。
-
-### 9.1 清单怎么生成（不动手）
-
-#### ★★ 插件不是每个 release 都发 —— 清单必须增量合并
-
-这条是最容易踩的：**发 PC 的那次 release 里没有插件资产**，
-清单若"只写本次 release 有的东西"，插件条目就被删了，用户以为插件没了。
-
-所以基线**必须从线上现有的清单读**，读本地临时文件不算数：
-
-| 优先级 | 基线来源 | 说明 |
-|---|---|---|
-| ① | 本次 release 的 `packages.json` | 同一个 Release 复议 |
-| ② | **上一个**（非 draft）release 的 `packages.json` | 常规路径 |
-| ③ | 本地 `$TEMP/packages.json` | 仅本地调试；**CI 全新 runner 上必然没有** |
-
-踩过（2026-10-29，用户点出）：原来只读 ③。本地反复跑时临时文件里有残留，
-看起来"能保留旧条目"；**上 CI 就是空的** → 只保留本次资产 → 插件全被删。
-后果极隐蔽：一切看起来都成功。
-
-实测验证（`release-v0.9.35` 只有 exe，drpy 在 `0.9.34`）：
-
-```
-基线：release release-v0.9.34 的 packages.json → 2 个条目（meow-pc, drpy）
-  meow-pc  <- meow-setup-0.9.35.exe     ← 本次更新
-  · drpy：本次无资产，保留原条目         ← 继承
-→ 上传后的清单：
-  meow-pc  v0.9.35  url→ release-v0.9.35/meow-setup-0.9.35.exe
-  drpy     v0.1.0   url→ release-v0.9.34/drpy-0.1.0.zip          （指向旧 tag）
-```
-
-客户端实测：能拉到这条继承的 drpy，并成功下载+校验+解压落盘。
-
-**★ 继承的资产会被复制到本次 release（默认行为，加固 2026-10-29）。**
-
-上面那个"只发 PC 但保留 drpy"的清单里，drpy 的 url 原本指向旧 tag
-（`release-v0.9.34/drpy-0.1.0.zip`）。那有两个问题：旧 release 一删插件就装不上；
-私有仓的标准链接还本来就要靠客户端转 API 端点。
-
-所以脚本会把继承条目的资产**下载一份、上传到本次 release**，然后把 url 改指本次：
-
-```
-复制继承资产：drpy（release-v0.9.34 → release-v0.9.35）
-已并入本次 release：drpy
-→ 清单里 drpy 的 url 变成 release-v0.9.35/drpy-0.1.0.zip
-```
-
-**每个 release 自包含，删任何旧 release 都不影响。**
-
-实测验证：把 `release-v0.9.34` 删掉之后，客户端仍能从 0.9.35 装 drpy
-（下载+校验+解压落盘全通）。
-
-代价是多占空间（apiserver 37MB / ffmpeg 37MB 这类大插件）。省空间的开关：
-`-NoCopyAssets`。开了它则保留"别删旧 release"这条运维规则，且脚本会逐个
-校验继承条目的资产是否还在，不在就红字警告：
-
-```
-⚠ 以下继承条目的 url 可能失效：
-    · drpy（url 指向 release-v0.9.34 的 drpy-0.1.0.zip，但该资产不存在）
-```
-
-#### 用法
-
-```bash
-# 取 latest release（自动跳过 draft / prerelease），生成并上传清单
-./deploy/scripts/sync-packages.ps1
-
-# 指定 tag
-./deploy/scripts/sync-packages.ps1 -Tag release-v0.9.34
-
-# 只生成不上传（本地想看内容）
-./deploy/scripts/sync-packages.ps1 -Tag release-v0.9.34 -SkipUpload
-
-# 只看不写盘
-./deploy/scripts/sync-packages.ps1 -Tag release-v0.9.34 -DryRun
-```
-
-**★ 不下载安装包重算 sha256**：GitHub Release 资产自带
-`digest: "sha256:<hex>"`（实测可用），直接读它。省一次 11MB 下载。
-
-**★ 按 tag 前缀只更新对应条目**（与 `release.yml` 的 scope 判定一致）。
-只发 `tv-v*` 时不会动 `meow-pc` 条目——否则那个 release 里没有 exe，
-全量重建会把 PC 条目删掉，用户以为"PC 没更新"。
-
-**★ 上传后会回读校验**：重新拉一次 Release 上的 `packages.json`，
-比对条目名集合。踩过——同名资产已存在时 POST 会被拒，
-只判断响应文本会漏过去，结果"脚本说成功、Release 上还是旧清单"。
-
-### 9.2 自动化：Release Publish 后自动同步
-
-`.github/workflows/release.yml` 里有 `sync-packages` job：
-
-```
-打 release-v* tag → 构建 → 建 draft Release → 【人点 Publish】
-                                                  ↓
-                              release: published 事件 → sync-packages job
-                                                  ↓
-                          生成 packages.json → gh 上传成该 Release 的资产
-                                                  ↓
-                                    git 完全不碰（本地零影响）
-```
-
-三条实现约束：
-
-1. **必须在 Publish 之后**：draft 的资产对 API 不可见
-   （`/releases/tags/<tag>` 拿不到 assets），所以用 `release: [published]`
-   事件，不在 publish job 里顺带做。
-2. **`plan` job 必须排除 `release` 事件**：`release: published` 会唤醒整个
-   workflow，那时没有 tag（`github.ref` 是默认分支），`plan` 里
-   `GITHUB_REF#refs/tags/` 得到空串会落到 `*)` 报"无法识别"，连带下游全红。
-   下游 job 都 `needs: plan`，拦住这一个就够。
-3. **清单挂 Release 资产，不提交 git**：见 §9.0 的理由。
-
-### 9.2.1 按需跳过插件（省 runner 时长）
-
-四个插件的版本线本来就是独立的，构建成本差别巨大：
-
-| 插件 | 产物 | 版本线 | 构建代价 |
-|---|---|---|---|
-| apiserver | 37.9MB | 跟主版本 0.9.x | 慢（jlink 裁 JRE） |
-| danmu-api | 11.2MB | 1.0.0 独立 | `git clone` 上游 + `npm install` |
-| drpy | 3.8MB | 0.1.0 独立 | 快 |
-| ffmpeg | 37.1MB | 9.0.2 独立 | **下载 110MB 再解压** |
-| node | 31.1MB | 22.18.0 独立 | 中 |
-
-所以：
-
-- `release-v*` / `pc-v*` **默认只构建 apiserver**（其余插件极少变，顺带构建等于白烧时长）
-- `plugins-v*` 构建全部插件；`tv-v*` 只出 TV 壳（不带插件）；`tv-plugins-v*` 只出运行时模块
-- 要全量：用 `workflow_dispatch`，勾 plugins 并把 `plugins_only` 留空
-- `pcplugins-v*` 已删除（2026-11-06），不要再用
-
-实现：`release.yml` 的 `plugins_only` → `_plugins.yml`（Windows runner）；PC 壳在 `_pc_shell.yml`（Windows runner）。
-
-### 9.3 更新源怎么来
-
-| 平台 | 清单来源 | token |
-|---|---|---|
-| PC | **设置 → 维护 → 应用更新 → 更新源**（留空 = 内置 GitHub Release） | 全局「GitHub 加速 → 访问令牌」→ `plugin-token.txt`（插件与应用更新共用） |
-| TV | **设置 → 维护 → 应用更新 → 更新源**（应用与运行时模块共用） | `localStorage['meow.updateToken']` |
-| Web | 不显示该分区（没有安装包概念） | — |
-
-★ **留空不等于用插件源**：内置默认源优先于插件源（`getUpdateSource()`：
-手填 > 内置 > 插件源）。想用自建镜像/插件源，必须手填。
-
-★ **PC 上 token 只填一次**：设置页「GitHub 加速 → 访问令牌」写进
-`%APPDATA%/com.meow.player/plugin-token.txt`，插件安装器读同一份
-（`source_token()`）。公开源于空即可。
-
-★ **候选回退**：公开 GitHub 地址会按全局加速列表逐个尝试；私有仓 token
-请求不经过任何代理。详见 §10。
-
-### 9.4 本地怎么测（不用真发版）
-
-```powershell
-# 1. 造一份「版本号 +1」的清单（安装包原样复制）
-powershell -File server/serve-update-test.ps1
-
-# 2. 起本地静态服务（带 CORS + apk/exe MIME + Range）
-powershell -File server/serve-release.ps1 -Port 8099 -Dir release/update-test
-
-# 3. 应用 → 设置 → 应用更新 → 更新源填 http://127.0.0.1:8099/packages.json
-```
-
-装上去的是当前版本的包内容，验证的是**链路**。验完清空更新源。
-
-### 9.5 分平台与安全
-
-- `platform` 按 ABI 匹配：TV 用原生 `meowTv.appUpdaterPlatform()` 报的
-  `arm64` / `armv7` / `x86_64`，**不靠 UA 猜**。挑错会下到装不上的包
-  （`INSTALL_FAILED_NO_MATCHING_ABIS`）。`meow-tv` 条目要带
-  `android-x86_64`——模拟器（MuMu/AVD）报的就是它，而这个包实测
-  `lib/` 条目为 0（纯 Java），x86_64 装得上。
-- **必须校验 sha256，且失败必须中止**（在原生做，不匹配的文件直接删）。
-- 只接受 `http(s)` 地址。
-- 安装只接受下载缓存目录内的路径（PC 用 `canonicalize` 比对，
-  否则 invoke 就变成"运行任意 exe"）。
-- **绝不静默安装**：只提示 + 用户点击。静默替换应用自己在本机执行场景下
-  等于给了远端任意代码执行能力。
-- token 只进原生请求头，**不进 URL、不进日志**，也不进 `plugin-sources.json`
-  （那个结构会整体回传前端，容易被界面误显示）。
-
-### 9.6 清单读取与下载都在原生做
-
-| 端 | 清单 | 下载 | 校验 |
-|---|---|---|---|
-| PC | `appupdate.rs`，`curl.exe -s -L --fail` | `curl.exe -L --fail -C -` | Rust `sha2` |
-| TV | `AppUpdater.java`，OkHttp | OkHttp 流式写 `cacheDir/updates/` | Java `MessageDigest` |
-
-页面（`api/appUpdate.ts`）只做：比版本、展示、点按钮、轮询进度。
-
-三条否决"页面 XHR"的实测：
-
-1. **GitHub Release 资产无 `Access-Control-Allow-Origin`**（302 到
-   `release-assets.githubusercontent.com`，最终 200 也不带）→ 页面 XHR 被拦
-2. **私有仓的 token 发不出去**：`raw` 的 CORS 预检对
-   `access-control-request-headers: authorization` 回 403 且无 `Allow-Headers`
-3. 11MB apk 过 `addJavascriptInterface` → base64 约 **15MB** 字符串
-
-★ **app_update_manifest_text 必须 async + spawn_blocking**：同步 command 在
-Tauri 里跑在主线程，实测单次 ~380ms、三个并发 1142ms（串行排队，UI 卡住）。
-改 spawn_blocking 后三并发 540ms，不阻塞界面。
-
-★ **那 ~350ms 是"在 Tauri 里启动 curl 子进程"的固有开销**，不是本功能引入的：
-项目原有的 `plugin_test_source`（同样调 curl）实测也 370–385ms，而同样一条
-curl 在 shell 里只要 12ms。要消掉它得换成 Rust 内置 HTTP 客户端
-（`ureq`，纯同步、单一依赖），这会破坏"零新增依赖"约定，待定。
-
-### 9.7 安装这一步的平台差异
-
-| 平台 | 做法 | 注意 |
-|---|---|---|
-| Android | APK 写 `cache/updates/` → `FileProvider` 出 `content://` → `ACTION_VIEW` | Android 7+ 不允许 `file://`（`FileUriExposedException`）；需 `<provider>` + `<queries>` |
-| Windows | `app_update_install(path)` → `cmd /C start` 拉起安装器 | 路径必须在 `cacheDir/updates` 内（防"运行任意 exe"） |
-
-★ Android 侧先 `resolveActivity` 再 `startActivity`：部分定制 ROM / 模拟器把
-安装器藏起来，`startActivity` 不抛异常但**没有任何 Activity 进栈**
-（用户看到"点了没反应"）。判空后回一句「没有可用的安装器；安装包已保存到 …」。
-
-★ 安装包文件名用 **ASCII**（`meow-tv-0.9.30.apk` / `meow-setup-0.9.30.exe`）：
-中文名进 URL 要百分号编码，`Content-Disposition` 与中间代理都有出问题的先例。
-release 目录里同时保留中文名给人看，清单指 ASCII 名。
-
-### 9.8 当前状态（2026-10-29 基线，2026-11-09 复核）
-
-| 项 | 状态 | 证据 |
-|---|---|---|
-| PC 本地全链路 | ✅ | 4.6MB / 1.5s，sha256 一致，5 个失败用例全拒，安装路径限制生效 |
-| PC 从 GitHub 私有仓 | ✅ | 检出 + 下载 + 校验 + **NSIS 向导弹出**全通 |
-| 清单挂 Release + repo 级端点 | ✅ | 上传/回读校验通过；客户端只填 `releases/latest` 即检出 |
-| **插件从 GitHub 私有仓** | ✅ | 清单拉到 `drpy,meow-pc`；drpy(3.8MB) 下载+校验+解压落盘成功 |
-| GitHub 代理回退 | ✅ **全局列表 + 自定义 + 冷却**（2026-11-09） | 设置页可增删改/排序/测试；公开地址才挂代理，私有 token 直连 |
-| 按 tag 前缀增量更新清单 | ✅ 已实现 | `sync-packages.ps1` 实测跑通；另推 `updates` 分支静态清单 |
-| `plugins_only` 按需构建 | ✅ 已跑 | `pc-v*` / `release-v*` 的 apiserver 单插件构建已用于发版 |
-| Release Publish 后自动同步 | ✅ 已跑 | `release-v1.0.8` 起清单在 Publish 后生成并回填 |
-| TV 实机 | ✅ MuMu 0.9.38 | 清单→APK→logcat `InstallStart` 全链路；后续版本未逐版重跑 |
-
-**★ 本环境到 api.github.com 的 TLS 握手抖动频繁**（`curl: (35)` /
-`gh: net/http: TLS handshake timeout`）。安装器当前是 **3 次退避重试**
-（`http_get_text_retry` 的 TRIES=3）；再加全局代理候选后，表现为"某个候选失败会换下一个"。
-2026-11-09 起，公开 GitHub 地址的候选/冷却逻辑见 §10。
+（数值仅示意。）`desc` 是给用户看的更新说明，客户端弹框按行渲染。
+
+### 9.3 两条硬规则
+
+1. **应用条目必须 `hidden: true`**。否则会出现在「本机插件」的可安装列表
+   （那边只过滤 `hidden`），用户点了会走插件安装器、解压找不到 `manifest.json`。
+   前端 `availablePlugins` 另外再挡一层旧 id（`app` / `app-pc` / `app-tv`）。
+2. **id 用品牌名**：`meow-pc` / `meow-tv`，与 `apiserver` / `danmu-api` / `drpy`
+   一致。旧 id 仍能读，是新清单的升级路径，不要再写。
+
+### 9.4 版本判定与私有仓
+
+- **不用 GitHub 的 `/releases/latest` 语义**：`latest` 按发布时间挑，给旧版补
+  hotfix 会让 latest 回退，draft 也不参与计算。实际是拉 `/releases?per_page=30`
+  列表，过滤非 draft / 非 prerelease / 带 `packages.json` 的条目，按 tag 的数字段
+  取最大版本（前端 `pickManifestRelease`；Rust 参考实现 `pick_release_with_manifest`）。
+  写成 `releases/latest` 只是入口，补发旧版 hotfix 也不会让客户端降级。
+- **私有仓的标准下载链接带 token 也是 404**（实测），唯一可用路径是
+  `api.github.com/repos/.../releases/assets/<id>`；清单里**始终写标准链接**，
+  客户端有 token 时自己换；token 为空时优先 `browser_download_url`，代理才生效。
+- **API 资产端点必须带 `Accept: application/octet-stream`**：不加的话拿到的是
+  描述资产的 JSON，下载"成功"但 sha256 对不上，缓存里还留个假 zip。
 
 ---
 
-## 10. 源与 GitHub 加速（2026-11-09 定稿）
-
-> 本节只写**定稿的决策与接线点**；完整设计（候选算法、UI 线框、数据模型、阶段）见
-> `tmp/2026-11-09-github-accel-and-source-layout/方案.md`。实施后把关键段并回本节。
+## 十、源与 GitHub 加速
 
 ### 10.1 一条原则：加速统一，业务源分置
 
 | 对象 | 处理 | 位置 |
 |---|---|---|
-| GitHub 加速列表 | 全局唯一，可自定义维护（增删改、排序、启停、测试、恢复默认） | 网络与加速 → GitHub 加速 |
-| 访问令牌 | 全局唯一（PC 上已共用 `plugin-token.txt`） | 网络与加速 → GitHub 加速 → 访问令牌 |
-| PC 插件源 | 保持多源列表 | 本机插件 → 插件源 |
-| PC 应用更新源 | 单字段（默认内置 GitHub Release；插件源仅在内置源为空时兜底） | 维护 → 应用更新（令牌/加速走全局块） |
-| TV 应用更新 + 运行时模块 | **共用一个源**（现状已如此） | 维护 → 应用更新 |
-| fpk 索引源 | 独立字段（`fnpack.json` ≠ `packages.json`） | 维护 → 应用更新（FpkUpgradePanel） |
-| CatVod 配置源 | 独立字段 | 搜索与源 → 配置地址 |
+| GitHub 加速列表 / 访问令牌 | 全局唯一；加速可增删改、排序、启停、测试、恢复默认 | 网络与加速 → GitHub 加速 |
+| PC 插件源 | 多源列表，可切换；默认跟随应用更新源（可关） | 本机插件 → 插件源 |
+| PC 应用更新源 | 单字段（留空 = 内置 GitHub Release） | 维护 → 应用更新 |
 
-不合并成一个输入框的原因：`packages.json` 与 `fnpack.json` schema 不同；PC 插件源可多源、应用更新只需一条；填错一个会同时打断三条链路。
+不合并成一个输入框：两条清单 schema 不同，且填错一个会同时打断多条链路。
 
-### 10.2 候选与回退（公开地址才加速）
+### 10.2 候选生成（以 PC 插件安装器为准）
 
-- 白名单：`raw.githubusercontent.com`、`github.com`（releases/download）、`api.github.com`（仅公开、无 token）、`gist.githubusercontent.com`。
-- 顺序：直连 → 用户列表（默认 `gh-proxy.com → ghfast.top → ghproxy.net`）→ jsDelivr（仅索引或 `size < 20MB`）。
-- 每个候选独立超时（索引 8s / 包 15s）；包下载失败换候选，**sha256 不符直接失败**（防投毒）；失败候选进冷却。
-- 私有仓（有 token）**绝不拼代理**：token 只发 GitHub 域名，代理不转发 Authorization（实测 403/404）。
+`installer.rs` 的 `expand_public_candidates`：**有 token，或地址不是公开 GitHub
+地址 → 只直连**；公开地址且无 token → `直连 + git-proxies.json` 里的前缀（按文件
+顺序，只收 `https://` 前缀或 `{url}` 模板）。原生侧**没有冷却**、不区分 `useFor`、
+也不读 `directFirst`；`useFor` 分链路开关、冷却与 jsDelivr 都只在前端
+（`gitAccel.ts` 的 `gitAccelCandidates`，索引或 `size < 20MB` 才启用 jsDelivr）。
+内置预设当前 `gh-proxy.com`、`ghfast.top`、`ghproxy.net` 默认启用；
+`gh.llkk.cc` 实测 12 秒超时，默认停用；jsDelivr 只对 raw 地址生效，单文件上限
+20MB。两条硬规则：**只对公开 GitHub 地址加代理**（私有仓不拼代理，代理不转发
+`Authorization`）；**SHA256 不匹配不换线路重试**——内容错了换地址还是错，
+而且可能是投毒。
 
-### 10.3 各链路接线
+### 10.3 安全边界
 
-| 链路 | 接线点 |
-|---|---|
-| fpk | `fpkUpgrade.ts`：FnDepot + 主仓 `fpk-updates/fpk.json` 双索引；包多候选；索引源支持 `owner/repo` 归一化 |
-| PC 插件 | 设置页把启用前缀写入 `git-proxies.json`；`installer.rs` 读它，清单/下载加候选；私有源保持 API asset |
-| PC/TV 更新 | `appUpdate.ts` / `AppUpdater.java`：清单/资产候选；**token 为空时优先 `browser_download_url`**（否则代理不生效） |
-| TV 模块 | `TvBridge.moduleAssetUrl` 同上；源沿用应用更新，令牌/加速沿用全局块 |
-| 配置导入 | 前端随请求带 `proxies`；Java `fetchTextAccel` 只对 GitHub 白名单 host 加候选（仍走 `openStream` 强制 DoH） |
+- 代理只拼公开 GitHub 主机：`raw.githubusercontent.com`、
+  `gist.githubusercontent.com`、`github.com/releases/download|latest/download`、
+  `api.github.com/.../releases/`；不把任意 URL 塞进代理（开放代理 / SSRF）。
+- **token 只发给 GitHub 自己的域名**：`api.github.com`、
+  `raw.githubusercontent.com`、`codeload.github.com`、
+  `objects.githubusercontent.com`、`github.com`。源换成自建服务器后，
+  无条件的 `Authorization` 会把 PAT 明文送过去，不少静态服务器还会直接 401。
+- token 只进请求头，**不进 URL、日志、`plugin-sources.json`**（后者会整体回传
+  前端），所以单独存 `plugin-token.txt`。清单只校验 schema（`schema_version == 1`）、
+  没有签名；包用 SHA256 强校验。源地址允许 `http`，是否走 HTTPS 由源决定。
 
-### 10.4 开源前后
+---
 
-- **闭源期（当前）**：私有仓更新/资产只能直连 `api.github.com` + token；fpk 与公开配置源可立即加速；**不另建镜像仓**。
-- **开源后**：主仓 public releases 即资产镜像；`packages.json` 发版时 force push 到 **`updates` 分支**做静态清单兜底（绕开匿名 API 60 次/小时限流）；不新建 `meow-releases`，也不把应用/插件塞进 FnDepot（fpk 例外，见下条）。
-- **fpk 双通道（2026-11-11）**：`fpk-v*` 同时挂主仓 prerelease + 推 `fpk-updates/fpk.json`；FnDepot 仍是飞牛第三方源正式通道。客户端先读 FnDepot，失败/更旧时读主仓。
-- **更新中心（2026-11-11）**：`UpdateCenter.vue` 聚合壳 / 模块 / 插件 / fpk 的检查与状态；只合并入口，安装仍走各自通道；壳每次启动检查，其余默认 24h 且可逐项关闭。
-- **显式备用源**：应用更新支持 `updateBackupSource`；主源失败才试，**不会**静默回落官方源。
-- 开源配套（三处已实现）：`appUpdate.ts` 的 `manifestAssetUrlFrom`、`TvBridge.moduleAssetUrl`、`installer.rs` 的 `manifest_asset_from`——token 为空时优先 `browser_download_url`，这样代理才生效。
+## 相关
 
-### 10.5 安全边界
-
-- 代理只拼公开 GitHub 主机；不把任意 URL 塞进代理（开放代理/SSRF）。
-- token 永不进代理请求；私有源继续 API asset + 直连。
-- 包用 sha256 强校验；索引/清单只信任 HTTPS + schema，不做签名承诺。
-
-### 10.6 可行性验证（2026-11-09 实测）
-
-探针：`tmp/2026-11-09-github-accel-and-source-layout/feasibility.mjs`（本机，TUN fake-ip 环境）。
-
-| 检查 | 结果 |
-|---|---|
-| fpk 索引候选回退 | 坏候选（127.0.0.1:9 / gh.llkk.cc 3s）失败后，`raw` 1.45s 成功，5617B JSON 解析通过 |
-| fpk 安装包候选 | 同样跳过后，`raw` 1.95s 返回 206 + 16KB，gzip 魔数校验通过 |
-| 公开 GitHub API | 直连 403（匿名限流）；`gh-proxy.com` 200（125239B / 68 assets / CORS `*`）；`ghfast.top` 10.5s 超时；`ghproxy.net` 403 |
-| 静态 raw 清单 | `raw` / `gh-proxy` / `ghproxy.net` / jsDelivr 均 200（6521B，解析通过）；`ghfast.top` 本次 000 |
-| jsDelivr 包上限 | 1.1.5 包 HEAD 200，`content-length=19576883`（<20MB）；1.1.7 已 21.7MB，不可依赖 |
-| 私有仓 token 路径 | 匿名直连/代理均失败；带 token + DoH 直连 200（13143B）→ 必须保持直连 |
-| Java 侧注意 | 裸 `HttpURLConnection` 在 TUN fake-ip 下 SSL 握手失败；新增代理必须复用 `ApiServer` 的 `openStream`（强制 DoH） |
-
-**结论**：候选回退、公开 API 代理、静态 raw 清单三条都实测可行；`ghfast.top` 与 `gh.llkk.cc` 可用性会漂移，必须健康检查 + 冷却，不能写死顺序。`updates` 分支本身尚未创建（下一次 release 时由 `sync-packages.ps1` 创建），raw 分支路径已用 FnDepot `main` 等价验证；三处 asset 偏好已落地，待真机回归。
+- 清单与发版流程：[构建与发版](./build-release.md)
+- `policy.json` 与 `jsRuntime` / `danmakuApi` 的消费方：[配置系统](./config-system.md)
+- 弹幕降级与外部 API：[弹幕](./danmaku.md)
+- TV 运行时模块（另一套实现）：[TV 接入](./tv-integration.md)
