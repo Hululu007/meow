@@ -175,6 +175,14 @@ public final class Jars {
     }
 
     /**
+     * 供导入期预处理器使用：下载/校验一条 jar 规格，返回本地文件。
+     * 不改变加载器状态。
+     */
+    public static File prepareForImport(String spec) throws Exception {
+        return prepare(spec);
+    }
+
+    /**
      * 把一条规格变成本地可用的 jar 文件。
      *
      * <p>规格形如 {@code https://host/x.jar;md5;<32位>}，md5 段可省。
@@ -299,7 +307,7 @@ public final class Jars {
      * 这个类根本没编进 APK；同理 Android 的 {@code com.meow.tv.SocketHttpServer}
      * 在 JVM 上不存在。比"看 Build.VERSION"可靠——我们在 JVM 上也提供 android 桩。
      */
-    private static boolean isJvm() {
+    public static boolean isJvm() {
         try {
             Class.forName("jvm.JvmHttpServer");
             return true;

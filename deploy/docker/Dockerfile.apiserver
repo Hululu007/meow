@@ -1,5 +1,9 @@
 # 后端镜像：JRE + 编译产物 + spider jar（不含 nginx）
 # 前端在独立容器里，见 Dockerfile.web。
+#
+# RUNTIME_BASE 只用于本地验证（例如复用已带 ffmpeg/curl 的旧 apiserver 镜像）；
+# 正式构建使用默认的 eclipse-temurin:17-jre。
+ARG RUNTIME_BASE=eclipse-temurin:17-jre
 
 # ---------- 编译 ----------
 FROM eclipse-temurin:17-jdk AS build
@@ -12,26 +16,42 @@ RUN find src -name '*.java' > sources.txt \
  && mkdir -p classes \
  && javac -encoding UTF-8 -cp "libs/*" -d classes @sources.txt
 
-# ---------- 运行 ----------
-FROM eclipse-temurin:17-jre
+# ---------- dex2jar（只作为构建阶段，最终镜像仍是一个 apiserver） ----------
+FROM eclipse-temurin:17-jdk AS dex2jar
+ARG DEX2JAR_VERSION=2.4
+# 固定版本 + SHA256；不用 apt/curl，避免构建机仓库不可达。
+ADD https://github.com/pxb1988/dex2jar/releases/download/v${DEX2JAR_VERSION}/dex-tools-v${DEX2JAR_VERSION}.zip /tmp/dex2jar.zip
+RUN echo "ee7c45eb3c1d2474a6145d8d447e651a736a22d9664b6d3d3be5a5a817dda23a  /tmp/dex2jar.zip" | sha256sum -c - \
+ && cd /tmp \
+ && jar xf dex2jar.zip \
+ && mv "dex-tools-v${DEX2JAR_VERSION}" /opt/dex2jar
 
-# curl 供 HEALTHCHECK 使用。
-# ffmpeg 供「浏览器放不了的格式」现转 HLS（core/Transcode.java 调它）：
-# Chromium/WebView2 没有 HEVC 解码器，用户 NAS 上的 MKV(H.265) 在 Web/PC 端
-# 必须转码才能播。装进镜像而不是挂宿主，是为了让所有部署方式表现一致——
-# OECT 那种只有 Docker 的盒子上没法另外装。
-#
-# 为什么用 --no-install-recommends：默认会额外拉一堆推荐包。
-# 实测装完约 33MB（libavcodec 12MB + libavfilter 11MB 占大头），
-# 其中 libavdevice/libcdio/libopenal 是 ffmpeg 的硬依赖删不掉，留着也不影响。
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ffmpeg \
- && rm -rf /var/lib/apt/lists/*
+# ---------- 运行 ----------
+FROM ${RUNTIME_BASE}
+ARG INSTALL_TOOLS=true
+
+# curl 供 HEALTHCHECK 使用；ffmpeg 供浏览器放不了的格式现转 HLS。
+# APT_MIRROR 只给无法访问 archive.ubuntu.com 的构建环境用，默认保持官方源。
+ARG APT_MIRROR=archive.ubuntu.com
+RUN if [ "$INSTALL_TOOLS" = "true" ]; then \
+      if [ "$APT_MIRROR" != "archive.ubuntu.com" ]; then \
+        sed -i "s|archive.ubuntu.com|${APT_MIRROR}|g; s|security.ubuntu.com|${APT_MIRROR}|g" \
+          /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true; \
+      fi; \
+      apt-get update \
+      && apt-get install -y --no-install-recommends curl ffmpeg \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # ffmpeg 就位后把它告诉后端：Transcode.ffmpegPath() 的查找顺序是
 # 系统属性 > MEOW_FFMPEG > policy.json > PATH。这里走环境变量，
 # 比依赖 PATH 明确，也便于排障时 printenv 确认。
 ENV MEOW_FFMPEG=/usr/bin/ffmpeg
+
+# dex2jar：导入期把只有 classes.dex 的 CatVod jar 转成 JVM class jar。
+# 转换在现有 apiserver 进程内按需拉起子进程，不是独立镜像/服务。
+COPY --from=dex2jar /opt/dex2jar /opt/dex2jar
+ENV MEOW_DEX2JAR=/opt/dex2jar
 
 WORKDIR /app
 

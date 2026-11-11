@@ -57,6 +57,13 @@ if ! jar_has_version "$JAR" "$SRC_VERSION"; then
 fi
 echo "  apiserver.jar OK (VERSION=$SRC_VERSION)"
 
+echo "[1b/5] dex2jar（JVM 导入期 dex→class 转换）"
+DEX2JAR_DIR="$SRC/server/tools/dex2jar"
+if [ ! -d "$DEX2JAR_DIR/lib" ]; then
+    bash "$SRC/deploy/scripts/fetch-dex2jar.sh" "$DEX2JAR_DIR"
+fi
+[ -d "$DEX2JAR_DIR/lib" ] || { echo "缺少 $DEX2JAR_DIR/lib" >&2; exit 1; }
+
 echo "[2/5] build meowd (musl, platform=$PLATFORM, docker $RUST_IMAGE)"
 if [ "$PLATFORM" = "arm" ]; then
     # arm 二进制由 build-arm.sh 交叉编译；这里不重复编，避免误用 x86 产物
@@ -103,6 +110,8 @@ grep -q 'src="/app/meow/assets/' "$SRC/client/apps/web/dist/index.html" || {
 }
 cp -r "$SRC/client/apps/web/dist/." "$PKG/app/web/"
 cp "$JAR" "$PKG/app/seed/apiserver/apiserver.jar"
+mkdir -p "$PKG/app/seed/apiserver/tools"
+cp -a "$DEX2JAR_DIR" "$PKG/app/seed/apiserver/tools/dex2jar"
 HAS_SPIDER=0
 if [ -f "$SRC/server/host/libs/spider.jar" ]; then
     cp "$SRC/server/host/libs/spider.jar" "$PKG/app/seed/apiserver/"
@@ -187,6 +196,7 @@ grep -qE "^version[[:space:]]*=[[:space:]]*$VER" "$TMPX/manifest" || { echo "man
 grep -qE "^platform[[:space:]]*=[[:space:]]*$PLATFORM" "$TMPX/manifest" || { echo "manifest platform 写错" >&2; exit 1; }
 test -f "$TMPX/app/web/index.html" || { echo "包内缺 web/index.html" >&2; exit 1; }
 test -f "$TMPX/app/seed/apiserver/apiserver.jar" || { echo "包内缺 apiserver.jar" >&2; exit 1; }
+test -d "$TMPX/app/seed/apiserver/tools/dex2jar/lib" || { echo "包内缺 dex2jar（JVM dex 源转换需要）" >&2; exit 1; }
 if [ "$HAS_SPIDER" = "1" ]; then
     test -f "$TMPX/app/seed/apiserver/spider.jar" || { echo "包内缺 spider.jar" >&2; exit 1; }
 fi
