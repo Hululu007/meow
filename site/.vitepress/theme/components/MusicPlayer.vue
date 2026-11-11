@@ -292,7 +292,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .mw-music-missing {
   position: fixed;
-  left: 20px;
+  right: 20px;
   bottom: 20px;
   z-index: 30;
   padding: 6px 12px;
@@ -305,10 +305,11 @@ onBeforeUnmount(() => {
 
 .mw-music {
   position: fixed;
-  left: 20px;
+  right: 20px;
   bottom: 20px;
   z-index: 30;
   display: flex;
+  flex-direction: row-reverse;
   align-items: center;
   gap: 10px;
 }
@@ -523,7 +524,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 640px) {
   .mw-music {
-    left: 12px;
+    right: 12px;
     bottom: 12px;
   }
 

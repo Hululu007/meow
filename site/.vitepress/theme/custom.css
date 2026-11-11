@@ -246,3 +246,15 @@ body {
     transition: none;
   }
 }
+
+
+/* 右下角留给了背景音乐播放器，把 VitePress 的「返回顶部」抬上去 */
+.VPBackToTop {
+  bottom: 88px !important;
+}
+
+@media (max-width: 640px) {
+  .VPBackToTop {
+    bottom: 76px !important;
+  }
+}
