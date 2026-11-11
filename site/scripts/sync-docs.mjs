@@ -27,13 +27,15 @@ function syncChangelog() {
   const versions = raw.slice(start).trim()
   const page = `---
 outline: [2, 3]
+editLink: false
 ---
 
 # 更新日志
 
-每个版本的改动说明。客户端内的更新弹框读取的也是这份内容。
+> 本页由仓库根目录的 [CHANGELOG.md](https://github.com/upchr/meow/blob/main/CHANGELOG.md)
+> 自动生成，**改它请改那份文件**，不要改这里。客户端内的更新弹框读的也是同一份。
 
-> 版本号与打包产物的对应关系见 [下载与版本](../reference/downloads.md)。
+版本号与打包产物的对应关系见 [下载与版本](../reference/downloads.md)。
 
 ${versions}
 `
