@@ -79,6 +79,16 @@ docker compose -f docker-compose.sources.yml up -d
 | `nginx.sources.conf` | ❌ gitignore | ✅ 构建资源 |
 | `.dockerignore` | ❌ gitignore | ✅ 构建资源 |
 
+官方镜像（多架构 amd64/arm64，只含 nginx 配置，不含任何源包）：
+
+```bash
+docker pull chrplus/meow-sources:1.1.0
+docker run -d --name meow-sources \
+  -p 18080:8080 \
+  -v /vol2/1000/meow-sources:/usr/share/nginx/html:ro \
+  chrplus/meow-sources:1.1.0
+```
+
 要点：
 
 - **不要把源包 COPY 进镜像**：nginx 配置与 jar/config 分离，源包通过

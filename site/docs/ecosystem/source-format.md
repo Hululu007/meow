@@ -207,6 +207,124 @@ TV/Fongmi 在站点没有 `jar` 时会回退到顶层 `spider`；JVM 则优先 `
 - 多数站**静默忽略** `type_id`：请求分类后要校验返回条目的 `type_id` 是否等于请求值，
   不认就只提供「最新更新」
 
+## 源服务：一个静态 nginx 目录
+
+源服务不解析配置，也不改 jar，只做两件事：**按原样提供 JSON，按原样提供 jar**。
+
+```text
+sources/
+├── config.all.json       # 唯一入口
+├── source-pack.json      # 产物清单 / hash / profile
+├── spider-dex.jar        # 主爬虫（dex）
+├── spider.jar            # 主爬虫 class 版（旧 JVM 兼容，可选）
+├── spider-ext-dex.jar    # 站点级扩展爬虫（dex，可选）
+├── spider-ext.jar        # 站点级扩展 class 版（旧 JVM 兼容，可选）
+├── config.jvm.json       # 旧 JVM 兼容 profile（可选）
+├── config.tv.json        # 旧 TV 兼容 profile（可选）
+└── SHA256SUMS.txt
+```
+
+### 目录/字段规则
+
+| 规则 | 要求 |
+|---|---|
+| 唯一入口 | `config.all.json` |
+| 顶层 `spider` | 绝对 `http(s)` URL，必须是 **dex** jar，带 `;md5;` |
+| 站点级 `jar` | 可选；省略用顶层；写了必须是 **dex** |
+| `spiderJvm` | 可选 class jar，仅 JVM 优化/旧版兼容；Fongmi/TV 忽略 |
+| 地址 | 禁止 `file:`、相对路径、`127.0.0.1`、`localhost` |
+| 缓存 | 配置 `Cache-Control: no-cache`；jar URL 带 md5/版本号 |
+| 编码 | UTF-8，无 BOM |
+| 扩展爬虫 | 独立站点用站点级 `jar`；不要假设它会自动合并进主 jar |
+
+### `api` 与 `jar` 的关系
+
+```text
+站点有 jar → 用站点 jar 找 api 对应的类
+站点无 jar → 用顶层 spider 主 jar 找
+```
+
+`api: "csp_AppRJ"` 映射到 `com.github.catvod.spider.AppRJ`。  
+`key` / `name` 只用于展示和唯一标识，**不参与选类**。
+
+### `source-pack.json`
+
+机器可读清单，源服务健康检查和校验脚本依赖它：
+
+```json
+{
+  "schema": "meow-source-pack/1",
+  "entry": "config.all.json",
+  "primaryRuntime": "dex",
+  "profiles": {
+    "all": { "config": "config.all.json", "runtimes": ["fongmi", "android", "jvm"] }
+  },
+  "artifacts": [
+    {
+      "name": "spider-dex.jar",
+      "role": "dex-spider",
+      "bytes": 820924,
+      "md5": "<md5>",
+      "sha256": "<sha256>"
+    }
+  ]
+}
+```
+
+### 源服务镜像
+
+官方镜像（多架构 amd64/arm64，**不含任何源包内容**）：
+
+```bash
+docker pull chrplus/meow-sources:1.1.0
+
+docker run -d --name meow-sources \
+  -p 18080:8080 \
+  -v /path/to/sources:/usr/share/nginx/html:ro \
+  chrplus/meow-sources:1.1.0
+```
+
+镜像只包含 nginx 配置；`config.all.json`、`source-pack.json`、jar 必须通过挂载目录提供。
+健康检查同时要求 `source-pack.json` 和 `config.all.json` 可读。
+
+Open Source 版只保留可直接启动的 `docker-compose.sources.yml`（官方 nginx + 内联配置）：
+
+```bash
+cd deploy/docker
+MEOW_SOURCES_DIR=/path/to/sources \
+  docker compose -f docker-compose.sources.yml up -d
+```
+
+私仓版保留 `Dockerfile.sources` / `nginx.sources.conf`，用于构建自定义镜像：
+
+```bash
+docker build -f Dockerfile.sources -t chrplus/meow-sources:1.1.0 .
+```
+
+### 校验与更新
+
+```bash
+python3 deploy/source-pack/validate.py --dir /path/to/sources \
+  --base-url http://<HOST>:18080
+```
+
+更新 jar 时：
+
+1. 替换文件；
+2. 重算 md5，更新 `config.all.json` 的 `spider`（及站点级 `jar`）；
+3. 更新 `source-pack.json` / `SHA256SUMS.txt`；
+4. 跑校验脚本和 `curl` 回验。
+
+只换文件不需要重启 nginx；开源版改 nginx 规则要改 compose 的内联
+`configs.content`，私仓版改 `nginx.sources.conf` 后重建镜像。
+
+### Fongmi 兼容提示
+
+- `spiderJvm` 是未知字段，Fongmi 忽略，不影响 dex 导入。
+- 猫窝 `proxy` 是字符串数组；Fongmi 期望对象数组，会忽略；给第三方用时可以删掉。
+- `parses` 里的 `Demo` / `Web` 是猫窝内置名；给 Fongmi 用时改成标准解析 URL。
+- 站点级 `jar` 必须是 dex；class-only 站点 jar 在 Fongmi/TV 上无法加载。
+
 ## 排障顺序
 
 配置导入后不生效时，按这个顺序查：
@@ -215,7 +333,7 @@ TV/Fongmi 在站点没有 `jar` 时会回退到顶层 `spider`；JVM 则优先 `
 2. `sites[].key` 是否重复
 3. `api` 前缀与形态是否匹配（`csp_` / `.js` / CMS URL）
 4. `spider` 的 MD5 是否与文件一致
-5. 站点级 `jar` 是否只有 TV 需要、有没有漏
+5. 站点级 `jar` 是不是误用了 class（TV/Fongmi 只认 dex）、有没有漏
 6. 地址是否是 `127.0.0.1`（在电视/容器里指设备自己）
 
 更细的字段语义与 Fongmi 消费路径见开发文档 [TV 接入与 Fongmi](/dev/tv-integration)。
