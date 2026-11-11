@@ -1,9 +1,9 @@
 # 部署与发版（唯一操作手册）
 
 > **本文是部署、发版、CI 的唯一操作入口。**
-> 细节参考：[docs/36](../docs/36-Docker部署.md)（Docker 深入排障）、
-> [docs/46](../docs/46-TV签名.md)（TV 签名与密钥备份）、
-> [docs/33](../docs/33-插件系统.md)（插件系统设计）。
+> 细节参考：[docs/36](../site/docs/dev/docker.md)（Docker 深入排障）、
+> [docs/46](../site/docs/dev/tv-signing.md)（TV 签名与密钥备份）、
+> [docs/33](../site/docs/dev/plugin-system.md)（插件系统设计）。
 >
 > 本文与上述文档冲突时，**本文的操作步骤优先**。
 
@@ -47,7 +47,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/release.ps1 -
 | 加一个插件怎么改 | 只改 `deploy/units.json` 加一条，然后跑 `verify.ps1` |
 | 改了脚本会不会漏改文档 | 跑 `verify.ps1`，第 3 项和第 7 项就是查这个 |
 | 版本号怎么改 | `./deploy/scripts/bump-version.ps1 -Version x.y.z`（13 处一次改齐） |
-| TV 签名会不会丢 | keystore 未入库，**必须异地备份**，见 [docs/46](../docs/46-TV签名.md) |
+| TV 签名会不会丢 | keystore 未入库，**必须异地备份**，见 [docs/46](../site/docs/dev/tv-signing.md) |
 
 **三条硬约束**（违反会出事）：
 1. **不要主动用 CI 发版**——每次都要用户同意，本地才是默认路径
@@ -210,7 +210,7 @@ docker compose pull && docker compose up -d
 
 ### 2.4 变量（`.env`）
 
-只列最常改的，全表见 `.env.example` 注释与 [docs/36 §4.4](../docs/36-Docker部署.md)。
+只列最常改的，全表见 `.env.example` 注释与 [docs/36 §4.4](../site/docs/dev/docker.md)。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
@@ -473,7 +473,7 @@ ci.yml                  质量检查（PR / 手动 dispatch，约 1 分钟：构
 
 > **★ Environment 级 secret 只有 job 声明 `environment: dockerhub` 才可见**，
 > 漏了会报 `Password required`（实测踩过）。
-> TV 签名的备份红线见 [docs/46](../docs/46-TV签名.md)。
+> TV 签名的备份红线见 [docs/46](../site/docs/dev/tv-signing.md)。
 
 ### 4.5 平台分配（别改）
 
@@ -572,7 +572,7 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 | `tv-plugins-v*` | `tv-node-*` |
 | `plugins-v*` | `plugins` |
 | `docker-v*` | 无（不建 Release） |
-| `fpk-v*` | 不走本脚本；fnOS 包与 FnDepot 索引见 [36 §11.1](../docs/36-Docker部署.md) |
+| `fpk-v*` | 不走本脚本；fnOS 包与 FnDepot 索引见 [36 §11.1](../site/docs/dev/docker.md) |
 
 **只发 TV 不会让 PC 条目消失**——脚本先读线上清单做基线，只覆盖本次涉及的那几条。
 

@@ -5,7 +5,7 @@
 >
 > **2026-11-11 源包规范**：统一入口 `config.all.json`，顶层 `spider` 是 dex。
 > 站点级 `jar` 可选；没有时 TV 回退顶层 `spider`（已实测），不再要求每个
-> `csp_` 站重复写 jar。规则见 [`deploy/source-pack/`](../deploy/source-pack/README.md)。
+> `csp_` 站重复写 jar。规则见 [`deploy/source-pack/`](https://github.com/upchr/meow/blob/main/deploy/source-pack/README.md)。
 
 > 版本：v1（2026-10-21）
 > 定位：**TV 端接入的唯一施工依据**。

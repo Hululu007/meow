@@ -1,7 +1,7 @@
 # TV 打包与签名（★ 密钥备份说明）
 
 > 面向：所有可能碰到 TV 打包的人。
-> 相关：[部署与发版](../deploy/README.md)（发版规范）、[部署与发版](../deploy/README.md)（CI 触发）。
+> 相关：[部署与发版](https://github.com/upchr/meow/blob/main/deploy/README.md)（发版规范）、[部署与发版](https://github.com/upchr/meow/blob/main/deploy/README.md)（CI 触发）。
 
 ---
 

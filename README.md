@@ -87,7 +87,7 @@ meow/
 │   ├── drpy/           drpy 外挂 Node 运行时（打成插件）
 │   ├── plugin-manifests/  插件清单模板
 │   └── build-plugin*.ps1  插件构建（fat jar + jlink JRE）
-├── docs/            架构/契约/前端/TV/插件/部署等技术文档，入口 docs/00-目录索引.md
+├── site/docs/dev/   架构/契约/前端/TV/插件/部署等技术文档（与文档站共用）
 ├── deploy/          部署与发版（Dockerfile ×3 + compose ×2 + 脚本）
 └── data/            运行时数据（apiserver 与 danmu 各自挂载）
 ```

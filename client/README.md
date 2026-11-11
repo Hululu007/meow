@@ -6,14 +6,14 @@
 - **PC**：Tauri 2 套同一份前端，打包成 Windows 安装包，内置后端插件管理
 
 后端不在这里，在 [`../server/host`](../server/host)（Java 宿主）。
-三端架构与取舍见 [`../docs/25-三端架构.md`](../docs/25-三端架构.md)。
+三端架构与取舍见 [`../site/docs/dev/architecture.md`](../site/docs/dev/architecture.md)。
 
 | 你想干什么 | 看 |
 |---|---|
 | 跑起来看效果 | [快速开始](#快速开始) |
 | 改设置页 | [设置页结构](#设置页结构) |
 | 打包 PC 版 | [PC 打包](#pc-打包) |
-| 查老 bug 别改回去 | [`../docs/27-前端手册.md`](../docs/27-前端手册.md) |
+| 查老 bug 别改回去 | [`../site/docs/dev/frontend.md`](../site/docs/dev/frontend.md) |
 
 ---
 

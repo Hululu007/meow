@@ -2,8 +2,8 @@ node_modules/
 .vitepress/dist/
 .vitepress/cache/
 
-# 从仓库 docs/ 与 CHANGELOG.md 同步生成，构建前由 scripts/sync-docs.mjs 重建
-docs/dev/
+# 更新日志由 scripts/sync-docs.mjs 从 CHANGELOG.md 生成
+# （技术文档已在 site/docs/dev/ 入库，不再生成）
 docs/reference/changelog.md
 
 # 背景音乐按仓库 owner 要求入库分发（site/docs/public/music/）。

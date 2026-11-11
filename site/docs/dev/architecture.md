@@ -128,7 +128,7 @@ zyfun 的 `T4_CATVOD` 适配器本来就是为"外部 CatVod 服务"设计的。
 >
 > **2026-11-11 源包规范**：唯一入口 `config.all.json`，顶层 `spider` 必须是 dex；
 > Fongmi/TV 原生加载，JVM 没有 `spiderJvm` 时用 `Dex2Jvm` 导入期转换。
-> 规则/校验见 [`deploy/source-pack/`](../deploy/source-pack/README.md)。
+> 规则/校验见 [`deploy/source-pack/`](https://github.com/upchr/meow/blob/main/deploy/source-pack/README.md)。
 
 **本轮新增能力（弹幕线，已达 ~85%）**：
 - 弹幕源从 6 个域名扩展到 **22 个平台标签**（爱奇艺/腾讯/优酷/B站/芒果/咪咕/搜狐/乐视/

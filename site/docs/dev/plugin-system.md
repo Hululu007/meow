@@ -913,7 +913,7 @@ taskkill //IM meow-player.exe //T //F 2>/dev/null
 **`desc` 是给用户看的更新说明**（客户端弹框正文，多行按行渲染）。
 来源三档：`CHANGELOG.md` 的 `## <版本>` 小节 → `git log` 的 feat/fix/perf
 → 模板串。**发版前写 `CHANGELOG.md` 那一节**是唯一能让用户看懂改了什么的方式，
-写法见 [deploy/README.md §4.7](../deploy/README.md)。
+写法见 [deploy/README.md §4.7](https://github.com/upchr/meow/blob/main/deploy/README.md)。
 
 **保留 id 用品牌名**：`meow-pc` / `meow-tv`（不是 `app-pc`/`app-tv`）。
 清单是给人看的（用户可能手写、也可能在浏览器里直接打开排查），
