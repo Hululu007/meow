@@ -10,6 +10,33 @@ const appVersion = JSON.parse(
   readFileSync(join(here, '..', '..', 'client', 'package.json'), 'utf8'),
 ).version
 
+/**
+ * 搜索分词。
+ *
+ * VitePress 默认按空白切词，中文整句会变成一个 token——搜「备份」可能命中，
+ * 搜「怎么备份」「备份在哪」就搜不到。这里用浏览器内置的 Intl.Segmenter
+ * 按词切中文，英文/代码标识符（spiderJvm、fnpack.json）整体保留。
+ */
+function tokenizeForSearch(text: string): string[] {
+  const tokens: string[] = []
+  const latin = text.match(/[A-Za-z0-9_.#/@-]+/g) || []
+  tokens.push(...latin)
+
+  const cjk = text.replace(/[A-Za-z0-9_.#/@-]+/g, ' ')
+  const Segmenter = (Intl as unknown as { Segmenter?: new (locale: string, opts: object) => { segment(input: string): Iterable<{ segment: string; isWordLike?: boolean }> } }).Segmenter
+  if (Segmenter) {
+    const seg = new Segmenter('zh-CN', { granularity: 'word' })
+    for (const part of seg.segment(cjk)) {
+      if (part.isWordLike && part.segment.trim()) tokens.push(part.segment)
+    }
+  } else {
+    for (const ch of cjk) {
+      if (/[一-鿿]/.test(ch)) tokens.push(ch)
+    }
+  }
+  return tokens
+}
+
 const devSidebar = [
   { text: '总览', link: '/dev/' },
   { text: '三端架构', link: '/dev/architecture' },
@@ -122,6 +149,11 @@ export default defineConfig({
         content: 'Web / PC / TV 共用一套播放内核。不提供内容源，源包由用户导入。',
       },
     ],
+    ['meta', { property: 'og:image', content: 'https://upchr.github.io/meow/og.png' }],
+    ['meta', { property: 'og:image:width', content: '1200' }],
+    ['meta', { property: 'og:image:height', content: '630' }],
+    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
+    ['meta', { name: 'twitter:image', content: 'https://upchr.github.io/meow/og.png' }],
   ],
 
   sitemap: {
@@ -158,6 +190,11 @@ export default defineConfig({
     search: {
       provider: 'local',
       options: {
+        miniSearch: {
+          options: {
+            tokenize: tokenizeForSearch,
+          },
+        },
         translations: {
           button: { buttonText: '搜索文档', buttonAriaLabel: '搜索文档' },
           modal: {
