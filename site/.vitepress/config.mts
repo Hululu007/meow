@@ -38,18 +38,46 @@ function tokenizeForSearch(text: string): string[] {
 }
 
 const devSidebar = [
-  { text: '总览', link: '/dev/' },
-  { text: '三端架构', link: '/dev/architecture' },
-  { text: '接口契约', link: '/dev/api-contract' },
-  { text: '前端手册', link: '/dev/frontend' },
-  { text: '播放与转码', link: '/dev/playback' },
-  { text: '弹幕', link: '/dev/danmaku' },
-  { text: 'TV 接入与 Fongmi', link: '/dev/tv-integration' },
-  { text: '插件系统', link: '/dev/plugin-system' },
-  { text: 'Docker 部署', link: '/dev/docker' },
-  { text: '片库与离线缓存', link: '/dev/library-cache' },
-  { text: 'TV 签名', link: '/dev/tv-signing' },
-  { text: 'AI 助手', link: '/dev/ai-assistant' },
+  {
+    text: '总览',
+    items: [
+      { text: '三端架构', link: '/dev/architecture' },
+      { text: '接口契约', link: '/dev/api-contract' },
+    ],
+  },
+  {
+    text: '客户端',
+    items: [
+      { text: '前端手册', link: '/dev/frontend' },
+      { text: '播放与转码', link: '/dev/playback' },
+      { text: '弹幕', link: '/dev/danmaku' },
+      { text: '片库与离线缓存', link: '/dev/library-cache' },
+      { text: '直播', link: '/dev/live' },
+      { text: 'AI 助手', link: '/dev/ai-assistant' },
+    ],
+  },
+  {
+    text: '源与扩展',
+    items: [
+      { text: '配置系统', link: '/dev/config-system' },
+      { text: '插件系统', link: '/dev/plugin-system' },
+    ],
+  },
+  {
+    text: '端',
+    items: [
+      { text: 'TV 接入与 Fongmi', link: '/dev/tv-integration' },
+    ],
+  },
+  {
+    text: '运维',
+    items: [
+      { text: '数据与状态', link: '/dev/data-state' },
+      { text: 'Docker 部署', link: '/dev/docker' },
+      { text: '构建与发版', link: '/dev/build-release' },
+      { text: '测试与验收', link: '/dev/testing' },
+    ],
+  },
 ]
 
 const guideSidebar = [

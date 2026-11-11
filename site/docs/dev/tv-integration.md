@@ -593,6 +593,82 @@ TV 模拟器/真机在 Android Studio 的 Device Manager 里起，或直接连�
 
 ---
 
+## 七·五、签名与分发（★ 密钥备份）
+
+TV APK **必须用固定的一份 keystore 签名**，否则用户装不上更新。
+这份 keystore **只存在于本机和 GitHub Secrets，绝不能进 git**，**丢了就永远发不出可覆盖升级的包**。
+
+### 为什么签名身份必须固定
+
+Android 用签名判断「能不能覆盖升级」：已装 A 签名的应用，只能装 A 签名的更新；
+换成 B 签名会被拒绝，用户必须卸载重装——而卸载会清掉登录态、播放记录、收藏、片库配置。
+
+| 项 | 值 |
+|---|---|
+| 文件 | `client/apps/tv/meow-release.jks` |
+| 配置 | `client/apps/tv/keystore.properties` |
+| 别名 | `meow` |
+| 有效期 | 2026-10-23 → 2054-03-10 |
+| 算法 | SHA256withRSA / 2048 位 |
+| SHA-256 指纹 | `AD:D7:2E:8D:06:62:DC:BB:EA:D6:9B:7B:B7:04:05:D3:CA:FA:6D:51:2D:44:9E:1D:DE:95:0A:95:1E:8E:CC:83` |
+
+### 备份（最重要）
+
+keystore 只在两处：本机 + GitHub Secrets，两处属于同一套账号体系。
+本机磁盘挂了、账号丢了，签名能力就永久消失。
+
+**必须备份到与电脑和 GitHub 都无关的地方**（密码管理器附件 / 离线介质 / 加密压缩包），
+并且**必须连 `keystore.properties` 一起存**——只有 `.jks` 没有密码等于有保险箱没钥匙。
+
+| 场景 | 后果 |
+|---|---|
+| keystore 丢失 | 用户必须卸载重装，数据全丢 |
+| 密码丢失 | 同上 |
+| keystore 泄露 | 别人能签发冒名更新包，需立即换新并公告 |
+
+### 绝不能进 git
+
+```bash
+# 三个都应返回空
+git ls-files client/apps/tv/ | grep -iE 'jks|keystore'
+git log --all --oneline -- '*meow-release.jks'
+git check-ignore client/apps/tv/meow-release.jks
+```
+
+进了 git 就永久留在历史里。万一提交了，只能认定泄露 → 换 keystore（用户需卸载重装一次）。
+
+### 两种打包方式的签名行为
+
+```gradle
+signingConfig ksProps.exists() ? signingConfigs.release : signingConfigs.debug
+```
+
+- **本地**：`keystore.properties` 存在 → release 签名；不存在 → **静默退回 debug**。
+  `build-apk.ps1` 在 release 模式下硬校验，缺失直接报错，避免误发 debug 包。
+- **CI**：全新 runner 没有这两个文件，工作流先 `base64 -d` 还原 `.jks`，
+  再用三个密码 secret 现造 `keystore.properties`。缺 secret 时打 warning 并出 debug 包。
+
+::: warning CI 里的相对路径基准
+`storeFile` 相对 `app/build.gradle` 所在目录（`app/`）解析，必须写 `../meow-release.jks`。
+写成 `meow-release.jks` 会报 `Keystore file ... not found`，而本地不会——本地 properties 本来就是正确写法，CI 抄漏过。
+:::
+
+### 发版前必做
+
+```bash
+apksigner verify --print-certs <apk> | head -3
+```
+
+指纹与上表一致 = 能覆盖升级；不一致 = 用户装不上。
+
+### 检查清单
+
+- [ ] `keystore.properties` 与 `meow-release.jks` 都在本地
+- [ ] 两者都**没有**出现在 `git status` 待提交列表
+- [ ] `git ls-files` 查不到 `.jks`
+- [ ] 打出的 APK 用 apksigner 验过，指纹一致
+- [ ] 备份是最新的
+
 ## 第八章 TV 参与三端统一的能力边界
 
 ### 8.1 TV 能做的（我们不需要管）
