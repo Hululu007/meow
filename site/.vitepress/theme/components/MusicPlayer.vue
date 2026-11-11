@@ -206,6 +206,14 @@ function onFirstGesture() {
   void play()
 }
 
+/** 欢迎页的「进入」是一次明确的用户手势，直接起播 */
+function onGateEnter() {
+  if (started || userPaused) return
+  started = true
+  autoPlayAt = performance.now()
+  void play()
+}
+
 function onVisibility() {
   if (document.hidden) {
     if (raf) cancelAnimationFrame(raf)
@@ -225,12 +233,14 @@ onMounted(async () => {
   }
   window.addEventListener('pointerdown', onFirstGesture, { once: true })
   window.addEventListener('keydown', onFirstGesture, { once: true })
+  window.addEventListener('mw:enter', onGateEnter)
   document.addEventListener('visibilitychange', onVisibility)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('pointerdown', onFirstGesture)
   window.removeEventListener('keydown', onFirstGesture)
+  window.removeEventListener('mw:enter', onGateEnter)
   document.removeEventListener('visibilitychange', onVisibility)
   if (raf) cancelAnimationFrame(raf)
   void ac?.close().catch(() => {})

@@ -7,13 +7,14 @@ import HomePage from './components/HomePage.vue'
 import ScrollProgress from './components/ScrollProgress.vue'
 import CursorGlow from './components/CursorGlow.vue'
 import MusicPlayer from './components/MusicPlayer.vue'
+import WelcomeGate from './components/WelcomeGate.vue'
 
 export default {
   extends: DefaultTheme,
   Layout: () =>
     h(DefaultTheme.Layout, null, {
       // 顶部 2px 滚动进度条 + 全站鼠标柔光
-      'layout-top': () => [h(ScrollProgress), h(CursorGlow)],
+      'layout-top': () => [h(WelcomeGate), h(ScrollProgress), h(CursorGlow)],
       'layout-bottom': () => h(MusicPlayer),
     }),
   enhanceApp({ app }) {
