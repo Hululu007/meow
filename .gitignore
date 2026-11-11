@@ -165,6 +165,13 @@ reverse/artifacts/spider.zip
 reverse/artifacts/classes.dex
 reverse/artifacts/config.json
 
+# ── 源导入镜像构建资源（2026-11-11）──────────────────────────────────
+# 开源版只保留可直接启动的 docker-compose.sources.yml（官方 nginx + 内联配置）。
+# Dockerfile.sources / nginx.sources.conf / .dockerignore 只在私仓维护。
+deploy/docker/Dockerfile.sources
+deploy/docker/nginx.sources.conf
+deploy/docker/.dockerignore
+
 # ── 公开壳内容边界（2026-11-09）──────────────────────────────────────
 # 内部逆向、真实配置、待办/测试矩阵/归档与私密部署材料不进公开库；
 # 完整版保留在私有库 upchr/meow-private。

@@ -2,34 +2,28 @@
 #
 #   sources  nginx 只读源包目录   18080 ← 挂载 sources/
 #
-# 与 docker-compose.yml 的关系：**完全独立**，不共享 name/network。
-# 主栈升级（web/apiserver）不应该重启源包服务；源包更新也不应该重启主栈。
+# 开源版只保留这一个文件：不依赖 Dockerfile.sources / nginx.sources.conf，
+# 使用官方 nginx 镜像 + 内联 nginx 配置，直接 `up -d` 即可启动。
+# 构建资源（Dockerfile.sources、nginx.sources.conf、.dockerignore）在私仓维护。
 #
 # 用法：
 #   cd deploy/docker
 #   MEOW_SOURCES_DIR=/vol2/1000/meow-sources \
-#     docker compose -f docker-compose.sources.yml up -d --build
+#     docker compose -f docker-compose.sources.yml up -d
 #
-# 只看日志：
-#   docker compose -f docker-compose.sources.yml logs -f sources
+# 源包目录必须包含 config.all.json + source-pack.json + spider-dex.jar。
+# 规则/校验见 deploy/source-pack/README.md。
 #
 # 换源包目录/端口：
 #   MEOW_SOURCES_DIR=/path/to/sources MEOW_SOURCES_PORT=18081 \
 #     docker compose -f docker-compose.sources.yml up -d
-#
-# ★ 同机同端口从 systemd 切过来时，先 systemctl disable --now meow-sources，
-#   否则 18080 被占用，容器起不来。config.*.json 里的绝对地址不用改。
 
 name: meow-sources
 
 services:
   sources:
-    build:
-      # 源包镜像只 COPY 本目录的 nginx.sources.conf，不需要整个仓库上下文；
-      # 这样拷到 OECT 的 compose 目录也能直接 build。
-      context: .
-      dockerfile: Dockerfile.sources
-    image: ${MEOW_SOURCES_IMAGE:-chrplus/meow-sources:1.1.0}
+    # 不构建自定义镜像：公开版用官方 nginx，配置由下面的 configs 内联注入。
+    image: nginx:1.27-alpine
     container_name: meow-sources
     ports:
       # 必须绑 0.0.0.0：TV/PC 在局域网里直接访问，不经过主栈 nginx。
@@ -37,4 +31,43 @@ services:
     volumes:
       # 只读挂载：源包由宿主机上的生成/更新流程维护，容器不写。
       - "${MEOW_SOURCES_DIR:-./sources}:/usr/share/nginx/html:ro"
+    configs:
+      - source: sources_nginx
+        target: /etc/nginx/conf.d/default.conf
+    healthcheck:
+      # 规范源包必须同时有清单和唯一入口；旧目录没有 source-pack.json 会 unhealthy。
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/source-pack.json >/dev/null && wget -qO- http://127.0.0.1:8080/config.all.json >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
     restart: unless-stopped
+
+configs:
+  sources_nginx:
+    # 与私仓 nginx.sources.conf 保持同一份规则：
+    # - 禁止 SPA fallback（找不到必须 404）
+    # - .jar 显式 application/java-archive
+    # - no-cache + CORS
+    content: |
+      server {
+          listen 8080;
+          server_name _;
+          server_tokens off;
+
+          root /usr/share/nginx/html;
+          autoindex off;
+          charset utf-8;
+
+          add_header Cache-Control "no-cache" always;
+          add_header Access-Control-Allow-Origin "*" always;
+
+          location / {
+              try_files $$uri =404;
+          }
+
+          location ~* \.jar$ {
+              default_type application/java-archive;
+              try_files $$uri =404;
+          }
+      }
