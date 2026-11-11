@@ -78,12 +78,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/release.ps1 -
 deploy/
 ├── README.md                    ← 本文
 ├── docker/
-│   ├── docker-compose.yml       ← 启动（拉 Registry 镜像）
-│   ├── docker-compose.build.yml ← 构建 + 启动（本地源码）
+│   ├── docker-compose.yml       ← 主栈启动（不含 sources）
+│   ├── docker-compose.build.yml ← 主栈构建 + 启动（不含 sources）
+│   ├── docker-compose.with-sources.yml ← 主栈 + sources 一键启动
+│   ├── docker-compose.sources.yml ← 只启动源服务
 │   ├── Dockerfile.web           ← nginx + 静态文件
 │   ├── Dockerfile.apiserver     ← JRE + classes + libs + ffmpeg
 │   ├── Dockerfile.drpy          ← Node 运行时
-│   ├── docker-compose.sources.yml ← 源包独立编排（开源版唯一保留；官方 nginx + 内联配置）
 │   ├── nginx.conf.template      ← web 容器反代配置
 │   └── .env.example             ← 变量模板（复制成 .env 用）
 ├── source-pack/
@@ -98,11 +99,13 @@ deploy/
     └── build-push-docker.ps1    ← 三镜像构建并推送
 ```
 
-> **源包服务（2026-11-11 拆分）**：开源版只保留
-> `docker-compose.sources.yml`（官方 nginx + 内联配置，直接 `up -d`）。
-> `Dockerfile.sources`、`nginx.sources.conf`、`.dockerignore` 属于构建资源，
-> 已 gitignore，只在私仓 `upchr/meow-private` 维护；源包规范见
-> [`source-pack/`](source-pack/README.md)。
+> **源包服务（2026-11-11 拆分）**：主栈和 build compose 都不含 sources。
+> `docker-compose.with-sources.yml` = 主栈 + sources；
+> `docker-compose.sources.yml` = 只启动源服务（Docker Hub 镜像 `1.2.0`）。
+> 镜像内置主爬虫 + Jable + 41 站默认源；挂载自己的源包会覆盖默认源。
+> `Dockerfile.sources`、`nginx.sources.conf`、`entrypoint.sh`、
+> `default-sources` 属于构建资源，已 gitignore，只在私仓
+> `upchr/meow-private` 维护；源包规范见 [`source-pack/`](source-pack/README.md)。
 
 ### 1.1 ★ 构建单元的唯一真源：`deploy/units.json`
 

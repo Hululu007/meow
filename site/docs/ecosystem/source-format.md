@@ -273,32 +273,53 @@ sources/
 
 ### 源服务镜像
 
-官方镜像（多架构 amd64/arm64，**不含任何源包内容**）：
+官方镜像（多架构 amd64/arm64，内置 **主爬虫 + Jable 扩展 + 41 站默认源**）：
 
 ```bash
-docker pull chrplus/meow-sources:1.1.0
+docker pull chrplus/meow-sources:1.2.0
 
 docker run -d --name meow-sources \
   -p 18080:8080 \
-  -v /path/to/sources:/usr/share/nginx/html:ro \
-  chrplus/meow-sources:1.1.0
+  -e MEOW_SOURCES_BASE=http://<HOST>:18080 \
+  chrplus/meow-sources:1.2.0
 ```
 
-镜像只包含 nginx 配置；`config.all.json`、`source-pack.json`、jar 必须通过挂载目录提供。
-健康检查同时要求 `source-pack.json` 和 `config.all.json` 可读。
+- `MEOW_SOURCES_BASE` 用来把内置 `config.all.json` 里的 `__SOURCE_BASE__`
+  替换成客户端能访问的地址；TV/Fongmi 不能填 `127.0.0.1`。
+- 镜像默认源已包含 41 站和 Jable；不挂载即可导入。
+- 用自己的完整源包时，把目录挂到 `/mounted-sources`（含 `config.all.json` 时
+  整目录覆盖默认源）：
 
-Open Source 版只保留可直接启动的 `docker-compose.sources.yml`（官方 nginx + 内联配置）：
+```bash
+docker run -d --name meow-sources \
+  -p 18080:8080 \
+  -e MEOW_SOURCES_BASE=http://<HOST>:18080 \
+  -v /path/to/sources:/mounted-sources:ro \
+  chrplus/meow-sources:1.2.0
+```
+
+compose 分工：
+
+- `docker-compose.yml` / `docker-compose.build.yml`：主栈，**不含 sources**
+- `docker-compose.with-sources.yml`：主栈 + sources，一键启动
+- `docker-compose.sources.yml`：只启动源服务
 
 ```bash
 cd deploy/docker
-MEOW_SOURCES_DIR=/path/to/sources \
-  docker compose -f docker-compose.sources.yml up -d
+
+# 主栈 + 源服务
+docker compose -f docker-compose.with-sources.yml up -d
+
+# 只启动源服务
+docker compose -f docker-compose.sources.yml up -d
 ```
 
-私仓版保留 `Dockerfile.sources` / `nginx.sources.conf`，用于构建自定义镜像：
+私仓版保留 `Dockerfile.sources` / `nginx.sources.conf` / `entrypoint.sh` /
+`default-sources`，用于构建并推送这个镜像：
 
 ```bash
-docker build -f Dockerfile.sources -t chrplus/meow-sources:1.1.0 .
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -f Dockerfile.sources -t chrplus/meow-sources:1.2.0 --push .
 ```
 
 ### 校验与更新
@@ -315,8 +336,8 @@ python3 deploy/source-pack/validate.py --dir /path/to/sources \
 3. 更新 `source-pack.json` / `SHA256SUMS.txt`；
 4. 跑校验脚本和 `curl` 回验。
 
-只换文件不需要重启 nginx；开源版改 nginx 规则要改 compose 的内联
-`configs.content`，私仓版改 `nginx.sources.conf` 后重建镜像。
+只换挂载源包文件不需要重启 nginx；改镜像内置源/nginx 规则要改私仓
+`default-sources` / `nginx.sources.conf` 后重新构建推送镜像。
 
 ### Fongmi 兼容提示
 

@@ -113,13 +113,20 @@ Fongmi、猫窝 TV 和猫窝 JVM 都会按 jar URL 缓存。只替换服务器�
 
 ## 6. 源服务（nginx）
 
-开源版只保留 `deploy/docker/docker-compose.sources.yml`：官方 nginx 镜像 +
-内联 `configs.content`，直接 `up -d` 即可；`Dockerfile.sources` /
-`nginx.sources.conf` / `.dockerignore` 是私仓构建资源，已在公开库 gitignore。
+compose 分工：
+
+- `docker-compose.yml` / `docker-compose.build.yml`：主栈，不含 sources；
+- `docker-compose.with-sources.yml`：主栈 + sources 一键启动；
+- `docker-compose.sources.yml`：只启动源服务。
+
+官方镜像 `chrplus/meow-sources:1.2.0` 内置主爬虫 + Jable 扩展 + 41 站默认源；
+自定义完整源包通过 `/mounted-sources` 只读挂载覆盖。`Dockerfile.sources` /
+`nginx.sources.conf` / `entrypoint.sh` / `default-sources` 是私仓构建资源，
+已在公开库 gitignore。
 
 规则一致：
 
-- 只读挂载源包目录，不把 jar/config COPY 进镜像；
+- 默认源与用户挂载源分离，挂载源不 COPY 进镜像；
 - 禁止 SPA fallback（找不到必须 404，不能返回 index.html）；
 - `.jar` 显式 `application/java-archive`；
 - 关闭目录列表，开启 `Cache-Control: no-cache` 和 CORS；

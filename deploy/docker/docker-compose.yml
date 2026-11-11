@@ -4,6 +4,9 @@
 #   apiserver  JVM + spider jar（无 nginx）      30011
 #   danmu_api  官方镜像 logvar/danmu-api         30012
 #
+# 需要同时启动源服务时，用 docker-compose.with-sources.yml；
+# 只启动源服务用 docker-compose.sources.yml。本文件不包含 sources。
+#
 # 这个文件只负责**运行**，镜像从 Docker Hub 拉取。
 # 要从源码构建，用另一个完整文件：
 #   docker compose -f docker-compose.build.yml up -d --build

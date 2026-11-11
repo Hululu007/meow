@@ -4,6 +4,9 @@
 #   apiserver  JVM + spider jar（无 nginx）      30011   ← 本地构建
 #   danmu_api  官方镜像 logvar/danmu-api         30012   ← 拉取
 #
+# 本文件只构建主栈，不包含 sources。源服务用 docker-compose.sources.yml
+# 或 docker-compose.with-sources.yml（后者为全部服务）。
+#
 # 用法（只指定这一个文件即可，不需要叠加别的）：
 #   docker compose -f docker-compose.build.yml up -d --build
 #

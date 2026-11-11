@@ -52,54 +52,75 @@ sources/
 因此 **`spiderJvm` 不是必需产物**。推荐 `config.all.json` 不写它，让 JVM 走统一
 的 dex2jvm 链路；只有在明确要优化 JVM 冷导入时才加。
 
-## 三、OECT 上的独立服务
+## 三、OECT / Docker 上的源服务
 
-源文件放在 `/vol2/1000/meow-sources`，端口 `18080`。当前用 Docker：
+源文件放在 `/vol2/1000/meow-sources`，端口 `18080`。主 compose 不含 sources：
 
 ```bash
 cd /vol2/1000/docker-data/meow
 
-# .env 至少要有：
-#   MEOW_SOURCES_DIR=/vol2/1000/meow-sources
-#   （可选）MEOW_SOURCES_PORT=18080
+# 全部服务：主栈 + sources
+docker compose -f docker-compose.with-sources.yml up -d
 
-# 开源版：只保留这个 compose，使用官方 nginx + 内联配置，直接启动
+# 只启动源服务（公开镜像）
 docker compose -f docker-compose.sources.yml up -d
 
-# 私仓版：保留 Dockerfile.sources / nginx.sources.conf，可构建自定义镜像
-# docker compose -f docker-compose.sources.yml up -d --build
+# 私仓版只启动源服务并本地构建
+docker compose -f docker-compose.sources.yml up -d --build
+```
+
+源服务的关键变量：
+
+```bash
+# 可选：挂载自己的完整源包；不挂载就用镜像内置的 41 站（含 Jable）
+MEOW_SOURCES_DIR=/vol2/1000/meow-sources
+# 内置源生成 jar 绝对地址用；TV/Fongmi 必须填局域网地址
+MEOW_SOURCES_BASE=http://192.168.1.20:18080
+MEOW_SOURCES_PORT=18080
 ```
 
 文件归属：
 
 | 文件 | 开源版 | 私仓版 |
 |---|---|---|
-| `docker-compose.sources.yml` | ✅ 唯一保留文件，官方 nginx + 内联配置 | ✅ 可为 build 版本 |
-| `Dockerfile.sources` | ❌ gitignore | ✅ 构建资源 |
-| `nginx.sources.conf` | ❌ gitignore | ✅ 构建资源 |
+| `docker-compose.yml` | ✅ 主栈，不含 sources | ✅ 主栈，不含 sources |
+| `docker-compose.build.yml` | ✅ 构建主栈，不含 sources | ✅ 构建主栈，不含 sources |
+| `docker-compose.with-sources.yml` | ✅ 主栈 + sources，一键启动 | ✅ 主栈 + sources |
+| `docker-compose.sources.yml` | ✅ 只启动 sources（Docker Hub 镜像） | ✅ 只启动 sources（可 build） |
+| `Dockerfile.sources` / `nginx.sources.conf` / `entrypoint.sh` / `default-sources` | ❌ gitignore | ✅ 构建资源 |
 | `.dockerignore` | ❌ gitignore | ✅ 构建资源 |
 
-官方镜像（多架构 amd64/arm64，只含 nginx 配置，不含任何源包）：
+官方镜像（多架构 amd64/arm64，内置主爬虫 + Jable + 41 站默认源）：
 
 ```bash
-docker pull chrplus/meow-sources:1.1.0
+docker pull chrplus/meow-sources:1.2.0
 docker run -d --name meow-sources \
   -p 18080:8080 \
-  -v /vol2/1000/meow-sources:/usr/share/nginx/html:ro \
-  chrplus/meow-sources:1.1.0
+  -e MEOW_SOURCES_BASE=http://192.168.1.20:18080 \
+  chrplus/meow-sources:1.2.0
+```
+
+要使用自己的完整源包：
+
+```bash
+docker run -d --name meow-sources \
+  -p 18080:8080 \
+  -e MEOW_SOURCES_BASE=http://192.168.1.20:18080 \
+  -v /vol2/1000/meow-sources:/mounted-sources:ro \
+  chrplus/meow-sources:1.2.0
 ```
 
 要点：
 
-- **不要把源包 COPY 进镜像**：nginx 配置与 jar/config 分离，源包通过
-  `MEOW_SOURCES_DIR` 只读挂载；公开镜像不含第三方内容。
+- 镜像默认源已包含 **主爬虫 + Jable 扩展 + 41 站配置**；挂载
+  `/mounted-sources` 时整目录覆盖默认源。
 - 健康检查同时要求 `source-pack.json` 和 `config.all.json` 可读；只有旧
   `config.all.json`、没有规范清单的目录会被判未规范化。
 - 找不到文件必须 404，不能回落 `index.html`（否则客户端把 HTML 当 JSON/jar）。
-- 开源版改 nginx 规则要改 compose 里的 `configs.content`；私仓版改
+- 开源版改 nginx 规则要改私仓构建资源后重新推镜像；私仓版改
   `nginx.sources.conf` 后 `up -d --build`。
-- 只换源包文件不需要重启 nginx。
-- 源包服务与主栈 `meow` 完全独立；重建 `meow-web` 不影响它。
+- 只换挂载的源包文件不需要重启 nginx。
+- `with-sources` 使用主栈的 `meow` 网络；`sources` 独立启动时只暴露 18080。
 
 systemd 仅作无 Docker 环境备用，启动 `python3 -m http.server 18080` 即可；生产推荐
 上面的 nginx 容器。
