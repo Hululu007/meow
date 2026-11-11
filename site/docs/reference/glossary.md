@@ -6,10 +6,10 @@
 
 | 词 | 含义 |
 |---|---|
-| **源包（Source Pack）** | `config.json` + spider jar 的组合，决定你能搜到什么 |
+| **源包（Source Pack）** | `config.all.json` + dex spider jar 的组合，决定你能搜到什么 |
 | **spider** | 爬虫实现，通常是一个 jar；也指配置里指向 jar 的字段 |
-| **jar** | Java 归档包。JVM 端要 **class 形态**，TV 端要 **dex 形态** |
-| **class / dex** | 两种字节码格式。前者给 JVM，后者给 Android 的 ART |
+| **jar** | Java 归档包。规范源包主产物是 **dex 形态**；class 形态只用于旧 JVM 兼容 |
+| **class / dex** | 两种字节码格式。前者给 JVM，后者给 Android 的 ART；猫窝 JVM 用 dex2jvm 在导入期自动转换 |
 | **`csp_` 站点** | `api` 以 `csp_` 开头的站点，由 spider jar 处理 |
 | **`ext`** | 传给 spider 的扩展参数，同一个 jar 靠不同 ext 出不同站点 |
 | **`key`** | 站点唯一标识，同名 jar 多实例时必须不重复 |

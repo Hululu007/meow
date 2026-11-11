@@ -4,57 +4,50 @@
 
 ## 源包里有什么
 
-一个源包通常包含两样东西：
+规范源包只有一个入口：
 
 ```
 源包/
-├── config.json     站点清单：有哪些站、每个站怎么加载、解析表、直播表
-└── spider.jar      爬虫实现（class 形态给 JVM，dex 形态给 TV）
+├── config.all.json    站点清单：有哪些站、每个站怎么加载、解析表、直播表
+├── source-pack.json   机器可读清单（entry / 产物 / hash）
+└── spider-dex.jar     爬虫实现：ZIP 内含 classes.dex
 ```
 
-`config.json` 的顶层 `spider` 指向 jar。部分源会把直播表、解析表拆成单独文件，
-或者用一个多仓索引把多个单仓串起来。
+`config.all.json` 的顶层 `spider` 指向 dex jar。源包以 **CatVod dex 为主**：
+Fongmi、TVBox、猫窝 TV 直接加载它；猫窝 JVM 在导入时用 `Dex2Jvm` 把 dex
+转成 class 并缓存，不需要源包准备两套 jar。
 
 ::: tip 仓库不提供源包
 公开库与公开 Release 都不含 spider jar、真实站点配置或第三方令牌。
 源包由你从自己信任的渠道获取，放在私有 Release、NAS 或对象存储上都行。
+规则与校验脚本见仓库 `deploy/source-pack/`。
 :::
 
-## 三端要的格式不一样
+## 一份配置通吃三端
 
-这是最容易踩的坑：**同一个 `config.json`，JVM 端和 TV 端要的 jar 形态不同**。
-
-| 端 | jar 形态 | 判断依据 | 谁加载 |
-|---|---|---|---|
-| Web / PC（JVM） | **class 形态**：jar 里是 `.class` | 顶层 `spider` 或 `spiderJvm` | `URLClassLoader` / `Class.forName` |
-| TV（Android） | **dex 形态**：ZIP 内含 `classes.dex` | 每个 `csp_` 站点的 `jar` 字段 | `DexClassLoader` |
-
-把 dex 形态塞给 JVM 会报 `NoClassDefFoundError`，把 class 形态塞给 TV 会
-`ClassNotFoundException`，两者不通用。
-
-### 一份配置通吃三端：`spiderJvm`
-
-从 1.1.6 起，猫窝认一个自定义字段 `spiderJvm`：
+| 端 | 读取 | 加载 |
+|---|---|---|
+| Fongmi / TVBox | 顶层 `spider` + 可选站点 `jar` | `DexClassLoader` |
+| 猫窝 TV | 同上；站点不写 `jar` 时回退顶层 `spider` | `DexClassLoader` |
+| 猫窝 JVM | 优先 `spiderJvm`；没有则 `spider` | `URLClassLoader`，dex 由 `Dex2Jvm` 转换 |
 
 ```json
 {
   "spider": "https://example.com/spider-dex.jar;md5;<32位>",
-  "spiderJvm": "https://example.com/spider-class.jar;md5;<32位>",
-  "sites": [ ... ]
+  "sites": [
+    { "key": "示例", "name": "示例", "type": 3, "api": "csp_Example" }
+  ]
 }
 ```
 
-- **JVM 端优先读 `spiderJvm`**，没有才回退到 `spider`
-- **TV / Fongmi 只读 `spider`**（`spiderJvm` 是未知字段，直接忽略）
-- 站点条目里**不写** `jar`，由顶层字段统一决定
-
-于是同一份 `config.all.json` 可以同时给 Web、PC、TV 和 Fongmi 用。
-旧版猫窝不认 `spiderJvm`，仍然需要单独的 `config.jvm.json`（顶层 `spider` 直接指向 class jar）。
-
-::: warning 顺序别搞反
-统一配置里顶层 `spider` 必须是 **dex**：Fongmi 会先按顶层字段 `DexClassLoader`，
-指向 class jar 会直接加载失败，而它不会回退到 `spiderJvm`。
-:::
+- **顶层 `spider` 必须是 dex**：Fongmi 会按顶层字段 `DexClassLoader`，指向 class
+  jar 会直接加载失败。
+- **站点不写 `jar`**：由顶层统一提供。只有站点确实需要另一个 dex jar 时才写站点级
+  `jar`，同样必须是 dex。
+- **`spiderJvm` 是可选字段**：class jar，只给 JVM 做冷导入优化/旧版兼容；
+  Fongmi/TV 会忽略。新源包不需要它，JVM 走 dex2jvm 即可。
+- 旧版猫窝不认 `spiderJvm`/dex2jvm 时，才需要单独的 `config.jvm.json`
+  （顶层 `spider` 直接指向 class jar）。
 
 ## `spider` 字段的 `;md5;` 语义
 
@@ -65,7 +58,8 @@
 - 分号后是**这个 jar 文件本身**的 MD5（32 位小写 hex）
 - 缓存里已有同 MD5 的 jar 就直接复用，不重复下载
 - 下载后 MD5 不匹配**拒绝加载**，不会用半截文件启动
-- 不写 `;md5;` 也能跑，但每次启动都会重新探测，且无法判断是否需要更新
+- **规范要求 jar URL 必须带 `;md5;`**（或用版本化文件名）。不写虽然可能跑起来，
+  但换 jar 后客户端会继续用旧缓存，Fongmi/TV/JVM 都一样。
 
 ## 导入步骤
 
@@ -94,11 +88,11 @@
 
 ### TV
 
-设置 →「本机执行」→「配置地址」→ 填入 `config.json` 的 URL。
+设置 →「本机执行」→「配置地址」→ 填入 `config.all.json` 的 URL。
 
 TV 端额外注意：
 
-- 只导入带 `jar` 字段或顶层 `spider` 可用的 `csp_` 站点，其他形态会被跳过
+- `csp_` 站点可以用站点级 `jar`，也可以只靠顶层 `spider`；两种都必须是 dex
 - 端上会维护一份自己的站点表；通过扫码从 Web/PC 推送配置时，两份表会同步
 - 配置地址可以是局域网地址，但电视必须能访问到那台机器
 
@@ -110,7 +104,7 @@ TV 端额外注意：
 | drpy `.js` | 站点 `api` 以 `.js` 结尾 | `drpy` 插件里的 Node 运行时 |
 | 苹果CMS 直连 | 站点 `type: 1`，`api` 是 CMS 接口 | 按 CMS 协议直接拉 |
 | 多仓索引 | `{"urls": ["https://.../config.json"]}` | 导入时逐个探测可用性 |
-| CatVod 出口配置 | 标准 `/config.json` 九字段 | 可导入站点 / 直播 / 解析表 |
+| CatVod 出口配置 | 标准 `/config.all.json` 九字段 | 可导入站点 / 直播 / 解析表 |
 
 ## 导入后自检
 

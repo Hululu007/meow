@@ -1,7 +1,7 @@
 # 源包与配置格式
 
-源包的核心是一个 `config.json`。这一页说明它的字段：哪些必填、哪些只在特定端生效、
-写错了会怎样。
+源包的核心是一个 `config.all.json`。这一页说明它的字段：哪些必填、哪些只在特定端生效、
+写错了会怎样。规范源包以 CatVod **dex** 为主入口。
 
 ::: warning 只为排障与自制源包
 这里描述的是 CatVod / TVBox / Fongmi 系的通用配置格式。项目不提供任何真实配置，
@@ -12,8 +12,7 @@
 
 ```json
 {
-  "spider": "https://example.com/spider.jar;md5;<32位小写hex>",
-  "spiderJvm": "https://example.com/spider-class.jar;md5;<32位小写hex>",
+  "spider": "https://example.com/spider-dex.jar;md5;<32位小写hex>",
   "sites": [],
   "parses": [],
   "lives": [],
@@ -28,8 +27,8 @@
 
 | 键 | 必需 | 作用 |
 |---|---|---|
-| `spider` | 视源而定 | 爬虫 jar 地址；格式 `url;md5;<hex>` |
-| `spiderJvm` | 否 | 猫窝自定义：JVM 端优先读它，见 [导入源包](/guide/source-pack#一份配置通吃三端-spiderjvm) |
+| `spider` | 视源而定 | 爬虫 **dex** jar 地址；格式 `url;md5;<hex>` |
+| `spiderJvm` | 否 | 猫窝自定义：可选的 class jar，JVM 优先读它；Fongmi/TV 忽略 |
 | `sites` | ✅ | 站点表 |
 | `parses` | ✅ | 解析器表 |
 | `lives` | | 直播表 |
@@ -43,13 +42,14 @@
 ## `spider`
 
 ```
-"spider": "https://example.com/spider.jar;md5;d41d8cd98f00b204e9800998ecf8427e"
+"spider": "https://example.com/spider-dex.jar;md5;d41d8cd98f00b204e9800998ecf8427e"
 ```
 
 - 分号后是**该 jar 文件本身**的 MD5
 - 已有同 MD5 缓存时复用，不重复下载
 - 下载后 MD5 不匹配**拒绝加载**，不会用半截文件启动
-- 省略 `;md5;` 也能跑，但每次启动都会重新探测，且无法判断是否需要更新
+- **规范要求 jar URL 必须带 `;md5;`**（或用版本化文件名）；不写会导致换 jar 后
+  客户端继续用旧缓存
 
 ## `sites`
 
@@ -64,8 +64,7 @@
   "changeable": 1,
   "hide": 0,
   "indexs": 1,
-  "timeout": 20,
-  "jar": "https://example.com/spider.jar;md5;<hex>"
+  "timeout": 20
 }
 ```
 
@@ -78,11 +77,11 @@
 | `ext` | 传给 spider 的扩展参数，单 key 站点也建议写上 |
 | `searchable` | 是否参与聚合搜索 |
 | `hide` | 是否在列表隐藏 |
-| `jar` | **TV 端必需**：站点级 jar 地址；JVM 端可由顶层统一提供 |
+| `jar` | 可选：站点级 **dex** jar 地址；省略时由顶层 `spider` 提供 |
 
-::: tip TV 只认带 `jar` 的站点
-TV 端逐个站点构造 `DexClassLoader`，没有 `jar` 字段的 `csp_` 站点会被跳过。
-JVM 端则优先用顶层 `spiderJvm` / `spider`，站点级 `jar` 可选。
+::: tip 站点 jar 可以省略
+TV/Fongmi 在站点没有 `jar` 时会回退到顶层 `spider`；JVM 则优先 `spiderJvm`，
+没有就用 `spider` 走 dex2jvm。只有某站确实需要另一个 dex jar 时才写站点级 `jar`。
 :::
 
 ## `parses`

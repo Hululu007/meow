@@ -42,10 +42,15 @@ TV   ─┘
 | **TV** | 无（客户端自己执行） | `DexClassLoader` |
 
 > **spider jar 与站点配置由「源包（Source Pack）」提供，仓库不附带。**
-> - **JVM**（Docker / PC / 自建后端）：源包 = `config.json` + **class 形态** jar；
->   配置顶层 `spider` 指向 jar（可带 `;md5;<32位>`）。
-> - **TV 本机执行**：源包 = `config.json` + **dex 形态** jar（ZIP 内含 `classes.dex`）；
->   **每个 `csp_` 站点都要带 `jar` 字段**（TV 只导入这类站点）。
+> - **统一入口**：`config.all.json`，顶层 `spider` 指向 **CatVod dex jar**
+>   （ZIP 内含 `classes.dex`，URL 带 `;md5;<32位>`）。
+> - **Fongmi / TVBox / 猫窝 TV**：直接加载这份 dex；站点不写 `jar` 时回退顶层
+>   `spider`，不需要为每个 `csp_` 站重复写 jar。
+> - **猫窝 JVM**（Docker / PC / 自建后端）：同一份配置直接导入；没有 `spiderJvm`
+>   时由导入期 `Dex2Jvm` 自动把 dex 转成 class 并缓存。`spiderJvm` 是可选的
+>   JVM 优化/旧版兼容字段，不是必需产物。
+> - 规则、校验脚本与 OECT 源服务部署见 [`deploy/source-pack/`](deploy/source-pack/README.md)
+>   和 [`deploy/SOURCE_PACK.md`](deploy/SOURCE_PACK.md)。
 > - 导入入口：Web/PC 设置 →「配置源」；TV 设置 →「本机执行」→ 配置地址；
 >   手机扫码可把**后端地址 + 配置地址**推给 TV（走后端模式）。
 > - 源包放在私有 Release / NAS / 对象存储即可，仓库只保留加载器、示例配置和构建脚本。

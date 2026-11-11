@@ -28,8 +28,9 @@ Web 端检查 `web` 容器能否连到 `apiserver`：页面能开但接口 503�
 
 按命中率排查：
 
-1. **jar 形态不对**：JVM 端要 class 形态，TV 端要 dex 形态（ZIP 内含 `classes.dex`）
-2. **站点缺 `jar` 字段**：TV 只导入带 `jar` 或顶层 `spider` 可用的 `csp_` 站点
+1. **顶层 `spider` 不是 dex**：Fongmi/TV 要 dex（ZIP 内含 `classes.dex`）；
+   JVM 会自动转，但 Android 不会
+2. **站点既没有 `jar`，顶层 `spider` 也不可用**：TV 会跳过这类 `csp_` 站
 3. **配置里的地址是 `127.0.0.1`**：在电视/手机/容器里，它指设备自己
 4. **jar 下载不到**：`spider` 的 MD5 不匹配会直接拒绝加载
 5. **缺少运行时**：`.js` 源需要 drpy，没起就是「不可用」
@@ -37,10 +38,11 @@ Web 端检查 `web` 容器能否连到 `apiserver`：页面能开但接口 503�
 ### 报 `ClassNotFoundException` / `NoClassDefFoundError`
 
 - `ClassNotFoundException`：jar 里没有这个类，或 jar 没被加载（TV 常见于格式不对）
-- `NoClassDefFoundError`：类在但依赖缺；或 class 形态与 dex 形态互换使用
+- `NoClassDefFoundError`：类在但依赖缺；或旧 JVM 拿到了未转换的 dex 源包
 
-迁移到新源包时，记得勾选「用这份配置的顶层 spider 覆盖本地」，
-否则本机还留着旧 jar 地址。
+猫窝 JVM 当前会在导入期把 dex 转成 class；旧版 JVM 仍然需要
+`config.jvm.json`（顶层 `spider` 指向 class jar）。迁移到新源包时，记得勾选
+「用这份配置的顶层 spider 覆盖本地」，否则本机还留着旧 jar 地址。
 
 ### 追加导入了新仓，旧站点消失了
 

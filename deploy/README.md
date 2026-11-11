@@ -88,6 +88,9 @@ deploy/
 │   ├── nginx.sources.conf       ← 源包 nginx 配置（禁止 SPA fallback）
 │   ├── nginx.conf.template      ← web 容器反代配置
 │   └── .env.example             ← 变量模板（复制成 .env 用）
+├── source-pack/
+│   ├── README.md                ← ★源包规范（meow-source-pack/1）
+│   └── validate.py              ← 源包校验（dex/md5/manifest/Fongmi 兼容）
 ├── units.json                   ← ★构建单元唯一真源（见下）
 └── scripts/
     ├── verify.ps1               ← ★自检（改完脚本/文档必跑）
