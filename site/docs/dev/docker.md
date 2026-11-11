@@ -35,6 +35,9 @@
 | `drpy` | `Dockerfile.drpy` 本地构建 | Node 22，跑 `.js` / drpy 源 | `0.0.0.0:30013` → 9330 |
 | `danmu_api` | `logvar/danmu-api:1.21.6` | 上游 Node 服务 | `127.0.0.1:30012` |
 
+带源形态多第五个容器 `meow-sources`（nginx，宿主 `18080`，内置主爬虫 + Jable +
+41 站默认源），见 §3.3。
+
 **`drpy` 为什么不能省**：配置里 200+ 个源是 drpy/`.js`，没有这个运行时它们会被判
 “不可用”（`apiserver` 通过 `MEOW_JS_RUNTIME` 指向它）。`DRPY_STRIP_REMOTE=1` 默认开：
 drpy2 会纯副作用地 import 第三方 CDN 脚本，直接执行等于引入供应链风险。
@@ -99,12 +102,12 @@ Windows 用 Docker Desktop 即可；**宿主机不需要 JDK / Node**，编译�
 
 ## 三、编排与构建
 
-| 文件（都在 `deploy/docker/`） | 作用 | 镜像来源 |
-|---|---|---|
-| `docker-compose.yml` | 启动 | 从 Registry 拉 |
-| `docker-compose.build.yml` | 构建 + 启动 | 本地源码构建 |
-| `docker-compose.with-sources.yml` | 主栈 + 源服务 | 从 Registry 拉 |
-| `docker-compose.sources.yml` | 只启动源服务 | 从 Registry 拉 |
+| 文件（都在 `deploy/docker/`） | 形态 | 容器数 | 镜像来源 |
+|---|---|---|---|
+| `docker-compose.yml` | **主体直接启动**（发布镜像） | 4 | 从 Registry 拉 |
+| `docker-compose.build.yml` | **主体构建**（本地源码） | 4 | 本地构建 |
+| `docker-compose.with-sources.yml` | **带源主体启动**：主栈 + 源服务 | 5 | 从 Registry 拉 |
+| `docker-compose.sources.yml` | **源服务独立启动** | 1 | 从 Registry 拉 |
 
 前两个**完整且独立，二选一，不是叠加**：端口、环境变量、卷、网络、`name: meow`、
 `container_name` 完全一致，唯一差别是后者多了 `build:` 段，切换时接管同一组容器。
@@ -177,6 +180,36 @@ context 都是**仓库根目录**，靠 `.dockerignore` 裁剪：**`**/node_modu
 
 compose 不做 manifest list，要发布多架构镜像用 `build-push-docker.ps1`（§七）。
 
+### 3.3 源服务：带源主体与独立源服务
+
+两种源形态共用同一镜像 `chrplus/meow-sources:1.2.0`（**独立版本线**，不跟
+`MEOW_VERSION` 走）：内置主爬虫 + Jable 扩展 + 41 站默认源，**不挂载即可用**；
+`MEOW_SOURCES_DIR` 指到自己的完整源包目录时整目录只读覆盖内置源（挂到
+`/mounted-sources`）。默认 `./sources` 是空目录——空目录 = 用镜像内置源。
+
+**起容器 ≠ 导入源**：没有任何首启自动导入。容器起来后要在设置页手动填
+`http://<宿主IP>:18080/config.all.json`（TV / Fongmi 也在配置地址填这个）。
+
+**★ `MEOW_SOURCES_BASE` 默认是占位值，必须按导入方改**：内置源生成的 jar 下载
+绝对地址由它拼出，默认 `http://127.0.0.1:18080` 只在「导入方与源服务同主机」时
+成立——apiserver 容器去拉时 127.0.0.1 指向容器自己，症状是「站点导进来但 jar
+下载失败」：
+
+| 谁导入 | `MEOW_SOURCES_BASE` 填 |
+|---|---|
+| 只有 Docker 主栈的 apiserver（同 `meow` 网络） | `http://meow-sources:18080`（容器名可解析） |
+| TV / Fongmi / 局域网其他机器也要导入 | 宿主局域网地址，如 `http://192.168.1.20:18080` |
+
+两种形态的边界：
+
+| 形态 | 启动 | 特点 |
+|---|---|---|
+| 带源主体启动 | `docker compose -f docker-compose.with-sources.yml up -d` | 五容器同在 `meow` 网络，`name: meow` 与主栈同项目——共享 `.env` 与 `data/` |
+| 源服务独立启动 | `docker compose -f docker-compose.sources.yml up -d` | 单容器、**独立项目 `meow-sources`**，不在 `meow` 网络里，主栈容器解析不到它；给局域网设备当源分发点（默认绑 `0.0.0.0:18080`） |
+
+源镜像的构建（`Dockerfile.sources` 等）在私仓维护，公开库只有 compose 与镜像；
+详见 [`SOURCE_PACK.md`](https://github.com/upchr/meow/blob/main/deploy/SOURCE_PACK.md)。
+
 ---
 
 ## 四、配置：`.env` 与 compose 的分工
@@ -214,6 +247,10 @@ compose 不做 manifest list，要发布多架构镜像用 `build-push-docker.ps
 | `MEOW_CORS` | `*` | B | 公网暴露时收紧（§9.1） |
 | `DANMU_SOURCE_ORDER` | 8 个来源 | B | 不配只有 3 个来源 |
 | `APISERVER_JAVA_OPTS` | `-Xms64m -Xmx512m …` | B | 小内存机器降 `-Xmx256m` |
+| `MEOW_SOURCES_IMAGE` | `chrplus/meow-sources:1.2.0` | A | 源服务镜像 tag，**独立版本线**；仅 sources / with-sources 读 |
+| `MEOW_SOURCES_PORT` / `MEOW_SOURCES_BIND` | `18080` / `0.0.0.0` | A | 端口冲突 / 收回本机 |
+| `MEOW_SOURCES_DIR` | `./sources`（空目录） | A | 指到完整源包目录时覆盖镜像内置源 |
+| `MEOW_SOURCES_BASE` | `http://127.0.0.1:18080`（占位） | B | **按导入方改**，见 §3.3 |
 
 A 组只在宿主生效（镜像 tag、端口、绑定地址），B 组会传进容器。**★ `DRPY_VERSION` 不能
 跟 `MEOW_VERSION` 走**：drpy 只在主版本发版时顺带重打，中间的主版本号在远端不存在。跟着
@@ -533,9 +570,10 @@ cd deploy/docker && docker compose up -d
 cd deploy/docker && docker compose up -d web
 cd deploy/docker && docker compose up -d apiserver danmu_api
 
-# 主栈 + 源服务 / 只起源服务
+# 主栈 + 源服务 / 只起源服务（起完到设置页手动导入源，见 §3.3）
 cd deploy/docker && docker compose -f docker-compose.with-sources.yml up -d
 cd deploy/docker && docker compose -f docker-compose.sources.yml up -d
+# 导入地址 http://<宿主IP>:18080/config.all.json；MEOW_SOURCES_BASE 默认 127.0.0.1 是占位
 
 # 状态 / 日志 / 验证 / 停单个（不要用 down <服务名>）
 cd deploy/docker && docker compose ps && docker compose logs -f apiserver
