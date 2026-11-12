@@ -115,6 +115,36 @@ public final class AppUpdater {
     }
 
     /**
+     * 按候选列表拉清单（`|` 分隔的直连 + GitHub 加速代理）。
+     *
+     * <p>★ 为什么模块链也要走加速（2026-11-12）：模块清单与 50MB 的模块 APK
+     * 都从 GitHub 取，被墙用户直连必失败。应用自更新一直有候选列表
+     * （JS 算好、`appUpdateDownload(urls.join('|'))` 传进来），模块链却只传
+     * 单地址——同一台电视能更新壳、却装不上模块。这里补齐清单侧，
+     * 下载侧由 {@link #start} 的 urlsPipe 直接支持。
+     *
+     * <p>判据是内容含 {@code "packages"}：代理错误页/HTML 会返回 200，
+     * 只看"取到字节"会被它骗过去。
+     */
+    public static String fetchManifestAny(String urlsPipe, String token) {
+        lastError = "";
+        if (urlsPipe == null || urlsPipe.trim().isEmpty()) {
+            lastError = "清单地址为空";
+            return null;
+        }
+        String last = "";
+        for (String raw : urlsPipe.split("\\|")) {
+            String u = raw == null ? "" : raw.trim();
+            if (u.isEmpty()) continue;
+            String text = fetchManifest(u, token);
+            if (text != null && text.contains("\"packages\"")) return text;
+            last = lastError;
+        }
+        lastError = last.isEmpty() ? "所有候选地址都失败" : last;
+        return null;
+    }
+
+    /**
      * 这个地址能不能收到访问令牌。
      *
      * <p><b>只发给 GitHub 自己的域名</b>，其他一律不发。两个理由：

@@ -14,6 +14,7 @@ import { reactive, ref } from 'vue'
 import { isDesktop } from '@/api'
 import {
   checkAppUpdate,
+  downloadCandidates,
   getBackupUpdateSource,
   getUpdateSource,
   getUpdateToken,
@@ -242,13 +243,20 @@ export async function checkModule(silent = false): Promise<boolean> {
     }
     const src = (await getUpdateSource()) || ''
     const tok = getUpdateToken()
-    let chk = JSON.parse(String(b.moduleCheck(src, tok) || '{}'))
+    // ★ 清单也走全局加速（2026-11-12）：模块清单在 GitHub 上，被墙用户直连
+    //   必失败。候选由 downloadCandidates 按「GitHub 加速」算好，逐个试。
+    //   与设置页 modInstall、App 自更新同一套语义。
+    let chk: Record<string, unknown> = { ok: false }
+    for (const c of downloadCandidates(src)) {
+      chk = JSON.parse(String(b.moduleCheck(c, tok) || '{}'))
+      if (chk.ok !== false) break
+    }
     // 显式备用源：主源失败才试（与应用更新同一份 Prefs）
     const backup = getBackupUpdateSource()
     if (chk.ok === false && backup && backup !== src) {
       chk = JSON.parse(String(b.moduleCheck(backup, tok) || '{}'))
     }
-    if (chk.ok === false) throw new Error(chk.error || '检查失败')
+    if (chk.ok === false) throw new Error(String(chk.error || '检查失败'))
     const latestVersion = String(chk.version || '')
     if (!latestVersion) throw new Error('清单里没有模块版本')
     const has = isNewer(latestVersion, moduleCurrent.value)

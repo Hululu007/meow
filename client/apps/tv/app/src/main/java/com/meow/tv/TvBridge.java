@@ -895,11 +895,27 @@ public class TvBridge {
      */
     @JavascriptInterface
     public String moduleCheck(String source, String token) {
+        return moduleCheck(source, token, "");
+    }
+
+    /**
+     * 带候选地址的版本（2026-11-12）：{@code urlsPipe} 是 JS 按「网络与加速 →
+     * GitHub 加速」算好的直连+代理列表（`|` 分隔），拉清单时逐个尝试。
+     *
+     * <p>为什么候选由页面传：加速列表存在 Web 侧的 Prefs 里（与 App 更新共用
+     * 同一份），原生不重复维护一份配置。风险与原设计一致——页面本来就能下发
+     * "装一个新版本"；清单只是内容，仍要过 sha256 校验。
+     */
+    @JavascriptInterface
+    public String moduleCheck(String source, String token, String urlsPipe) {
         try {
             String src = (source == null || source.trim().isEmpty())
                     ? com.meow.tv.runtime.RuntimeModuleCatalog.SOURCE : source.trim();
             String tk = token == null ? "" : token;
-            String text = AppUpdater.fetchManifest(src, tk);
+            String pipe = urlsPipe == null ? "" : urlsPipe.trim();
+            String text = pipe.isEmpty()
+                    ? AppUpdater.fetchManifest(src, tk)
+                    : AppUpdater.fetchManifestAny(pipe, tk);
             // 源可能给的是"仓库/release 端点"而不是 packages.json 本身
             // （与 App 更新同一个源）。那种情况先解析出 packages.json 资产再拉。
             if (text == null || !text.contains("\"packages\"")) {
@@ -935,6 +951,23 @@ public class TvBridge {
 
     @JavascriptInterface
     public String moduleDownload(String source, String token) {
+        return moduleDownload(source, token, "");
+    }
+
+    /**
+     * 带候选地址的版本（2026-11-12）：{@code urlsPipe} 是 JS 按「GitHub 加速」
+     * 为**模块 APK** 算好的直连+代理列表（`|` 分隔），逐个尝试。
+     *
+     * <p>安全闸：每个候选必须**包含清单里的原始 url**（代理都是
+     * `前缀+原地址` 或 `前缀里嵌原地址`）。这样即使页面被换掉，也只会下载
+     * 同一个资产的不同线路，不会把下载目标改到别的包——sha256 仍由
+     * AppUpdater 强制校验。
+     *
+     * <p>私有仓（带 token）不走代理：代理不转发 Authorization，且资产地址
+     * 已被转成 api.github.com 端点，候选列表没有意义。
+     */
+    @JavascriptInterface
+    public String moduleDownload(String source, String token, String urlsPipe) {
         try {
             if (moduleCatalogJson.isEmpty()) {
                 String check = moduleCheck(source, token);
@@ -974,8 +1007,26 @@ public class TvBridge {
                 return "{\"ok\":false,\"error\":\"清单缺 url/sha256\"}";
             }
             String fileName = "meow-node-" + abi + ".apk";
-            String real = moduleAssetUrl(url, token == null ? "" : token);
-            return AppUpdater.start(activity, real, sha, token == null ? "" : token, fileName);
+            String tk2 = token == null ? "" : token;
+            String real = moduleAssetUrl(url, tk2);
+            // 公开仓 + 页面给了候选：逐个试（直连常被墙，代理是唯一出路）
+            String pipe = urlsPipe == null ? "" : urlsPipe.trim();
+            if (!pipe.isEmpty() && tk2.trim().isEmpty()) {
+                StringBuilder ok = new StringBuilder();
+                for (String raw : pipe.split("\\|")) {
+                    String c = raw == null ? "" : raw.trim();
+                    if (c.isEmpty()) continue;
+                    if (!c.startsWith("http://") && !c.startsWith("https://")) continue;
+                    // 只接受"原地址的线路变体"，不能是别的文件
+                    if (!c.contains(real)) continue;
+                    if (ok.length() > 0) ok.append('|');
+                    ok.append(c);
+                }
+                if (ok.length() > 0) {
+                    return AppUpdater.start(activity, ok.toString(), sha, tk2, fileName);
+                }
+            }
+            return AppUpdater.start(activity, real, sha, tk2, fileName);
         } catch (Throwable t) {
             return "{\"ok\":false,\"error\":\"" + AppUpdater.escape(t.getMessage()) + "\"}";
         }

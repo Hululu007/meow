@@ -684,6 +684,43 @@ if ((-not $NoCopyAssets) -and $archival) {
     }
 }
 
+# ---------------------------------------------------------------- 本次 tag 的资产二次校验
+#
+# ★★ 2026-11-12 事故后加（release-v1.1.7 的 tv-node 三件套）：
+#   复制步曾经因为 $rel 变量被自检循环覆盖，把继承资产传回**旧 release**
+#   （同名资产 already_exists 还被判成功），url 却改写成了新 tag —— 而下面
+#   「继承条目存活校验」当时对"指向本次 tag"的条目直接 continue（注释写着
+#   "本次的资产，一定有"），于是 404 一路漏到用户：全新安装点模块下载必失败。
+#
+#   这里的判据不信任任何中间状态：复制之后**重新拉一次本次 release 的资产
+#   列表**，逐条核对"指向本次 tag 的 url 必须真有资产"，缺一个就红。
+$curAssets = @()
+try {
+    $curAssets = @((Get-GhApi "/repos/$Repo/releases/tags/$tag").assets)
+} catch {
+    Write-Host "  ! 取本次 release 资产列表失败（$($_.Exception.Message)），跳过二次校验" -ForegroundColor DarkYellow
+}
+if ($curAssets.Count -gt 0) {
+    $missingCur = @()
+    foreach ($k in @($packages.Keys)) {
+        $u = [string]$packages[$k].url
+        if (-not $u) { continue }
+        $m4 = [regex]::Match($u, '/releases/download/([^/]+)/(.+)$')
+        if (-not $m4.Success) { continue }
+        if ($m4.Groups[1].Value -ne $tag) { continue }
+        $fname = [uri]::UnescapeDataString($m4.Groups[2].Value)
+        if (@($curAssets | Where-Object { $_.name -eq $fname }).Count -eq 0) {
+            $missingCur += "$k（url 指向 $tag 的 $fname，但资产不存在）"
+        }
+    }
+    if ($missingCur.Count -gt 0) {
+        Write-Host "  X 这些条目指向本次 release 却没有对应资产：" -ForegroundColor Red
+        $missingCur | ForEach-Object { Write-Host "    · $_" -ForegroundColor Red }
+        throw "清单自检失败：本次 release 缺少被引用的资产（复制步没生效？见 2026-11-12 事故）"
+    }
+    Write-Host "  本次 tag 资产二次校验通过（$($curAssets.Count) 个资产）" -ForegroundColor Green
+}
+
 # ---------------------------------------------------------------- 继承条目的存活校验
 #
 # 复制失败（或用了 -NoCopyAssets）时，url 仍指向旧 release。这里兜底检查
@@ -697,7 +734,7 @@ foreach ($k in @($packages.Keys)) {
     $m2 = [regex]::Match($u, '/releases/download/([^/]+)/')
     if (-not $m2.Success) { continue }
     $uTag = $m2.Groups[1].Value
-    if ($uTag -eq $tag) { continue }   # 本次的资产，一定有
+    if ($uTag -eq $tag) { continue }   # 本次 tag 的条目已在上面「二次校验」里核对过
     # 用 API 查该 tag 的资产列表，确认文件还在
     try {
         $r3 = Get-GhApi "/repos/$Repo/releases/tags/$uTag"

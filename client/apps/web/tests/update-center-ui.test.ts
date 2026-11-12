@@ -122,3 +122,46 @@ describe('模块安装：轮询状态与原生词表一致', () => {
     expect(copyBlock, '复制循环还在用被覆盖的 $rel.upload_url').not.toContain('$rel.upload_url')
   })
 })
+
+/**
+ * 模块链的 git 加速接入（2026-11-12 用户问「模块安装是否需要参与，
+ * 避免连不上 github 的用户」）。
+ *
+ * 事实：模块清单与 50MB 的模块 APK 都在 GitHub 上；应用自更新一直有候选
+ * 列表（直连+代理+jsDelivr），模块链原先只传单地址 → 被墙用户能更新壳、
+ * 却装不上模块。修复后：
+ *   · 清单：按 downloadCandidates(src) 逐个试 moduleCheck
+ *   · APK：把清单 url 的候选 join('|') 传给 moduleDownload（原生逐个试）
+ *   · 原生侧新增 fetchManifestAny + moduleCheck/moduleDownload 三参重载，
+ *     且候选必须包含原始 url（防止被换下载目标）
+ */
+describe('模块链参与 git 加速', () => {
+  const SETTINGS = join(ROOT, 'client', 'apps', 'web', 'src', 'views', 'SettingsView.vue')
+  const STORE = join(ROOT, 'client', 'apps', 'web', 'src', 'stores', 'updateCenter.ts')
+  const BRIDGE = join(ROOT, 'client', 'apps', 'tv', 'app', 'src', 'main', 'java', 'com', 'meow', 'tv', 'TvBridge.java')
+  const UPDATER = join(ROOT, 'client', 'apps', 'tv', 'app', 'src', 'main', 'java', 'com', 'meow', 'tv', 'AppUpdater.java')
+
+  it('设置页：清单按候选逐个试，APK 候选 join 后传给 moduleDownload', () => {
+    const src = readFileSync(SETTINGS, 'utf8')
+    expect(src).toContain('for (const c of downloadCandidates(src))')
+    expect(src).toContain('b.moduleDownload(src, tok, assetCands)')
+    expect(src).toContain("downloadCandidates(String(chk.url)).join('|')")
+    // 轮询超时必须有结论，不能停在「下载中 100%」
+    expect(src).toContain('安装超时')
+  })
+
+  it('更新中心 checkModule 同样按候选试清单', () => {
+    const src = readFileSync(STORE, 'utf8')
+    expect(src).toContain('for (const c of downloadCandidates(src))')
+  })
+
+  it('原生：清单支持多候选，模块下载校验候选必须包含原地址', () => {
+    const up = readFileSync(UPDATER, 'utf8')
+    expect(up, '缺 fetchManifestAny').toContain('public static String fetchManifestAny')
+    expect(up).toContain('contains("\\"packages\\"")')
+    const br = readFileSync(BRIDGE, 'utf8')
+    expect(br).toContain('public String moduleCheck(String source, String token, String urlsPipe)')
+    expect(br).toContain('public String moduleDownload(String source, String token, String urlsPipe)')
+    expect(br, '候选没有"必须包含原 url"的安全闸').toContain('if (!c.contains(real)) continue;')
+  })
+})

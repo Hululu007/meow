@@ -82,6 +82,7 @@ import {
 //   各留一份会出现「弹框说发现新版本、这里仍显示已是最新」。
 import {
   clearUpdateCache,
+  downloadCandidates,
   getBackupUpdateSource,
   getUpdateSource,
   getUpdateToken,
@@ -2821,7 +2822,15 @@ async function modInstall() {
     // 与「在线更新」共用同一份源/令牌（都在 Prefs 里，手机推送也会带过来）
     const src = (await getUpdateSource()) || ''
     const tok = getUpdateToken()
-    let chk = JSON.parse(b.moduleCheck(src, tok))
+    // ★ 清单也走全局加速（2026-11-12）：模块清单和 APK 都在 GitHub 上，
+    //   被墙用户直连必失败。候选列表由 downloadCandidates 按「网络与加速 →
+    //   GitHub 加速」算好（直连 + 代理），逐个试，第一个拿到清单的胜出。
+    //   与 App 自更新（fetchRawTextCandidates）同一套语义。
+    let chk: Record<string, unknown> = { ok: false }
+    for (const c of downloadCandidates(src)) {
+      chk = JSON.parse(b.moduleCheck(c, tok))
+      if (chk.ok !== false) break
+    }
     const backup = getBackupUpdateSource()
     if (chk.ok === false && backup && backup !== src) {
       chk = JSON.parse(b.moduleCheck(backup, tok))
@@ -2830,8 +2839,11 @@ async function modInstall() {
       modMsg.value = '检查失败：' + (chk.error || '未知错误')
       return
     }
-    modMsg.value = `下载中（${fmtSize(chk.size || 0)}，${chk.abi}）…`
-    b.moduleDownload(src, tok)
+    modMsg.value = `下载中（${fmtSize(Number(chk.size) || 0)}，${chk.abi}）…`
+    // APK 同理：把清单里 url 的候选线路一起传下去（原生逐个试、sha256 不变）
+    const assetCands = chk.url ? downloadCandidates(String(chk.url)).join('|') : ''
+    b.moduleDownload(src, tok, assetCands)
+    let settled = false
     for (let i = 0; i < 260; i++) {
       await new Promise((r) => setTimeout(r, 700))
       const st = JSON.parse(b.appUpdateState())
@@ -2843,10 +2855,12 @@ async function modInstall() {
       if (st.state === 'ready') {
         modMsg.value = '下载完成，拉起安装器…'
         b.appUpdateInstall()
+        settled = true
         break
       }
       if (st.state === 'failed') {
         modMsg.value = '下载失败：' + st.message
+        settled = true
         break
       }
       modMsg.value =
@@ -2854,6 +2868,8 @@ async function modInstall() {
           ? '校验中…'
           : `下载中 ${st.percent}%（${fmtSize(st.received || 0)} / ${fmtSize(st.total || 0)}）`
     }
+    // 轮询超时也必须给结论，否则界面停在「下载中 100%」看起来像卡死
+    if (!settled) modMsg.value = '安装超时：下载未完成（网络太慢或被拦截），可再点一次重试'
   } catch (e) {
     modMsg.value = '安装失败：' + String(e)
   } finally {
