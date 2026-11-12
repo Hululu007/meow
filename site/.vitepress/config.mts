@@ -94,7 +94,7 @@ const guideSidebar = [
     items: [
       { text: 'Web / Docker', link: '/guide/web-docker' },
       { text: 'PC 桌面端', link: '/guide/pc' },
-      { text: 'TV / 投影仪', link: '/guide/tv' },
+      { text: 'TV / 投影仪 / 手机', link: '/guide/tv' },
       { text: '飞牛 fnOS', link: '/guide/fnos' },
     ],
   },

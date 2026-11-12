@@ -13,7 +13,7 @@
 |---|---|---|
 | `meow-setup-<版本>.exe` | Windows | PC 安装版（NSIS），带开始菜单与卸载 |
 | `meow-bare-<版本>.exe` | Windows | PC 免安装版，解压即用 |
-| `meow-TV-<版本>.apk` | Android TV / 投影仪 | TV 壳，release 签名 |
+| `meow-TV-<版本>.apk` | Android TV / 投影仪 / 安卓手机 | TV 壳，release 签名 |
 | `apiserver-<版本>.zip` | Windows | PC 后端插件；也可手动导入 |
 | `tv-node-arm64-v8a-<node版本>.apk` | arm64-v8a | TV 运行时模块 |
 | `tv-node-armeabi-v7a-<node版本>.apk` | armeabi-v7a | TV 运行时模块（老设备） |
