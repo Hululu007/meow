@@ -175,12 +175,18 @@ describe('移动端导航：底部标签栏 + 顶栏搜索展开', () => {
     expect(menu).toContain('to="/library"')
   })
 
-  it('AI / 设置不重复出现在「更多」菜单里（标签栏已经有一级入口）', () => {
+  it('「更多」菜单只兜底 AI 之外的入口：设置覆盖 640–767，手机交给标签栏', () => {
+    /*
+     * 2026-11-12 顶栏挤压修复：设在 640–767 从顶栏撤走（顶栏 md:block），
+     * 由「更多」菜单兜住；<640 有底部标签栏，菜单里不再重复（hidden sm:block）。
+     * AI 仍然不进菜单（手机上它是标签栏的一级入口）。
+     */
     // 注意从模板里那个 div 开始切：`data-more-menu` 在 <script> 的点击外部判定里也出现过一次
     const menu = header.slice(header.indexOf('<div class="relative md:hidden" data-more-menu>'))
     expect(menu).not.toContain('To="/ai"')
     expect(menu).not.toContain('AI 助手')
-    expect(menu).not.toContain('to="/settings"')
+    expect(menu).toContain('to="/settings"')
+    expect(menu).toMatch(/class="hidden[^"]*sm:block"[\s\S]{0,80}?>\s*设置/)
   })
 })
 
@@ -265,9 +271,18 @@ describe('移动端播放页：全屏时的返回出口', () => {
     expect(player).toContain('Math.min(window.innerWidth, window.innerHeight) < 480')
   })
 
-  it('控制栏收起时单独浮一个返回键（否则全屏里没有出口）', () => {
-    expect(player).toContain('showFloatingBack')
-    expect(player).toContain('!showCtrl.value')
+  it('返回键显隐与底部控制栏完全一致（2026-11-12 用户要求）', () => {
+    // 删掉了「控制栏收起时单独浮一个返回键」：播放中左上角不该留按钮挡画面
+    expect(player).not.toContain('showFloatingBack')
+    // 唯一的返回键在顶栏里，而顶栏容器由 showCtrl 控制显隐
+    const topBar = player.indexOf('meow-ctrl-bar absolute inset-x-0 top-0')
+    expect(topBar).toBeGreaterThan(0)
+    const backBtn = player.indexOf('v-if="showBackButton"', topBar)
+    expect(backBtn).toBeGreaterThan(topBar)
+    // 同一容器上必须还挂着 showCtrl 的显隐绑定
+    const ctrlClass = player.indexOf("showCtrl ? 'opacity-100'", topBar)
+    expect(ctrlClass).toBeGreaterThan(topBar)
+    expect(ctrlClass).toBeLessThan(backBtn + 2000)
   })
 
   it('离开播放页不能只靠 history.back()（Android WebView 实测是空操作）', () => {

@@ -320,6 +320,95 @@ const guideChannel = ref(0)
  * 不用几何选焦就是因为没有这个"列"概念（见 openGuide 注释）。
  */
 const guideColumn = ref<'group' | 'channel'>('channel')
+
+/**
+ * 「分类-台」面板的宽度调节（2026-11-12 用户要求）。
+ *
+ * <p>固定 `w-1/3` + 左列 42% 时，长分类名（「公共直播源（每日更新）」）和
+ * 台名会被截成「公共直播…」「CCTV…」。两条都做：自适应 + 可拖拽。
+ *   1. 左列默认按内容自适应（`w-max`，上限 46% 面板宽）；
+ *   2. 面板右边缘、左右两列之间各给一个拖拽条，拖完记 localStorage，
+ *      下次打开沿用（0 = 没拖过，走默认）。
+ *
+ * <p>TV 上没有指针设备，拖拽条永远不会被触发，默认宽度也不变 ——
+ * 遥控器那套 ↑↓/←→/OK 完全不受影响。
+ */
+const GUIDE_W_KEY = 'meow.live.guideW'
+const GUIDE_SPLIT_KEY = 'meow.live.guideSplitW'
+const guidePanelW = ref(0)
+const guideSplitW = ref(0)
+try {
+  const w = Number(localStorage.getItem(GUIDE_W_KEY) || 0)
+  const sp = Number(localStorage.getItem(GUIDE_SPLIT_KEY) || 0)
+  if (Number.isFinite(w) && w > 0) guidePanelW.value = Math.round(w)
+  if (Number.isFinite(sp) && sp > 0) guideSplitW.value = Math.round(sp)
+} catch {
+  /* 隐私模式下 localStorage 会抛，忽略 */
+}
+const guidePanelStyle = computed(() =>
+  guidePanelW.value > 0
+    ? { width: guidePanelW.value + 'px', minWidth: '0px', maxWidth: 'none' }
+    : undefined,
+)
+const guideSideStyle = computed(() =>
+  guideSplitW.value > 0
+    ? { width: guideSplitW.value + 'px', minWidth: '0px', maxWidth: 'none' }
+    : undefined,
+)
+function saveGuideSize(key: string, v: number) {
+  try {
+    localStorage.setItem(key, String(Math.round(v)))
+  } catch {
+    /* 忽略 */
+  }
+}
+/** 拖面板右边缘：240px ~ 62% 视口宽 */
+function startGuidePanelResize(e: PointerEvent) {
+  const panel = (e.currentTarget as HTMLElement).closest('[data-guide-panel]') as HTMLElement | null
+  if (!panel) return
+  const startX = e.clientX
+  const startW = panel.getBoundingClientRect().width
+  const maxW = Math.round(window.innerWidth * 0.62)
+  const move = (ev: PointerEvent) => {
+    const w = Math.round(Math.min(maxW, Math.max(240, startW + ev.clientX - startX)))
+    guidePanelW.value = w
+    // 面板被拖窄时，左列不能把它挤没
+    const cap = Math.max(104, w - 168)
+    if (guideSplitW.value > cap) guideSplitW.value = cap
+  }
+  const up = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    window.removeEventListener('pointercancel', up)
+    saveGuideSize(GUIDE_W_KEY, guidePanelW.value)
+    if (guideSplitW.value > 0) saveGuideSize(GUIDE_SPLIT_KEY, guideSplitW.value)
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+  window.addEventListener('pointercancel', up)
+}
+/** 拖两列之间：104px ~ 面板宽 - 168px */
+function startGuideSplitResize(e: PointerEvent) {
+  const side = (e.currentTarget as HTMLElement).closest('[data-guide-side]') as HTMLElement | null
+  const panel = (e.currentTarget as HTMLElement).closest('[data-guide-panel]') as HTMLElement | null
+  if (!side || !panel) return
+  const startX = e.clientX
+  const startW = side.getBoundingClientRect().width
+  const panelW = panel.getBoundingClientRect().width
+  const cap = Math.max(104, panelW - 168)
+  const move = (ev: PointerEvent) => {
+    guideSplitW.value = Math.round(Math.min(cap, Math.max(104, startW + ev.clientX - startX)))
+  }
+  const up = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    window.removeEventListener('pointercancel', up)
+    saveGuideSize(GUIDE_SPLIT_KEY, guideSplitW.value)
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+  window.addEventListener('pointercancel', up)
+}
 /** 起播看门狗：3 秒没画面就判坏台 */
 let badTimer: number | undefined
 /** 连续跳过几个坏台了。一次换台操作里连跳超过 MAX_AUTO_SKIP 就停下等人 */
@@ -2703,10 +2792,25 @@ onBeforeUnmount(() => {
         <!-- 左侧 1/3 透明面板：左右两块，各自滚动 -->
         <div
           class="absolute inset-y-0 left-0 flex w-1/3 min-w-[18rem] max-w-[34rem] bg-black/72 backdrop-blur-md"
+          data-guide-panel
+          :style="guidePanelStyle"
           @click.stop
         >
+          <!-- 面板右边缘：拖它调整个面板宽度（手机/桌面；TV 不触发） -->
+          <div
+            class="guide-resize guide-resize--edge"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整面板宽度"
+            @pointerdown.stop.prevent="startGuidePanelResize"
+            @click.stop
+          />
           <!-- 左块：播放列表（多源时） + 分类 -->
-          <div class="flex w-[42%] min-w-[7.5rem] flex-col border-r border-white/10">
+          <div
+            class="relative flex w-max min-w-[7.5rem] max-w-[46%] flex-col border-r border-white/10"
+            data-guide-side
+            :style="guideSideStyle"
+          >
             <div class="flex shrink-0 items-center justify-between px-2.5 pb-1 pt-2 text-[11px] text-white/50">
               <span>分类 {{ Math.max(0, groups.findIndex((g) => keyOf(g) === activeKey)) + 1 }}/{{ groups.length }}</span>
               <!-- 刷新：原顶栏按钮移到这里（页面级顶栏已随 isLive 移除） -->
@@ -2747,10 +2851,19 @@ onBeforeUnmount(() => {
                 ]"
                 @click="guideGroup = gi; guideChannel = 0; guideColumn = 'channel'"
               >
-                <span class="truncate">{{ g.group }}</span>
+                <span class="truncate" :title="g.group">{{ g.group }}</span>
                 <span class="shrink-0 text-[10px] opacity-70">{{ uniqueCount(g) }}</span>
               </div>
             </div>
+            <!-- 两列之间的拖拽条（鼠标/触屏可调；TV 没有指针事件，天然不触发） -->
+            <div
+              class="guide-resize guide-resize--split"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="调整分类列宽度"
+              @pointerdown.stop.prevent="startGuideSplitResize"
+              @click.stop
+            />
           </div>
 
           <!-- 右块：台列表 -->
@@ -2774,7 +2887,7 @@ onBeforeUnmount(() => {
                 @click="guideChannel = i; void guideOk()"
               >
                 <span class="w-9 shrink-0 text-[10px] opacity-60">{{ i + 1 }}</span>
-                <span class="truncate">{{ ch.name }}</span>
+                <span class="truncate" :title="ch.name">{{ ch.name }}</span>
                 <!--
                   线路数：跨源时用主题色，同源多线用灰色。
                   ★ 不再拼「· M 源」——面板右列只有约 216px，台名一长
@@ -2860,5 +2973,44 @@ onBeforeUnmount(() => {
     inset 0 0 0 1px rgba(255, 255, 255, 0.65),
     0 0 0 2px var(--color-accent, #03dac5),
     0 0 12px 2px var(--color-accent, #03dac5);
+}
+
+/*
+ * 「分类-台」面板的拖拽条（2026-11-12）。
+ *
+ * 10px 宽的命中区 + 中间一条 2px 细线：看得见、又好拖（2px 本身太细）。
+ * `touch-action: none` 必须给，否则手机上按下会被当成页面滚动，pointermove
+ * 直接被内核取消（表现为「拖不动」）。
+ */
+.guide-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+  /* 拖的时候别选中底下的分类名/台名 */
+  user-select: none;
+}
+.guide-resize::after {
+  content: '';
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.16);
+  transition: background 0.15s;
+}
+.guide-resize:hover::after,
+.guide-resize:active::after {
+  background: var(--color-accent, #03dac5);
+}
+/* 面板右边缘、两列分界各半个命中区压在边线上 */
+.guide-resize--edge,
+.guide-resize--split {
+  right: -5px;
 }
 </style>

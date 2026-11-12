@@ -1467,3 +1467,57 @@ html {
 html[data-mode='light'] {
   --tv-focus-inner: rgba(0, 0, 0, 0.42);
 }
+
+/*
+ * ── 触屏设备默认不画焦点环（2026-11-12 用户要求）───────────────────
+ *
+ * 「聚焦圆环 竖屏设备默认不要显示（除非接入键盘 方向键控制后显示）」
+ *
+ * 焦点环是遥控器/键盘的定位光标。手机上手指点哪儿哪儿就动，环只会一直
+ * 糊在屏幕上（播放页左上角那个返回键最明显，看着像按钮被选中了）。
+ *
+ * 判据是 `html[data-input]`（见 compat/inputModality.ts）：
+ *   有触摸点 → 默认 touch（不画）；按方向键 → key（画）；再触摸 → touch。
+ *   真电视的 WebView 没有触摸点 → 默认 key，行为与以前一致。
+ *
+ * ★ 必须 `!important` 且把三处上下文都列出来：tv-nav 注入的规则本身带
+ *   `!important`，tokens.css 里 .cat-chips / .seg-group 两条内嵌环也是
+ *   `!important` 且特异度 (0,3,1) 更高 —— 只写一条会漏掉胶囊条和分段控件。
+ */
+html[data-input='touch'] .meow-tv-focus,
+html[data-input='touch'] .cat-chips .meow-tv-focus,
+html[data-input='touch'] .seg-group .meow-tv-focus,
+html[data-input='touch'] [data-tv-scope] .meow-tv-focus,
+html[data-input='touch'] [data-tv-inset-focus] .meow-tv-focus,
+html[data-input='touch'] [data-tv-scroll].meow-tv-focus {
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+/*
+ * ── 播放器底部控制栏的遮罩（2026-11-12 用户要求）───────────────────
+ *
+ * 「播放器页面底栏应该加遮罩，目前无遮罩在部分影视里看不清底栏控制按钮」
+ *
+ * 原来是 Tailwind 的 `from-black/85 via-black/50`：亮场景（雪地、白墙、
+ * 片头字幕）底下按钮和时间码直接糊掉。这里换成自定义多段渐变：
+ *   · 底部 96% 不透明 —— 按钮所在的区域绝对够黑；
+ *   · 中段留 72% / 42% 过渡，上半截渐隐，不出现"一条硬边"；
+ *   · 顶部完全透明，画面裁切感最小。
+ *
+ * ★ 不用 backdrop-filter：播放中每帧都要重算一次全宽模糊，Chromium 66
+ *   （投影仪/Android 9）上会掉帧，得不偿失。
+ * ★ 高度不写死在这里：`.pt-16 / sm:pt-20` 是渐变的高度来源（padding 撑开），
+ *   换皮肤/换断点时只调 padding 就够。
+ */
+.meow-ctrl-mask {
+  background-image: linear-gradient(
+    to top,
+    rgba(0, 0, 0, 0.96) 0%,
+    rgba(0, 0, 0, 0.9) 14%,
+    rgba(0, 0, 0, 0.76) 34%,
+    rgba(0, 0, 0, 0.52) 58%,
+    rgba(0, 0, 0, 0.26) 78%,
+    rgba(0, 0, 0, 0) 100%
+  );
+}

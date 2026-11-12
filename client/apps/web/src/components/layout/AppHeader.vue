@@ -149,12 +149,29 @@ watch(showSites, (v) => {
   if (typeof w.__meowTvScopeClosed === 'function') w.__meowTvScopeClosed()
 })
 
+/**
+ * 滑动页面时收起顶栏浮层（2026-11-12 用户要求）。
+ *
+ * <p>「更多」菜单是绝对定位浮层、没有遮罩：手机上它盖住半屏，用户往下一滑
+ * 菜单还浮在原处（截图反馈「滑动页面也应该隐藏关闭」）。
+ *
+ * <p>`scroll` 不冒泡，所以在 document 上按 **capture** 收 —— 页面滚动容器
+ * 有的是 window、有的是一层 `overflow-y-auto`，capture 才能全收到。
+ * 站点下拉开着时，它自己内部的滚动不该把它关掉（`data-site-menu` 排除）。
+ */
+function onDocScroll(e: Event) {
+  const t = e.target as Node | null
+  const inSiteMenu = t instanceof Element && !!t.closest('[data-site-menu]')
+  if (showSites.value && !inSiteMenu) showSites.value = false
+  if (showMore.value) showMore.value = false
+}
 onMounted(() => {
   offSync = onSyncStatus((s) => (syncStatus.value = s))
   window.addEventListener('meow:webdav', onWebdavChange)
   window.addEventListener('meow:fav-updates-changed', onFavUpdatesChanged)
   document.addEventListener('keydown', onDocKey)
   document.addEventListener('click', onDocClick)
+  document.addEventListener('scroll', onDocScroll, { capture: true, passive: true })
 })
 onBeforeUnmount(() => {
   offSync?.()
@@ -162,6 +179,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('meow:fav-updates-changed', onFavUpdatesChanged)
   document.removeEventListener('keydown', onDocKey)
   document.removeEventListener('click', onDocClick)
+  document.removeEventListener('scroll', onDocScroll, { capture: true } as EventListenerOptions)
 })
 
 function submit() {
@@ -376,7 +394,12 @@ function pickSite(key: string) {
         <path d="M12 9v4M12 17h.01" />
         <circle cx="12" cy="12" r="9" />
       </svg>
-      {{ syncHint.text }}
+      <!--
+        文字只在 ≥1280 显示：徽标 69–80px 且 shrink-0，在 640–1279 会把
+        搜索输入框压到只剩放大镜（实测 768：112→38px；1024 会吃掉站点名）。窄屏只留图标，
+        宽度降到 ~30px；完整文案仍在 title 里。
+      -->
+      <span class="hidden xl:inline">{{ syncHint.text }}</span>
     </span>
 
     <!--
@@ -450,7 +473,7 @@ function pickSite(key: string) {
     >
       <RouterLink
         to="/settings"
-        class="hidden rounded-md px-3 py-1.5 text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink sm:block"
+        class="hidden rounded-md px-3 py-1.5 text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink md:block"
       >
         设置
       </RouterLink>
@@ -512,7 +535,21 @@ function pickSite(key: string) {
           >
             历史<span v-if="historyCount" class="ml-1 text-[11px] text-ink-3">{{ historyCount }}</span>
           </RouterLink>
-          <!-- AI / 设置 不进这个菜单：手机上它们是底部标签栏的一级入口 -->
+          <!--
+            设置：只在 640–767 出现在这里。
+            这个区间用的是桌面顶栏（有搜索框），但宽度又放不下 设置 + 全部导航；
+            实测 640–767 加上同步徽标后搜索框只剩 34–38px。所以 <768 把「设置」
+            从顶栏撤掉（顶栏 md:block），由这个菜单兜住入口；<640 有底部标签栏，
+            不重复放（hidden sm:block）。
+          -->
+          <RouterLink
+            to="/settings"
+            class="hidden rounded-md px-3 py-2 text-sm text-ink-2 transition max-sm:py-3 max-sm:text-[15px] hover:bg-card-hover hover:text-ink sm:block"
+            @click="showMore = false"
+          >
+            设置
+          </RouterLink>
+          <!-- AI 不进这个菜单：手机上它是底部标签栏的一级入口 -->
 
         </div>
       </div>

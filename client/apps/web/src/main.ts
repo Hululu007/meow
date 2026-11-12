@@ -2,6 +2,9 @@
 //   Object.fromEntries / flatMap / matchAll / at —— 这些是运行时 API，
 //   esbuild 的 target 只转语法不补 API。业务模块评估前必须先装好。
 import './compat/legacyPolyfills'
+// 输入方式（触摸 / 键盘）→ 决定画不画焦点环。同样要在首帧前装好，
+// 否则手机首屏会先闪一下环再消失。
+import './compat/inputModality'
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'

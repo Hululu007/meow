@@ -2551,11 +2551,13 @@ function leavePlayback() {
   }, 260)
 }
 
-/**
- * 控制栏收起后，顶栏里的返回键也跟着隐藏 —— 触屏用户就没有出口了。
- * 所以控制栏收起时单独浮一个返回键（只在手机形态下）。
- */
-const showFloatingBack = computed(() => !showCtrl.value && isTouch.value && showBackButton.value)
+/*
+ * ★ 2026-11-12 删除「控制栏收起时浮一个返回键」（用户要求）。
+ *
+ * 原设计：控制栏一收起，顶栏返回键跟着隐藏，触屏用户就没有出口，于是
+ * 额外浮一个常驻返回键。用户实测后要求**返回键显隐与底部控制栏完全一致**：
+ * 播放中（控制栏收起）左上角不该留按钮挡画面；想看返回键，点一下画面
+ * 唤出控制栏即可。所以现在只有顶栏那一个返回键（随 showCtrl 显隐）。
 
 // 伪全屏没有标准 API 可查，广播给 App 让它收起 AI 悬浮按钮
 // （虽然播放页本身不显示 FAB，但这条通道要保持一致，避免以后接其他浮层时漏）。
@@ -4800,22 +4802,6 @@ defineExpose({ restart, seekTo, getTime, pause })
       </div>
     </div>
 
-    <!--
-      全屏 + 控制栏收起时的返回键（手机上唯一的出口）。
-      控制栏一唤出就收起自己，避免和顶栏里的返回键重叠。
-    -->
-    <button
-      v-if="showFloatingBack"
-      class="absolute z-40 grid h-10 w-10 place-items-center rounded-full bg-black/45 text-white shadow-lg backdrop-blur-sm transition active:scale-95 active:opacity-70"
-      style="left: calc(0.75rem + env(safe-area-inset-left)); top: calc(0.75rem + env(safe-area-inset-top))"
-      aria-label="返回"
-      title="返回"
-      @click.stop="leavePlayback()"
-    >
-      <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-        <path d="m15 18-6-6 6-6" />
-      </svg>
-    </button>
 
     <!-- 缓冲中：只转圈，不挡点击 -->
     <div
@@ -5171,7 +5157,7 @@ defineExpose({ restart, seekTo, getTime, pause })
 
     <!-- 底部控制栏 -->
     <div
-      class="meow-ctrl-bar absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-3 pb-2.5 pt-12 sm:px-5 sm:pb-4 sm:pt-14"
+      class="meow-ctrl-bar meow-ctrl-mask absolute inset-x-0 bottom-0 z-30 px-3 pb-2.5 pt-16 sm:px-5 sm:pb-4 sm:pt-20"
       :class="showCtrl ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
       data-ctrl-root
     >
