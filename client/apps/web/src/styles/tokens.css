@@ -1513,11 +1513,41 @@ html[data-input='touch'] [data-tv-scroll].meow-tv-focus {
 .meow-ctrl-mask {
   background-image: linear-gradient(
     to top,
-    rgba(0, 0, 0, 0.96) 0%,
-    rgba(0, 0, 0, 0.9) 14%,
-    rgba(0, 0, 0, 0.76) 34%,
-    rgba(0, 0, 0, 0.52) 58%,
-    rgba(0, 0, 0, 0.26) 78%,
+    rgba(0, 0, 0, 0.92) 0%,
+    rgba(0, 0, 0, 0.78) 30%,
+    rgba(0, 0, 0, 0.4) 60%,
     rgba(0, 0, 0, 0) 100%
   );
+}
+
+/*
+ * 播放器控制栏的文字/图标**不能跟随主题**（2026-11-12 用户报「播放栏看不清」）。
+ *
+ * 根因不在遮罩：控制栏原来用的是 `text-ink` / `text-ink-2` / `text-ink-3`，
+ * 浅色主题下这些是**深色**。整条栏压在深色遮罩（≈90% 黑）上，深字 + 深底
+ * = 图标和文字直接消失；遮罩调浓之后更彻底看不见。
+ *
+ * 视频画面永远是"深色背景"，所以这里把这一族颜色钉死成白色系，
+ * 与直播页底栏（text-white/xx）保持一致。桌面端用 !important 之外的
+ * 高特异性选择器即可：未分层的规则天然压过 @layer utilities。
+ */
+.meow-player-root,
+.meow-ctrl-bar {
+  color: rgba(255, 255, 255, 0.92);
+}
+.meow-player-root .text-ink,
+.meow-ctrl-bar .text-ink {
+  color: rgba(255, 255, 255, 0.92);
+}
+.meow-player-root .text-ink-2,
+.meow-ctrl-bar .text-ink-2 {
+  color: rgba(255, 255, 255, 0.72);
+}
+.meow-player-root .text-ink-3,
+.meow-ctrl-bar .text-ink-3 {
+  color: rgba(255, 255, 255, 0.55);
+}
+.meow-player-root .hover\:text-ink:hover,
+.meow-ctrl-bar .hover\:text-ink:hover {
+  color: #fff;
 }

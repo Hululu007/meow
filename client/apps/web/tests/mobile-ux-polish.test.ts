@@ -120,9 +120,19 @@ describe('④ 播放器底栏遮罩', () => {
     expect(i).toBeGreaterThan(0)
     const block = css.slice(i, css.indexOf('}', i))
     expect(block).toContain('linear-gradient')
-    expect(block).toContain('rgba(0, 0, 0, 0.96)')
+    expect(block).toContain('rgba(0, 0, 0, 0.92)')
     // 顶部要完全透明，否则底栏上沿会有一条硬边
     expect(block).toContain('rgba(0, 0, 0, 0) 100%')
+  })
+
+  it('控制栏文字固定白色系（浅色主题下 text-ink 是深色，会糊在遮罩里）', () => {
+    const css = read('src/styles/tokens.css')
+    expect(css).toContain('.meow-player-root .text-ink')
+    expect(css).toContain('rgba(255, 255, 255, 0.92)')
+    expect(css).toContain('.meow-player-root .text-ink-3')
+    // 播放器根节点必须挂这个类，否则覆盖不生效
+    const player = read('src/components/player/VideoPlayer.vue')
+    expect(player).toContain('meow-player-root group relative h-full w-full')
   })
 
   it('不用 backdrop-filter（播放中每帧全宽模糊，Chromium 66 会掉帧）', () => {

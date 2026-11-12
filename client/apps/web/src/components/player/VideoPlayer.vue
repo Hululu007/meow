@@ -4689,7 +4689,7 @@ defineExpose({ restart, seekTo, getTime, pause })
 <template>
   <div
     ref="wrap"
-    class="group relative h-full w-full select-none overflow-hidden bg-black"
+    class="meow-player-root group relative h-full w-full select-none overflow-hidden bg-black"
     :class="pseudoFs ? 'fixed inset-0 z-[100] h-full w-full' : ''"
     @mousemove="wake"
     @click="onWrapClick"
@@ -5157,7 +5157,7 @@ defineExpose({ restart, seekTo, getTime, pause })
 
     <!-- 底部控制栏 -->
     <div
-      class="meow-ctrl-bar meow-ctrl-mask absolute inset-x-0 bottom-0 z-30 px-3 pb-2.5 pt-16 sm:px-5 sm:pb-4 sm:pt-20"
+      class="meow-ctrl-bar meow-ctrl-mask absolute inset-x-0 bottom-0 z-30 px-3 pb-2.5 pt-12 sm:px-5 sm:pb-4 sm:pt-14"
       :class="showCtrl ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
       data-ctrl-root
     >
