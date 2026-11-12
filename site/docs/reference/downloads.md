@@ -38,6 +38,7 @@ Web 形态直接拉镜像，不需要源码：
 | `chrplus/meow-apiserver` | JVM + spider jar + ffmpeg |
 | `chrplus/meow-drpy` | Node 运行时（**独立版本线**，不跟应用版本） |
 | `logvar/danmu-api` | 弹幕聚合（上游镜像） |
+| `chrplus/meow-sources` | 源服务：内置主爬虫 + Jable + 41 站默认源（**独立版本线**），见 [源包与配置格式](/ecosystem/source-format) |
 
 `web` 与 `apiserver` 均含 amd64 + arm64，Docker 按本机架构自动选。
 
@@ -51,7 +52,7 @@ sha256sum -c SHA256SUMS.txt
 Windows PowerShell：
 
 ```powershell
-Get-FileHash .\meow-setup-1.1.5.exe -Algorithm SHA256
+Get-FileHash .\meow-setup-<版本>.exe -Algorithm SHA256
 ```
 
 值应与 `SHA256SUMS.txt` 中对应行一致。
