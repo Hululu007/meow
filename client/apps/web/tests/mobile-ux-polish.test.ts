@@ -146,6 +146,16 @@ describe('⑦ 竖屏直播页：返回键跟底栏同显隐 + 面板里不显示
     expect(body).toContain('compactViewport.value')
   })
 
+  it('只在竖屏显示，且挂载即开始 5 秒自动收起（否则常量常驻）', () => {
+    const i = live.indexOf('const showLiveBack = computed(')
+    const body = live.slice(i, i + 400)
+    expect(body).toContain('!landscape.value')
+    // 冷启动时 showCtrl 初始 true，必须靠挂载时的 wake() 排上收起计时
+    const m = live.indexOf('onMounted(() => {')
+    const mount = live.slice(m, m + 300)
+    expect(mount).toContain('wake()')
+  })
+
   it('按钮贴在左上角安全区，点了走 leaveLive', () => {
     const i = live.indexOf('v-if="showLiveBack"')
     expect(i).toBeGreaterThan(0)

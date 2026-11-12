@@ -303,6 +303,9 @@ const showExitFsButton = computed(
  */
 const showLiveBack = computed(
   () =>
+    // 只在竖屏（手机形态窗口）：横屏是电视式界面，底栏本来就不渲染，
+    // 控制栏的自动收起计时也不跑，留着会变成常驻按钮压在画面上。
+    !landscape.value &&
     !!current.value &&
     showCtrl.value &&
     !showGuide.value &&
@@ -2202,6 +2205,10 @@ function handleTvMenuHere(): boolean {
 
 onMounted(() => {
   void load()
+  // ★ 挂载就把「5 秒后收起控制栏」的计时排上（2026-11-12）：
+  //   原来只有 wake() 被调用过才计时，冷启动进直播页 showCtrl 一直是 true，
+  //   底栏和左上角返回键都常驻在画面上。
+  wake()
   syncCompactViewport()
   bufWatchdogTimer = window.setInterval(checkBufferWatchdog, 2000)
   window.addEventListener('keydown', onKeydown)
