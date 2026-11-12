@@ -10,6 +10,7 @@ on:
       - 'pc-v[0-9]*'
       - 'plugins-v[0-9]*'
       - 'tv-plugins-v[0-9]*'
+      - 'docker-v[0-9]*'
   release:
     types: [published]
   workflow_dispatch:
@@ -104,6 +105,8 @@ jobs:
             pc-v[0-9]*)         set_out tv false; set_out pc true;  set_out plugins true;  set_out docker false; set_out tvplugins false; set_out release true;  set_out plugins_only apiserver ;;
             plugins-v[0-9]*)    set_out tv false; set_out pc false; set_out plugins true;  set_out docker false; set_out tvplugins false; set_out release true;  set_out plugins_only '' ;;
             tv-plugins-v[0-9]*) set_out tv false; set_out pc false; set_out plugins false; set_out docker false; set_out tvplugins true;  set_out release true;  set_out plugins_only '' ;;
+            # ★ 只重建 Docker 三镜像（2026-11-12 补回）：不建 GitHub Release、不改 packages.json。
+            docker-v[0-9]*)     set_out tv false; set_out pc false; set_out plugins false; set_out docker true;  set_out tvplugins false; set_out release false; set_out plugins_only '' ;;
             *) echo "::error::无法识别的 tag：$TAG"; exit 1 ;;
           esac
 

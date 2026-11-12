@@ -101,3 +101,22 @@ describe('fpk 资产并入主 Release', () => {
     expect(mergeAt).toBeGreaterThan(archivalAt)
   })
 })
+
+describe('docker-v* 单链已恢复', () => {
+  it('on.push.tags 与 plan 矩阵两处都有 docker-v*，且不建 Release', () => {
+    /*
+     * 2026-11-12 用户要求补回：docker-v* 曾只在 plan 里、on.push.tags 缺失
+     * → tag 推上去零触发。两处必须同改（历史上就踩过"只改 case 不触发"）。
+     */
+    const rel = read('.github', 'workflows', 'release.yml')
+    const tagsSection = rel.slice(rel.indexOf('on:'), rel.indexOf('permissions'))
+    expect(tagsSection, 'on.push.tags 缺 docker-v*').toContain("'docker-v[0-9]*'")
+    const caseLine = rel.split(String.fromCharCode(10)).find((l) => l.includes('docker-v[0-9]*)'))
+    expect(caseLine, 'plan 矩阵缺 docker-v*').toBeTruthy()
+    // 只重建镜像，不建 Release、不改清单
+    expect(caseLine).toContain("set_out docker true")
+    expect(caseLine).toContain("set_out release false")
+    expect(caseLine).toContain("set_out tv false")
+    expect(caseLine).toContain("set_out pc false")
+  })
+})
