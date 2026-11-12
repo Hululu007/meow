@@ -123,7 +123,7 @@ onBeforeUnmount(() => {
   <div ref="root" class="relative">
     <button
       type="button"
-      class="flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20 backdrop-blur"
+      class="hit-44 flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20 backdrop-blur"
       @click.stop="toggle"
     >
       {{ display }}
@@ -149,7 +149,7 @@ onBeforeUnmount(() => {
       v-if="open"
       ref="menu"
       data-tv-scope
-      class="rate-menu fixed z-[110] max-h-[60vh] overflow-y-auto rounded-lg border border-line bg-elevated p-1 shadow-2xl"
+      class="rate-menu fixed z-[110] max-h-[60vh] overflow-y-auto rounded-lg border border-line bg-elevated p-1 meow-light-card shadow-2xl"
       :style="menuStyle"
       @click.stop
     >

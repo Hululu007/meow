@@ -24,6 +24,9 @@ const router = createRouter({
       component: () => import('@/views/PlayView.vue'),
     },
     { path: '/search', name: 'search', component: () => import('@/views/SearchView.vue') },
+    // 我的：历史 + 收藏一个一级入口（手机底栏第五格）。两个视图以 embedded
+    // 形态内嵌，分区写进 ?tab=（从详情返回不丢当前分区）
+    { path: '/me', name: 'me', component: () => import('@/views/MeView.vue') },
     { path: '/history', name: 'history', component: () => import('@/views/HistoryView.vue') },
     { path: '/live', name: 'live', component: () => import('@/views/LiveView.vue') },
     // 本地/NAS 片库：与「直播」同级，不混进源列表——首页只渲染当前一个源，

@@ -37,6 +37,6 @@ describe('中间档（640–1023）不再挤压搜索框', () => {
       /class="hidden[^"]*sm:block"[^>]*\n\s*@click="showMore = false"/,
     )
     // 菜单本身仍只在 <768 出现
-    expect(header).toContain('class="relative md:hidden" data-more-menu')
+    expect(header).toContain('class="relative md:hidden max-sm:hidden" data-more-menu')
   })
 })

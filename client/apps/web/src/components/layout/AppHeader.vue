@@ -17,6 +17,17 @@ const showSites = ref(false)
 const showMore = ref(false)
 
 /**
+ * 顶栏「…」里的「刷新首页」。
+ *
+ * 手机上首页只有下拉刷新，滚到半截时够不到 —— 这里补一个随时可达的入口。
+ * 走事件而不是改 store：刷新是页面自己的事，顶栏不该知道 HomeView 的加载逻辑。
+ */
+function refreshHome() {
+  showMore.value = false
+  window.dispatchEvent(new Event('meow:refresh-home'))
+}
+
+/**
  * 手机顶栏的「搜索框」。
  *
  * <p>形态上是一个占满剩余宽度的输入框样式，但**不是真 input**：
@@ -179,6 +190,8 @@ onMounted(() => {
   offSync = onSyncStatus((s) => (syncStatus.value = s))
   window.addEventListener('meow:webdav', onWebdavChange)
   window.addEventListener('meow:fav-updates-changed', onFavUpdatesChanged)
+  // 页面错误态里的「换个站点」：下拉状态在顶栏，页面只能发事件
+  window.addEventListener('meow:open-sites', onOpenSites)
   document.addEventListener('keydown', onDocKey)
   document.addEventListener('click', onDocClick)
   document.addEventListener('scroll', onDocScroll, { capture: true, passive: true })
@@ -187,10 +200,16 @@ onBeforeUnmount(() => {
   offSync?.()
   window.removeEventListener('meow:webdav', onWebdavChange)
   window.removeEventListener('meow:fav-updates-changed', onFavUpdatesChanged)
+  window.removeEventListener('meow:open-sites', onOpenSites)
   document.removeEventListener('keydown', onDocKey)
   document.removeEventListener('click', onDocClick)
   document.removeEventListener('scroll', onDocScroll, { capture: true } as EventListenerOptions)
 })
+
+function onOpenSites() {
+  showMore.value = false
+  showSites.value = true
+}
 
 function submit() {
   const wd = keyword.value.trim()
@@ -499,9 +518,15 @@ function pickSite(key: string) {
         桌面（sm+）沿用原来的内联搜索框。
       -->
 
-      <!-- 窄屏「更多」：上面被隐藏的入口必须在这里找得到，否则等于功能消失。
-           覆盖到 md（<768）：直播/片库是 md:flex，640–767 这段只有这里能进 -->
-      <div class="relative md:hidden" data-more-menu>
+      <!--
+        「更多」菜单：只给 640–767 这一段。
+
+        <640（2026-11-12 用户要求）整条撤掉：底栏五项（首页/直播/AI/设置/我的）
+        + 我的页里的片库页签已覆盖原来菜单里的全部入口（历史/收藏/直播/片库/
+        刷新首页），再留一个「…」就是重复入口；刷新走首页下拉。
+        640–767 没有底部标签栏，直播/收藏/历史/设置仍只能从这里进。
+      -->
+      <div class="relative md:hidden max-sm:hidden" data-more-menu>
         <button
           class="rounded-md px-2 py-1.5 text-ink-2 transition hover:bg-card-hover hover:text-ink max-sm:grid max-sm:h-10 max-sm:w-10 max-sm:place-items-center max-sm:rounded-full"
           title="更多"
@@ -517,6 +542,16 @@ function pickSite(key: string) {
           v-if="showMore"
           class="absolute right-0 top-full mt-2 w-40 overflow-hidden rounded-lg border border-line bg-elevated p-1.5 shadow-2xl max-sm:w-56 max-sm:p-2"
         >
+          <!-- 刷新首页：手机上滚到半截够不到下拉刷新，这里补一个入口。
+               只在本就有刷新能力的页面出现，避免留一个点了没反应的按钮 -->
+          <button
+            v-if="route.name === 'home'"
+            type="button"
+            class="block w-full rounded-md px-3 py-2 text-left text-sm text-ink-2 transition max-sm:py-3 max-sm:text-[15px] hover:bg-card-hover hover:text-ink"
+            @click="refreshHome"
+          >
+            刷新首页
+          </button>
           <RouterLink
             to="/library"
             class="block rounded-md px-3 py-2 text-sm text-ink-2 transition max-sm:py-3 max-sm:text-[15px] hover:bg-card-hover hover:text-ink"

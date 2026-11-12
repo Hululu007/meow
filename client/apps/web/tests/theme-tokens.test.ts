@@ -2,7 +2,7 @@
  * 主题变量门禁。
  *
  * 这个测试只做三件事，但每一件都对应一次真实回退：
- *  1. 每套风格必须有浅/深两块、每块 27 个变量 —— 少一个就会有元素拿 :root
+ *  1. 每套风格必须有浅/深两块、每块 28 个变量 —— 少一个就会有元素拿 :root
  *     的 meow 默认值，表现为"换主题后某块颜色没变"。
  *  2. accent / on-* 必须是 6 位 hex —— TV 焦点光晕 `rgbaFromHex()` 只认这种
  *     格式，写 rgb()/oklch() 会让光晕静默失效（见 stores/theme.ts）。
@@ -20,6 +20,7 @@ const css = readFileSync(resolve(process.cwd(), 'src/styles/tokens.css'), 'utf8'
 const REQUIRED = [
   'color-base',
   'color-header-veil',
+  'color-strip-veil',
   'color-surface',
   'color-elevated',
   'color-panel',
@@ -91,7 +92,7 @@ describe('主题变量完整性', () => {
     expect([...blocks.keys()].sort()).toEqual(expected)
   })
 
-  it('每块都定义了 27 个变量', () => {
+  it('每块都定义了 28 个变量', () => {
     for (const [name, vars] of blocks) {
       expect(Object.keys(vars).sort(), name).toEqual([...REQUIRED].sort())
     }

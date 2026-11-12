@@ -38,6 +38,46 @@ beforeEach(() => {
   window.__meowTvKeyOwner = false
 })
 
+/**
+ * 把 jsdom 摆成指定设备形态，跑完还原。
+ *
+ * ★ 为什么必须摆：jsdom 的 `matchMedia` 是个空壳，任何查询都返回
+ *   `matches=false`；`innerWidth/innerHeight` 默认 1024×768。
+ *   照抄进 `isBigScreenLandscape()` 就等于"永远当成大屏横屏、没有鼠标的电视"，
+ *   于是「非 TV 环境保留返回键」必然失败 —— 失败的不是产品，是环境没摆对。
+ *
+ * @param finePointer 是否有鼠标/触控板（`any-pointer: fine`）
+ */
+async function withDevice(
+  width: number,
+  height: number,
+  finePointer: boolean,
+  run: () => Promise<void>,
+) {
+  const iw = Object.getOwnPropertyDescriptor(window, 'innerWidth')
+  const ih = Object.getOwnPropertyDescriptor(window, 'innerHeight')
+  const mm = window.matchMedia
+  Object.defineProperty(window, 'innerWidth', { value: width, configurable: true })
+  Object.defineProperty(window, 'innerHeight', { value: height, configurable: true })
+  window.matchMedia = ((q: string) => ({
+    matches: q.includes('fine') ? finePointer : false,
+    media: q,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as any
+  try {
+    await run()
+  } finally {
+    if (iw) Object.defineProperty(window, 'innerWidth', iw)
+    if (ih) Object.defineProperty(window, 'innerHeight', ih)
+    window.matchMedia = mm
+  }
+}
+
 describe('观看时长：按墙钟累计，不靠 pos 差值', () => {
   it('播放 3 秒后 progress 里的 watched 接近 3（而不是 0）', async () => {
     const w = mountPlayer({ src: 'http://x/a.m3u8' })
@@ -186,22 +226,42 @@ describe('控制栏可见性：收起后不能留在焦点候选里', () => {
   it('TV 环境下不渲染左上角返回按钮', async () => {
     document.documentElement.setAttribute('data-tv', '1')
     window.__meowTvKeyOwner = true
-    const w = mountPlayer({ src: 'http://x/a.m3u8' })
-    fakeMedia(w)
-    await w.find('.group').trigger('mousemove')
-    await w.vm.$nextTick()
-    const back = w.findAll('button[aria-label="返回"]')
-    expect(back.length).toBe(0)
-    w.unmount()
+    // 真电视形态：大屏横屏 + 没有鼠标/触控（遥控器自带返回键）
+    await withDevice(960, 540, false, async () => {
+      const w = mountPlayer({ src: 'http://x/a.m3u8' })
+      fakeMedia(w)
+      await w.find('.group').trigger('mousemove')
+      await w.vm.$nextTick()
+      const back = w.findAll('button[aria-label="返回"]')
+      expect(back.length).toBe(0)
+      w.unmount()
+    })
   })
 
   it('非 TV 环境保留返回按钮', async () => {
-    const w = mountPlayer({ src: 'http://x/a.m3u8' })
-    fakeMedia(w)
-    await w.find('.group').trigger('mousemove')
-    await w.vm.$nextTick()
-    const back = w.findAll('button[aria-label="返回"]')
-    expect(back.length).toBe(1)
-    w.unmount()
+    // 桌面浏览器：有鼠标 → 不是"大屏横屏无指针"形态 → 给返回键
+    await withDevice(1440, 900, true, async () => {
+      const w = mountPlayer({ src: 'http://x/a.m3u8' })
+      fakeMedia(w)
+      await w.find('.group').trigger('mousemove')
+      await w.vm.$nextTick()
+      const back = w.findAll('button[aria-label="返回"]')
+      expect(back.length).toBe(1)
+      w.unmount()
+    })
+  })
+
+  it('TV 壳跑在手机模拟器上（横屏但短边 < 480）也保留返回按钮', async () => {
+    // 2026-11-12 用户口径：只有「大屏横屏的电视/投影仪」不给返回键，
+    // 其他形态都给 —— 手机横屏（短边 390）算"其他"。
+    await withDevice(844, 390, false, async () => {
+      const w = mountPlayer({ src: 'http://x/a.m3u8' })
+      fakeMedia(w)
+      await w.find('.group').trigger('mousemove')
+      await w.vm.$nextTick()
+      const back = w.findAll('button[aria-label="返回"]')
+      expect(back.length).toBe(1)
+      w.unmount()
+    })
   })
 })

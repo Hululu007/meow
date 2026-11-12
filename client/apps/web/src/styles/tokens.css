@@ -51,6 +51,13 @@
   /* 有壁纸时顶栏的蒙层色。必须每个主题给常量，不能用 color-mix：
      实测切主题时 color-mix 会保留上一次算出的值（详见 .app-header 注释） */
   --color-header-veil: rgb(18 20 29 / 0.76);
+  /* 吸顶横条（首页分类胶囊 / 设置分区胶囊）的蒙层色。
+     和手机底部标签栏（MobileTabBar：--color-card + 底色 0.78 + blur24
+     saturate180）是同一套玻璃，这里**只比标签栏再实一点点**（0.78→0.82）：
+     标签栏是浮在内容之上的独立岛，横条是与内容同屏滚动的带状面板，
+     透过去的海报会直接顶在胶囊字后面（用户口径「对齐 tabbar，略低一点点」）。
+     同样必须每个主题给常量，理由见上一行。 */
+  --color-strip-veil: rgb(18 20 29 / 0.82);
 
   /*
    * 分组面板（.set-card）底。
@@ -104,6 +111,8 @@
    * 否则最后一行会被玻璃栏压住。
    * 手机 = 栏高 3.5rem + 离底 0.75rem + 中间 AI 球向上顶出的 1.5rem ≈ 6rem。 */
   --tabbar-h: 0px;
+  /* 满屏页面（直播）给标签栏让位用；≥640 没有标签栏，所以是 0 */
+  --tabbar-clear: 0px;
 
   /* ── 字号刻度（★ 新代码请用这些，不要再写 text-[11px]）──────────
    *
@@ -145,6 +154,7 @@
 html[data-style="meow"][data-mode="dark"] {
   --color-base: #12141d;
   --color-header-veil: rgb(18 20 29 / 0.76);
+  --color-strip-veil: rgb(18 20 29 / 0.82);
   --color-surface: #1a1d2b;
   --color-elevated: #242838;
   --color-panel: #2e3346;
@@ -175,6 +185,7 @@ html[data-style="meow"][data-mode="dark"] {
 html[data-style="meow"][data-mode="light"] {
   --color-base: #f4f6fa;
   --color-header-veil: rgb(244 246 250 / 0.76);
+  --color-strip-veil: rgb(244 246 250 / 0.82);
   --color-surface: #ffffff;
   --color-elevated: #eef1f7;
   --color-panel: #e4e9f2;
@@ -206,6 +217,7 @@ html[data-style="meow"][data-mode="light"] {
 html[data-style="claude"][data-mode="dark"] {
   --color-base: #1f1e1b;
   --color-header-veil: rgb(31 30 27 / 0.76);
+  --color-strip-veil: rgb(31 30 27 / 0.82);
   --color-surface: #2d2c25;
   --color-elevated: #38362f;
   --color-panel: #433f37;
@@ -236,6 +248,7 @@ html[data-style="claude"][data-mode="dark"] {
 html[data-style="claude"][data-mode="light"] {
   --color-base: #efebe0;
   --color-header-veil: rgb(239 235 224 / 0.76);
+  --color-strip-veil: rgb(239 235 224 / 0.82);
   --color-surface: #ffffff;
   --color-elevated: #e9e5d6;
   --color-panel: #e0dbc9;
@@ -267,6 +280,7 @@ html[data-style="claude"][data-mode="light"] {
 html[data-style="material"][data-mode="dark"] {
   --color-base: #141218;
   --color-header-veil: rgb(20 18 24 / 0.76);
+  --color-strip-veil: rgb(20 18 24 / 0.82);
   --color-surface: #211f26;
   --color-elevated: #2b2930;
   --color-panel: #36343b;
@@ -297,6 +311,7 @@ html[data-style="material"][data-mode="dark"] {
 html[data-style="material"][data-mode="light"] {
   --color-base: #fefbff;
   --color-header-veil: rgb(254 251 255 / 0.76);
+  --color-strip-veil: rgb(254 251 255 / 0.82);
   --color-surface: #ffffff;
   --color-elevated: #f5eff7;
   --color-panel: #ece6f0;
@@ -328,6 +343,7 @@ html[data-style="material"][data-mode="light"] {
 html[data-style="nord"][data-mode="dark"] {
   --color-base: #2e3440;
   --color-header-veil: rgb(46 52 64 / 0.76);
+  --color-strip-veil: rgb(46 52 64 / 0.82);
   --color-surface: #343b4a;
   --color-elevated: #3b4252;
   --color-panel: #434c5e;
@@ -358,6 +374,7 @@ html[data-style="nord"][data-mode="dark"] {
 html[data-style="nord"][data-mode="light"] {
   --color-base: #eceff4;
   --color-header-veil: rgb(236 239 244 / 0.76);
+  --color-strip-veil: rgb(236 239 244 / 0.82);
   --color-surface: #ffffff;
   --color-elevated: #e5e9f0;
   --color-panel: #d8dee9;
@@ -389,6 +406,7 @@ html[data-style="nord"][data-mode="light"] {
 html[data-style="tokyo"][data-mode="dark"] {
   --color-base: #1a1b26;
   --color-header-veil: rgb(26 27 38 / 0.76);
+  --color-strip-veil: rgb(26 27 38 / 0.82);
   --color-surface: #1f2335;
   --color-elevated: #24283b;
   --color-panel: #292e42;
@@ -419,6 +437,7 @@ html[data-style="tokyo"][data-mode="dark"] {
 html[data-style="tokyo"][data-mode="light"] {
   --color-base: #eef0f7;
   --color-header-veil: rgb(238 240 247 / 0.76);
+  --color-strip-veil: rgb(238 240 247 / 0.82);
   --color-surface: #ffffff;
   --color-elevated: #e6e9f4;
   --color-panel: #dbe0ef;
@@ -450,6 +469,7 @@ html[data-style="tokyo"][data-mode="light"] {
 html[data-style="catppuccin"][data-mode="dark"] {
   --color-base: #181825;
   --color-header-veil: rgb(24 24 37 / 0.76);
+  --color-strip-veil: rgb(24 24 37 / 0.82);
   --color-surface: #1e1e2e;
   --color-elevated: #313244;
   --color-panel: #45475a;
@@ -480,6 +500,7 @@ html[data-style="catppuccin"][data-mode="dark"] {
 html[data-style="catppuccin"][data-mode="light"] {
   --color-base: #eff1f5;
   --color-header-veil: rgb(239 241 245 / 0.76);
+  --color-strip-veil: rgb(239 241 245 / 0.82);
   --color-surface: #ffffff;
   --color-elevated: #e6e9ef;
   --color-panel: #dce0e8;
@@ -511,6 +532,7 @@ html[data-style="catppuccin"][data-mode="light"] {
 html[data-style="oled"][data-mode="dark"] {
   --color-base: #000000;
   --color-header-veil: rgb(0 0 0 / 0.76);
+  --color-strip-veil: rgb(0 0 0 / 0.82);
   --color-surface: #0a0a0a;
   --color-elevated: #141414;
   --color-panel: #1e1e1e;
@@ -541,6 +563,7 @@ html[data-style="oled"][data-mode="dark"] {
 html[data-style="oled"][data-mode="light"] {
   --color-base: #ffffff;
   --color-header-veil: rgb(255 255 255 / 0.76);
+  --color-strip-veil: rgb(255 255 255 / 0.82);
   --color-surface: #f7f7f7;
   --color-elevated: #efefef;
   --color-panel: #e5e5e5;
@@ -572,6 +595,7 @@ html[data-style="oled"][data-mode="light"] {
 html[data-style="everforest"][data-mode="dark"] {
   --color-base: #2b3339;
   --color-header-veil: rgb(43 51 57 / 0.76);
+  --color-strip-veil: rgb(43 51 57 / 0.82);
   --color-surface: #323c41;
   --color-elevated: #3a454a;
   --color-panel: #475258;
@@ -602,6 +626,7 @@ html[data-style="everforest"][data-mode="dark"] {
 html[data-style="everforest"][data-mode="light"] {
   --color-base: #fdf6e3;
   --color-header-veil: rgb(253 246 227 / 0.76);
+  --color-strip-veil: rgb(253 246 227 / 0.82);
   --color-surface: #ffffff;
   --color-elevated: #f4eeda;
   --color-panel: #efebd4;
@@ -1389,6 +1414,10 @@ html[data-tv='1'] .seg-group .meow-tv-focus {
   :root {
     --header-h: calc(3.5rem + env(safe-area-inset-top));
     --tabbar-h: calc(6rem + env(safe-area-inset-bottom));
+    /* 只让开标签栏本体（3.5rem + 离底 0.75rem）的高度。
+       满屏画面里（直播页）不需要 6rem —— 那是给页面内容留白用的，
+       多出来的 1.75rem 是中间 AI 球向上顶出的部分。 */
+    --tabbar-clear: calc(4.25rem + env(safe-area-inset-bottom));
   }
   /* 底部标签栏是 fixed 的，页面内容要自己让出这 56px */
   .has-tabbar {
@@ -1567,6 +1596,43 @@ html[data-input='touch'] [data-tv-scroll].meow-tv-focus {
 .meow-ctrl-bar .hover\:text-ink:hover {
   color: #fff;
 }
+/*
+ * 浅色卡片（bg-elevated 这类跟随主题的面板）：恢复主题色文字。
+ *
+ * 播放器根节点里默认把 text-ink 钉成白色（视频底是深色），但「倍速菜单」和
+ * 「搜索弹幕」这两块是**浅色卡片**（bg-elevated，浅色主题下接近白），
+ * 白字压白底 = 全都看不见（2026-11-12 用户截图）。给它们挂
+ * `.meow-light-card` 把文字颜色还给主题。
+ */
+.meow-player-root .meow-light-card,
+.meow-player-root .meow-light-card .text-ink,
+.meow-player-root .meow-light-card .hover\:text-ink:hover {
+  color: var(--color-ink);
+}
+.meow-player-root .meow-light-card .text-ink-2 {
+  color: var(--color-ink-2);
+}
+.meow-player-root .meow-light-card .text-ink-3 {
+  color: var(--color-ink-3);
+}
+
+/*
+ * 视频画面上的深色胶囊/面板（bg-black/* 那种绝对黑底）：统一白字。
+ *
+ * 用于播放器根节点之外的浮层（例如 PlayView 的「已从 xx:xx 继续播放」
+ * 提示条）——它们同样压在画面上，主题色在浅色模式下是深色，会糊在黑底里。
+ */
+.meow-on-dark,
+.meow-on-dark .text-ink {
+  color: rgba(255, 255, 255, 0.92);
+}
+.meow-on-dark .text-ink-2 {
+  color: rgba(255, 255, 255, 0.72);
+}
+.meow-on-dark .text-ink-3 {
+  color: rgba(255, 255, 255, 0.55);
+}
+
 /*
  * 海报角标（集数 / 备注）。
  *

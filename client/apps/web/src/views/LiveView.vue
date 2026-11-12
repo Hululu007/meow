@@ -30,6 +30,7 @@ let firstPlayDone = false
 </script>
 
 <script setup lang="ts">
+import { isBigScreenLandscape } from '@/compat/deviceForm'
 /**
  * 直播页。
  *
@@ -109,8 +110,18 @@ const router = useRouter()
  * <p>有历史就退一步（保住从搜索/详情进来的上下文），深链直接进来的回首页。
  */
 function leaveLive() {
+  const before = router.currentRoute.value.fullPath
   if (window.history.length > 1) router.back()
   else void router.push('/')
+  /*
+   * Android WebView 的 history.back() 可能是空操作（点播页 2026-11-05 踩过：
+   * popstate/hashchange 都不触发，hash 不变）。这里补同样的兜底：260ms 后
+   * 路由没动就 replace 到首页。否则用户点返回"没反应"（面板还留在屏上）。
+   */
+  window.setTimeout(() => {
+    if (router.currentRoute.value.fullPath !== before) return
+    void router.replace('/')
+  }, 260)
 }
 
 /**
@@ -287,31 +298,23 @@ const showExitFsButton = computed(
   () =>
     (fullscreen.value || pseudoFs.value) &&
     !showCtrl.value &&
+    // 面板打开时让位：面板自带返回键，两个圆形箭头在同一位置会叠在一起
+    !showGuide.value &&
     isTouch.value &&
     (!isTvEnv() || compactViewport.value),
 )
 
 /**
- * 手机形态播放中，左上角的「返回」按钮。
+ * 「分类-台」面板打开时左上角的返回按钮。
  *
- * <p>直播页是路由级满屏（App 的顶栏按 isLive 隐藏），有台在播时屏幕上原本
- * 只有底栏，而底栏 5 秒自动收起 —— 收起后手机只剩系统返回手势。
+ * <p><b>2026-11-12 用户口径</b>：不常驻——和面板**同时显示/消失**即可。
+ * 面板已挪到右侧，宽屏上按钮在左、面板在右，互不遮挡；只有窄屏（手机竖屏）
+ * 面板占 86% 宽时才需要 top-14 给按钮让位。面板关掉后按钮一起收走。
  *
- * <p>显隐跟**底栏**同一个节奏（showCtrl），并且「分类-台」面板打开时隐藏：
- * 面板占着屏幕左侧三分之一（含左上角），按钮留着只会压在面板标题上。
- * 真电视不给（遥控器有返回键，而且左上角按钮会被几何选焦最先命中）。
+ * <p>真电视仍然不给：遥控器有返回键，而且左上角按钮会被几何选焦最先命中。
  */
 const showLiveBack = computed(
-  () =>
-    // 只在竖屏（手机形态窗口）：横屏是电视式界面，底栏本来就不渲染，
-    // 控制栏的自动收起计时也不跑，留着会变成常驻按钮压在画面上。
-    !landscape.value &&
-    !!current.value &&
-    showCtrl.value &&
-    // ★ 面板打开时**不再**隐藏（2026-11-12）：面板改成浮起来的圆角卡片后
-    //   顶部留了 3.5rem 的边距，左上角返回键完全露在外面，可以继续点。
-    isTouch.value &&
-    (!isTvEnv() || compactViewport.value),
+  () => !!current.value && showGuide.value && !isBigScreenLandscape(),
 )
 /** 换台提示（"央视一套 → 央视二套"），必须出现在画面中央 */
 const zapHint = ref('')
@@ -341,11 +344,13 @@ const guideOverlayHost = useOverlayHost()
 const guideGroup = ref(0)
 /** 面板光标：右列台下标（在去重后的 channels 里） */
 const guideChannel = ref(0)
+/** 面板光标：顶部「换源」行下标（多播放列表时才存在） */
+const guideSource = ref(0)
 /**
  * 光标在哪一列：↑↓ 只作用于当前列（列内夹停），←→ 切列。
  * 不用几何选焦就是因为没有这个"列"概念（见 openGuide 注释）。
  */
-const guideColumn = ref<'group' | 'channel'>('channel')
+const guideColumn = ref<'source' | 'group' | 'channel'>('channel')
 
 /**
  * 「分类-台」面板的宽度调节（2026-11-12 用户要求）。
@@ -388,7 +393,12 @@ function saveGuideSize(key: string, v: number) {
     /* 忽略 */
   }
 }
-/** 拖面板右边缘：240px ~ 62% 视口宽 */
+/**
+ * 拖面板**左边缘**：240px ~ 62% 视口宽。
+ *
+ * <p>面板贴右缘（用户 2026-11-12 要求改到右侧），右边缘固定在屏幕上，
+ * 只能拖左边；向右拖是变窄，所以位移要取反，否则指针和边缘反向跑。
+ */
 function startGuidePanelResize(e: PointerEvent) {
   const panel = (e.currentTarget as HTMLElement).closest('[data-guide-panel]') as HTMLElement | null
   if (!panel) return
@@ -396,7 +406,7 @@ function startGuidePanelResize(e: PointerEvent) {
   const startW = panel.getBoundingClientRect().width
   const maxW = Math.round(window.innerWidth * 0.62)
   const move = (ev: PointerEvent) => {
-    const w = Math.round(Math.min(maxW, Math.max(240, startW + ev.clientX - startX)))
+    const w = Math.round(Math.min(maxW, Math.max(240, startW + startX - ev.clientX)))
     guidePanelW.value = w
     // 面板被拖窄时，左列不能把它挤没
     const cap = Math.max(104, w - 168)
@@ -414,14 +424,15 @@ function startGuidePanelResize(e: PointerEvent) {
   window.addEventListener('pointercancel', up)
 }
 /**
- * 拖两列之间：**面板跟着一起变宽**，右列宽度保持不变（2026-11-12 用户要求）。
+ * 拖两列之间的分界。
  *
- * <p>原来只改左列 px、面板宽度不动 → 拖分界等于**挤压右侧台列表**，
- * 台名越拖越窄。用户要的是「左列变宽时把面板一起撑开」。
+ * <p>★ 面板改到右侧后语义反过来了：右边缘钉在屏幕上，分界线的 x =
+ * 右边缘 − 右列宽。**只改左列宽的话分界线不会动**（左列往左长、右列
+ * 宽度不变，分界线仍在原位），拖动会像"拖不动"。所以这里改成：
+ * 左列宽度固定，拖动调**右列**宽度，面板跟着一起变宽/变窄。
  *
- * <p>所以：先记住右列当前宽度，每次移动同时写 `guideSplitW`（左列）和
- * `guidePanelW = 左列 + 右列`。上限仍是视口 62% —— 到顶后左列停住
- * （右列永远不许被压到 0，所以不是继续挤它）。
+ * <p>「面板跟着变宽、另一列不被挤压」的原始诉求仍然成立，只是守住的那一列
+ * 从右列换成了左列。
  */
 function startGuideSplitResize(e: PointerEvent) {
   const side = (e.currentTarget as HTMLElement).closest('[data-guide-side]') as HTMLElement | null
@@ -430,14 +441,15 @@ function startGuideSplitResize(e: PointerEvent) {
   const startX = e.clientX
   const startW = side.getBoundingClientRect().width
   const startPanelW = panel.getBoundingClientRect().width
-  // 右列要守住的那份宽度（起始时右列多宽，拖完还是多宽）
-  const rightW = Math.max(168, Math.round(startPanelW - startW))
+  // 左列守住起始宽度；右列随指针缩放
+  const leftW = Math.max(104, Math.round(startW))
+  const startRight = Math.max(168, Math.round(startPanelW - startW))
   const maxPanelW = Math.round(window.innerWidth * 0.62)
-  const maxLeft = Math.max(104, maxPanelW - rightW)
+  const maxRight = Math.max(168, maxPanelW - leftW)
   const move = (ev: PointerEvent) => {
-    const left = Math.round(Math.min(maxLeft, Math.max(104, startW + ev.clientX - startX)))
-    guideSplitW.value = left
-    guidePanelW.value = left + rightW
+    const right = Math.round(Math.min(maxRight, Math.max(168, startRight - (ev.clientX - startX))))
+    guideSplitW.value = leftW
+    guidePanelW.value = leftW + right
   }
   const up = () => {
     window.removeEventListener('pointermove', move)
@@ -1184,6 +1196,21 @@ function openGuide() {
   guideChannel.value = at >= 0 ? at : 0
   guideColumn.value = 'channel'
   wake()
+  /*
+   * 打开时把"当前分类 + 当前台"滚到列表靠前位置。
+   *
+   * 只靠下面的 watch 不够：首次打开时 guideGroup/guideChannel 可能本来就是
+   * 0（watch 不触发），或者值虽变但面板 DOM 还没挂好。用户实测"选中的分类
+   * 在列表下方，还要自己滚才能找到"——这里等 Teleport 挂载后强制定位一次。
+   * block:'start' = 选中项贴到列表顶部（配合 scroll-padding 16px），
+   * 而不是 nearest 的"只保证露出来"（可能贴在底部看不见上下文）。
+   */
+  void nextTick(() => {
+    requestAnimationFrame(() => {
+      scrollGuideColIntoView('group', 'start')
+      scrollGuideColIntoView('channel', 'start')
+    })
+  })
 }
 
 /** 光标在右列上移/下移：**到边界停住**（不环绕，也不跳列） */
@@ -1198,10 +1225,31 @@ function guideMoveChannel(dir: number) {
 function guideMoveGroup(dir: number) {
   const n = groups.value.length
   if (!n) return
+  if (dir < 0 && guideGroup.value === 0 && playlists.value.length > 1) {
+    // 第一条分类再往上 = 顶部的「换源」行（视觉上就在分类上方）
+    guideColumn.value = 'source'
+    guideSource.value = playlists.value.length - 1
+    return
+  }
   const next = guideGroup.value + dir
   if (next < 0 || next >= n) return
   guideGroup.value = next
   guideChannel.value = 0
+}
+
+/** ↑↓ 在「换源」行里移动；最后一行再往下回到第一条分类 */
+function guideMoveSource(dir: number) {
+  const n = playlists.value.length
+  if (!n) return
+  const next = guideSource.value + dir
+  if (next < 0) return
+  if (next >= n) {
+    guideColumn.value = 'group'
+    guideGroup.value = 0
+    guideChannel.value = 0
+    return
+  }
+  guideSource.value = next
 }
 
 /** ←→ 切列：右列 → 左列 / 左列 → 右列（不改变各自列内的光标） */
@@ -1218,18 +1266,25 @@ function guideSwitchColumn(which: 'group' | 'channel') {
  *
  * <p>block:'nearest'：只在需要时滚，已经可见就不动（避免每按一下都跳动）。
  */
+function scrollGuideColIntoView(
+  col: 'source' | 'group' | 'channel',
+  align: ScrollLogicalPosition = 'nearest',
+) {
+  const idx =
+    col === 'source' ? guideSource.value : col === 'group' ? guideGroup.value : guideChannel.value
+  const el = document.querySelector<HTMLElement>(
+    `[data-guide-col="${col}"][data-guide-idx="${idx}"]`,
+  )
+  el?.scrollIntoView({ block: align })
+}
+
 function scrollGuideIntoView() {
   if (!showGuide.value) return
   void nextTick(() => {
-    const sel =
-      guideColumn.value === 'group'
-        ? `[data-guide-col="group"][data-guide-idx="${guideGroup.value}"]`
-        : `[data-guide-col="channel"][data-guide-idx="${guideChannel.value}"]`
-    const el = document.querySelector<HTMLElement>(sel)
-    el?.scrollIntoView({ block: 'nearest' })
+    scrollGuideColIntoView(guideColumn.value)
   })
 }
-watch([guideGroup, guideChannel, guideColumn], scrollGuideIntoView)
+watch([guideSource, guideGroup, guideChannel, guideColumn], scrollGuideIntoView)
 
 /**
  * OK 键：
@@ -1237,6 +1292,15 @@ watch([guideGroup, guideChannel, guideColumn], scrollGuideIntoView)
  *   光标在右列 → 选中该台：关面板 → 切分类 → 播放
  */
 async function guideOk() {
+  if (guideColumn.value === 'source') {
+    const p = playlists.value[guideSource.value]
+    if (p) {
+      // 切源等于换了一套分组/台，面板里的旧坐标已经失效 → 直接收起
+      showGuide.value = false
+      await openPlaylist(p)
+    }
+    return
+  }
   if (guideColumn.value === 'group') {
     // 左列按 OK：切到该分类并进右列，光标落在第一台
     const g = groups.value[guideGroup.value]
@@ -1855,21 +1919,25 @@ function onKeydown(e: KeyboardEvent) {
     switch (e.key) {
       case 'ArrowUp':
         e.preventDefault()
-        if (guideColumn.value === 'group') guideMoveGroup(-1)
+        if (guideColumn.value === 'source') guideMoveSource(-1)
+        else if (guideColumn.value === 'group') guideMoveGroup(-1)
         else guideMoveChannel(-1)
         break
       case 'ArrowDown':
         e.preventDefault()
-        if (guideColumn.value === 'group') guideMoveGroup(1)
+        if (guideColumn.value === 'source') guideMoveSource(1)
+        else if (guideColumn.value === 'group') guideMoveGroup(1)
         else guideMoveChannel(1)
         break
       case 'ArrowLeft':
         e.preventDefault()
-        guideSwitchColumn('group')
+        if (guideColumn.value === 'source') guideColumn.value = 'group'
+        else guideSwitchColumn('group')
         break
       case 'ArrowRight':
         e.preventDefault()
-        guideSwitchColumn('channel')
+        if (guideColumn.value === 'source') guideSwitchColumn('channel')
+        else guideSwitchColumn('channel')
         break
       case 'Enter':
         e.preventDefault()
@@ -2345,24 +2413,8 @@ onBeforeUnmount(() => {
         手机没有物理返回键就卡在这一屏。有台在播时不显示（全屏画面里另有
         悬浮退出按钮，见 showExitFsButton）。
     -->
-    <!--
-      播放中的「返回」：与底栏同显隐；面板打开时让位（面板占着左上角）。
-      手机/TV 壳跑在紧凑视口时给，真电视不给（遥控器有返回键，且会抢焦点）。
-    -->
     <button
-      v-if="showLiveBack"
-      class="absolute z-30 grid h-9 w-9 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20 active:scale-95"
-      style="left: calc(0.75rem + env(safe-area-inset-left)); top: calc(0.75rem + env(safe-area-inset-top))"
-      aria-label="返回"
-      title="返回"
-      @click="leaveLive"
-    >
-      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-        <path d="m15 18-6-6 6-6" />
-      </svg>
-    </button>
-    <button
-      v-if="!current"
+      v-if="!current && !showGuide"
       class="absolute z-30 flex items-center gap-1 rounded-full bg-white/12 py-1.5 pl-2 pr-3 text-xs text-white/85 backdrop-blur transition hover:bg-white/20 active:scale-95"
       style="left: calc(0.75rem + env(safe-area-inset-left)); top: calc(0.75rem + env(safe-area-inset-top))"
       title="返回"
@@ -2682,7 +2734,7 @@ onBeforeUnmount(() => {
           -->
           <div
             v-if="!landscape && !showGuide"
-            class="meow-ctrl-bar absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-3 pb-2.5 pt-12 sm:px-5 sm:pb-4 sm:pt-14"
+            class="meow-ctrl-bar absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-3 pb-[calc(0.625rem+var(--tabbar-clear))] pt-12 sm:px-5 sm:pb-4 sm:pt-14"
             :class="showCtrl ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
             data-ctrl-root
           >
@@ -2832,16 +2884,15 @@ onBeforeUnmount(() => {
     </template>
 
     <!--
-      频道指南：经典网络电视的左侧滑出面板。
+      频道指南：右侧滑出的分类-台面板（2026-11-12 用户要求从左侧改到右侧）。
 
       ★ 结构：**左右两块**，左边分类、右边台列表，各自独立滚动。
         之前做成了上下两块（分类在上、台在下），在 1138 宽的视口里
         分类区被压到只剩 10 个分类可见、要在小窗口里挤着滚 —— 分类多时
-        根本翻不完。左右分栏才符合"左边选分类、右边选台"的直觉。
+        根本翻不完。左右分栏才符合"先选分类、再选台"的直觉。
 
-      ★ 位置是**左侧 1/3**，不是居中弹窗：网络电视/IPTV 的惯例就是
-        左侧滑出分类+台列表，右侧画面继续播着 —— 居中弹窗会把画面挡住，
-        用户选台时看不到自己在选什么。
+      ★ 位置是**右侧 1/3**，不是居中弹窗：面板贴右缘、左侧画面继续播着，
+        用户选台时还能看到画面；左上角的返回按钮也不再被面板压住。
 
       ★ 用 Teleport 挂到 body：留在本组件内会被外层容器的定位上下文
         影响（顶栏 sticky / 播放器 fixed 全屏都靠它），实测遮罩盖不住
@@ -2866,10 +2917,36 @@ onBeforeUnmount(() => {
         role="dialog"
         @click="showGuide = false"
       >
-        <!-- 左侧 1/3 透明面板：左右两块，各自滚动 -->
+        <!--
+          播放中的「返回」：放在遮罩内部而不是页面里。
+          ★ 踩过：按钮原来在页面根（z-10 的 stacking context）里，即使自己
+            z-[1000] 也压不过 body 上的 z-[999] 遮罩 —— 点击先被遮罩的
+            @click 接走，表现是"点返回没反应，面板关了但没退出直播页"。
+          放在遮罩内部 + @click.stop，才能真正点到它。
+        -->
+        <!-- div role=button：面板/遮罩里不能有原生可聚焦按钮，
+             否则 tv-nav 会把方向键抢去移焦点，页面状态机收不到 -->
         <div
-          class="absolute left-3 flex w-1/3 max-sm:w-[86%] min-w-[16rem] max-w-[34rem] overflow-hidden rounded-xl border border-white/10 bg-black/75 shadow-2xl backdrop-blur-md"
-          :class="landscape ? 'top-3 bottom-3' : 'top-14 bottom-3'"
+          v-if="showLiveBack"
+          role="button"
+          class="absolute z-30 grid h-9 w-9 cursor-pointer place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20 active:scale-95"
+          style="left: calc(0.75rem + env(safe-area-inset-left)); top: calc(0.75rem + env(safe-area-inset-top))"
+          aria-label="返回"
+          title="返回"
+          @click.stop="leaveLive"
+        >
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="m15 18-6-6 6-6" />
+          </svg>
+        </div>
+        <!-- 右侧 1/3 透明面板：左右两块，各自滚动 -->
+        <div
+          class="absolute right-3 flex w-1/3 max-sm:w-[86%] min-w-[16rem] max-w-[34rem] overflow-hidden rounded-xl border border-white/10 bg-black/75 shadow-2xl backdrop-blur-md"
+          :class="
+            landscape
+              ? 'top-3 bottom-3'
+              : 'top-14 bottom-[calc(0.75rem+var(--tabbar-clear))]'
+          "
           data-guide-panel
           :style="guidePanelStyle"
           @click.stop
@@ -2902,20 +2979,29 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <!-- 多源时给切换入口（原来在常驻侧栏里） -->
-            <div v-if="playlists.length > 1" class="shrink-0 border-b border-white/10 px-1.5 pb-1.5">
+            <div v-if="playlists.length > 1" class="shrink-0 border-b border-white/10 px-4 pb-4">
+              <!-- 标清这里是"信号源列表"：只写「换源」两个字时用户不知道
+                   它和下面分类/台是两套东西（2026-11-12 用户提问） -->
+              <div class="px-2 pb-0.5 text-[10px] text-white/40">信号源</div>
               <div
-                v-for="p in playlists"
+                v-for="(p, pi) in playlists"
                 :key="p.url"
                 role="button"
+                data-guide-col="source"
+                :data-guide-idx="pi"
+                :title="`切换到 ${p.name}`"
                 class="mb-0.5 flex w-full cursor-pointer items-center justify-between gap-1 rounded px-2 py-1 text-left text-[11px] transition"
-                :class="playlistBusy === p.url ? 'text-white/40' : 'text-white/70 hover:bg-white/10'"
-                @click="openPlaylist(p)"
+                :class="[
+                  playlistBusy === p.url ? 'text-white/40' : 'text-white/70 hover:bg-white/10',
+                  guideColumn === 'source' && guideSource === pi ? 'guide-cursor' : '',
+                ]"
+                @click="showGuide = false; openPlaylist(p)"
               >
                 <span class="truncate">{{ p.name }}</span>
-                <span class="shrink-0 opacity-60">{{ playlistBusy === p.url ? '…' : '换' }}</span>
+                <span class="shrink-0 opacity-60">{{ playlistBusy === p.url ? '…' : '换源' }}</span>
               </div>
             </div>
-            <div class="min-h-0 flex-1 overflow-y-auto px-3.5 py-2">
+            <div class="guide-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4">
               <div
                 v-for="(g, gi) in groups"
                 :key="keyOf(g)"
@@ -2938,7 +3024,7 @@ onBeforeUnmount(() => {
               class="guide-resize guide-resize--split"
               role="separator"
               aria-orientation="vertical"
-              aria-label="调整分类列宽度"
+              aria-label="调整台列表宽度"
               @pointerdown.stop.prevent="startGuideSplitResize"
               @click.stop
             />
@@ -2950,7 +3036,7 @@ onBeforeUnmount(() => {
               <span class="truncate text-xs text-white/85">{{ groups[guideGroup]?.group }}</span>
               <span class="shrink-0 text-[11px] text-white/45">{{ guideChannels.length }} 台</span>
             </div>
-            <div class="min-h-0 flex-1 overflow-y-auto px-3.5 py-2">
+            <div class="guide-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4">
               <div
                 v-for="(ch, i) in guideChannels"
                 :key="ch.name"
@@ -2991,7 +3077,7 @@ onBeforeUnmount(() => {
         -->
         <div
           v-if="!isTouch"
-          class="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded bg-black/60 px-3 py-1 text-center text-[11px] text-white/70"
+          class="pointer-events-none absolute bottom-4 left-4 max-w-[62%] rounded bg-black/60 px-3 py-1 text-left text-[11px] leading-snug text-white/70"
         >
           <span v-if="stats" class="mr-2 text-white/45">
             已试 {{ stats.tried }} 源 · 无直播 {{ stats.failed }}
@@ -3003,7 +3089,7 @@ onBeforeUnmount(() => {
             方向键说明只给电视/PC：手机上根本没有方向键，占着一行字还挡画面
             （2026-11-12 用户要求竖屏设备不显示这条提示栏）。源统计仍然保留。
           -->
-          <span v-if="!isTouch">←→ 换列 · ↑↓ 本列移动 · OK 选择 · BACK 关闭</span>
+          <span v-if="!isTouch">←→ 换列 · ↑↓ 本列移动 · 分类首行再↑选信号源 · OK 选择 · BACK 关闭</span>
         </div>
       </div>
     </Teleport>
@@ -3047,8 +3133,10 @@ onBeforeUnmount(() => {
  *   也是 docs/27 定稿的焦点环规格。这里照抄（含 1px 内白线压边）。
  *
  * 代价是外环 + 辉光会伸出元素边界，所以两个列表容器的内边距要 ≥ 14px
- * （px-3.5 + py-2）：滚动容器是 overflow-y-auto，伸出部分会被裁，
+ * （这里用 16px：px-4 + py-4，留 2px 余量）：滚动容器是 overflow-y-auto，伸出部分会被裁，
  * 裁掉就变成"焦点框缺一条边"（tv-nav 的注释里也记着这个坑）。
+ * 纵向还要 `scroll-padding-block: 16px`——scrollIntoView 默认把元素贴到
+ * 滚动端口边缘，会把底部那 14px 内边距"滚掉"，首尾行的环照样被切。
  *
  * `position: relative; z-index: 1` 是给外辉光抢绘制层级：同一个滚动容器里
  * 后面的兄弟元素会盖住前面元素的外阴影，辉光就只剩上半圈。
@@ -3099,8 +3187,19 @@ onBeforeUnmount(() => {
  * 面板现在 overflow-hidden + 圆角：命中区不能再往外伸（会被裁掉），
  * 改成贴着内沿 10px —— 视觉上仍压在边线上，拖动命中不受影响。
  */
-.guide-resize--edge,
 .guide-resize--split {
   right: 0;
+}
+/* 面板贴右缘：可拖的是左边缘（右边缘固定） */
+.guide-resize--edge {
+  left: 0;
+}
+
+/*
+ * 列表滚动区：预留滚动对齐边距，让首尾行的 2px 外环 + 12px 辉光完整可见。
+ * 只给纵向（横向由 px-3.5=14px 兜住）。
+ */
+.guide-scroll {
+  scroll-padding-block: 16px;
 }
 </style>

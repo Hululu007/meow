@@ -76,7 +76,10 @@ describe('⑤ 窄屏入口补齐', () => {
     const at = lv.indexOf('@click.stop="cycleLine(1)"')
     expect(at).toBeGreaterThan(-1)
     const cls = lv.slice(Math.max(0, at - 500), at)
-    const m = cls.match(/class="([^"]+)"/)
+    // 取**离点击事件最近**的那个 class：底栏里前面的换台按钮 svg 也有 class，
+    // 用第一个匹配会读到 svg 的 `h-[18px] w-[18px]`（2026-11-12 实测误报）。
+    const all = [...cls.matchAll(/class="([^"]+)"/g)]
+    const m = all[all.length - 1]
     expect(m, '找不到线路按钮的 class').toBeTruthy()
     expect(m![1]).not.toContain('hidden')
     expect(m![1]).toMatch(/\bflex\b/)

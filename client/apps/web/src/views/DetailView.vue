@@ -15,6 +15,7 @@ import { getProgress, listHistory, pushHistory } from '@/stores/history'
 import { getLinePref } from '@/stores/linePref'
 import { useAppStore } from '@/stores/app'
 import PosterImage from '@/components/common/PosterImage.vue'
+import { cleanIntro, cleanLine } from '@/utils/introText'
 
 const route = useRoute()
 const router = useRouter()
@@ -52,9 +53,8 @@ const descExpanded = ref(false)
 const descEl = ref<HTMLElement | null>(null)
 /** 这段简介是否**真的**被折叠了（短简介不该出现按钮） */
 const descClamped = ref(false)
-const descText = computed(() =>
-  (item.value?.vod_content || '').replace(/<[^>]+>/g, '').trim(),
-)
+// 源站简介里混着标签/BBcode/JSON（实测 B 站源首行就是 {"id":…}），渲染前统一净化
+const descText = computed(() => cleanIntro(item.value?.vod_content))
 
 /**
  * 判断简介有没有被 4 行截断。
@@ -541,10 +541,10 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-if="item.vod_director" class="mt-2 text-sm text-ink-3 max-sm:mt-1.5 max-sm:text-[13px]">
-            导演：<span class="text-ink-2">{{ item.vod_director }}</span>
+            导演：<span class="text-ink-2">{{ cleanLine(item.vod_director) }}</span>
           </div>
           <div v-if="item.vod_actor" class="mt-1 line-clamp-2 text-sm text-ink-3 max-sm:text-[13px]">
-            主演：<span class="text-ink-2">{{ item.vod_actor }}</span>
+            主演：<span class="text-ink-2">{{ cleanLine(item.vod_actor) }}</span>
           </div>
 
           <template v-if="descText">
@@ -562,7 +562,7 @@ onBeforeUnmount(() => {
             -->
             <button
               v-if="descClamped || descExpanded"
-              class="mt-1.5 text-xs text-accent transition hover:underline"
+              class="hit-44 mt-1.5 rounded px-2 py-1.5 text-xs text-accent transition hover:underline"
               @click="descExpanded = !descExpanded"
             >
               {{ descExpanded ? '收起简介' : '展开简介' }}

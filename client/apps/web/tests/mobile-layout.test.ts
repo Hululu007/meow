@@ -128,9 +128,12 @@ describe('移动端导航：底部标签栏 + 顶栏搜索展开', () => {
   const header = read('components/layout/AppHeader.vue')
   const tokens = readFileSync(TOKENS, 'utf8')
 
-  it('三个一级入口：首页 / AI / 设置，且只在手机显示', () => {
+  it('五个一级入口：首页 / 直播 / AI / 设置 / 我的，且只在手机显示', () => {
+    expect(tab).toContain('to="/"')
+    expect(tab).toContain('to="/live"')
     expect(tab).toContain('to="/ai"')
     expect(tab).toContain('to="/settings"')
+    expect(tab).toContain('to="/me"')
     expect(tab).toContain('@media (max-width: 639px)')
     // 透明玻璃风：薄纱 token 底 + 背景模糊（底色走 token，不用 color-mix）
     expect(tab).toContain('backdrop-filter: blur(')
@@ -145,15 +148,36 @@ describe('移动端导航：底部标签栏 + 顶栏搜索展开', () => {
     expect(tab).toContain('border-radius: 999px')
   })
 
-  it('播放页 / 直播页不显示标签栏（会盖住进度条），其余页面给内容留出 56px', () => {
+  it('只有播放页不显示标签栏；直播页保留（它是一级入口），内容给底栏留出 6rem', () => {
     expect(app).toContain('has-tabbar')
-    expect(app).toContain("n !== 'play' && n !== 'live'")
+    // 2026-11-12：直播成了一级入口，藏掉底栏会让这一格永远不亮也回不去
+    expect(app).toContain("const showTabBar = computed(() => String(route.name || '') !== 'play')")
     expect(tokens).toContain('--tabbar-h: calc(6rem + env(safe-area-inset-bottom))')
+    // 满屏画面（直播）只让开标签栏本体，不需要 6rem
+    expect(tokens).toContain('--tabbar-clear')
     expect(tokens).toContain('.has-tabbar')
   })
 
   it('手机上悬浮 AI 球收起（标签栏已是一级入口，避免压住最后一行）', () => {
     expect(tokens).toMatch(/\.ai-fab \{\s*display: none;/)
+  })
+
+  it('<640 顶栏没有「…」菜单：入口全部由底栏 + 我的页承担（2026-11-12）', () => {
+    // 菜单只给 640–767（那段没有底部标签栏）；<640 撤掉，不留重复入口
+    expect(header).toContain('relative md:hidden max-sm:hidden" data-more-menu')
+    // 手机原来靠菜单进的片库，现在在「我的」页签栏里；
+    // 片库页顶部也放同一条页签（MeTabs），三个分区在哪都可见
+    const me = read('views/MeView.vue')
+    expect(me).toContain('<MeTabs')
+    const meTabs = read('components/common/MeTabs.vue')
+    expect(meTabs).toContain("router.push({ name: 'library' })")
+    expect(meTabs).toContain('片库')
+    const library = read('views/LibraryView.vue')
+    expect(library).toContain('<MeTabs active="library" />')
+    // 片库（及其添加页）归属「我的」：底栏在这一段仍亮着
+    expect(tab).toContain(
+      "['me', 'history', 'favorites', 'library', 'libraryAdd'].includes(String(route.name))",
+    )
   })
 
   it('顶栏搜索在手机上是"输入框样式的按钮"，点击直达搜索页', () => {
@@ -174,7 +198,7 @@ describe('移动端导航：底部标签栏 + 顶栏搜索展开', () => {
      * 而「更多」菜单原是 sm:hidden（<640 才显示）→ 640–767 两处都没有入口。
      * 菜单容器必须是 md:hidden，这段宽度才落得进菜单。
      */
-    expect(header).toContain('<div class="relative md:hidden" data-more-menu>')
+    expect(header).toContain('<div class="relative md:hidden max-sm:hidden" data-more-menu>')
     const menu = header.slice(header.indexOf('data-more-menu'))
     expect(menu).toContain('to="/live"')
     expect(menu).toContain('to="/library"')
@@ -187,7 +211,7 @@ describe('移动端导航：底部标签栏 + 顶栏搜索展开', () => {
      * AI 仍然不进菜单（手机上它是标签栏的一级入口）。
      */
     // 注意从模板里那个 div 开始切：`data-more-menu` 在 <script> 的点击外部判定里也出现过一次
-    const menu = header.slice(header.indexOf('<div class="relative md:hidden" data-more-menu>'))
+    const menu = header.slice(header.indexOf('<div class="relative md:hidden max-sm:hidden" data-more-menu>'))
     expect(menu).not.toContain('To="/ai"')
     expect(menu).not.toContain('AI 助手')
     expect(menu).toContain('to="/settings"')

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { isBigScreenLandscape } from '@/compat/deviceForm'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Hls from 'hls.js'
@@ -409,6 +410,58 @@ function seekTo(sec: number) {
   const target = Number.isFinite(d) && d > 0 ? Math.min(sec, d - 1) : sec
   v.currentTime = Math.max(0, target)
   syncDm()
+}
+
+// ---------------------------------------------------------------- 跳到指定时间
+/**
+ * 底栏那行时间从"只显示"改成"可点跳转"（2026-11-12）。
+ *
+ * <p>注释里一直写着"点了跳到指定分钟"，但 span 上没有任何事件 ——
+ * 长视频想跳 1 小时 20 分只能拖进度条，误差几十秒。手机上尤其难拖准。
+ *
+ * <p>数字键盘打不出冒号，所以 `parseClock` 额外吃纯数字：
+ * 1234 = 12:34、834 = 8:34。这样不用切换输入法符号页。
+ */
+const seekDialog = ref(false)
+const seekText = ref('')
+const seekInputEl = ref<HTMLInputElement | null>(null)
+
+function parseClock(raw: string): number | null {
+  const s = raw.trim()
+  if (!s) return null
+  if (s.includes(':')) {
+    const parts = s.split(':').map((x) => Number(x.trim()))
+    if (parts.length > 3) return null
+    if (parts.some((n) => !Number.isFinite(n) || n < 0)) return null
+    return parts.reduce((acc, n) => acc * 60 + n, 0)
+  }
+  if (!/^\d+$/.test(s)) return null
+  if (s.length <= 2) return Number(s)
+  if (s.length === 3) return Number(s.slice(0, 1)) * 60 + Number(s.slice(1))
+  if (s.length === 4) return Number(s.slice(0, 2)) * 60 + Number(s.slice(2))
+  return Number(s)
+}
+
+function openSeekDialog() {
+  seekText.value = fmt(currentTime.value)
+  seekDialog.value = true
+  void nextTick(() => {
+    const el = seekInputEl.value
+    if (!el) return
+    try {
+      el.focus({ preventScroll: true })
+    } catch {
+      el.focus()
+    }
+    el.select()
+  })
+}
+
+function applySeekDialog() {
+  const sec = parseClock(seekText.value)
+  if (sec == null) return
+  seekTo(sec)
+  seekDialog.value = false
 }
 
 /** 供外部读取当前进度 */
@@ -1546,15 +1599,45 @@ function onStageClick(e: MouseEvent) {
     clearTimeout(suppressTimer)
     return
   }
-  // 触屏中间 1/3 没有双击语义（快进只在左右两侧），单击不必等 220ms 判双击。
-  // 这是最高频的操作，值得为它去掉延迟；左右两侧仍保留判定窗口。
-  if (isTouch.value && zoneOf(e) === 'mid') {
-    toggle()
+  /*
+   * 触屏（2026-11-12 用户口径，三区统一）：
+   *   单击 = 只呼出/收起控制栏；
+   *   双击 = 左区 -10s / 右区 +10s / 中区 暂停播放；
+   *   长按 = 左区 2× 快退 / 右区 2× 快进 / 中区无动作。
+   * 单击仍然延迟 220ms，用来区分双击；双击事件里会 clearTimeout，
+   * 所以不会出现"先切控制栏再暂停"。双击动作本身不再等待。
+   *
+   * ★ 不让单击暂停：左右两区占了屏幕 2/3，点哪都可能"手滑一下视频就停"。
+   *   暂停留给双击（明确意图）和按钮（看得见的入口）。
+   */
+  if (isTouch.value) {
+    /*
+     * ★ 必须用**点击前**的可见状态决定动作。
+     *
+     * 这个 click 之后还会冒泡到播放器根节点触发 `onWrapClick` 的 `wake()`，
+     * 也就是"栏一定会被撑开"。如果 220ms 后再无条件 toggle，
+     * 刚被撑开的栏立刻又被收起 —— 表现是「点一下画面，控制栏闪一下就没了」
+     * （实测：收起态点一下，220ms 后消失，比 5 秒自动隐藏快得多）。
+     *
+     * 所以：点击前是收起的 → 220ms 后只需续期；点击前是显示的 → 收起。
+     */
+    const wasVisible = showCtrl.value
+    clickTimer = window.setTimeout(() => {
+      if (wasVisible) hideControlBar()
+      else wake()
+    }, 220)
     return
   }
   clickTimer = window.setTimeout(() => {
     toggle()
   }, 220)
+}
+
+/** 收起控制栏（触屏单击第二下）。不改播放状态，也不碰面板。 */
+function hideControlBar() {
+  clearTimeout(hideTimer)
+  showCtrl.value = false
+  if (isTvEnv()) clearTvFocus()
 }
 
 // ---------------------------------------------------------------- 触屏 / 手势
@@ -1599,18 +1682,27 @@ function onStageDblClick(e: MouseEvent) {
       flashSeekHint(10)
       return
     }
-    // 中区：两次即时 toggle 已经相互抵消（暂停浮层也延迟显示，不会闪），
-    // 落到下面走全屏即可。
+    // 中区双击：立即暂停/播放（单击只切控制栏，在 click 定时器里被这里清掉）
+    toggle()
+    return
   }
   toggleFullscreen()
 }
 
-// -------- 长按 2 倍速（触屏） --------
+// -------- 长按快退/快进（触屏） --------
 
-/** 长按倍速中 */
-const boosting = ref(false)
-/** 长按前的倍速，松手还原 */
-let rateBeforeBoost = 1
+/**
+ * 长按左右区 = 2× 快退/快进（2026-11-12 用户口径）。
+ *
+ * <p>复用「按住 ←/→ 扫描」（`startKeyScan`）：快进直接用 playbackRate=2，
+ * 快退按绝对目标位置逐帧回退。这比另写一套 touch 定时器划算 ——
+ * 净速度、弹幕速率、松手还原、右上角「2x 快进中」提示全都是现成的。
+ *
+ * <p>中间区不响应：控制栏交给单击，不在这里塞动作，避免"想唤出控制栏
+ * 结果按住不动开始快进"。
+ */
+/** 这次长按是否真的启动了扫描（松手要抑制补发的 click） */
+let longPressScanned = false
 let longPressTimer: number | undefined
 /** 长按起点，用于判断是"长按"还是"滑动手势" */
 let pressStart = { x: 0, y: 0 }
@@ -1621,15 +1713,17 @@ function onStagePointerDown(e: PointerEvent) {
   // 记下竖直手势的起点值，供 onStagePointerMove 增量应用
   swipe.reset(e.clientX)
   clearTimeout(longPressTimer)
+  const zone = zoneOf(e)
   longPressTimer = window.setTimeout(() => {
-    const v = video.value
-    if (!v || v.paused) return
-    // 已经在竖滑（调亮度/音量）就不要启动长按倍速
+    // 已经在竖滑（调亮度/音量）就不要启动长按扫描
     if (swipe.active) return
-    rateBeforeBoost = v.playbackRate
-    v.playbackRate = 2
-    dm.value?.setRate(2)
-    boosting.value = true
+    if (zone === 'mid') return
+    const v = video.value
+    // 暂停时快进扫描没有意义（playbackRate 不推进画面），两侧保持一致：
+    // 只有播放中才响应，避免一侧动一侧不动
+    if (!v || v.paused) return
+    longPressScanned = true
+    startKeyScan(zone === 'left' ? -1 : 1)
   }, 450)
 }
 
@@ -1694,9 +1788,9 @@ function onStagePointerMove(e: PointerEvent) {
     const third = w / 3
     if (pressStart.x < third) swipe.kind = 'brightness'
     else if (pressStart.x > w - third) swipe.kind = 'volume'
-    else return // 中间 1/3 不做竖滑：留给单击暂停
-    // 已在竖滑 → 取消长按（否则拖到一半突然变 2 倍速）
-    clearTimeout(longPressTimer)
+    else return // 中间 1/3 不做竖滑（留给单击切控制栏）
+    // 已在竖滑 → 取消长按（否则滑到一半突然开始快进）
+    endLongPress()
     swipe.active = true
     swipe.startY = pressStart.y
     swipe.baseValue =
@@ -1805,16 +1899,12 @@ function endSwipe() {
 
 function endLongPress() {
   clearTimeout(longPressTimer)
-  if (!boosting.value) return
-  boosting.value = false
-  // ★ 长按结束后浏览器还会补发一次 click，那一下绝不能当成"单击暂停"。
-  // 否则长按 2 倍速 → 松手 → 视频停了（实测复现）。
+  if (!longPressScanned) return
+  longPressScanned = false
+  // ★ 长按结束后浏览器还会补发一次 click，那一下绝不能当成"切控制栏"。
+  // 否则长按快进 → 松手 → 控制栏又弹出来（同类问题实测复现过）。
   suppressNextClick()
-  const v = video.value
-  if (v) {
-    v.playbackRate = rateBeforeBoost
-    // 交给 ratechange 处理器去同步 rate ref 与弹幕
-  }
+  stopKeyScan()
 }
 
 function onStagePointerUp(e: PointerEvent) {
@@ -2559,7 +2649,7 @@ function syncCompactViewport() {
  * <p>手机形态（含 TV 壳跑在手机模拟器上）**给**：手机可能没有物理返回键，
  * 播放页又是整页铺满、没有顶栏可退。
  */
-const showBackButton = computed(() => !isTvEnv() || compactViewport.value)
+const showBackButton = computed(() => !isBigScreenLandscape())
 
 const route = useRoute()
 const router = useRouter()
@@ -2814,6 +2904,14 @@ function onFullscreenChange() {
    * 这条事件不会触发（没有 fullscreenchange 可发）。
    */
   if (!unmounting && !document.fullscreenElement && !pseudoFs.value) rememberFsIntent(false)
+  /*
+   * 用户按 Esc / 系统手势退出真全屏时，还要把**壳的方向**还回去。
+   * 进全屏时 syncShellOrientation(true) 把 Activity 钉成了横屏，不还原就会
+   * "退出全屏回到列表，界面还是横的"（2026-11-12 审计发现）。
+   * 伪全屏（壳里 requestFullscreen 被拒的降级路径）不在这里还 ——
+   * exitPseudoFs 自己会调。
+   */
+  if (!document.fullscreenElement && !pseudoFs.value) syncShellOrientation(false)
   dm.value?.resize()
   // 退出全屏后如果还竖着，重新提示（但已手动关掉就不再打扰）
   checkOrientation()
@@ -4230,11 +4328,9 @@ onMounted(() => {
   })
   // 倍速 / 拖动后按当前时间重算弹幕位置，保证与画面同步
   v?.addEventListener('ratechange', () => {
-    // 长按倍速期间跳过纠正：那 2x 是我们自己临时设的，
-    // 被 wantedRate 纠回去就等于长按失效
-    // 长按倍速 / 按住方向键扫描期间跳过纠正：那 2x 是我们自己临时设的，
+    // 按住方向键扫描 / 长按快进期间跳过纠正：那 2x 是我们自己临时设的，
     // 被 wantedRate 纠回去就等于手势失效
-    if (boosting.value || keyScan.value !== 0) {
+    if (keyScan.value !== 0) {
       dm.value?.setRate(v.playbackRate)
       dm.value?.sync(v.currentTime)
       return
@@ -4890,6 +4986,46 @@ defineExpose({ restart, seekTo, getTime, pause })
       {{ fmt(currentTime) }} / {{ fmt(duration) }}
     </div>
 
+    <!-- 跳到指定时间：点底栏时间打开（数字键盘可用 1234 = 12:34） -->
+    <div
+      v-if="seekDialog"
+      class="absolute inset-0 z-50 grid place-items-center bg-black/45 px-6"
+      @click.self="seekDialog = false"
+    >
+      <div
+        class="w-full max-w-[18rem] rounded-xl border border-white/10 bg-black/90 p-4 text-ink shadow-2xl backdrop-blur-xl"
+      >
+        <p class="text-xs text-white/60">跳到指定时间</p>
+        <input
+          ref="seekInputEl"
+          v-model="seekText"
+          enterkeyhint="go"
+          class="mt-2 w-full rounded-lg border border-white/15 bg-white/10 px-3 py-2.5 text-center font-mono text-lg text-white outline-none focus:border-player"
+          placeholder="12:34"
+          @keyup.enter="applySeekDialog"
+        />
+        <p class="mt-1.5 text-[11px] leading-relaxed text-white/45">
+          支持 12:34 / 1:02:03；只用数字键时 1234 = 12:34
+        </p>
+        <div class="mt-3 flex gap-2">
+          <button
+            type="button"
+            class="h-11 flex-1 rounded-lg bg-white/10 text-sm text-white/80"
+            @click="seekDialog = false"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            class="h-11 flex-1 rounded-lg bg-accent text-sm font-medium text-on-accent"
+            @click="applySeekDialog"
+          >
+            跳转
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!--
       最底部迷你进度条（设置项 showMiniProgress）。
       不唤控制栏也能看到播放位置；只在控制栏隐藏时显示，
@@ -5146,9 +5282,9 @@ defineExpose({ restart, seekTo, getTime, pause })
       </div>
     </div>
 
-    <!-- 长按倍速 / 按住方向键扫描中：右上角提示，避免用户以为卡了 -->
+    <!-- 长按快退/快进 或 按住方向键扫描中：右上角提示，避免用户以为卡了 -->
     <div
-      v-if="boosting || keyScan !== 0"
+      v-if="keyScan !== 0"
       class="pointer-events-none absolute right-4 top-16 z-30 flex items-center gap-1.5 rounded-full bg-black/80 px-3 py-1.5 text-xs text-ink shadow-2xl backdrop-blur"
     >
       <svg
@@ -5239,7 +5375,7 @@ defineExpose({ restart, seekTo, getTime, pause })
       <div class="flex items-center gap-1.5 sm:gap-2">
         <!-- 播放/暂停 -->
         <button
-          class="grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10"
+          class="hit-44 grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10"
           :aria-label="playing ? '暂停' : '播放'"
           data-tv-primary
           @click="toggle"
@@ -5252,10 +5388,15 @@ defineExpose({ restart, seekTo, getTime, pause })
           </svg>
         </button>
 
-        <!-- 时间：可点，点了跳到指定分钟（长视频用） -->
-        <span class="shrink-0 font-mono text-[11px] text-ink-2 sm:text-xs">
+        <!-- 时间：可点，打开「跳到指定时间」（长视频用；注释与实现必须一致） -->
+        <button
+          type="button"
+          class="hit-44 shrink-0 font-mono text-[11px] text-ink-2 sm:text-xs"
+          aria-label="跳到指定时间"
+          @click="openSeekDialog"
+        >
           {{ fmt(shownTime) }} / {{ fmt(duration) }}
-        </span>
+        </button>
 
         <!-- 音量：手机有实体音量键，竖屏底栏让位给全屏/更多 -->
         <div class="hidden shrink-0 items-center gap-1.5 sm:flex">
@@ -5385,7 +5526,7 @@ defineExpose({ restart, seekTo, getTime, pause })
 
         <!-- 弹幕开关（高频，常驻） -->
         <button
-          class="shrink-0 rounded-md px-2 py-1.5 text-xs font-medium transition backdrop-blur"
+          class="hit-44 shrink-0 rounded-md px-2 py-1.5 text-xs font-medium transition backdrop-blur"
           :class="dmOn ? 'bg-player/20 text-player' : 'bg-white/10 text-ink-3'"
           :title="dmOn ? '关闭弹幕' : '开启弹幕'"
           @click="toggleDanmaku"
@@ -5415,7 +5556,7 @@ defineExpose({ restart, seekTo, getTime, pause })
         />
 
         <!-- 全屏 -->
-        <button class="grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10 tv-hide" title="全屏" @click="toggleFullscreen">
+        <button class="hit-44 grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10 tv-hide" title="全屏" @click="toggleFullscreen">
           <svg v-if="!fullscreen" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
           </svg>
@@ -5428,7 +5569,7 @@ defineExpose({ restart, seekTo, getTime, pause })
         <!-- 重播 / 刷新：TV 上要能从底栏直接够到（原来只在「更多」里）。
              TV 视口没有 hover，藏进更多等于多按两次；这两项又是排障最常用的。 -->
         <button
-          class="grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10"
+          class="hit-44 grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10"
           title="重播"
           @click="restart()"
         >
@@ -5438,7 +5579,7 @@ defineExpose({ restart, seekTo, getTime, pause })
           </svg>
         </button>
         <button
-          class="grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10"
+          class="hit-44 grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10"
           title="刷新"
           @click="reloadSrc()"
         >
@@ -5889,7 +6030,7 @@ defineExpose({ restart, seekTo, getTime, pause })
         <span class="text-[11px] text-ink-3">
           共 {{ episodes?.length ?? 0 }} 集 · 当前第 {{ (currentIndex ?? 0) + 1 }}
         </span>
-        <button class="text-ink-3 hover:text-ink" @click="showEpPanel = false">✕</button>
+        <button class="hit-44 grid h-9 w-9 place-items-center text-ink-3 hover:text-ink" @click="showEpPanel = false">✕</button>
       </div>
       <div
         class="grid min-h-0 flex-1 auto-rows-min grid-cols-5 gap-1.5 overflow-y-auto"
@@ -5897,7 +6038,7 @@ defineExpose({ restart, seekTo, getTime, pause })
         <button
           v-for="(ep, i) in episodes"
           :key="i"
-          class="relative truncate rounded-md px-1 py-1.5 text-[12px] transition"
+          class="relative min-h-11 truncate rounded-md px-1 text-[12px] transition"
           :class="epCellClass(i)"
           :aria-current="i === currentIndex ? 'true' : undefined"
           :title="isNewEpIdx(i) ? `${ep.name} · 自上次看新增` : ep.name"

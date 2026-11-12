@@ -19,6 +19,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { apiBase } from '@/api'
 import CachePanel from '@/components/library/CachePanel.vue'
 import PosterImage from '@/components/common/PosterImage.vue'
+import MeTabs from '@/components/common/MeTabs.vue'
 import { colsStyle, useCardCols } from '@/composables/useCardCols'
 import {
   cachePoster,
@@ -1078,6 +1079,16 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="mx-auto w-full max-w-[1400px] px-4 py-5 max-sm:px-3 max-sm:py-4">
+    <!--
+      「我的」三页签（历史/收藏/片库）：手机上从「我的」页签点进片库后，
+      这条要跟着出现在片库页顶部，否则页签栏整个消失、回历史/收藏得多点一次
+      底栏（2026-11-12 用户反馈「片库页上方看不见页签胶囊组」）。
+      只给 <640：≥640 从顶栏「片库」进来（那里没有底部标签栏，也没有这条），
+      片库页保持原来的紧凑头部。
+    -->
+    <div class="hidden max-sm:block">
+      <MeTabs active="library" />
+    </div>
     <!-- 页签：片库 / 缓存。两个都是"我本地有什么片子"，但量级差很多
          （缓存可能只有几集，片库可能上万文件），叠在一页会让后者永远在屏幕外 -->
     <div class="flex items-center gap-1.5">

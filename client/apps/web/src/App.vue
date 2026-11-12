@@ -816,16 +816,25 @@ const isPlay = computed(() => route.name === 'play')
 /** 直播页：与播放页同构的路由级满屏页面（顶栏不渲染、底栏不显示） */
 const isLive = computed(() => route.name === 'live')
 
+/*
+ * 全屏播放 / 直播页强制暗色：底色是视频画面，浅色主题的浅面板压上去就是白斑。
+ * watch 默认 pre-flush，在渲染前改 data-mode，不会闪一下浅色。
+ */
+watch(
+  [isPlay, isLive],
+  ([p, l]) => setForceDark(p || l),
+  { immediate: true },
+)
+
 /**
- * 手机底部标签栏（首页 / AI / 设置）。
+ * 手机底部标签栏（首页 / 直播 / AI / 设置 / 我的）。
  *
- * <p>播放页和直播页不显示：那两页是整屏画面，底栏会盖住进度条与控制栏。
+ * <p>只有播放页不显示：那是整屏点播画面，底栏会盖住进度条与控制栏。
+ * 直播页保留底栏 —— 它是一级入口，藏掉的话"直播"这格永远不亮，
+ * 用户也回不到其它入口；直播自己的控制栏与频道面板用 --tabbar-clear 让位。
  * <p>只在 <640px 出现（组件内部 CSS 控制），桌面/电视不受影响。
  */
-const showTabBar = computed(() => {
-  const n = String(route.name || '')
-  return n !== 'play' && n !== 'live'
-})
+const showTabBar = computed(() => String(route.name || '') !== 'play')
 
 /**
  * 是否有元素处于全屏（真全屏或伪全屏）。
@@ -1060,5 +1069,8 @@ function goSettings() {
 
     <!-- 手机底部一级入口（首页 / AI / 设置）。桌面与电视不显示，见组件内 CSS。 -->
     <MobileTabBar v-if="showTabBar" />
+
+    <!-- 全局确认 / 提示弹框：替代原生 confirm/alert（见 composables/useConfirm.ts） -->
+    <ConfirmDialog />
   </div>
 </template>

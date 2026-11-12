@@ -2050,7 +2050,7 @@ onBeforeUnmount(() => {
     <div
       v-if="resumeTip"
       data-resume-bar
-      class="absolute bottom-28 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-full bg-black/85 px-4 py-2 text-xs text-ink shadow-2xl backdrop-blur"
+      class="absolute bottom-28 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-full bg-black/85 px-4 py-2 text-xs text-ink meow-on-dark shadow-2xl backdrop-blur"
     >
       <span>已{{ resumeTip.label === '开始播放' ? '跳到' : '从' }} {{ Math.floor(resumeTip.at / 60) }}:{{
         String(Math.floor(resumeTip.at % 60)).padStart(2, '0')

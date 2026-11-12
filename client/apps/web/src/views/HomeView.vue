@@ -196,11 +196,65 @@ onMounted(() => {
   window.addEventListener('scroll', onScroll, { passive: true })
   // 遥控器移焦不走 focusin（tv-nav 只加 class），必须单独听它的事件
   window.addEventListener('meow:tv-focus', onTvFocus)
+  // 顶栏「…」→「刷新首页」（见 AppHeader）：手机上滚到半截够不到下拉
+  window.addEventListener('meow:refresh-home', onRefreshHome)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('scroll', onScroll)
   window.removeEventListener('meow:tv-focus', onTvFocus)
+  window.removeEventListener('meow:refresh-home', onRefreshHome)
 })
+
+function onRefreshHome() {
+  void loadHome()
+}
+
+/** 打开顶栏的站点下拉（错误态「换个站点」用，下拉状态归 AppHeader 管） */
+function openSitePicker() {
+  window.dispatchEvent(new Event('meow:open-sites'))
+}
+
+// ---------------------------------------------------------------- 下拉刷新（手机）
+/**
+ * 手机下拉刷新（2026-11-12）。
+ *
+ * <p>为什么要有：首页正常态**没有任何刷新入口** —— 只有错误态那个「刷新」
+ * 按钮；底部「首页」重复点又是空导航。内容停在旧状态时只能杀进程。
+ *
+ * <p>★ 只在页面已经在顶部（scrollY <= 0）时接管：一开始下拉就 preventDefault，
+ * 否则 WebView 的过滚动/下拉链会先吃掉手势。
+ * ★ 阈值 56px + 0.5 阻尼：太浅容易误触，太深单手拉不到。
+ */
+const PULL_TRIGGER = 56
+const pull = ref(0)
+let pullStart = 0
+let pullActive = false
+
+function onPullStart(e: TouchEvent) {
+  if (!window.matchMedia('(max-width: 639px)').matches) return
+  if (window.scrollY > 0 || loading.value) return
+  pullStart = e.touches[0]?.clientY ?? 0
+  pullActive = pullStart > 0
+}
+
+function onPullMove(e: TouchEvent) {
+  if (!pullActive) return
+  const dy = (e.touches[0]?.clientY ?? 0) - pullStart
+  if (dy <= 0) {
+    pull.value = 0
+    return
+  }
+  pull.value = Math.min(84, dy * 0.5)
+  if (pull.value > 6) e.preventDefault()
+}
+
+function onPullEnd() {
+  if (!pullActive) return
+  pullActive = false
+  const go = pull.value >= PULL_TRIGGER
+  pull.value = 0
+  if (go) void loadHome()
+}
 
 /** 记住点过的影片，供历史页使用 */
 function remember(item: VodItem) {
@@ -226,7 +280,21 @@ watch(
 </script>
 
 <template>
-  <div class="mx-auto max-w-[1600px] px-6 py-6 max-sm:px-3 max-sm:py-4">
+  <div
+    class="mx-auto max-w-[1600px] px-6 py-6 max-sm:px-3 max-sm:py-4"
+    @touchstart="onPullStart"
+    @touchmove="onPullMove"
+    @touchend="onPullEnd"
+    @touchcancel="onPullEnd"
+  >
+    <!-- 下拉刷新指示：手指往下拉时撑开的高度就是进度，过半即"松开刷新" -->
+    <div
+      v-if="pull > 0"
+      class="flex items-start justify-center overflow-hidden text-[11px] text-ink-3"
+      :style="{ height: pull + 'px' }"
+    >
+      {{ pull >= PULL_TRIGGER ? '松开刷新首页' : '下拉刷新' }}
+    </div>
     <!-- 第一行：源站返回的分类 -->
     <!--
       手机：分类胶囊吸顶（2026-11-05 用户要求，和设置页的分区胶囊同一套）。
@@ -234,13 +302,15 @@ watch(
       ★ 只给 <640：TV 上 tv-nav 把**任何 position:sticky 祖先**当"钉住层"，
         左右键会进不去内容区（见 SearchView 的 tv-unstick 注释）——
         电视必须保持 static。PC 也不吸（桌面高度富裕，吸顶反而多一条横带）。
-      ★ 吸顶时底色用 --color-header-veil + 背景模糊，紧贴顶栏下沿成一条连续面板；
+      ★ 吸顶时底色用 --color-strip-veil + 背景模糊（并补 180% 饱和），紧贴顶栏
+        下沿成一条连续面板；它和底部标签栏是同一套玻璃，只是蒙层比标签栏再实
+        一点点（用户口径「对齐 tabbar 透明度，略低一点点」）。
         `-my-3` 是给横向滚动条留白的负边距，吸顶后要归零，否则 top 会差 12px。
     -->
     <div
       v-if="classes.length"
       ref="chipsEl"
-      class="cat-chips no-scrollbar -mx-6 mb-3 flex gap-1.5 overflow-x-auto overflow-y-hidden px-6 py-3 -my-3 max-sm:sticky max-sm:top-[var(--header-h)] max-sm:z-20 max-sm:-mx-3 max-sm:my-0 max-sm:mb-2 max-sm:border-b max-sm:border-line/60 max-sm:bg-[var(--color-header-veil)] max-sm:px-3 max-sm:py-2.5 max-sm:backdrop-blur-xl"
+      class="cat-chips no-scrollbar -mx-6 mb-3 flex gap-1.5 overflow-x-auto overflow-y-hidden px-6 py-3 -my-3 max-sm:sticky max-sm:top-[var(--header-h)] max-sm:z-20 max-sm:-mx-3 max-sm:my-0 max-sm:mb-2 max-sm:border-b max-sm:border-line/60 max-sm:bg-[var(--color-strip-veil)] max-sm:px-3 max-sm:py-2.5 max-sm:backdrop-blur-xl max-sm:backdrop-saturate-[180%]"
       @focusin="onChipFocus"
     >
       <button
@@ -250,7 +320,7 @@ watch(
         :class="
           c.type_id === activeTid
             ? 'bg-accent font-medium text-on-accent'
-            : 'text-ink-2 hover:bg-card-hover hover:text-ink'
+            : 'bg-card text-ink hover:bg-card-hover'
         "
         @click="switchClass(c.type_id)"
       >
@@ -271,12 +341,21 @@ watch(
       <div class="text-3xl opacity-40">📭</div>
       <p class="mt-3 text-sm text-ink-2">{{ error }}</p>
       <p class="mt-1 text-xs text-ink-3">可以换个站点试试</p>
-      <button
-        class="mt-5 rounded-md bg-card px-4 py-2 text-sm hover:bg-card-hover"
-        @click="loadHome"
-      >
-        刷新
-      </button>
+      <!-- 文案说了"换站点"就必须给入口：只写一句话等于让用户自己去找 -->
+      <div class="mt-5 flex flex-wrap items-center justify-center gap-2">
+        <button
+          class="rounded-md bg-card px-4 py-2.5 text-sm hover:bg-card-hover"
+          @click="loadHome"
+        >
+          刷新
+        </button>
+        <button
+          class="rounded-md bg-accent px-4 py-2.5 text-sm font-medium text-on-accent hover:bg-accent-dim"
+          @click="openSitePicker"
+        >
+          换个站点
+        </button>
+      </div>
     </div>
 
     <!-- 网格 -->

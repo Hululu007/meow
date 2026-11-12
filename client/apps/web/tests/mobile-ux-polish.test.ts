@@ -26,10 +26,16 @@ describe('① 触屏设备默认不画焦点环', () => {
   it('有输入方式嗅探模块，并在 main.ts 里首屏前安装', () => {
     expect(existsSync(join(WEB, modPath))).toBe(true)
     const mod = read(modPath)
-    // 默认值看触摸点数：TV 的 WebView 没有触摸点 → 默认 key（行为不变）
+    // 默认值按方向：横屏 = key（MuMu 模拟器也有触摸点，不能只看 maxTouchPoints）
+    expect(mod).toContain('function defaultMode')
+    expect(mod).toContain('function isLandscape')
+    expect(mod).toContain('window.innerWidth >= window.innerHeight')
+    expect(mod).toContain("if (isLandscape()) return 'key'")
+    expect(mod).toContain('function portraitTouch')
     expect(mod).toContain('navigator.maxTouchPoints')
     expect(mod).toContain("apply('touch')")
-    expect(mod).toContain("apply('key')")
+    expect(mod).toContain('applyKey')
+    expect(mod).toContain("portraitTouch() ? 'touch' : 'key'")
     // 只认导航键：打字的字母数字不该把环唤出来
     expect(mod).toContain('ArrowUp')
     expect(mod).toContain('ArrowRight')
@@ -62,6 +68,43 @@ describe('① 触屏设备默认不画焦点环', () => {
     window.dispatchEvent(new Event('pointerdown'))
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }))
     expect(root.getAttribute('data-input')).toBe('touch')
+  })
+
+  it('竖屏触屏按方向键也不画环（77 竖屏仍有环的回归）', async () => {
+    await import('../src/compat/inputModality')
+    const root = document.documentElement
+    const iw = Object.getOwnPropertyDescriptor(window, 'innerWidth')
+    const ih = Object.getOwnPropertyDescriptor(window, 'innerHeight')
+    const mt = Object.getOwnPropertyDescriptor(navigator, 'maxTouchPoints')
+    Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true })
+    Object.defineProperty(window, 'innerHeight', { value: 844, configurable: true })
+    Object.defineProperty(navigator, 'maxTouchPoints', { value: 1, configurable: true })
+    try {
+      root.setAttribute('data-input', 'key')
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+      expect(root.getAttribute('data-input')).toBe('touch')
+      // 旋转成竖屏也要把已画的环收掉
+      root.setAttribute('data-input', 'key')
+      window.dispatchEvent(new Event('resize'))
+      expect(root.getAttribute('data-input')).toBe('touch')
+    } finally {
+      if (iw) Object.defineProperty(window, 'innerWidth', iw)
+      if (ih) Object.defineProperty(window, 'innerHeight', ih)
+      if (mt) Object.defineProperty(navigator, 'maxTouchPoints', mt)
+    }
+  })
+
+  it('TV 壳的遥控按键显式切 key：原生直调 JS 不产生 DOM keydown，否则环永远不出现', () => {
+    const nav = readFileSync(
+      join(ROOT, 'client', 'apps', 'tv', 'app', 'src', 'main', 'assets', 'tv-nav.js'),
+      'utf8',
+    )
+    const i = nav.indexOf('window.__meowTvNav = function')
+    expect(i).toBeGreaterThan(0)
+    const body = nav.slice(i, i + 1400)
+    expect(body).toContain("setAttribute('data-input', 'key')")
+    // 竖屏不切 key（手机/竖放模拟器用户要求不显示焦点环）
+    expect(body).toContain('window.innerWidth >= window.innerHeight')
   })
 
   it('tokens.css 在 data-input=touch 时把环全部关掉（含胶囊条/分段控件/弹层）', () => {
@@ -218,6 +261,18 @@ describe('④ 播放器底栏遮罩', () => {
     expect(player).toContain('meow-player-root group relative h-full w-full')
   })
 
+  it('浅色卡片（倍速/搜索弹幕）保留主题色，深色胶囊统一白字', () => {
+    const css = read('src/styles/tokens.css')
+    expect(css).toContain('.meow-player-root .meow-light-card')
+    expect(css).toContain('color: var(--color-ink)')
+    expect(css).toContain('.meow-on-dark')
+    // 两块浅色卡片必须挂上逃生舱类，否则白字压白底
+    expect(read('src/components/player/RateSelect.vue')).toContain('meow-light-card')
+    expect(read('src/components/player/VideoPlayer.vue')).toContain('bg-elevated p-3.5 meow-light-card')
+    // 续播提示条是黑底胶囊，必须白字
+    expect(read('src/views/PlayView.vue')).toContain('text-ink meow-on-dark')
+  })
+
   it('不用 backdrop-filter（播放中每帧全宽模糊，Chromium 66 会掉帧）', () => {
     const i = css.indexOf('.meow-ctrl-mask')
     const block = css.slice(i, css.indexOf('}', i))
@@ -225,25 +280,56 @@ describe('④ 播放器底栏遮罩', () => {
   })
 })
 
-describe('⑦ 竖屏直播页：返回键跟底栏同显隐 + 面板里不显示方向键提示', () => {
+describe('⑦ 直播页：返回键跟面板同显隐 + 信号源可导航 + 面板里不显示方向键提示', () => {
   const live = read('src/views/LiveView.vue')
 
-  it('有 showLiveBack：播放中 + 控制栏可见 + 面板未开 + 触屏（真电视不给）', () => {
+  it('有 showLiveBack：真电视不给；其余（PC/Web/竖屏）与面板同显隐，不常驻', () => {
     const i = live.indexOf('const showLiveBack = computed(')
     expect(i).toBeGreaterThan(0)
-    const body = live.slice(i, i + 400)
+    const body = live.slice(i, i + 500)
     expect(body).toContain('current.value')
-    expect(body).toContain('showCtrl.value')
-    // 面板改成浮动卡片后不再遮住左上角，返回键不必让位
-    expect(body).not.toContain('!showGuide.value')
-    expect(body).toContain('isTouch.value')
-    expect(body).toContain('compactViewport.value')
+    expect(body).toContain('!isBigScreenLandscape()')
+    // ★ 2026-11-12 用户口径：PC/Web 也不常驻——返回键和面板同时显示/消失。
+    // 面板已挪到右侧，宽屏上左按钮/右面板互不遮挡。
+    expect(body).toContain('showGuide.value')
+    expect(body).not.toContain('!isTouch.value')
+    expect(body).not.toContain('!landscape.value')
+    expect(body).not.toContain('showCtrl.value')
   })
 
-  it('只在竖屏显示，且挂载即开始 5 秒自动收起（否则常量常驻）', () => {
-    const i = live.indexOf('const showLiveBack = computed(')
-    const body = live.slice(i, i + 400)
-    expect(body).toContain('!landscape.value')
+  it('顶部「信号源」行进方向键导航：分类首行再↑进入，↓到底回分类，Enter 切源并收起面板', () => {
+    // 列类型必须包含 source，否则 ↑↓ 永远只在 group/channel 两列里打转
+    expect(live).toContain("const guideColumn = ref<'source' | 'group' | 'channel'>")
+    expect(live).toContain('const guideSource = ref(0)')
+    expect(live).toContain('function guideMoveSource(')
+    // 分类第一条再往上
+    expect(live).toContain("guideColumn.value = 'source'")
+    expect(live).toContain('guideSource.value = playlists.value.length - 1')
+    // 行本身要可定位、有光标样式、文案说清是「换源」
+    expect(live).toContain('data-guide-col="source"')
+    expect(live).toContain("guideColumn === 'source' && guideSource === pi")
+    expect(live).toContain('信号源')
+    expect(live).toContain("'换源'")
+    // Enter：切源并收起（切完旧坐标失效）
+    const i = live.indexOf('async function guideOk()')
+    const body = live.slice(i, i + 900)
+    expect(body).toContain("if (guideColumn.value === 'source')")
+    expect(body).toContain('showGuide.value = false')
+    expect(body).toContain('await openPlaylist(p)')
+  })
+
+  it('面板在右侧；宽屏不留顶部空档，窄屏才给返回键让出 3.5rem', () => {
+    // 返回键显隐按"大屏横屏 + 无鼠标"形态判断，不靠 UA
+    expect(live).toContain("from '@/compat/deviceForm'")
+    expect(live).toContain('isBigScreenLandscape()')
+    expect(live).not.toContain('const isTrueTv = computed(')
+    // 面板改到右侧（2026-11-12 用户要求），且不再压住左上角返回键
+    expect(live).toContain('absolute right-3 flex w-1/3')
+    expect(live).not.toContain('absolute left-3 flex w-1/3')
+    // 横屏上下对称 12px（返回键已在左侧）；竖屏才留 top-14 给返回键，
+    // 底部还要让开手机底部标签栏（--tabbar-clear，2026-11-12 直播成为一级入口）
+    expect(live).toMatch(/landscape\s*\?\s*'top-3 bottom-3'/)
+    expect(live).toContain("'top-14 bottom-[calc(0.75rem+var(--tabbar-clear))]'")
     // 冷启动时 showCtrl 初始 true，必须靠挂载时的 wake() 排上收起计时
     const m = live.indexOf('onMounted(() => {')
     const mount = live.slice(m, m + 300)
@@ -256,17 +342,54 @@ describe('⑦ 竖屏直播页：返回键跟底栏同显隐 + 面板里不显示
     const body = live.slice(i, i + 700)
     expect(body).toContain('env(safe-area-inset-left)')
     expect(body).toContain('env(safe-area-inset-top)')
-    expect(body).toContain('@click="leaveLive"')
+    // 必须在面板遮罩内部（页面根的 stacking context 压不过 body 上的遮罩），
+    // 且 click.stop 防止冒泡到遮罩的"点空白关面板"
+    expect(body).toContain('@click.stop="leaveLive"')
     expect(body).toContain('aria-label="返回"')
   })
 
-  it('「分类-台」是浮起来的圆角卡片（竖屏顶部留出返回键的位置）', () => {
+  it('「分类-台」是贴右缘的浮起圆角卡片；窄屏顶部留出返回键的位置', () => {
     expect(live).toContain('overflow-hidden rounded-xl border border-white/10 bg-black/75')
-    // 横屏贴边、竖屏顶部留 3.5rem（返回键 48px 高 + 8px 间隙）
-    expect(live).toContain('top-14 bottom-3')
+    // 宽屏贴右/上/下边；窄屏顶部留 3.5rem（返回键 48px 高 + 8px 间隙），
+    // 底部让开标签栏
+    expect(live).toContain("top-14 bottom-[calc(0.75rem+var(--tabbar-clear))]")
     expect(live).toContain('top-3 bottom-3')
+    expect(live).toContain('absolute right-3')
     // 不再贴着左/上边缘（原来 inset-y-0 left-0 把返回键压在下面）
     expect(live).not.toContain('absolute inset-y-0 left-0 flex w-1/3')
+  })
+
+  it('首尾焦点环完整：列表纵向留 14px + scroll-padding 16px，信号源块也不贴边', () => {
+    // 外环 2px + 12px 辉光 = 14px；内边距 16px 留 2px 余量
+    expect(live).toContain('guide-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4')
+    expect(live).toContain('scroll-padding-block: 16px')
+    // 信号源行也在 overflow-hidden 的面板里：横向同样要留够
+    expect(live).toContain('border-b border-white/10 px-4 pb-4')
+  })
+
+  it('打开面板时把当前分类/台滚到列表靠前（不能只靠 watch，首次不触发）', () => {
+    const i = live.indexOf('function openGuide()')
+    expect(i).toBeGreaterThan(0)
+    const body = live.slice(i, i + 1600)
+    expect(body).toContain("scrollGuideColIntoView('group', 'start')")
+    expect(body).toContain("scrollGuideColIntoView('channel', 'start')")
+    expect(live).toContain('function scrollGuideColIntoView(')
+  })
+
+  it('全屏退出键在面板打开时隐藏（避免和面板返回键叠在同一位置）', () => {
+    const i = live.indexOf('const showExitFsButton = computed(')
+    expect(i).toBeGreaterThan(0)
+    const body = live.slice(i, i + 400)
+    expect(body).toContain('!showGuide.value')
+  })
+
+  it('返回点击有 WebView 兜底：history.back 空操作时 260ms 后 replace 首页', () => {
+    const i = live.indexOf('function leaveLive()')
+    expect(i).toBeGreaterThan(0)
+    const body = live.slice(i, i + 700)
+    expect(body).toContain('router.currentRoute.value.fullPath')
+    expect(body).toContain("router.replace('/')")
+    expect(body).toContain('260')
   })
 
   it('ESC = 返回：面板→全屏→调试面板→离开页面，逐层退出', () => {

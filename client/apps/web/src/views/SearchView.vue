@@ -39,6 +39,10 @@ const scope = ref<'current' | 'all'>('all')
 const keyword = ref(wd.value)
 /** 搜索框（进页面自动聚焦，见 onMounted） */
 const inputEl = ref<HTMLInputElement | null>(null)
+/** 结果区锚点：手机上提交搜索后把结果滚进视野（键盘收起后不用手再滑一下） */
+const resultsAnchor = ref<HTMLElement | null>(null)
+/** 只有「用户主动提交」才自动滚；从详情返回不抢 useReturnRestore 的恢复 */
+let revealPending = false
 
 const loading = ref(false)
 /**
@@ -83,6 +87,20 @@ const noiseDowngraded = ref(0)
 const searchFinal = ref(false)
 const error = ref('')
 const list = ref<VodItem[]>([])
+/*
+ * 单站结果的翻页状态（2026-11-12）。
+ *
+ * 原来只取第 1 页、`pagecount` 拿到就扔：冷门片/老片在源站排到第 2 页之后
+ * 就永远搜不到，用户只会以为「这个源没有」。
+ * 后端不给 pagecount 时按「上一页满页就再试一页」推，拿到空页即停。
+ */
+const listPage = ref(1)
+const listPageCount = ref(1)
+const loadingMore = ref(false)
+const moreError = ref('')
+/** 触底哨兵 + 观察器（手机页面整体滚，桌面单站结果是同一层，root 用视口即可） */
+const moreEl = ref<HTMLElement | null>(null)
+let moreObserver: IntersectionObserver | null = null
 const groups = ref<
   Array<{ vod_name: string; vod_pic: string; vod_remarks?: string; sources: any[] }>
 >([])
@@ -194,7 +212,16 @@ async function run(force = false) {
       const r = await fetchSearch(store.current, k, 1)
       if (runId !== runSeq) return
       list.value = r.list || []
+      listPage.value = 1
+      // 后端不给 pagecount：第 1 页有东西就假定还有下一页，翻到空页自然停
+      listPageCount.value =
+        typeof r.pagecount === 'number' && r.pagecount > 0
+          ? r.pagecount
+          : list.value.length
+            ? 2
+            : 1
       if (!list.value.length) error.value = '该站点没有找到结果'
+      else maybeRevealResults()
     } else {
       /*
        * 聚合搜索走「启动任务 → 轮询快照」：
@@ -280,6 +307,75 @@ async function run(force = false) {
 }
 
 /**
+ * 手机提交搜索后，把结果区滚到吸顶搜索条下面（2026-11-12）。
+ *
+ * 触屏上键盘一收、页面还停在原来的滚动位置（可能在热播榜/最近搜索上），
+ * 用户会以为"搜了没反应"。只在 <640 做：桌面结果区是内层滚动容器，
+ * 滚 window 只会把搜索框推走。
+ */
+function maybeRevealResults() {
+  if (!revealPending) return
+  revealPending = false
+  if (!window.matchMedia('(max-width: 639px)').matches) return
+  void nextTick(() => {
+    resultsAnchor.value?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  })
+}
+
+/**
+ * 单站结果翻页（触底自动加载）。
+ *
+ * 只在 `scope === 'current'` 有意义：聚合搜索是"每个源第 1 页"的快照任务，
+ * 没有翻页概念。
+ */
+async function loadMore() {
+  if (scope.value !== 'current' || !store.current) return
+  if (loading.value || loadingMore.value) return
+  if (listPage.value >= listPageCount.value) return
+  const k = wd.value.trim()
+  if (!k) return
+  const runId = runSeq
+  const next = listPage.value + 1
+  loadingMore.value = true
+  moreError.value = ''
+  try {
+    const r = await fetchSearch(store.current, k, next)
+    if (runId !== runSeq) return
+    const seen = new Set(list.value.map((i) => i.vod_id))
+    const add = (r.list || []).filter((i) => !seen.has(i.vod_id))
+    if (add.length) list.value = [...list.value, ...add]
+    listPage.value = next
+    listPageCount.value =
+      typeof r.pagecount === 'number' && r.pagecount > 0
+        ? r.pagecount
+        : add.length
+          ? next + 1
+          : next
+  } catch (e: any) {
+    if (runId === runSeq) moreError.value = e?.message || String(e)
+  } finally {
+    if (runId === runSeq) loadingMore.value = false
+  }
+}
+
+/** 哨兵进视野就取下一页；提前 600px 预取，滚到底时结果已就位 */
+function observeMore() {
+  moreObserver?.disconnect()
+  moreObserver = null
+  const el = moreEl.value
+  if (!el || typeof IntersectionObserver === 'undefined') return
+  moreObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting)) void loadMore()
+    },
+    { rootMargin: '600px 0px' },
+  )
+  moreObserver.observe(el)
+}
+
+watch(list, () => void nextTick(observeMore))
+
+/**
  * 空闲态：没有关键词（路由里没有 wd）。
  *
  * <p>用户要求（2026-11-04）：搜索页分两个状态 ——
@@ -333,6 +429,14 @@ function searchByName(name: string) {
 function submit() {
   const k = keyword.value.trim()
   if (!k) return
+  /*
+   * 提交即收键盘（2026-11-12）：Android 上 IME 不收起就一直盖着下半屏，
+   * 结果出来了也只能看到第一行。blur 之后键盘自行落下，不必用户再点一下。
+   */
+  const el = inputEl.value
+  if (el && document.activeElement === el) el.blur()
+  // 结果出来后自动滚到结果区（见 maybeRevealResults）
+  revealPending = true
   router.push({ name: 'search', query: { wd: k } })
 }
 
@@ -426,6 +530,8 @@ onBeforeUnmount(() => {
   const w = window as unknown as { __meowTvPageBack?: () => boolean }
   if (w.__meowTvPageBack === handleTvBackHere) w.__meowTvPageBack = undefined
   window.dispatchEvent(new Event('meow:tv-pageback'))
+  moreObserver?.disconnect()
+  moreObserver = null
 })
 </script>
 
@@ -484,6 +590,13 @@ onBeforeUnmount(() => {
         搜索
       </button>
     </form>
+
+    <!-- 结果区锚点：提交搜索后滚到这里（吸顶搜索条高度用 scroll-mt 让开） -->
+    <div
+      ref="resultsAnchor"
+      aria-hidden="true"
+      class="max-sm:scroll-mt-[calc(var(--header-h)+4.25rem)]"
+    />
 
 
     <!--
@@ -805,6 +918,59 @@ onBeforeUnmount(() => {
     <div v-else-if="list.length" class="poster-grid mt-8" :style="colsStyle(listCols)">
       <PosterCard v-for="item in list" :key="item.vod_id" :item="item" :site="store.current" />
     </div>
+    <!-- 单站翻页哨兵：进视野自动取下一页（`pagecount` 之前拿到就扔，见 script） -->
+    <div
+      v-if="list.length && scope === 'current'"
+      ref="moreEl"
+      class="mt-6 flex h-11 items-center justify-center text-xs text-ink-3"
+    >
+      <span v-if="loadingMore" class="flex items-center gap-2">
+        <span class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-line-hover border-t-accent" />
+        正在加载更多…
+      </span>
+      <button
+        v-else-if="moreError"
+        type="button"
+        class="rounded-md bg-card px-3 py-2 hover:bg-card-hover"
+        @click="loadMore"
+      >
+        加载失败，点此重试
+      </button>
+      <span v-else-if="listPage < listPageCount">继续下滑加载更多</span>
+    </div>
     </template>
   </div>
 </template>
+
+<style scoped>
+/*
+ * 最近搜索的单条删除。
+ *
+ * 原来是 `opacity-0 group-hover/chip:opacity-60` —— 触屏没有 hover，
+ * 手机上永远看不到这个 ✕，只能「清空」全部（实测 2026-11-12）。
+ * 现在常显 + 32px 热区（胶囊本身只有 2.5 的纵向 padding，再大就会
+ * 压到相邻 chip 的点击区）。
+ */
+.hist-del {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  margin: -0.5rem -0.75rem -0.5rem -0.25rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  line-height: 1;
+  opacity: 0.55;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+.hist-del:hover,
+.hist-del:active {
+  opacity: 1;
+  background: var(--color-card-hover);
+}
+@media (pointer: coarse) {
+  .hist-del {
+    opacity: 0.7;
+  }
+}
+</style>

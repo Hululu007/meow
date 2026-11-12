@@ -28,8 +28,11 @@ import {
 } from '@/stores/favUpdates'
 import { useReturnRestore } from '@/composables/useReturnRestore'
 
+/** `embedded`：被「我的」页当成一个分区渲染（2026-11-12），见 HistoryView 同名字段 */
+const props = defineProps<{ embedded?: boolean }>()
+
 // 返回上一页时恢复滚动位置与焦点（TV 上从详情返回不该跳回顶部）
-useReturnRestore('favorites')
+useReturnRestore(props.embedded ? 'me-favorites' : 'favorites')
 
 const router = useRouter()
 const items = ref<FavoriteItem[]>(listFavorites())
@@ -312,9 +315,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="mx-auto max-w-[1600px] px-6 py-8 max-sm:px-3 max-sm:py-5">
+  <div :class="props.embedded ? '' : 'mx-auto max-w-[1600px] px-6 py-8 max-sm:px-3 max-sm:py-5'">
     <div class="flex items-center justify-between">
-      <div>
+      <div v-if="!props.embedded">
         <h1 class="text-xl font-semibold max-sm:text-lg">我的收藏</h1>
         <p class="mt-1 text-xs text-ink-3 max-sm:mt-0.5 max-sm:text-[11px]">
           共 {{ items.length }} 部 · 点封面进详情页 · 右上角可取消收藏

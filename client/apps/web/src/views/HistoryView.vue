@@ -9,10 +9,19 @@ import type { StatsOverview } from '@/stores/watchStats'
 import WatchStatsPanel from '@/components/common/WatchStatsPanel.vue'
 import { registerTvMenuHandler } from '@/stores/tvMenu'
 import { useReturnRestore } from '@/composables/useReturnRestore'
+import { confirmDialog } from '@/composables/useConfirm'
+import { isScoreRemarks } from '@/utils/remarks'
 import { groupByDay } from '@/utils/historyGroup'
 
+/**
+ * `embedded`：被「我的」页当成一个分区渲染（2026-11-12）。
+ * 嵌进去时不要页面级居中/内边距（外层容器已经有），也不要大标题
+ * （分区切换条已经说明了当前是什么）。
+ */
+const props = defineProps<{ embedded?: boolean }>()
+
 // 返回上一页时恢复滚动位置与焦点（TV 上从详情返回不该跳回顶部）
-useReturnRestore('history')
+useReturnRestore(props.embedded ? 'me-history' : 'history')
 
 const router = useRouter()
 const items = ref<HistoryItem[]>(listHistory())
@@ -358,9 +367,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="mx-auto max-w-[1600px] px-6 py-8 max-sm:px-3 max-sm:py-5">
+  <div :class="props.embedded ? '' : 'mx-auto max-w-[1600px] px-6 py-8 max-sm:px-3 max-sm:py-5'">
     <div class="flex items-center justify-between">
-      <div>
+      <div v-if="!props.embedded">
         <h1 class="text-xl font-semibold max-sm:text-lg">观看历史</h1>
         <p class="mt-1 text-xs text-ink-3 max-sm:mt-0.5 max-sm:text-[11px]">
           本地保存最近 {{ items.length }} 条 · 点封面继续播放 · 右上角可移除

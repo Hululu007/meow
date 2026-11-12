@@ -91,11 +91,16 @@ describe('直播播放页：频道面板导航（页面接管 + 列内夹停）'
     expect(src).toContain('data-guide-idx')
   })
 
-  it('↑↓ 只动当前列（有列状态），←→ 才切列', () => {
-    expect(src, '缺少 guideColumn 状态').toContain("guideColumn = ref<'group' | 'channel'>")
+  it('↑↓ 只动当前列（信号源/分类/台三列），←→ 才切列', () => {
+    // 2026-11-12：顶部「信号源」也是可导航的一列（分类首条再 ↑ 进入）
+    expect(src, '缺少 guideColumn 状态').toMatch(
+      /guideColumn = ref<'source' \| 'group' \| 'channel'>/,
+    )
     expect(src, '缺少列内夹停的 guideMoveChannel').toContain('function guideMoveChannel')
     expect(src, '缺少列内夹停的 guideMoveGroup').toContain('function guideMoveGroup')
+    expect(src, '缺少信号源列移动').toContain('function guideMoveSource')
     expect(src, '缺少跨列的 guideSwitchColumn').toContain('function guideSwitchColumn')
+    expect(src).toContain('data-guide-col="source"')
   })
 
   it('台列表按台名去重（同台多线路不占列表项）', () => {
@@ -136,8 +141,13 @@ describe('直播播放页：频道面板导航（页面接管 + 列内夹停）'
   })
 
   it('光标环会伸出元素，列表内边距必须留够（否则被 overflow 裁掉一条边）', () => {
-    // 外环 2px + 辉光 12px ≈ 14px；px-3.5 = 14px、py-2 = 8px。
-    expect(src, '列表容器内边距太小会裁掉焦点框').toContain('overflow-y-auto px-3.5 py-2')
+    // 外环 2px + 辉光 12px ≈ 14px；px-4 / py-4 = 16px 留 2px 余量。
+    // 只够静态边距还不够：scrollIntoView 会把首尾行贴到滚动端口边缘，
+    // 所以还要 scroll-padding-block: 16px 把内边距留出来。
+    expect(src, '列表容器内边距太小会裁掉焦点框').toContain(
+      'guide-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4',
+    )
+    expect(src, '缺少滚动对齐边距').toContain('scroll-padding-block: 16px')
   })
 })
 
@@ -256,6 +266,40 @@ describe('直播播放页：播放交互（缓冲/音量/亮度/调试/画中画
     // 拿不到系统亮度时只能压暗，要明说
     expect(src, '缺少 cssDim 兜底').toMatch(/const cssDim = ref\(0\)/)
     expect(src, '缺少滑动浮层').toMatch(/v-if="swipeHint"/)
+  })
+
+  it('触屏：单击只切控制栏（按点击前状态决定），双击立即暂停/播放', () => {
+    // 这条是点播播放器（VideoPlayer）的行为，不是直播页
+    const player = readFileSync(
+      join(ROOT, 'client', 'apps', 'web', 'src', 'components', 'player', 'VideoPlayer.vue'),
+      'utf8',
+    )
+    const i = player.indexOf('function onStageClick')
+    const body = player.slice(i, i + 1600)
+    /*
+     * 关键判据：这个 click 之后还会冒泡到根节点触发 onWrapClick 的 wake()，
+     * 所以必须记下**点击前**的可见状态 —— 否则 220ms 后无条件 toggle 会把
+     * 刚被撑开的控制栏又收起来（用户报的「点一下闪一下就没」）。
+     */
+    expect(body, '要记下点击前的可见状态').toContain('const wasVisible = showCtrl.value')
+    expect(body, '显示中才收起').toContain('if (wasVisible) hideControlBar()')
+    expect(body, '收起态只需续期').toContain('else wake()')
+    expect(body, '单击要延迟 220ms 判双击').toContain('}, 220)')
+    const d = player.indexOf('function onStageDblClick')
+    const dbl = player.slice(d, d + 900)
+    expect(dbl, '中区双击要立即 toggle').toContain('toggle()')
+  })
+
+  it('触屏长按：左右 2× 快退/快进，中间无动作（不再是长按倍速）', () => {
+    const player = readFileSync(
+      join(ROOT, 'client', 'apps', 'web', 'src', 'components', 'player', 'VideoPlayer.vue'),
+      'utf8',
+    )
+    const i = player.indexOf('function onStagePointerDown')
+    const body = player.slice(i, i + 1400)
+    expect(body, '中间区不响应长按').toContain("if (zone === 'mid') return")
+    expect(body, '左右复用按键扫描').toContain("startKeyScan(zone === 'left' ? -1 : 1)")
+    expect(player, '长按倍速的旧实现要删干净').not.toContain('boosting')
   })
 
   it('滑动后补发的 click 不能当成暂停', () => {

@@ -1819,6 +1819,26 @@
 
   window.__meowTvNav = function (action) {
     if (disposed) return false
+    /*
+     * 遥控/键盘操作 = key 模式。
+     *
+     * ★ 这条路是壳原生直接调 JS，**不会产生 DOM keydown**，所以
+     *   compat/inputModality.ts 的 keydown 监听收不到；而 MuMu 这类
+     *   模拟器 maxTouchPoints > 0，首屏会被判成 touch，焦点环被 CSS 关掉。
+     *   实测症状：方向键能移焦（逻辑在跑）但屏幕上看不到框，用户报
+     *   "无法聚焦"。每次按键显式切回 key，触摸时 inputModality 会再切 touch。
+     */
+    try {
+      /*
+       * 只有横屏才切 key：竖屏设备（手机/竖放的模拟器）用户明确要求
+       * 不显示焦点环。竖屏下即使是遥控/键盘也保持 touch。
+       */
+      if (window.innerWidth >= window.innerHeight) {
+        document.documentElement.setAttribute('data-input', 'key')
+      }
+    } catch (e) {
+      /* 老内核/文档未就绪：忽略，不影响按键逻辑 */
+    }
     // 记录按键时刻：MutationObserver 的焦点纠正会看它做宽限期判断
     lastKeyAt = Date.now()
     /*

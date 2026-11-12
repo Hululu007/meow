@@ -32,7 +32,7 @@ describe('问题1：TV 播放页去掉左上角返回按钮', () => {
     // （TV 壳跑在手机模拟器上时也要能返回），真电视（960×540）仍为 false。
     const src = codeOnly(PLAYER)
     expect(src).toMatch(/v-if="showBackButton"[\s\S]{0,200}aria-label="返回"/)
-    expect(src).toContain('const showBackButton = computed(() => !isTvEnv() || compactViewport.value)')
+    expect(src).toContain('const showBackButton = computed(() => !isBigScreenLandscape())')
     expect(src).toContain('Math.min(window.innerWidth, window.innerHeight) < 480')
   })
 })
