@@ -9,7 +9,7 @@
 > [`deploy/source-pack/`](https://github.com/upchr/meow/blob/main/deploy/source-pack/README.md)，
 > 部署见 [`SOURCE_PACK.md`](https://github.com/upchr/meow/blob/main/deploy/SOURCE_PACK.md)。
 > **源服务**不在主 compose：`.yml` / `.build.yml` 不含 sources，`.with-sources.yml`
-> 是主栈 + sources，`.sources.yml` 只起源服务。镜像 `chrplus/meow-sources:1.2.0` 内置
+> 是主栈 + sources，`.sources.yml` 只起源服务。镜像 `chrplus/meow-sources:1.2.0` 自带
 > 主爬虫 + Jable + 41 站默认源，`Dockerfile.sources` 等只在私仓维护。
 
 > **★ 所有 `docker compose` 命令都要先在 `deploy/docker/` 下执行**：`context: ../..`
@@ -35,7 +35,7 @@
 | `drpy` | `Dockerfile.drpy` 本地构建 | Node 22，跑 `.js` / drpy 源 | `0.0.0.0:30013` → 9330 |
 | `danmu_api` | `logvar/danmu-api:1.21.6` | 上游 Node 服务 | `127.0.0.1:30012` |
 
-带源形态多第五个容器 `meow-sources`（nginx，宿主 `18080`，内置主爬虫 + Jable +
+带源形态多第五个容器 `meow-sources`（nginx，宿主 `18080`，自带主爬虫 + Jable +
 41 站默认源），见 §3.3。
 
 **`drpy` 为什么不能省**：配置里 200+ 个源是 drpy/`.js`，没有这个运行时它们会被判
@@ -183,9 +183,9 @@ compose 不做 manifest list，要发布多架构镜像用 `build-push-docker.ps
 ### 3.3 源服务：带源主体与独立源服务
 
 两种源形态共用同一镜像 `chrplus/meow-sources:1.2.0`（**独立版本线**，不跟
-`MEOW_VERSION` 走）：内置主爬虫 + Jable 扩展 + 41 站默认源，**不挂载即可用**；
-`MEOW_SOURCES_DIR` 指到自己的完整源包目录时整目录只读覆盖内置源（挂到
-`/mounted-sources`）。默认 `./sources` 是空目录——空目录 = 用镜像内置源。
+`MEOW_VERSION` 走）：自带主爬虫 + Jable 扩展 + 41 站默认源，**不挂载即可用**；
+`MEOW_SOURCES_DIR` 指到自己的完整源包目录时整目录只读覆盖镜像自带的源（挂到
+`/mounted-sources`）。默认 `./sources` 是空目录——空目录 = 用镜像自带的源。
 
 **起容器 ≠ 导入源**：没有任何首启自动导入。容器起来后要在设置页手动填
 `http://<宿主IP>:18080/config.all.json`（TV / Fongmi 也在配置地址填这个）。
@@ -249,7 +249,7 @@ compose 不做 manifest list，要发布多架构镜像用 `build-push-docker.ps
 | `APISERVER_JAVA_OPTS` | `-Xms64m -Xmx512m …` | B | 小内存机器降 `-Xmx256m` |
 | `MEOW_SOURCES_IMAGE` | `chrplus/meow-sources:1.2.0` | A | 源服务镜像 tag，**独立版本线**；仅 sources / with-sources 读 |
 | `MEOW_SOURCES_PORT` / `MEOW_SOURCES_BIND` | `18080` / `0.0.0.0` | A | 端口冲突 / 收回本机 |
-| `MEOW_SOURCES_DIR` | `./sources`（空目录） | A | 指到完整源包目录时覆盖镜像内置源 |
+| `MEOW_SOURCES_DIR` | `./sources`（空目录） | A | 指到完整源包目录时覆盖镜像自带的源 |
 | `MEOW_SOURCES_BASE` | `http://127.0.0.1:18080`（占位） | B | **按导入方改**，见 §3.3 |
 
 A 组只在宿主生效（镜像 tag、端口、绑定地址），B 组会传进容器。**★ `DRPY_VERSION` 不能

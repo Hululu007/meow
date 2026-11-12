@@ -9,7 +9,7 @@
 :::
 
 ::: tip 只想快速起点源服务？不用自制源包
-官方源服务镜像一条命令起（内置 41 站 + Jable），命令与坑位见
+社区维护的源服务镜像一条命令起（自带 41 站 + Jable），命令与坑位见
 [导入源包 · 现成的源服务镜像](/guide/source-pack#现成的源服务镜像)。
 本页「[源服务](#源服务-一个静态-nginx-目录)」一节则讲目录结构、字段规则与校验脚本。
 :::
@@ -279,7 +279,7 @@ sources/
 
 ### 源服务镜像
 
-官方镜像（多架构 amd64/arm64，内置 **主爬虫 + Jable 扩展 + 41 站默认源**）：
+社区镜像（多架构 amd64/arm64，镜像里已带 **主爬虫 + Jable 扩展 + 41 站默认源**）：
 
 ```bash
 docker pull chrplus/meow-sources:1.2.0
@@ -290,7 +290,7 @@ docker run -d --name meow-sources \
   chrplus/meow-sources:1.2.0
 ```
 
-- `MEOW_SOURCES_BASE` 用来把内置 `config.all.json` 里的 `__SOURCE_BASE__`
+- `MEOW_SOURCES_BASE` 用来把镜像里 `config.all.json` 的 `__SOURCE_BASE__`
   替换成客户端能访问的地址；TV/Fongmi 不能填 `127.0.0.1`。
 - 镜像默认源已包含 41 站和 Jable；不挂载即可导入。
 - 用自己的完整源包时，把目录挂到 `/mounted-sources`（含 `config.all.json` 时
@@ -342,7 +342,7 @@ python3 deploy/source-pack/validate.py --dir /path/to/sources \
 3. 更新 `source-pack.json` / `SHA256SUMS.txt`；
 4. 跑校验脚本和 `curl` 回验。
 
-只换挂载源包文件不需要重启 nginx；改镜像内置源/nginx 规则要改私仓
+只换挂载源包文件不需要重启 nginx；改镜像自带源 / nginx 规则要改私仓
 `default-sources` / `nginx.sources.conf` 后重新构建推送镜像。
 
 ### Fongmi 兼容提示

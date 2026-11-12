@@ -38,7 +38,7 @@ Web 形态直接拉镜像，不需要源码：
 | `chrplus/meow-apiserver` | JVM + spider jar + ffmpeg |
 | `chrplus/meow-drpy` | Node 运行时（**独立版本线**，不跟应用版本） |
 | `logvar/danmu-api` | 弹幕聚合（上游镜像） |
-| `chrplus/meow-sources` | 源服务：内置主爬虫 + Jable + 41 站默认源（**独立版本线**），见 [源包与配置格式](/ecosystem/source-format) |
+| `chrplus/meow-sources` | 源服务：自带主爬虫 + Jable + 41 站默认源（**独立版本线**），见 [源包与配置格式](/ecosystem/source-format) |
 
 `web` 与 `apiserver` 均含 amd64 + arm64，Docker 按本机架构自动选。
 
