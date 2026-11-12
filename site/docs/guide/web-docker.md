@@ -11,12 +11,33 @@ Web 形态把前后端拆成四个容器：一个 nginx 静态前端、一个 JV
 
 ## 起服务
 
+两种起法，效果相同：**clone 仓库**（连构建文件与示例配置一起拿）或**只下编排文件**（不 clone，最快）。
+
+### 方式一：clone 仓库
+
 ```bash
 git clone https://github.com/upchr/meow.git
 cd meow/deploy/docker
 cp .env.example .env
 docker compose up -d
 ```
+
+### 方式二：不 clone，直接下编排文件
+
+默认值都内联在这份文件里，**不需要 `.env`**：
+
+```bash
+mkdir meow && cd meow
+curl -O https://upchr.github.io/meow/docker-compose.yml
+docker compose up -d
+```
+
+数据写在当前目录的 `./data/`。项目名与容器名和仓库版完全一致，两种方式可以无缝切换；
+要改端口 / 绑定地址 / 镜像版本，同目录建一个 `.env` 覆盖即可（变量见下方表格）。
+
+::: details 展开看这份编排的全文（与下载的是同一份，构建时从仓库自动同步）
+<<< ../../../deploy/docker/docker-compose.standalone.yml
+:::
 
 浏览器打开 `http://<主机IP>:30010`。
 

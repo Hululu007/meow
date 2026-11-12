@@ -1,0 +1,90 @@
+# 猫窝 Meow —— 独立编排（不用 clone 仓库，直接拉镜像启动）
+#
+# 用法：把这个文件存进任意空目录，然后
+#   docker compose up -d
+# 数据写在同目录的 ./data/（删掉目录 = 重置全部配置）。
+#
+# 所有参数都写成 ${VAR:-默认值}：默认不用改。要改就在同目录建 .env，
+# 或临时加前缀，比如 WEB_PORT=30020 docker compose up -d。常用：
+#   WEB_PORT=30010            前端端口（浏览器访问）
+#   APISERVER_BIND=0.0.0.0    后端给 TV / 局域网直连（同时务必设 MEOW_AUTH_TOKEN）
+#   MEOW_VERSION=1.1.7        镜像 tag（web / apiserver）
+#   MEOW_DANMAKU_API=         置空 = 不用弹幕聚合服务
+#   MEOW_AUTH_TOKEN=xxxx      写操作令牌（后端不只监听本机时建议设）
+#
+# 和仓库里的 docker-compose.yml 项目名、容器名一致（部署形态无缝切换）。
+# 要带源服务启动，用仓库里的 with-sources 编排；完整说明见
+# https://upchr.github.io/meow/guide/web-docker
+#
+# 停单个服务用 stop / start，不要 `docker compose down <服务名>`
+# （down 会删共享网络，其他容器立即失去网络；删容器用 rm -sf）。
+
+name: meow
+
+services:
+  apiserver:
+    image: ${APISERVER_IMAGE:-chrplus/meow-apiserver:${MEOW_VERSION:-1.1.7}}
+    container_name: meow-apiserver
+    ports:
+      # 默认只绑本机。要给 TV / 局域网直连改 APISERVER_BIND=0.0.0.0，
+      # 并设置 MEOW_AUTH_TOKEN（暴露的不只是播放，还有写端点）。
+      - "${APISERVER_BIND:-127.0.0.1}:${APISERVER_PORT:-30011}:9979"
+    volumes:
+      - ./data:/data
+    environment:
+      MEOW_DATA: /data
+      MEOW_PORT: "9979"
+      # 用 `-` 而非 `:-`：显式置空表示"不用这个服务"
+      MEOW_JS_RUNTIME: ${MEOW_JS_RUNTIME-http://drpy:9330}
+      MEOW_DANMAKU_API: ${MEOW_DANMAKU_API-http://danmu_api:9321}
+      MEOW_AUTH_TOKEN: ${MEOW_AUTH_TOKEN-}
+      MEOW_CORS: ${MEOW_CORS-*}
+      JAVA_OPTS: ${APISERVER_JAVA_OPTS:--Xms64m -Xmx512m -Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8}
+    restart: unless-stopped
+    networks: [meow]
+
+  web:
+    image: ${WEB_IMAGE:-chrplus/meow-web:${MEOW_VERSION:-1.1.7}}
+    container_name: meow-web
+    ports:
+      - "${WEB_PORT:-30010}:8080"
+    environment:
+      MEOW_APISERVER: ${MEOW_APISERVER:-http://apiserver:9979}
+    restart: unless-stopped
+    networks: [meow]
+
+  # drpy 运行时（.js 源）。独立版本线，别跟 MEOW_VERSION 走。
+  drpy:
+    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.23}}
+    container_name: meow-drpy
+    ports:
+      - "${DRPY_PORT:-30013}:9330"
+    environment:
+      DRPY_PORT: "9330"
+      DRPY_STRIP_REMOTE: "1"
+    restart: unless-stopped
+    networks: [meow]
+
+  # 弹幕聚合（官方镜像，可不启；不启用就把 MEOW_DANMAKU_API 置空）
+  danmu_api:
+    image: ${DANMU_API_IMAGE:-logvar/danmu-api:1.21.6}
+    container_name: meow-danmu-api
+    ports:
+      - "${DANMU_BIND:-127.0.0.1}:${DANMU_API_PORT:-30012}:9321"
+    volumes:
+      - ./data/danmu:/app/config
+    environment:
+      DANMU_API_PORT: "9321"
+      SOURCE_ORDER: ${DANMU_SOURCE_ORDER:-douban,360,renren,hanjutv,iqiyi,tencent,youku,bilibili}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9321/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    networks: [meow]
+
+networks:
+  meow:
+    driver: bridge

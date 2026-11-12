@@ -6,6 +6,10 @@ node_modules/
 # （技术文档已在 site/docs/dev/ 入库，不再生成）
 docs/reference/changelog.md
 
+# 独立编排文件由 scripts/sync-docs.mjs 从 deploy/docker/ 复制
+# （单一真源在 deploy/docker/docker-compose.standalone.yml）
+docs/public/docker-compose.yml
+
 # 背景音乐按仓库 owner 要求入库分发（site/docs/public/music/）。
 # 若要撤下，删除文件并把这两行加回忽略：
 #   docs/public/music/*.ogg

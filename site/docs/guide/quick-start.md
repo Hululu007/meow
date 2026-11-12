@@ -18,20 +18,21 @@
 
 ## 一、Docker（最省事）
 
-需要 Docker 与 Compose 插件。
+需要 Docker 与 Compose 插件。**不用 clone 仓库**——编排文件里的默认值都写好了，直接下载启动：
 
 ```bash
-# 1. 取配置模板
-git clone https://github.com/upchr/meow.git
-cd meow/deploy/docker
-cp .env.example .env
+# 1. 取编排文件（默认值已内联，不需要 .env）
+mkdir meow && cd meow
+curl -O https://upchr.github.io/meow/docker-compose.yml
 
-# 2. 起四个容器（web / apiserver / drpy / danmu_api）
+# 2. 起四个容器（web / apiserver / drpy / danmu_api），数据落在 ./data/
 docker compose up -d
 
 # 3. 浏览器打开
 #    http://localhost:30010
 ```
+
+想连构建文件与示例配置一起拿（或要改源码构建）：`git clone` 后进 `deploy/docker` 用仓库里的同名编排，两种方式效果相同。
 
 四个容器的分工：
 

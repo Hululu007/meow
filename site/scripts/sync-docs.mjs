@@ -3,9 +3,10 @@
  * 构建前的生成步骤。
  *
  * 技术文档已经迁到 site/docs/dev/ 并纳入版本管理，不再需要复制与链接重写。
- * 这里只剩两件事：
+ * 这里只剩三件事：
  *   - 更新日志：从仓库 CHANGELOG.md 裁出面向用户的正文
  *   - 品牌资源：从 client/brand/ 复制到 docs/public/
+ *   - 独立编排：从 deploy/docker/ 复制到 docs/public/（供「不 clone 直接下」）
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -54,5 +55,15 @@ function copyBrand() {
   console.log('[sync] 品牌资源 → docs/public/')
 }
 
+function copyCompose() {
+  const src = join(repoRoot, 'deploy', 'docker', 'docker-compose.standalone.yml')
+  if (!existsSync(src)) throw new Error('缺少 deploy/docker/docker-compose.standalone.yml')
+  const publicDir = join(siteRoot, 'docs', 'public')
+  mkdirSync(publicDir, { recursive: true })
+  copyFileSync(src, join(publicDir, 'docker-compose.yml'))
+  console.log('[sync] 独立编排 → docs/public/docker-compose.yml')
+}
+
 syncChangelog()
 copyBrand()
+copyCompose()
