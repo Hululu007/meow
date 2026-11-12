@@ -113,6 +113,7 @@ Check '全库脚本已被清单覆盖' {
         'server\serve-release.ps1',
         'server\serve-update-test.ps1',   # 本地测「应用在线更新」：造一份假版本清单，不发版
         'deploy\scripts\verify.ps1',       # 本脚本
+        'deploy\scripts\fetch-dex2jar.ps1', # 拉取本机 dex2jar 工具链（产物 gitignore，不发版）
         'deploy\scripts\build-plugins.ps1', # 插件单链路入口
         'deploy\scripts\release.ps1',       # 总编排入口（自身不被 units 引用）
         'deploy\scripts\sync-packages.ps1'  # CI 专用：把各插件 fnpack.json 汇总成 packages.json
@@ -120,13 +121,16 @@ Check '全库脚本已被清单覆盖' {
 
     # 只扫「可能放脚本的目录」，不递归全库：-Recurse + Include 实测 10 秒，
     # 因为在 node_modules / research / tv 上白跑。
+    # ★ tools 也排除：server\tools\dex2jar 是 fetch-dex2jar.ps1 拉的**本机工具链**
+    #   （.gitignore 整目录忽略），不是仓库内容 —— 不排除的话，凡是拉过工具链
+    #   的开发机这门必挂，而 CI 干净检出永远过（2026-11-13 实测）。
     $scanDirs = @('deploy', 'server', 'client') | ForEach-Object { Join-Path $root $_ }
     $found = foreach ($d in $scanDirs) {
         if (-not (Test-Path $d)) { continue }
         Get-ChildItem -Path $d -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object {
                 ($_.Extension -in '.ps1', '.bat') -and
-                $_.FullName -notmatch '[\\/](node_modules|research|build|tmp|release|tv|\\.git|target|dist)[\\/]'
+                $_.FullName -notmatch '[\\/](node_modules|research|build|tmp|release|tv|\\.git|target|dist|tools)[\\/]'
             } |
             ForEach-Object { $_.FullName.Substring($root.Length + 1) }
     }
