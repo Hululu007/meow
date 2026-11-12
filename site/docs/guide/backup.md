@@ -8,7 +8,7 @@
 |---|---|---|
 | **Web / Docker** | 仓库 `data/`（容器内 `/data`） | `deploy/docker/docker-compose.yml` 的挂载 |
 | **PC** | `%APPDATA%\com.meow.player` | 文件资源管理器地址栏粘贴即可 |
-| **TV** | 应用私有目录 | 需要 root 或 `adb backup`；普通用户建议用 WebDAV 同步代替 |
+| **TV** | 应用私有目录 | 需要 root 直接拷贝（`allowBackup=false`，`adb backup` 拿不到）；普通用户建议用 WebDAV 同步代替 |
 | **飞牛 fnOS** | 应用的 `var/data` | 应用中心的应用数据区，升级不覆盖 |
 
 ::: tip 先确认后端用的是哪个目录
@@ -26,9 +26,11 @@ PC 上如果连的是**远端后端**（设置页手填了地址），数据在�
 | **站点健康** | `site-health.json` | 可重新探测，不用备份 |
 | **封面与转码缓存** | `posters/`、`cache/` | 可重建，体积大，建议排除 |
 | **弹幕服务数据** | `danmu/` | 弹幕缓存，可重建 |
-| **插件目录** | PC `plugins/`、Web 容器内 | 可重新下载，不用备份 |
+| **插件目录** | PC 的 `plugins/`（Web 容器没有插件目录） | 可重新下载，不用备份 |
 
-**只备份 `data/` 就够了**，它是所有不可再生成状态的唯一来源。
+**只备份 `data/` 就够了**，它是服务端所有不可再生成状态的来源。
+注意前端还有一些配置只存在 localStorage（AI Key、WebDAV 凭据、更新令牌），不在 `data/`，
+换机 / 重装要重新填。
 体积敏感的话，排除 `cache/`、`posters/`、`danmu/` 三个子目录，剩下的通常只有几 MB。
 
 ## 怎么备份
@@ -41,16 +43,17 @@ cd deploy/docker
 # 1. 停服务，保证数据库文件一致
 docker compose stop
 
-# 2. 打包（data 在仓库根目录）
+# 2. 打包（仓库布局：data 在仓库根）
 tar -czf meow-data-$(date +%Y%m%d).tar.gz -C ../.. data
+#    不 clone 的部署（data 在编排文件旁）：当前目录直接 tar -czf meow-data-$(date +%Y%m%d).tar.gz data
 
 # 3. 起回来
 docker compose up -d
 ```
 
-::: warning 不要热备份 SQLite
-服务运行时直接复制 `data/` 可能拿到写了一半的数据库。
-停 5 秒比恢复一个坏库划算。
+::: warning 停服务再打包
+服务运行时直接复制 `data/` 可能拿到写了一半的 JSON（多个文件之间也可能不一致）。
+数据量很小，停 5 秒比恢复一份坏数据划算。
 :::
 
 ### PC
@@ -68,9 +71,9 @@ docker compose up -d
 
 普通设备拿不到应用私有目录。可行的替代：
 
-- **WebDAV 同步**：把收藏/进度同步到自己的 WebDAV（见下文）
+- **WebDAV 同步**：把观看历史、偏好与片库配置同步到自己的 WebDAV（**收藏不跟**，见下文）
 - **扫码推送配置**：把配置地址推给电视，重装后一步恢复
-- root / 开发设备可以用 `adb backup`，但恢复时同样受签名限制
+- root / 开发设备：直接拷贝应用私有目录 `/data/data/com.meow.tv`（壳声明了 `allowBackup=false`，`adb backup` 拿不到数据）
 
 ## 怎么恢复
 
@@ -101,7 +104,7 @@ TV 换机没有好办法，用扫码推送配置 + WebDAV 同步最快。
 设置里的 WebDAV 是**快照式同步**，不是增量备份：
 
 - 它按快照覆盖，多端同时改会互相覆盖
-- 它只同步状态（收藏/进度/偏好），不同步片库文件与离线缓存
+- 它只同步**观看历史、搜索历史、偏好与片库配置**；**收藏不走 WebDAV**（收藏以本机 localStorage 为准、后端只做跨端通道，快照还原也只还原偏好），也不同步片库文件与离线缓存
 - 同步失败不会阻塞播放，但也**不会给你报错**
 
 所以：**重要数据额外留一份本地备份**，别把 WebDAV 当唯一保障。
