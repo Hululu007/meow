@@ -895,19 +895,20 @@ public class TvBridge {
      */
     @JavascriptInterface
     public String moduleCheck(String source, String token) {
-        return moduleCheck(source, token, "");
+        return moduleCheckCandidates(source, token, "");
     }
 
     /**
      * 带候选地址的版本（2026-11-12）：{@code urlsPipe} 是 JS 按「网络与加速 →
      * GitHub 加速」算好的直连+代理列表（`|` 分隔），拉清单时逐个尝试。
      *
-     * <p>为什么候选由页面传：加速列表存在 Web 侧的 Prefs 里（与 App 更新共用
-     * 同一份），原生不重复维护一份配置。风险与原设计一致——页面本来就能下发
-     * "装一个新版本"；清单只是内容，仍要过 sha256 校验。
+     * <p>★ 方法名不能与两参版重名：Android WebView 的 JS 桥**不支持同名重载**，
+     * 加了重载后 JS 侧 `moduleCheck(src, tok)` 会解析到错误的方法、拿到空串，
+     * 页面报 `JSON.parse: End of input at character 0`（2026-11-12 投影仪实测）。
+     * 桥方法一律一名字一签名，新能力用新名字（*Candidates）。
      */
     @JavascriptInterface
-    public String moduleCheck(String source, String token, String urlsPipe) {
+    public String moduleCheckCandidates(String source, String token, String urlsPipe) {
         try {
             String src = (source == null || source.trim().isEmpty())
                     ? com.meow.tv.runtime.RuntimeModuleCatalog.SOURCE : source.trim();
@@ -927,7 +928,17 @@ public class TvBridge {
                 String alt = AppUpdater.fetchManifest(MODULE_MIRROR_SOURCE, "");
                 if (alt != null && alt.contains("\"packages\"")) text = alt;
             }
-            moduleCatalogJson = text == null ? "" : text;
+            // 清单没拿到就必须给真实原因：直接交给 pick("") 会抛
+            // JSONException("End of input at character 0 of")，页面只能显示
+            // 这句对用户无意义的 JSON 解析错（2026-11-12 实测踩到）。
+            if (text == null || !text.contains("\"packages\"")) {
+                moduleCatalogJson = "";
+                String why = AppUpdater.lastError();
+                return "{\"ok\":false,\"error\":\"拉清单失败："
+                        + AppUpdater.escape(why == null || why.isEmpty() ? "清单内容不完整" : why)
+                        + "\"}";
+            }
+            moduleCatalogJson = text;
             org.json.JSONObject pick =
                     com.meow.tv.runtime.RuntimeModuleCatalog.pick(moduleCatalogJson);
             org.json.JSONObject out = new org.json.JSONObject(pick.toString());
@@ -951,7 +962,7 @@ public class TvBridge {
 
     @JavascriptInterface
     public String moduleDownload(String source, String token) {
-        return moduleDownload(source, token, "");
+        return moduleDownloadCandidates(source, token, "");
     }
 
     /**
@@ -965,9 +976,11 @@ public class TvBridge {
      *
      * <p>私有仓（带 token）不走代理：代理不转发 Authorization，且资产地址
      * 已被转成 api.github.com 端点，候选列表没有意义。
+     *
+     * <p>★ 同样不能与两参版重名（WebView 桥不支持同名重载）。
      */
     @JavascriptInterface
-    public String moduleDownload(String source, String token, String urlsPipe) {
+    public String moduleDownloadCandidates(String source, String token, String urlsPipe) {
         try {
             if (moduleCatalogJson.isEmpty()) {
                 String check = moduleCheck(source, token);

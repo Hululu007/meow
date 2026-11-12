@@ -144,7 +144,7 @@ describe('模块链参与 git 加速', () => {
   it('设置页：清单按候选逐个试，APK 候选 join 后传给 moduleDownload', () => {
     const src = readFileSync(SETTINGS, 'utf8')
     expect(src).toContain('for (const c of downloadCandidates(src))')
-    expect(src).toContain('b.moduleDownload(src, tok, assetCands)')
+    expect(src).toContain('b.moduleDownloadCandidates(src, tok, assetCands)')
     expect(src).toContain("downloadCandidates(String(chk.url)).join('|')")
     // 轮询超时必须有结论，不能停在「下载中 100%」
     expect(src).toContain('安装超时')
@@ -160,8 +160,15 @@ describe('模块链参与 git 加速', () => {
     expect(up, '缺 fetchManifestAny').toContain('public static String fetchManifestAny')
     expect(up).toContain('contains("\\"packages\\"")')
     const br = readFileSync(BRIDGE, 'utf8')
-    expect(br).toContain('public String moduleCheck(String source, String token, String urlsPipe)')
-    expect(br).toContain('public String moduleDownload(String source, String token, String urlsPipe)')
+    expect(br).toContain('public String moduleCheckCandidates(String source, String token, String urlsPipe)')
+    expect(br).toContain('public String moduleDownloadCandidates(String source, String token, String urlsPipe)')
+    // Android WebView 的 JS 桥不支持同名重载：三参版必须用独立名字
+    expect(br, '桥方法又出现了同名重载').not.toContain(
+      'public String moduleCheck(String source, String token, String urlsPipe)',
+    )
+    expect(br, '桥方法又出现了同名重载').not.toContain(
+      'public String moduleDownload(String source, String token, String urlsPipe)',
+    )
     expect(br, '候选没有"必须包含原 url"的安全闸').toContain('if (!c.contains(real)) continue;')
   })
 })

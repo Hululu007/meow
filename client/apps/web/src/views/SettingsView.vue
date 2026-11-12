@@ -2826,14 +2826,23 @@ async function modInstall() {
     //   被墙用户直连必失败。候选列表由 downloadCandidates 按「网络与加速 →
     //   GitHub 加速」算好（直连 + 代理），逐个试，第一个拿到清单的胜出。
     //   与 App 自更新（fetchRawTextCandidates）同一套语义。
+    // ★ 桥方法名带 Candidates：Android WebView 的 JS 桥不支持同名重载，
+    //   老壳没有新名字时回退到两参版（就没有候选，只能直连）。
+    const checkOne = (u: string) =>
+      JSON.parse(
+        String(
+          (b.moduleCheckCandidates ? b.moduleCheckCandidates(u, tok, '') : b.moduleCheck(u, tok)) ||
+            '{}',
+        ),
+      )
     let chk: Record<string, unknown> = { ok: false }
     for (const c of downloadCandidates(src)) {
-      chk = JSON.parse(b.moduleCheck(c, tok))
+      chk = checkOne(c)
       if (chk.ok !== false) break
     }
     const backup = getBackupUpdateSource()
     if (chk.ok === false && backup && backup !== src) {
-      chk = JSON.parse(b.moduleCheck(backup, tok))
+      chk = checkOne(backup)
     }
     if (chk.ok === false) {
       modMsg.value = '检查失败：' + (chk.error || '未知错误')
@@ -2842,7 +2851,8 @@ async function modInstall() {
     modMsg.value = `下载中（${fmtSize(Number(chk.size) || 0)}，${chk.abi}）…`
     // APK 同理：把清单里 url 的候选线路一起传下去（原生逐个试、sha256 不变）
     const assetCands = chk.url ? downloadCandidates(String(chk.url)).join('|') : ''
-    b.moduleDownload(src, tok, assetCands)
+    if (b.moduleDownloadCandidates) b.moduleDownloadCandidates(src, tok, assetCands)
+    else b.moduleDownload(src, tok)
     let settled = false
     for (let i = 0; i < 260; i++) {
       await new Promise((r) => setTimeout(r, 700))

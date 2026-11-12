@@ -246,15 +246,23 @@ export async function checkModule(silent = false): Promise<boolean> {
     // ★ 清单也走全局加速（2026-11-12）：模块清单在 GitHub 上，被墙用户直连
     //   必失败。候选由 downloadCandidates 按「GitHub 加速」算好，逐个试。
     //   与设置页 modInstall、App 自更新同一套语义。
+    // ★ 桥方法名带 Candidates：WebView 桥不支持同名重载；老壳回退两参版。
+    const checkOne = (u: string) =>
+      JSON.parse(
+        String(
+          (b.moduleCheckCandidates ? b.moduleCheckCandidates(u, tok, '') : b.moduleCheck(u, tok)) ||
+            '{}',
+        ),
+      )
     let chk: Record<string, unknown> = { ok: false }
     for (const c of downloadCandidates(src)) {
-      chk = JSON.parse(String(b.moduleCheck(c, tok) || '{}'))
+      chk = checkOne(c)
       if (chk.ok !== false) break
     }
     // 显式备用源：主源失败才试（与应用更新同一份 Prefs）
     const backup = getBackupUpdateSource()
     if (chk.ok === false && backup && backup !== src) {
-      chk = JSON.parse(String(b.moduleCheck(backup, tok) || '{}'))
+      chk = checkOne(backup)
     }
     if (chk.ok === false) throw new Error(String(chk.error || '检查失败'))
     const latestVersion = String(chk.version || '')
