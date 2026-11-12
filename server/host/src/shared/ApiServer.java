@@ -12422,6 +12422,9 @@ public class ApiServer {
         String onConflict = "keep";
         boolean dryRun = false;
         List<String> proxiesParsed = new ArrayList<>();
+        // 请求体是否明确带了 proxies：带了才更新 jar 的加速候选。
+        // 老客户端不带这个字段，不能当成"用户关掉了加速"把已存配置清空。
+        boolean hasProxies = false;
         // 是否用导入配置里的顶层 spider 覆盖本地已有的。
         // 默认 false（保护用户手改的 jar 地址）；安装源包时必须传 true ——
         // 老用户的本地 spider 可能指向已失效的上游 dex 包，不覆盖就永远
@@ -12437,6 +12440,7 @@ public class ApiServer {
             }
             dryRun = in.optBoolean("dryRun", false);
             proxiesParsed = proxiesFromBody(in);
+            hasProxies = in.has("proxies");
             replaceSpider = in.optBoolean("replaceSpider", false);
         } catch (Exception e) {
             sendJson(ex, 400, "{\"code\":-1,\"msg\":\"bad json body\"}");
@@ -12456,6 +12460,9 @@ public class ApiServer {
         final String conflictMode = onConflict;
         final boolean preview = dryRun;
         final List<String> proxies = proxiesParsed;
+        // 配置 JSON 抓取用 proxies（fetchTextAccel）；jar 下载也要用同一套候选，
+        // 否则 spider 指向 raw.githubusercontent 时"配置能拉、jar 拉不下来"。
+        if (hasProxies) core.Jars.setAccelProxies(proxies);
 
         String configBase = url;
         String raw = null;

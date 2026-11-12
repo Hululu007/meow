@@ -130,7 +130,7 @@ public final class LocalSpiderHost {
                 }
             } else if (!jar.isFile() || (!md5.isEmpty() && !md5.equals(md5Of(jar)))) {
                 // 缓存命中且 md5 一致就不重复下载（Fongmi 同样做法）
-                if (!download(jarUrl, jar)) {
+                if (!download(jarUrl, jar, md5)) {
                     lastError = "jar 下载失败：" + jarUrl;
                     return false;
                 }
@@ -467,30 +467,76 @@ public final class LocalSpiderHost {
         return "jar-" + Integer.toHexString(url.hashCode()) + ".jar";
     }
 
-    private static boolean download(String url, File dest) {
+    /**
+     * 下载 jar：直连失败时按「网络与加速」里配置的候选重试。
+     *
+     * <p>加速配置由配置导入时落盘（{@code core.Jars.setAccelProxies}），这里只
+     * 负责按候选顺序试。每个候选都校验 md5：加速节点偶尔返回 HTML 错误页或
+     * 旧包，不校验会把坏文件留在缓存里，之后 DexClassLoader 报错、排查方向全错。
+     */
+    private static boolean download(String url, File dest, String md5) {
+        String base = core.ConfigText.idnUrl(url);
+        for (String cand : core.Jars.jarCandidates(base)) {
+            if (downloadOne(cand, dest)) {
+                if (md5 == null || md5.isEmpty() || md5.equalsIgnoreCase(md5Of(dest))) {
+                    if (!cand.equals(base)) Log.i(TAG, "jar 加速命中：" + cand);
+                    return true;
+                }
+                Log.w(TAG, "jar 校验失败，换下一个候选：" + cand);
+            }
+            //noinspection ResultOfMethodCallIgnored
+            dest.delete();
+        }
+        return false;
+    }
+
+    private static boolean downloadOne(String url, File dest) {
         HttpURLConnection c = null;
+        File tmp = new File(dest.getAbsolutePath() + ".tmp");
         try {
-            url = core.ConfigText.idnUrl(url);
             c = (HttpURLConnection) new URL(url).openConnection();
             c.setConnectTimeout(15_000);
             c.setReadTimeout(30_000);
             c.setRequestProperty("User-Agent", "meow-tv");
             if (c.getResponseCode() != 200) return false;
-            File tmp = new File(dest.getAbsolutePath() + ".tmp");
             try (InputStream in = c.getInputStream();
                  FileOutputStream out = new FileOutputStream(tmp)) {
                 byte[] buf = new byte[65536];
                 int n;
                 while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
             }
+            // 加速节点失败时常见 200 + HTML；不拦会被当 jar 缓存
+            if (looksLikeHtml(tmp)) {
+                Log.w(TAG, "jar 下载拿到 HTML（加速节点错误页）：" + url);
+                //noinspection ResultOfMethodCallIgnored
+                tmp.delete();
+                return false;
+            }
             // 先写临时文件再 rename：下到一半被杀不会留下半个 jar
             return tmp.renameTo(dest);
         } catch (Throwable t) {
             Log.w(TAG, "download failed " + url, t);
+            //noinspection ResultOfMethodCallIgnored
+            tmp.delete();
             return false;
         } finally {
             if (c != null) c.disconnect();
         }
+    }
+
+    private static boolean looksLikeHtml(File f) {
+        try (InputStream in = new java.io.FileInputStream(f)) {
+            byte[] head = new byte[64];
+            int n = in.read(head);
+            for (int i = 0; i < n; i++) {
+                byte b = head[i];
+                if (b == ' ' || b == '\n' || b == '\r' || b == '\t') continue;
+                return b == '<';
+            }
+        } catch (Exception ignored) {
+            /* 读不了交给 md5/加载阶段报错 */
+        }
+        return false;
     }
 
     private static String md5Of(File f) {

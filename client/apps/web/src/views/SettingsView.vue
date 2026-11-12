@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import TilePanel from '@/components/common/TilePanel.vue'
 import TileSelect from '@/components/common/TileSelect.vue'
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue'
@@ -139,12 +139,16 @@ import {
   deleteSnapshot,
   getSyncStatus,
   listSnapshots,
+  getLastPullError,
   onSyncStatus,
+  pruneSnapshotsTo,
   pullHistory,
   pullSearchHistory,
   pushHistory,
   pushSearchHistory,
   restoreSnapshot,
+  upload,
+  withSyncStatus,
   type Snapshot,
   type SyncStatus,
 } from '@/stores/sync'
@@ -157,6 +161,7 @@ import GitAccelPanel from '@/components/common/GitAccelPanel.vue'
 
 const store = useAppStore()
 const router = useRouter()
+const route = useRoute()
 const prefs = ref<Prefs>(getPrefs())
 
 function update<K extends keyof Prefs>(key: K, value: Prefs[K]) {
@@ -377,10 +382,10 @@ function openConnDialog() {
   try {
     const s = JSON.parse(b.connState())
     connDialog.api = s.api || apiUrl.value || ''
-    connDialog.config = s.config || cfgUrl.value || ''
+    connDialog.config = s.config || (cfgUrlDirty.value ? cfgUrl.value : '')
   } catch {
     connDialog.api = apiUrl.value || ''
-    connDialog.config = cfgUrl.value || ''
+    connDialog.config = cfgUrlDirty.value ? cfgUrl.value : ''
   }
   void startConnScan()
 }
@@ -830,7 +835,12 @@ async function testDav() {
   }
 }
 
-/** 切换自动同步：开启时立刻拉一次历史 */
+/**
+ * 切换自动同步。
+ *
+ * 开启时**先拉后推**：只拉的话，刚填好地址的用户要等下一次"历史/设置变更"
+ * 才会第一次上传，远端一直是空的，看起来像没生效（2026-11-12 实测）。
+ */
 async function toggleSync() {
   const next = !dav.value.enabled
   patchDav({ enabled: next })
@@ -839,12 +849,18 @@ async function toggleSync() {
   davBusy.value = true
   try {
     const r = await pullHistory(apiBase())
+    let uploaded = 0
+    if (dav.value.syncHistory || dav.value.syncPrefs) {
+      const u = await upload(apiBase())
+      uploaded = u.files.length
+    }
+    const merged = r.added ? `合并 ${r.added} 条远端历史` : '历史已是最新'
     davMsg.value = {
       ok: true,
-      text: r.added ? `已开启，合并了 ${r.added} 条远端历史` : '已开启（历史已是最新）',
+      text: `已开启，${merged}${uploaded ? `，已上传 ${uploaded} 项` : ''}`,
     }
   } catch (e: any) {
-    davMsg.value = { ok: false, text: `已开启，但首次拉取失败：${e?.message || e}` }
+    davMsg.value = { ok: false, text: `已开启，但首次同步失败：${e?.message || e}` }
   } finally {
     davBusy.value = false
   }
@@ -856,7 +872,10 @@ async function pushHistoryNow() {
   davBusy.value = true
   davMsg.value = null
   try {
-    const r = await pushHistory(apiBase())
+    const r = await withSyncStatus(
+      () => pushHistory(apiBase()),
+      (x) => `已上传 ${x.count} 条历史`,
+    )
     davMsg.value = { ok: true, text: `已上传 ${r.count} 条历史` }
   } catch (e: any) {
     davMsg.value = { ok: false, text: e?.message || String(e) }
@@ -869,7 +888,10 @@ async function pullHistoryNow() {
   davBusy.value = true
   davMsg.value = null
   try {
-    const r = await pullHistory(apiBase())
+    const r = await withSyncStatus(
+      () => pullHistory(apiBase()),
+      (x) => (x.added ? `已合并 ${x.added} 条新记录（共 ${x.total} 条）` : '本地已是最新'),
+    )
     davMsg.value = {
       ok: true,
       text: r.added ? `已合并 ${r.added} 条新记录（共 ${r.total} 条）` : '本地已是最新',
@@ -889,7 +911,10 @@ async function pushSearchWordsNow() {
   davBusy.value = true
   davMsg.value = null
   try {
-    const r = await pushSearchHistory(apiBase())
+    const r = await withSyncStatus(
+      () => pushSearchHistory(apiBase()),
+      (x) => `已上传 ${x.count} 个关键词`,
+    )
     davMsg.value = { ok: true, text: `已上传 ${r.count} 个关键词` }
   } catch (e: any) {
     davMsg.value = { ok: false, text: e?.message || String(e) }
@@ -902,7 +927,10 @@ async function pullSearchWordsNow() {
   davBusy.value = true
   davMsg.value = null
   try {
-    const r = await pullSearchHistory(apiBase())
+    const r = await withSyncStatus(
+      () => pullSearchHistory(apiBase()),
+      (x) => (x.added ? `已合并 ${x.added} 个新关键词（共 ${x.total} 个）` : '本机已是最新'),
+    )
     searchWordCount.value = listSearchHistory().length
     davMsg.value = {
       ok: true,
@@ -947,8 +975,30 @@ async function backupNow() {
   snapBusy.value = true
   snapMsg.value = null
   try {
-    const r = await createSnapshot(apiBase(), { force: true })
+    const r = await withSyncStatus(
+      () => createSnapshot(apiBase(), { force: true }),
+      (x) => `已创建备份 ${x.name}`,
+    )
     snapMsg.value = { ok: true, text: `已创建备份 ${r.name}` }
+    await refreshSnapshots()
+  } catch (e: any) {
+    snapMsg.value = { ok: false, text: e?.message || String(e) }
+  } finally {
+    snapBusy.value = false
+  }
+}
+
+/** 只保留最近 3 份设置备份 */
+async function cleanOldSnapshots() {
+  if (!confirm('只保留最近 3 份设置备份，其余全部删除？删除后不可恢复。')) return
+  snapBusy.value = true
+  snapMsg.value = null
+  try {
+    const r = await withSyncStatus(
+      () => pruneSnapshotsTo(apiBase(), 3),
+      (x) => `已清理 ${x.deleted} 份旧备份`,
+    )
+    snapMsg.value = { ok: true, text: `已清理 ${r.deleted} 份，保留 ${r.kept} 份` }
     await refreshSnapshots()
   } catch (e: any) {
     snapMsg.value = { ok: false, text: e?.message || String(e) }
@@ -1880,7 +1930,10 @@ void loadDmLocal()
 //
 // 这是「导入别人的 CatVod 配置」的入口。没有它，只有 curl 能加源——
 // 三个端（Web/PC/TV）都等于没有这个能力。
-const cfgUrl = ref('')
+// 源导入输入框预填一个可用的示例地址；用户仍要自己点「预览/导入」。
+// 连接设置弹层只在用户**改过**输入框时才沿用它，避免 TV 首连时被默认值带着走。
+const cfgUrl = ref('http://肥猫.net')
+const cfgUrlDirty = ref(false)
 const cfgBusy = ref(false)
 const cfgMsg = ref('')
 const cfgMsgOk = ref(false)
@@ -3682,6 +3735,9 @@ const syncStatus = ref<SyncStatus>(getSyncStatus())
 let offSync: (() => void) | undefined
 
 /** 同步状态文案 */
+/** 上次启动拉取失败的原因；成功或下一次拉取后清空 */
+const pullErr = ref(getLastPullError())
+
 const syncText = computed(() => {
   const s = syncStatus.value
   if (!dav.value.enabled) return '自动同步已关闭'
@@ -3695,6 +3751,7 @@ const syncText = computed(() => {
     case 'off':
       return '自动同步已关闭'
     default:
+      if (pullErr.value) return `上次拉取失败：${pullErr.value.message}`
       return dav.value.lastSyncAt
         ? `等待变更（上次 ${new Date(dav.value.lastSyncAt).toLocaleString()}）`
         : '等待变更'
@@ -3706,6 +3763,7 @@ onMounted(async () => {
   // 自动备份会产生新快照，同步完成后刷新列表
   window.addEventListener('meow:synced', onSynced)
   window.addEventListener('meow:search-history', onWordsChanged)
+  window.addEventListener('meow:sync-pull-error', onPullErrorChanged)
   searchWordCount.value = listSearchHistory().length
   await loadPolicy()
   void refreshLives()
@@ -3722,7 +3780,14 @@ onMounted(async () => {
   }
 })
 
+function onPullErrorChanged() {
+  pullErr.value = getLastPullError()
+}
+
 function onSynced() {
+  // 同步完成会写 lastSyncAt，但 dav 是组件挂载时的快照——不重读就会一直
+  // 显示"上次"的旧时间（实测：刚上传完仍显示几小时前）。
+  dav.value = getWebdav()
   if (dav.value.url) void refreshSnapshots()
 }
 
@@ -3990,6 +4055,20 @@ function currentScrollTop(): number {
   return window.scrollY
 }
 
+// 从顶栏同步徽标点进来时带 ?sec=sync：等首屏渲染后再滚过去。
+// 已在设置页时再点徽标不会重挂载组件（onMounted 不触发），所以再 watch 一次。
+onMounted(() => {
+  const sec = String(route.query.sec || '')
+  if (sec) setTimeout(() => scrollToSec(sec), 350)
+})
+
+watch(
+  () => route.query.sec,
+  (sec) => {
+    if (sec) setTimeout(() => scrollToSec(String(sec)), 350)
+  },
+)
+
 function scrollToSec(id: string) {
   const el = document.querySelector<HTMLElement>(`section[data-sec="${id}"]`)
   if (!el) return
@@ -4222,6 +4301,7 @@ onBeforeUnmount(() => {
   stopConnPoll()
   window.removeEventListener('meow:synced', onSynced)
   window.removeEventListener('meow:search-history', onWordsChanged)
+  window.removeEventListener('meow:sync-pull-error', onPullErrorChanged)
   window.removeEventListener('scroll', onScrollSpy)
   contentRef.value?.removeEventListener('scroll', onScrollSpy)
 })
@@ -4872,6 +4952,7 @@ onBeforeUnmount(() => {
           v-model="cfgUrl"
           class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent/50"
           placeholder="https://example.com/config.json"
+          @input="cfgUrlDirty = true"
         />
         <button
           class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover disabled:opacity-40"
@@ -5026,6 +5107,7 @@ onBeforeUnmount(() => {
           placeholder="https://example.com/config.json"
           class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
           title="CatVod 形状的 JSON 配置地址；也接受多仓（含 urls 数组）"
+          @input="cfgUrlDirty = true"
           @keyup.enter="doPreviewImport"
         />
         <button
@@ -6461,6 +6543,14 @@ onBeforeUnmount(() => {
             @click="refreshSnapshots"
           >
             刷新列表
+          </button>
+          <button
+            class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
+            :disabled="snapBusy || !snapshots.length"
+            title="只保留最近 3 份，其余删除"
+            @click="cleanOldSnapshots"
+          >
+            清理旧备份
           </button>
           <span v-if="snapBusy" class="h-3 w-3 animate-spin rounded-full border-2 border-line-hover border-t-accent" />
           <span

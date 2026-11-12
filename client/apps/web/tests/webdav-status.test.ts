@@ -56,7 +56,7 @@ describe('webdavPing（连接测试）', () => {
     const r = await webdavPing('http://192.168.1.20:30010', CFG)
     expect(r.ok).toBe(false)
     expect(r.status).toBe(0)
-    expect(r.msg).toContain('连接失败')
+    expect(r.msg).toContain('连不上 WebDAV 服务器')
     expect(r.msg).toContain('ConnectException')
   })
 
@@ -101,7 +101,7 @@ describe('pushHistory（上传）失败原因', () => {
       msg: 'ConnectException: Failed to connect to /192.168.1.34:5006',
     })
     await expect(pushHistory('http://192.168.1.20:30010')).rejects.toThrow(
-      /创建目录失败：ConnectException/,
+      /创建目录失败：连不上 WebDAV 服务器/,
     )
   })
 })

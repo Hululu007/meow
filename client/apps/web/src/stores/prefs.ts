@@ -745,6 +745,25 @@ export function applyBackup(
   return true
 }
 
+/**
+ * 把后端透出的网络异常翻译成人话。
+ *
+ * <p>原来直接把 Java 异常拼给用户看（`IOException: unexpected end of stream
+ * on http://…`），普通用户无法判断是地址写错、服务没开还是网络不通。
+ * 保留原始信息（截断 80 字）供排查，但结论先给人话。
+ */
+export function friendlyDavError(raw?: string): string {
+  const msg = (raw || '').trim()
+  const lower = msg.toLowerCase()
+  const hint = /unknownhost|failed to connect|connectexception|connection refused|sockettimeout|unexpected end of stream|sslhandshake|econnrefused|timeout/.test(
+    lower,
+  )
+    ? '连不上 WebDAV 服务器（检查地址、端口、服务是否在运行）'
+    : ''
+  if (!hint) return msg || '连接失败'
+  return msg ? `${hint}｜${msg.slice(0, 80)}` : hint
+}
+
 /** 连接测试：对目录发 PROPFIND */
 export async function webdavPing(
   apiBase: string,
@@ -774,12 +793,14 @@ export async function webdavPing(
       return {
         ok: false,
         status: 0,
-        msg: r.msg ? `连接失败：${r.msg}` : '连接失败（检查地址与端口）',
+        msg: friendlyDavError(r.msg),
       }
     }
     if (r.status < 300) {
-      // 数一下目录里已有几个文件，用户能直观看到同步状态
-      const files = (r.body.match(/<D:href>/g) || []).length
+      // 数一下目录里已有几个文件，用户能直观看到同步状态。
+      // 前缀大小写随服务器（D: / d: / dav:），不能只认 <D:href>——
+      // SabreDAV / Nextcloud 返回小写，会被误报成「空目录」。
+      const files = (r.body.match(/<(?:\w+:)?href>/gi) || []).length
       const existing = files > 1 ? (files - 1) + ' 个文件' : '空目录'
       return { ok: true, status: r.status, msg: `连接成功（${existing}）` }
     }
@@ -791,6 +812,6 @@ export async function webdavPing(
           : `HTTP ${r.status}`
     return { ok: false, status: r.status, msg: hint }
   } catch (e: any) {
-    return { ok: false, status: 0, msg: e?.message || String(e) }
+    return { ok: false, status: 0, msg: friendlyDavError(e?.message || String(e)) }
   }
 }

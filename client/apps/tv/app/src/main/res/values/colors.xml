@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 开屏底色：比页面底色更偏品牌青（图标主色 #0FA9A0 的暗调） -->
+    <color name="brand_splash_bg">#0B2220</color>
+    <color name="brand_splash_ink">#FFFFFF</color>
+    <color name="brand_splash_dim">#9AA4B2</color>
+</resources>

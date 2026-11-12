@@ -4,4 +4,18 @@
     <style name="Theme.MeowTv" parent="android:Theme.Material.NoActionBar.Fullscreen">
         <item name="android:windowBackground">@android:color/black</item>
     </style>
+
+    <!--
+      主界面：窗口底色换成品牌开屏图。
+      SplashActivity 退场到 WebView 首帧之间会露这块，不能是黑屏。
+      播放页/配置页仍用 Theme.MeowTv（纯黑），避免打开播放器时闪一下 logo。
+    -->
+    <style name="Theme.MeowMain" parent="Theme.MeowTv">
+        <item name="android:windowBackground">@drawable/splash_window_bg</item>
+    </style>
+
+    <!-- 品牌开屏（所有 Android 版本）；12+ 的系统开屏属性在 values-v31 里补 -->
+    <style name="Theme.MeowSplash" parent="Theme.MeowTv">
+        <item name="android:windowBackground">@drawable/splash_window_bg</item>
+    </style>
 </resources>

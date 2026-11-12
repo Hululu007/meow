@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ 的系统开屏（SplashScreen API）。base 里的 values/themes.xml
+  只设 windowBackground；这里补系统开屏的底色/图标/时长，保证系统屏与
+  SplashActivity 是同一套视觉，过渡不会「换一张脸」。
+-->
+<resources>
+    <style name="Theme.MeowSplash" parent="Theme.MeowTv">
+        <item name="android:windowBackground">@drawable/splash_window_bg</item>
+        <item name="android:windowSplashScreenBackground">@color/brand_splash_bg</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="android:windowSplashScreenAnimationDuration">260</item>
+    </style>
+
+
+    <style name="Theme.MeowMain" parent="Theme.MeowTv">
+        <item name="android:windowBackground">@drawable/splash_window_bg</item>
+        <item name="android:windowSplashScreenBackground">@color/brand_splash_bg</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="android:windowSplashScreenAnimationDuration">260</item>
+    </style>
+</resources>

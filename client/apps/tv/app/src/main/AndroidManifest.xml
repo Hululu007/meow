@@ -28,19 +28,36 @@
         android:banner="@mipmap/tv_banner"
         android:theme="@style/Theme.MeowTv">
 
+        <!--
+          品牌开屏：所有 Android 版本统一先看到「猫窝 + 正在启动…」。
+          LAUNCHER/LEANBACK_LAUNCHER 在这里，电视桌面点图标走这一屏；
+          Android 12+ 的系统开屏属性在 values-v31 的 Theme.MeowSplash 里。
+        -->
         <activity
-            android:name=".MainActivity"
+            android:name=".SplashActivity"
             android:exported="true"
             android:screenOrientation="unspecified"
-            android:windowSoftInputMode="adjustResize|stateAlwaysHidden"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode"
-            android:launchMode="singleTask">
+            android:theme="@style/Theme.MeowSplash">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          主界面保留 exported=true（adb/安装器显式拉起），窗口底色用
+          Theme.MeowMain（品牌底 + 居中图标），盖住 WebView 首帧前的空档。
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="unspecified"
+            android:windowSoftInputMode="adjustResize|stateAlwaysHidden"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode"
+            android:theme="@style/Theme.MeowMain"
+            android:launchMode="singleTask" />
 
         <!-- 配置页：独立 Activity，保证任何情况下都能退出（不会困在白屏） -->
         <activity

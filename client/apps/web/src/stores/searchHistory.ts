@@ -22,12 +22,13 @@ function read(): string[] {
   }
 }
 
-function write(items: string[]): void {
+function write(items: string[], opts: { notify?: boolean } = {}): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(items))
   } catch {
     /* 配额满时忽略 */
   }
+  if (opts.notify === false) return
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('meow:search-history'))
   }
@@ -66,10 +67,16 @@ export function exportSearchHistory(): string[] {
   return read()
 }
 
-export function importSearchHistory(items: unknown): void {
+/**
+ * 导入（覆盖）搜索词。
+ *
+ * `notify:false` 给 WebDAV 上传前的合并用：把远端词并进本地时若再广播
+ * `meow:search-history`，监听方会当成"用户搜了新词"又排队上传一次。
+ */
+export function importSearchHistory(items: unknown, opts: { notify?: boolean } = {}): void {
   if (!Array.isArray(items)) return
   const clean = items
     .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
     .slice(0, MAX)
-  write(clean)
+  write(clean, opts)
 }

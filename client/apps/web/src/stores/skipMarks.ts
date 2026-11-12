@@ -58,6 +58,11 @@ function writeAll(m: MarkMap) {
   } catch {
     /* 配额满时忽略——标记不是关键数据 */
   }
+  // 标记是长期数据、只在用户点「设片头/片尾」时变：变更后要能触发一次
+  // WebDAV 上传，否则只标片头不改进设置的用户，远端快照永远是旧的。
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('meow:skipmarks-changed'))
+  }
 }
 
 export function getSkipMarks(site: string, vodId: string): SkipMarks {

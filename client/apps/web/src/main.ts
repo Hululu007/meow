@@ -336,15 +336,32 @@ async function bootstrap() {
     const cs = getComputedStyle(document.documentElement)
     const splashBg = (cs.getPropertyValue('--color-base') || '').trim() || '#12141d'
     const splashFg = (cs.getPropertyValue('--color-ink-2') || '').trim() || '#9aa4b2'
+    const splashInk = (cs.getPropertyValue('--color-ink') || '').trim() || '#e6e8ee'
     splash.style.cssText =
       'position:fixed;top:0;right:0;bottom:0;left:0;display:flex;' +
-      'align-items:center;justify-content:center;' +
+      'flex-direction:column;align-items:center;justify-content:center;' +
       `background:${splashBg};color:${splashFg};font:14px/1.6 system-ui,sans-serif;z-index:9999`
-    splash.textContent = '正在启动后端…'
+
+    // 品牌开屏（PC）：Android 那边有 SplashActivity + 系统开屏，桌面端是
+    // 「等 sidecar JVM 起来」的真实等待，同样给图标 + 应用名，别只留一行字。
+    const logo = document.createElement('img')
+    logo.src = `${import.meta.env.BASE_URL}icon-192.png`
+    logo.alt = ''
+    logo.style.cssText =
+      'width:88px;height:88px;border-radius:20px;display:block;' +
+      'box-shadow:0 10px 28px rgba(0,0,0,.35)'
+    const appName = document.createElement('div')
+    appName.textContent = '猫窝'
+    appName.style.cssText =
+      `margin-top:18px;font-size:20px;font-weight:600;letter-spacing:.08em;color:${splashInk}`
+    const status = document.createElement('div')
+    status.textContent = '正在启动后端…'
+    status.style.cssText = 'margin-top:6px;font-size:13px'
+    splash.append(logo, appName, status)
     document.body.appendChild(splash)
     try {
       const info = await initBackend((msg) => {
-        splash.textContent = msg
+        status.textContent = msg
       })
       if (info && !info.ok) {
         // 失败原因交给 App.vue 展示（store.error）
@@ -429,6 +446,13 @@ function startBackgroundJobs() {
   // 搜索关键词变更 → 防抖上传
   window.addEventListener('meow:search-history', () => {
     scheduleUpload(base, 4000)
+  })
+
+  // 手动片头/片尾标记变更 → 防抖上传。
+  // 标记只随快照走（dedupe 已把它纳入比较），不监听的话"只标片头"的
+  // 用户永远等不到一次上传。
+  window.addEventListener('meow:skipmarks-changed', () => {
+    scheduleUpload(base, 6000)
   })
 
   // 页面隐藏/关闭前把待发的推出去，避免丢掉最后一次观看

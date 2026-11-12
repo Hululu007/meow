@@ -18,6 +18,7 @@
 
 import {
   applyBackup,
+  friendlyDavError,
   getPrefs,
   getWebdav,
   makeBackup,
@@ -26,9 +27,9 @@ import {
   type Backup,
   type WebdavConfig,
 } from './prefs'
-import { listHistory, type HistoryItem } from './history'
+import { listHistory, restoreHistoryFrom, type HistoryItem } from './history'
 import { listFavorites } from './favorites'
-import { addSearchHistory, exportSearchHistory, listSearchHistory } from './searchHistory'
+import { exportSearchHistory, importSearchHistory, listSearchHistory } from './searchHistory'
 
 /** 保留多少份设置快照 */
 export const MAX_SNAPSHOTS = 10
@@ -103,7 +104,7 @@ function reason(r: DavResult): string {
   if (r.status === 401) return '认证失败'
   if (r.status === 403) return '没有写入权限'
   if (r.status === 404) return '目录不存在'
-  if (r.status === 0) return r.msg || '连接失败'
+  if (r.status === 0) return friendlyDavError(r.msg)
   return `HTTP ${r.status}`
 }
 
@@ -180,12 +181,20 @@ function setLocalHistory(items: HistoryItem[]) {
   localStorage.setItem('meow.history.list', JSON.stringify(items))
 }
 
+/**
+ * 读远端历史。
+ *
+ * 404 = 还没上传过（空），其余失败必须抛：旧实现把 401/连不上都当"空"，
+ * 启动拉取失败被静默吞掉，用户看到"已同步"却不知道远端根本没取到。
+ */
 async function fetchRemoteHistory(
   apiBase: string,
   cfg: WebdavConfig,
 ): Promise<HistoryItem[]> {
   const r = await davCall(apiBase, cfg, 'GET', '/history.json')
-  if (!r.ok || !r.body) return []
+  if (r.status === 404) return []
+  if (!r.ok) throw new Error(`读取远端历史失败：${reason(r)}`)
+  if (!r.body) return []
   try {
     const parsed = JSON.parse(r.body)
     return Array.isArray(parsed?.items) ? (parsed.items as HistoryItem[]) : []
@@ -194,10 +203,18 @@ async function fetchRemoteHistory(
   }
 }
 
-/** 上传历史 */
+/**
+ * 上传历史（**先读-改-写**）。
+ *
+ * 两台设备同时同步时，各自直接 PUT 自己那份会把对方刚写的新条目覆盖掉
+ * （后写者赢）。先 GET 远端并进本地（notify:false，避免再触发一轮上传），
+ * 再 PUT 合并结果，冲突窗口从"整份历史"缩到"GET→PUT 之间"。
+ */
 export async function pushHistory(apiBase: string): Promise<{ count: number }> {
   const cfg = requireCfg()
   await ensureDir(apiBase, cfg)
+  const remote = await fetchRemoteHistory(apiBase, cfg)
+  if (remote.length) restoreHistoryFrom(remote, { notify: false })
   const items = listHistory()
   const payload = JSON.stringify({ version: 2, exportedAt: Date.now(), items })
   const r = await davCall(apiBase, cfg, 'PUT', '/history.json', payload)
@@ -239,9 +256,29 @@ export function mergeSearchWords(a: string[], b: string[]): string[] {
   return out.slice(0, 20)
 }
 
+async function fetchRemoteSearch(apiBase: string, cfg: WebdavConfig): Promise<string[]> {
+  const r = await davCall(apiBase, cfg, 'GET', '/search-history.json')
+  if (r.status === 404) return []
+  if (!r.ok) throw new Error(`读取远端搜索词失败：${reason(r)}`)
+  if (!r.body) return []
+  try {
+    const parsed = JSON.parse(r.body)
+    return Array.isArray(parsed?.items)
+      ? parsed.items.filter((x: unknown): x is string => typeof x === 'string' && !!x.trim())
+      : []
+  } catch {
+    return []
+  }
+}
+
+/** 上传搜索词（同样先读-改-写，避免多端互相覆盖）。 */
 export async function pushSearchHistory(apiBase: string): Promise<{ count: number }> {
   const cfg = requireCfg()
   await ensureDir(apiBase, cfg)
+  const remote = await fetchRemoteSearch(apiBase, cfg)
+  if (remote.length) {
+    importSearchHistory(mergeSearchWords(listSearchHistory(), remote), { notify: false })
+  }
   const items = listSearchHistory()
   const payload = JSON.stringify({ version: 1, exportedAt: Date.now(), items })
   const r = await davCall(apiBase, cfg, 'PUT', '/search-history.json', payload)
@@ -254,20 +291,12 @@ export async function pullSearchHistory(
 ): Promise<{ added: number; total: number }> {
   const cfg = requireCfg()
   const local = listSearchHistory()
-  const r = await davCall(apiBase, cfg, 'GET', '/search-history.json')
-  if (!r.ok || !r.body) return { added: 0, total: local.length }
-  let remote: string[] = []
-  try {
-    const parsed = JSON.parse(r.body)
-    remote = Array.isArray(parsed?.items) ? parsed.items : []
-  } catch {
-    return { added: 0, total: local.length }
-  }
+  const remote = await fetchRemoteSearch(apiBase, cfg)
   const merged = mergeSearchWords(local, remote)
   const before = new Set(local)
   const added = merged.filter((x) => !before.has(x)).length
-  // 远端有的词也补进来（并集语义：谁都不删）
-  for (const w of merged.slice().reverse()) addSearchHistory(w)
+  // 静默写：拉取不是"用户搜了新词"，不能广播 meow:search-history 再触发上传
+  if (added) importSearchHistory(merged, { notify: false })
   return { added, total: merged.length }
 }
 
@@ -321,6 +350,22 @@ function parseStamp(name: string): number {
  *
  * 如果和最新一份内容完全一致就跳过，避免"改一下午设置产生 50 个相同快照"。
  */
+/**
+ * 判断两份快照的内容是否"值得跳过"。
+ *
+ * 只比**稳定**的部分：prefs + 搜索词 + 手动片头标记。
+ * 历史/收藏/观看统计每次都在变，比它们会导致每次播放都产出一份快照。
+ * skipMarks 必须比——否则用户只标了片头、没改设置时，新标记永远不会被上传
+ * （dedupe 认为"和上一份一样"）。watchDays 同理不比（天天在涨）。
+ */
+export function snapshotEquivalent(prev: Backup, next: Backup): boolean {
+  return (
+    JSON.stringify(prev.prefs) === JSON.stringify(next.prefs) &&
+    JSON.stringify(prev.searchHistory ?? []) === JSON.stringify(next.searchHistory ?? []) &&
+    JSON.stringify(prev.aux?.skipMarks ?? []) === JSON.stringify(next.aux?.skipMarks ?? [])
+  )
+}
+
 export async function createSnapshot(
   apiBase: string,
   opts: { force?: boolean } = {},
@@ -345,11 +390,7 @@ export async function createSnapshot(
       if (r.ok && r.body) {
         try {
           const prev = JSON.parse(r.body) as Backup
-          if (
-            JSON.stringify(prev.prefs) === JSON.stringify(backup.prefs) &&
-            JSON.stringify(prev.searchHistory ?? []) ===
-              JSON.stringify(backup.searchHistory ?? [])
-          ) {
+          if (snapshotEquivalent(prev, backup)) {
             return { name: latest.name, skipped: true }
           }
         } catch {
@@ -396,7 +437,13 @@ export async function listSnapshots(apiBase: string): Promise<Snapshot[]> {
   const out: Snapshot[] = []
   for (const { href, lm } of entries) {
     if (!href) continue
-    const name = decodeURIComponent(href.split('/').filter(Boolean).pop() || '')
+    const rawName = href.split('/').filter(Boolean).pop() || ''
+    let name = rawName
+    try {
+      name = decodeURIComponent(rawName)
+    } catch {
+      /* 文件名里有坏 % 序列：按原样用，不让整个列表失败 */
+    }
     if (!name.startsWith('prefs-') || !name.endsWith('.json')) continue
     const ms = lm ? Date.parse(lm) : NaN
     out.push({
@@ -408,6 +455,27 @@ export async function listSnapshots(apiBase: string): Promise<Snapshot[]> {
   }
   // 服务器时间优先；没有 Last-Modified 的服务器退回文件名时间。
   return out.sort((a, b) => (b.mtime ?? b.at) - (a.mtime ?? a.at))
+}
+
+/**
+ * 手动清理：只保留最近 keep 份快照（默认 3）。
+ *
+ * 和自动 prune（保留 MAX_SNAPSHOTS=10）分开：用户可能想主动收缩，
+ * 不想一份份点删除。返回实际删掉几份。
+ */
+export async function pruneSnapshotsTo(
+  apiBase: string,
+  keep = 3,
+): Promise<{ deleted: number; kept: number }> {
+  const cfg = requireCfg()
+  const all = await listSnapshots(apiBase)
+  const extra = all.slice(Math.max(0, keep))
+  let deleted = 0
+  for (const s of extra) {
+    const r = await davCall(apiBase, cfg, 'DELETE', `/backups/${s.name}`).catch(() => null)
+    if (r?.ok) deleted++
+  }
+  return { deleted, kept: Math.min(all.length, Math.max(0, keep)) }
 }
 
 /** 只保留最近 MAX_SNAPSHOTS 份 */
@@ -480,36 +548,110 @@ export function scheduleUpload(apiBase: string, delayMs = 5000): void {
   if (!cfg.enabled || !cfg.url) return
   clearTimeout(uploadTimer)
   uploadTimer = window.setTimeout(() => {
-    autoSync(apiBase).catch(() => {
+    autoSyncNow(apiBase).catch(() => {
       /* 状态里已体现，不打断用户 */
     })
   }, delayMs)
 }
 
 /** 自动同步一次：按开关决定推历史 / 搜索词 / 设置快照 */
-async function autoSync(apiBase: string): Promise<void> {
+/** 自动同步失败后的重试间隔（毫秒）；0 = 首次立即执行 */
+let RETRY_DELAYS = [0, 3000, 10000]
+
+/** 测试用：把重试间隔缩短，避免单测真等 13 秒 */
+export function __setRetryDelaysForTest(d: number[]): void {
+  RETRY_DELAYS = d.length ? d : [0]
+}
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+let syncingNow = false
+let rerunRequested = false
+
+async function pushOnce(apiBase: string, cfg: WebdavConfig): Promise<void> {
+  if (cfg.syncHistory) await pushHistory(apiBase)
+  if (cfg.syncSearchHistory) await pushSearchHistory(apiBase)
+  if (cfg.syncPrefs) await createSnapshot(apiBase)
+  // 片库配置默认不备份（见 WebdavConfig.syncLibrary 的说明）
+  if (cfg.syncLibrary) await pushLibraryConfig(apiBase)
+}
+
+/**
+ * 执行一轮自动同步（失败退避重试 2 次：3s / 10s）。
+ *
+ * 为什么要重试：一次网络抖动（换 WiFi、NAS 休眠刚唤醒）就让徽标红到
+ * 下一次变更，用户看到的是"同步坏了"。重试仍失败才报错。
+ * 同一时刻只跑一轮；期间又有变更就记个标记，结束后补跑一次。
+ */
+export async function autoSyncNow(apiBase: string): Promise<void> {
   const cfg = getWebdav()
   if (!cfg.enabled || !cfg.url) return
+  if (syncingNow) {
+    rerunRequested = true
+    return
+  }
+  syncingNow = true
   emit({ state: 'syncing' })
+  let lastErr: unknown
   try {
-    if (cfg.syncHistory) await pushHistory(apiBase)
-    if (cfg.syncSearchHistory) await pushSearchHistory(apiBase)
-    if (cfg.syncPrefs) await createSnapshot(apiBase)
-    // 片库配置默认不备份（见 WebdavConfig.syncLibrary 的说明）
-    if (cfg.syncLibrary) await pushLibraryConfig(apiBase)
-    const at = Date.now()
-    saveWebdav({ lastSyncAt: at })
-    emit({ state: 'ok', at, message: '已同步' })
-  } catch (e: any) {
-    emit({ state: 'error', message: e?.message || String(e) })
-    throw e
+    for (let i = 0; i < RETRY_DELAYS.length; i++) {
+      if (RETRY_DELAYS[i]) await sleep(RETRY_DELAYS[i])
+      try {
+        await pushOnce(apiBase, cfg)
+        const at = Date.now()
+        saveWebdav({ lastSyncAt: at })
+        emit({ state: 'ok', at, message: i ? `已同步（重试 ${i} 次后成功）` : '已同步' })
+        lastErr = undefined
+        return
+      } catch (e) {
+        lastErr = e
+      }
+    }
+    const raw = lastErr instanceof Error ? lastErr.message : String(lastErr)
+    const times = RETRY_DELAYS.length - 1
+    emit({ state: 'error', message: `${raw}${times ? `（已重试 ${times} 次）` : ''}` })
+    throw lastErr
+  } finally {
+    syncingNow = false
+    if (rerunRequested) {
+      rerunRequested = false
+      void autoSyncNow(apiBase)
+    }
   }
 }
 
 let pulledThisSession = false
 let pulling = false
 
-/** 启动时拉一次历史与搜索词（只合并，设置不自动还原） */
+export interface PullError {
+  at: number
+  message: string
+}
+
+let lastPullError: PullError | null = null
+
+/** 上次启动拉取失败的原因（成功一次后清空）。设置页据此提示，不阻塞启动。 */
+export function getLastPullError(): PullError | null {
+  return lastPullError
+}
+
+function setPullError(e: unknown): void {
+  lastPullError = { at: Date.now(), message: e instanceof Error ? e.message : String(e) }
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('meow:sync-pull-error'))
+}
+
+function clearPullError(): void {
+  if (!lastPullError) return
+  lastPullError = null
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('meow:sync-pull-error'))
+}
+
+/**
+ * 启动时拉一次历史与搜索词（只合并，设置不自动还原）。
+ *
+ * 失败**不阻塞启动**，但也不再静默吞掉：记进 lastPullError，设置页显示
+ * "上次拉取失败：…"。否则换机时远端没取到，用户看到"已同步"（上次的
+ * 状态）会以为历史已经合并好了。
+ */
 export async function autoPullOnStart(apiBase: string): Promise<void> {
   const cfg = getWebdav()
   if (!cfg.enabled || !cfg.url || pulledThisSession || pulling) return
@@ -518,10 +660,34 @@ export async function autoPullOnStart(apiBase: string): Promise<void> {
     if (cfg.syncHistory) await pullHistory(apiBase)
     if (cfg.syncSearchHistory) await pullSearchHistory(apiBase)
     pulledThisSession = true
-  } catch {
-    /* 网络失败不阻塞启动 */
+    clearPullError()
+  } catch (e) {
+    setPullError(e)
   } finally {
     pulling = false
+  }
+}
+
+/**
+ * 把外部操作（设置页的手动按钮）也纳入顶栏同步状态。
+ *
+ * 之前手动"上传历史/立即备份"成功或失败都不 emit，顶栏会一直挂着上一次
+ * 的"同步失败"（或明明成功却不显示已同步），用户以为按钮无效。
+ */
+export async function withSyncStatus<T>(
+  fn: () => Promise<T>,
+  okText: (r: T) => string,
+): Promise<T> {
+  emit({ state: 'syncing' })
+  try {
+    const r = await fn()
+    const at = Date.now()
+    saveWebdav({ lastSyncAt: at })
+    emit({ state: 'ok', at, message: okText(r) })
+    return r
+  } catch (e: any) {
+    emit({ state: 'error', message: e?.message || String(e) })
+    throw e
   }
 }
 
@@ -532,7 +698,7 @@ export function flushUpload(apiBase: string): void {
   if (uploadTimer === undefined) return
   clearTimeout(uploadTimer)
   uploadTimer = undefined
-  autoSync(apiBase).catch(() => {})
+  autoSyncNow(apiBase).catch(() => {})
 }
 
 export function cancelPending(): void {

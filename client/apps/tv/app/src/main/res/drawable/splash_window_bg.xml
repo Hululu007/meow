@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MainActivity 的窗口底色：SplashActivity 结束到 WebView 首帧之间会露出来。
+  和 SplashActivity 用同一套底色 + 居中图标，过渡时看起来是一块屏而不是
+  「品牌屏 → 黑屏 → 应用」。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/brand_splash_bg" />
+    <item
+        android:width="112dp"
+        android:height="112dp"
+        android:gravity="center">
+        <bitmap
+            android:gravity="center"
+            android:src="@mipmap/ic_launcher" />
+    </item>
+</layer-list>

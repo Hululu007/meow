@@ -94,6 +94,16 @@ const syncHint = computed(() => {
 })
 
 /**
+ * 点同步徽标 → 设置页 WebDAV 区。
+ *
+ * 徽标只有 title 能看完整原因，而 TV 遥控器没有 hover；给一个可点的落点，
+ * 手机上也能点（窄屏只剩图标，更需要这条路径）。
+ */
+function openSyncSettings() {
+  router.push({ name: 'settings', query: { sec: 'sync' } })
+}
+
+/**
  * Escape 关闭站点下拉。
  *
  * 为什么需要：TV 壳的返回键走 `onBackPressed` → `__meowTvConsumeBack`，
@@ -376,12 +386,16 @@ function pickSite(key: string) {
       <span>AI</span>
     </RouterLink>
 
-    <!-- 同步状态：只在启用 WebDAV 且非空闲时出现 -->
+    <!-- 同步状态：只在启用 WebDAV 且非空闲时出现；点它去看详情（TV 没有 hover） -->
     <span
       v-if="syncHint"
-      class="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px]"
+      class="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px]"
       :class="syncHint.cls"
       :title="syncHint.title"
+      role="button"
+      tabindex="0"
+      @click="openSyncSettings"
+      @keydown.enter="openSyncSettings"
     >
       <span
         v-if="syncStatus.state === 'syncing'"
