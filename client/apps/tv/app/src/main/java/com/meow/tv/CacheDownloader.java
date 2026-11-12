@@ -126,7 +126,16 @@ public final class CacheDownloader {
         new Thread(() -> {
             final OkHttpClient http = new OkHttpClient.Builder()
                     .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-                    .readTimeout(0, java.util.concurrent.TimeUnit.SECONDS)
+                    /*
+                     * ★ 读超时必须有上限（原来是 0 = 永不超时）。
+                     *
+                     * OkHttp 的 readTimeout 是"两次读之间允许的空闲"，不是总时长：
+                     * 慢速下载只要还在冒数据就不会超时。而 0 的代价是——网络中途
+                     * 断掉（拔网线、代理死链）时线程**永远**等下去，任务卡在
+                     * "进行中"，后续缓存下载全被 busy 标志挡住，用户看到的是
+                     * "点了没反应"。60 秒一个字节都没有 = 确实死了。
+                     */
+                    .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
                     .build();
             Response resp = null;
             try {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 /**
@@ -237,5 +237,35 @@ describe('更新检查与设置页的性能护栏', () => {
     expect(s, '缺分区懒挂载').toContain('min-h-[20rem]')
     expect(s, '直播源仍在 onMounted 里拉').not.toContain('void refreshLives()')
     expect(s, '缺 ensureLives').toContain('ensureLives')
+  })
+
+  /**
+   * TV 端不许再有"永不超时"的读等待。
+   *
+   * readTimeout(0) = 无限：连接断掉时线程永远等下去，任务卡在"进行中"，
+   * 后续操作全被挡住，用户看到的是"点了没反应"。2026-11-12 之前 TV 上
+   * 有两处这种写法（更新清单、缓存下载），都已改成有上限。
+   */
+  it('TV 端没有"永不超时"的读等待', () => {
+    const dir = join(
+      ROOT,
+      'client',
+      'apps',
+      'tv',
+      'app',
+      'src',
+      'main',
+      'java',
+      'com',
+      'meow',
+      'tv',
+    )
+    const hits: string[] = []
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.java')) continue
+      const src = readFileSync(join(dir, f), 'utf8')
+      if (src.includes('readTimeout(0') || src.includes('setReadTimeout(0')) hits.push(f)
+    }
+    expect(hits, '这些文件还在无限等待：' + hits.join(', ')).toEqual([])
   })
 })
