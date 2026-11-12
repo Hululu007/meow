@@ -516,6 +516,10 @@ public final class Scrape {
                 if (!meta.optString("id", "").isEmpty()) merged.put("doubanId", meta.optString("id", ""));
                 boolean ok = meta.optBoolean("ok", false);
                 merged.put("scraped", ok);
+                // 命中的豆瓣条目标题：`pick()` 匹配不上时会退回第一条建议，
+                // 前端拿它复核"这条到底沾不沾亲"（季名刮削用，见 LibraryView.doScrapeDirs）。
+                // 只在命中时回传，刮不到时 title 就是请求名，回传反而会误导。
+                if (ok) merged.put("matchedTitle", meta.optString("title", ""));
                 if (ok) streak = 0;
                 else streak++;
                 out.put(merged);

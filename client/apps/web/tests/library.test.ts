@@ -10,6 +10,8 @@ import {
   libraryStream,
   parseFolderName,
   parseVideoName,
+  scrapeTitleOf,
+  seasonTitle,
   showTitleFrom,
 } from '../src/api/library'
 
@@ -327,6 +329,85 @@ describe('目录封面标题', () => {
   it('连「第N部」都没有的单文件，仍退回目录名', () => {
     // 解析失败时 title 会退回原名，那也能用；这里只锁"不返回空"
     expect(coverTitleFor(['电影', '某片'], [v('随机文件.mp4')]).length).toBeGreaterThan(0)
+  })
+})
+
+/**
+ * 影片卡的刮削名（用户截图：教父三部曲整排挂着《封神》海报）。
+ *
+ * 三个断言对应三层要求：
+ *   - 卡片显示「教父 第1部」——一眼知道是哪一部；
+ *   - 刮削名回退到「教父」+ 各自年份——豆瓣上 1972/1974/1990 才是三部片子；
+ *   - 目录名本身就叫「第N部」时退到上一层——不能又拿「第1部」去搜。
+ */
+describe('「第N部」影片卡的刮削名', () => {
+  const vid = (name: string) => ({ path: `教父/${name}`, name, dir: false, size: 1 })
+  const parts = [
+    vid('第1部.1972.特效中英字幕.BD1080P.mp4'),
+    vid('第2部.1974.特效中英字幕.BD1080P.mp4'),
+    vid('第3部.1990.特效中英字幕.BD1080P.mp4'),
+  ]
+
+  it('显示带目录名，刮削用目录名 + 年份', () => {
+    const gs = groupByTitle(parts, '教父', '电影')
+    expect(gs.map((g) => g.title)).toEqual(['教父 第1部', '教父 第2部', '教父 第3部'])
+    expect(gs.map((g) => scrapeTitleOf(g))).toEqual(['教父', '教父', '教父'])
+    expect(gs.map((g) => g.year)).toEqual([1972, 1974, 1990])
+  })
+
+  it('目录名本身是「第N部」时退到上一层', () => {
+    const gs = groupByTitle([vid('第1部.1972.mp4')], '第1部', '教父')
+    expect(scrapeTitleOf(gs[0])).toBe('教父')
+  })
+
+  it('剧集与普通电影的刮削名就是卡片名（默认不改变）', () => {
+    const gs = groupByTitle(
+      [{ path: 'x/S01E01.mkv', name: 'S01E01.mkv', dir: false, size: 1 }],
+      '瑞克和莫蒂',
+    )
+    expect(scrapeTitleOf(gs[0])).toBe(gs[0].title)
+  })
+})
+
+/**
+ * 季目录卡片的刮削名（用户要求：S01…S08 别挤成同一张剧海报）。
+ *
+ * 季名是"额外加料"的名字：豆瓣没这条条目时后端 `pick()` 会退回第一条建议，
+ * 所以前端必须复核命中标题是否沾亲、否则回退剧名（见 doScrapeDirs 第二轮）。
+ */
+describe('季目录卡片的刮削名', () => {
+  it('剧名 + 中文季号', () => {
+    expect(seasonTitle('瑞克和莫蒂', 1)).toBe('瑞克和莫蒂 第一季')
+    expect(seasonTitle('毛骗', 3)).toBe('毛骗 第三季')
+  })
+
+  it('超过十季或没有剧名 → 不做季名（调用方退回剧名）', () => {
+    expect(seasonTitle('某剧', 11)).toBe('')
+    expect(seasonTitle('', 2)).toBe('')
+  })
+
+  it('剧名里已经带季，不叠第二遍', () => {
+    expect(seasonTitle('瑞克和莫蒂 第一季', 1)).toBe('')
+  })
+})
+
+/**
+ * 目录封面祖先链的反向门禁（用户截图：S01…S08 八个季目录全挂着《剑来》）。
+ *
+ * `coverTitleByProbe` 只往后追加子目录名，所以调用方必须交**整条 trail**
+ * （含当前层）。少一级时 `动漫/瑞克和莫蒂/S01` 拼成 `['动漫','S01']`，
+ * S01 当纯季名跳过后落回「动漫」——豆瓣把「动漫」匹配成《剑来 第一季》。
+ * 这条链是组件里的两行，纯函数测不出来，只能断言源码形态。
+ */
+describe('目录封面祖先链', () => {
+  const VIEW = readFileSync(join(process.cwd(), 'src/views/LibraryView.vue'), 'utf8')
+
+  it('ancestors 取整条 trail（不能 slice(0,-1) 少一级）', () => {
+    // popTrail 里也有 slice(0,-1)，那是"退一层"，是对的；这里只盯 ancestors
+    expect(VIEW, 'ancestors 又少了当前层').not.toMatch(
+      /ancestors = trail\.value\.slice\(0,\s*-1\)/,
+    )
+    expect(VIEW.match(/ancestors = trail\.value\.map\(\(t\) => t\.name\)/g) || []).toHaveLength(2)
   })
 })
 

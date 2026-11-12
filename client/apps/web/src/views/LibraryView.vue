@@ -36,10 +36,13 @@ import {
   fmtSize,
   groupByTitle,
   libraryStream,
+  parseFolderName,
   posterUrl,
   saveLibrary,
   scrapeGroups,
   scrapeOne,
+  scrapeTitleOf,
+  seasonTitle,
   unbindScrape,
   waitLibraryTranscode,
   type LibraryEntry,
@@ -155,7 +158,10 @@ async function open(lib: string, path: string, name: string) {
     // 先让文件名出来，海报随后补（不 await）
     void doScrape(`${lib}|${path}`, groups.value, lib)
     // 祖先链给目录封面用：季目录卡要能剥出上层的剧名（否则刮成「S01」）
-    const ancestors = trail.value.slice(0, -1).map((t) => t.name)
+    // ★ **必须含当前层**：coverTitleByProbe 只会往后追加子目录名。
+    //   少一级时 `动漫/瑞克和莫蒂/S01` 拼成 `['动漫','S01']`，S01 被当纯季名
+    //   跳过后落回「动漫」→ 8 个季目录全刮成《剑来 第一季》（实测踩过）。
+    const ancestors = trail.value.map((t) => t.name)
     void doScrapeDirs(lib, `${lib}|${path}`, r.dirs || [], ancestors)
     // TV 壳：上一轮存的海报副本先接上，后端这次要是拉不到图也不至于全灰
     restoreMirror(Object.keys(posters.value))
@@ -186,7 +192,9 @@ async function open(lib: string, path: string, name: string) {
  */
 async function doScrape(where: string, g: TitleGroup[], lib: string) {
   if (scraping.value || scrapedFor.value === where) return
-  const wanted = g.map((x) => ({ title: x.title, year: x.year })).filter((x) => x.title)
+  // 刮削名 ≠ 卡片名：`教父 第1部` 这种带部号的卡片要拿「教父」去搜（scrapeTitle），
+  // 存/读也都按刮削名做 key，两边才对得上（见 posterOf 的调用处）。
+  const wanted = g.map((x) => ({ title: scrapeTitleOf(x), year: x.year })).filter((x) => x.title)
   if (!wanted.length) return
   scraping.value = true
   try {
@@ -304,15 +312,15 @@ async function doScrapeDirs(
   // 已经刮过这个位置就不再打外网
   if (dirCovered.value.includes(where)) return
   dirCovered.value = [...dirCovered.value, where]
-  const candidates: Array<{ dir: LibraryEntry; title: string }> = []
+  const candidates: Array<{ dir: LibraryEntry; title: string; fallback?: string }> = []
   const queue = [...dirs]
   const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
     for (;;) {
       const d = queue.shift()
       if (!d) return
       try {
-        const title = await coverTitleByProbe(lib, d, ancestors)
-        if (title) candidates.push({ dir: d, title })
+        const hit = await coverTitleByProbe(lib, d, ancestors)
+        if (hit.title) candidates.push({ dir: d, ...hit })
       } catch {
         /* 单个目录探失败不影响其余封面 */
       }
@@ -333,47 +341,93 @@ async function doScrapeDirs(
   // 封面这批成功了，就把限流提示收起来（同 doScrape 的理由）
   scrapeLimit.value = false
   const next = { ...posters.value }
+  // 季名（`瑞克和莫蒂 第一季`）没命中、或者命中的条目根本不沾亲时，
+  // 记下来等第二轮用剧名再刮一次 —— 一排同图也好过一张错图。
+  const missed: Array<{ i: number; base: string }> = []
+  const mirrored: Array<{ poster?: string }> = []
   items.forEach((m, i) => {
     const c = candidates[i]
-    if (!m?.poster) return
-    // 目录封面单独一个 key 空间：`dir:<path>`，避免和影片组的海报互相覆盖
-    next[`dir:${c.dir.path}`] = posterUrl(m.poster)
+    if (!c) return
+    const kin = !c.fallback || !m.matchedTitle || titleKin(m.matchedTitle, c.fallback)
+    if (m.poster && kin) {
+      // 目录封面单独一个 key 空间：`dir:<path>`，避免和影片组的海报互相覆盖
+      next[`dir:${c.dir.path}`] = posterUrl(m.poster)
+      mirrored.push(m)
+      return
+    }
+    if (c.fallback) missed.push({ i, base: c.fallback })
   })
+  // 第二轮：季名没搜到就退回剧名（一次性批量，不是逐个打）
+  if (missed.length) {
+    const second = await scrapeGroups(
+      missed.map((x) => ({ title: x.base, year: 0 })),
+      lib,
+    )
+    second.items.forEach((m, j) => {
+      const x = missed[j]
+      const c = x && candidates[x.i]
+      if (!m?.poster || !c) return
+      next[`dir:${c.dir.path}`] = posterUrl(m.poster)
+      mirrored.push(m)
+    })
+  }
   posters.value = next
   // TV 壳：目录封面同样要存镜像。
   // ★ 这条最初漏了 —— 实测 TV 上「电视剧/」这一层的 7 张卡是**目录卡**
   //   （下面还有一层），走的是 doScrapeDirs 而不是 doScrape，于是图片写了
   //   一个都没有（metaBytes=0）。而断网时用户最先看到的就是这一层，
   //   不存等于"兜底方案在这层失效"。
-  void doMirror(items)
+  void doMirror(mirrored)
+}
+
+/**
+ * 豆瓣命中的标题是不是真的沾亲（`pick()` 一条都匹配不上时会退回第一条建议，
+ * 于是"有海报"不等于"刮对了"）。只用来复核额外加料的名字（季名）。
+ */
+function titleKin(matched: string, base: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+  const m = norm(matched)
+  const b = norm(base)
+  return !!m && !!b && m.includes(b)
 }
 
 /**
  * 沿「第一个子目录」这条链下探，找到第一层有视频的目录，返回该用于搜刮的片名。
  *
  * @param ancestors 当前所在层的目录名链（如 `['动漫','瑞克和莫蒂']`）。
- *   **必须带上**：`动漫/瑞克和莫蒂/S01` 这张卡本身是季目录，只从 `S01`
- *   起算会得到片名「S01」（实测），带上祖先才能剥出「瑞克和莫蒂」。
- * @returns '' = 这条链上没有视频（不刮，保持文件夹图标）
+ *   **必须包含当前层**（调用方传整条 trail）：`动漫/瑞克和莫蒂/S01` 这张卡
+ *   本身是季目录，只从 `S01` 起算会得到片名「S01」（实测），带上祖先才能
+ *   剥出「瑞克和莫蒂」。
+ * @returns `{ title }`；`fallback` 只在「季目录加了季名」时出现 ——
+ *   季名没命中就退回剧名（见 doScrapeDirs 的第二轮）。
  */
 async function coverTitleByProbe(
   lib: string,
   d: LibraryEntry,
   ancestors: string[] = [],
-): Promise<string> {
+): Promise<{ title: string; fallback?: string }> {
   const names = [...ancestors, d.name]
   let cur = d
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
     const r = await fetchLibraryDir(lib, cur.path)
-    if (!r.ok) return ''
+    if (!r.ok) return { title: '' }
     const videos = (r.files || []).filter((f) => isVideoName(f.name))
-    if (videos.length) return coverTitleFor(names, videos)
+    if (videos.length) {
+      const base = coverTitleFor(names, videos)
+      // 这张卡本身就是季目录（S01 / 毛骗S02）→ 加上季名，让每季有自己的图。
+      // ★ 只看**卡片自己**的名字：`瑞克和莫蒂` 探测时会下探到 S01，但那张卡
+      //   代表整部剧，加季名会把它变成"第一季"。
+      const season = parseFolderName(d.name).season
+      const withSeason = season > 0 ? seasonTitle(base, season) : ''
+      if (withSeason) return { title: withSeason, fallback: base }
+      return { title: base }
+    }
     const next = (r.dirs || [])[0]
-    if (!next) return ''
+    if (!next) return { title: '' }
     names.push(next.name)
     cur = next
   }
-  return ''
+  return { title: '' }
 }
 
 function isVideoName(name: string): boolean {
@@ -386,6 +440,16 @@ function dirPosterOf(d: LibraryEntry): string {
 
 function posterOf(title: string, year = 0): string {
   return posters.value[`${title}|${year}`] || ''
+}
+
+/**
+ * 影片卡 / 详情页的海报。
+ *
+ * key 用**刮削名**而不是卡片名：`教父 第1部` 这类卡片的刮削名是「教父」
+ * （见 groupByTitle），写和读必须是同一个名字，否则永远取不到。
+ */
+function groupPosterOf(g: TitleGroup): string {
+  return posterOf(scrapeTitleOf(g), g.year)
 }
 
 // ---------------------------------------------------------------- 刮削绑定
@@ -402,7 +466,7 @@ function posterOf(title: string, year = 0): string {
 const boundPoster = computed(() => {
   const g = activeGroup.value
   if (!g) return ''
-  return posterOf(g.title, g.year)
+  return groupPosterOf(g)
 })
 
 const scrapeBusy = ref(false)
@@ -421,11 +485,13 @@ async function rescrapeActive() {
   scrapeBusy.value = true
   scrapeMsg.value = ''
   try {
-    const m = await scrapeOne(g.title, g.year, true, currentLib.value)
+    // 刮削名（不是卡片名）：`教父 第1部` 要重搜「教父」，否则又会搜成《封神第一部》
+    const want = scrapeTitleOf(g)
+    const m = await scrapeOne(want, g.year, true, currentLib.value)
     if (m.ok && m.poster) {
-      posters.value = { ...posters.value, [`${g.title}|${g.year}`]: posterUrl(m.poster) }
+      posters.value = { ...posters.value, [`${want}|${g.year}`]: posterUrl(m.poster) }
       scrapeMsgOk.value = true
-      scrapeMsg.value = `已匹配到「${m.title || g.title}」${m.year ? `（${m.year}）` : ''}`
+      scrapeMsg.value = `已匹配到「${m.title || want}」${m.year ? `（${m.year}）` : ''}`
     } else if (m.ok) {
       // 匹配到了但没有海报：豆瓣有条目却无图，也算成功但要说清
       scrapeMsgOk.value = false
@@ -448,8 +514,10 @@ async function unbindActive() {
   scrapeBusy.value = true
   scrapeMsg.value = ''
   try {
-    const ok = await unbindScrape(g.title, g.year, currentLib.value)
-    const key = `${g.title}|${g.year}`
+    // 后端缓存 key 用的是刮削名，解除绑定也必须用同一个名字
+    const want = scrapeTitleOf(g)
+    const ok = await unbindScrape(want, g.year, currentLib.value)
+    const key = `${want}|${g.year}`
     const next = { ...posters.value }
     delete next[key]
     posters.value = next
@@ -586,7 +654,8 @@ async function openReplace(lib: string, path: string, name: string) {
       openGroup(groups.value[0], true)
     }
     void doScrape(`${lib}|${path}`, groups.value, lib)
-    const ancestors = trail.value.slice(0, -1).map((t) => t.name)
+    // 同 open()：祖先链必须含当前层，否则整层子目录封面会刮到分类名上
+    const ancestors = trail.value.map((t) => t.name)
     void doScrapeDirs(lib, `${lib}|${path}`, dirs.value, ancestors)
     if (!r.ok) error.value = r.msg || '列目录失败'
   } finally {
@@ -881,7 +950,7 @@ onBeforeUnmount(() => {
                 表现为"已绑定海报"但画面里始终是胶片占位图。
               -->
               <PosterImage
-                :src="posterOf(activeGroup.title, activeGroup.year)"
+                :src="groupPosterOf(activeGroup)"
                 :alt="activeGroup.title"
                 :proxied="false"
               />
@@ -1132,8 +1201,8 @@ onBeforeUnmount(() => {
             >
               <div class="relative aspect-[2/3] overflow-hidden rounded-lg bg-elevated">
                 <img
-                  v-if="posterOf(g.title, g.year)"
-                  :src="posterOf(g.title, g.year)"
+                  v-if="groupPosterOf(g)"
+                  :src="groupPosterOf(g)"
                   :alt="g.title"
                   class="h-full w-full object-cover transition duration-300 group-hover:brightness-110"
                   loading="lazy"

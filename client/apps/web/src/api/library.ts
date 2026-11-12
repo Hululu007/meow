@@ -244,9 +244,20 @@ function cnNum(s: string): number {
 }
 
 export interface TitleGroup {
+  /** 卡片上显示的片名（`教父 第1部` 这种带部号的写法也在这里） */
   title: string
   year: number
+  /**
+   * 拿去豆瓣刮削的片名。默认等于 {@link title}，只有 `第N部` 这类结构性名字
+   * 才换成上层目录名 —— 见 `groupByTitle` 里对 part 组的处理。
+   */
+  scrapeTitle?: string
   files: Array<{ path: string; name: string; size: number; episode: number; part: number }>
+}
+
+/** 刮削用的片名：结构性名字（`第N部`）在 groupByTitle 里已经换成目录名 */
+export function scrapeTitleOf(g: { title: string; scrapeTitle?: string }): string {
+  return g.scrapeTitle || g.title
 }
 
 /**
@@ -290,6 +301,21 @@ export function parseFolderName(name: string): { title: string; season: number }
  * @param parentName 上一层目录名。**只用于纯季目录**（`…/瑞克和莫蒂/S01/`），
  *   因为那时剧名不在当前目录名里，在上一层。
  */
+/**
+ * 纯「第N部」——是部号不是片名（`教父/第1部.1972…`）。
+ *
+ * 和 `coverTitleFor` 里那条护栏是同一判据：拿它去豆瓣搜会匹配成
+ * 《封神第一部》（实测）。区别是那边防的是目录卡，这里防的是影片卡。
+ */
+const PART_ONLY = /^第\s*[0-9一二三四五六七八九十]+\s*部$/
+
+/** `第N部` 组该用哪个名字去刮：目录名，目录名本身也是 `第N部` 时退到上一层 */
+function partBaseName(folderTitle: string, parentName: string): string {
+  if (folderTitle && !PART_ONLY.test(folderTitle)) return folderTitle
+  if (parentName && !PART_ONLY.test(parentName)) return parentName
+  return ''
+}
+
 export function groupByTitle(files: LibraryEntry[], folderName = '', parentName = ''): TitleGroup[] {
   const videos = files.filter((f) => isVideoFile(f.name))
   const parsed = videos.map((f) => ({ f, p: parseVideoName(f.name) }))
@@ -301,12 +327,17 @@ export function groupByTitle(files: LibraryEntry[], folderName = '', parentName 
 
   const map = new Map<string, TitleGroup>()
   for (const { f, p } of parsed) {
-    const title = episodic ? folderTitle : p.title
+    // ★ `第N部` 要挂上目录名：显示成「教父 第1部」，刮削用「教父」。
+    //   直接用「第1部」去搜会得到《封神第一部》（实测，用户截图里整排
+    //   教父三部曲挂着封神海报）。年份天然区分各部（1972/1974/1990）。
+    const partOnly = !episodic && PART_ONLY.test(p.title)
+    const partBase = partOnly ? partBaseName(folderTitle, parentName) : ''
+    const title = partOnly && partBase ? `${partBase} ${p.title}` : episodic ? folderTitle : p.title
     const year = episodic ? 0 : p.year
     const key = `${title}|${year}`
     let g = map.get(key)
     if (!g) {
-      g = { title, year, files: [] }
+      g = { title, year, files: [], ...(partBase ? { scrapeTitle: partBase } : {}) }
       map.set(key, g)
     }
     g.files.push({
@@ -401,6 +432,25 @@ export function coverTitleFor(names: string[], videos: LibraryEntry[]): string {
     if (p && !/^第\s*[0-9一二三四五六七八九十]+\s*部$/.test(p)) return p
   }
   return showTitleFrom(names)
+}
+
+const CN_SEASON = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十']
+
+/**
+ * 季目录卡片的刮削名：`瑞克和莫蒂` + 1 → `瑞克和莫蒂 第一季`。
+ *
+ * 为什么要加季：祖先链修对之后，同一部剧的 `S01…S08` 都会刮到同一张剧海报，
+ * 一整排重复的图看起来就像"没刮到"。豆瓣对热门剧有独立的季条目，带上
+ * 「第一季」才能拿到各自的图。
+ *
+ * @returns '' = 不加季名（超过 10 季 / 没有剧名），调用方退回剧名本身
+ */
+export function seasonTitle(base: string, season: number): string {
+  const cn = CN_SEASON[season] || ''
+  if (!base || !cn) return ''
+  // 剧名里已经带季了（`瑞克和莫蒂 第一季` 这种目录）就别叠第二遍
+  if (base.includes(`第${cn}季`)) return ''
+  return `${base} 第${cn}季`
 }
 
 // ---------------------------------------------------------------- 按需转码
@@ -520,6 +570,14 @@ export interface ScrapedMeta {
   poster?: string
   id?: string
   episodes?: number
+  /**
+   * 后端实际命中的豆瓣条目标题（`enrich` 里回传）。
+   *
+   * 后端 `pick()` 在**一条都匹配不上**时会退回第一条建议（这是刻意的，
+   * 但也意味着"有海报"不等于"刮对了"）。季名这种额外加料的名字要拿它
+   * 复核一次，不沾亲就回退到剧名。
+   */
+  matchedTitle?: string
 }
 
 /**
