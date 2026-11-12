@@ -162,9 +162,22 @@ describe('移动端导航：底部标签栏 + 顶栏搜索展开', () => {
     expect(pill).not.toContain('<input')
   })
 
+
+  it('640–767px 也有直播/片库入口（顶栏是 md:flex，更多菜单必须覆盖到 md）', () => {
+    /*
+     * 2026-11-12 指南核验：直播/片库顶栏入口是 `hidden ... md:flex`（≥768 才显示），
+     * 而「更多」菜单原是 sm:hidden（<640 才显示）→ 640–767 两处都没有入口。
+     * 菜单容器必须是 md:hidden，这段宽度才落得进菜单。
+     */
+    expect(header).toContain('<div class="relative md:hidden" data-more-menu>')
+    const menu = header.slice(header.indexOf('data-more-menu'))
+    expect(menu).toContain('to="/live"')
+    expect(menu).toContain('to="/library"')
+  })
+
   it('AI / 设置不重复出现在「更多」菜单里（标签栏已经有一级入口）', () => {
     // 注意从模板里那个 div 开始切：`data-more-menu` 在 <script> 的点击外部判定里也出现过一次
-    const menu = header.slice(header.indexOf('<div class="relative sm:hidden" data-more-menu>'))
+    const menu = header.slice(header.indexOf('<div class="relative md:hidden" data-more-menu>'))
     expect(menu).not.toContain('To="/ai"')
     expect(menu).not.toContain('AI 助手')
     expect(menu).not.toContain('to="/settings"')

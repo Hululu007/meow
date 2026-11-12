@@ -490,10 +490,16 @@ if ($scope -contains 'plugins') {
         # 而更新说明是写给"装包的用户"看的应用改动。这里传显式 Notes，
         # 避免每个插件都去打一次 git log（会刷出 5 条"没有可用说明"的警告）。
         $entry = New-Entry $a $pver @('windows-x64') $pid2 -Notes "猫窝插件 $pid2 $pver"
-        # 插件的 hidden / requires 沿用原值，不要被应用那套规则覆盖
+        # ★ 插件条目必须可见（2026-11-12 修）：
+        #   New-Entry 默认 hidden=true 是给**应用安装包**（meow-pc/meow-tv）用的——
+        #   它们不是插件，出现在「本机插件」列表里会被插件安装器错误解包。
+        #   而 apiserver / drpy / danmu-api / node 恰恰是要让用户装的，
+        #   之前"沿用旧值"让它们从 1.1.x 起全是 hidden=true，
+        #   全新 PC 的「本机插件」列表因此是空的（找不到影视后端）。
+        $entry.hidden = $false
+        # 其余字段沿用原值（requires / display_name / desc 是人工维护的）
         if ($existing -and $existing.packages.$pid2) {
             $old = $existing.packages.$pid2
-            if ($null -ne $old.hidden) { $entry.hidden = $old.hidden }
             if ($old.requires) { $entry.requires = $old.requires }
             if ($old.display_name) { $entry.display_name = $old.display_name }
             if ($old.desc) { $entry.desc = $old.desc }

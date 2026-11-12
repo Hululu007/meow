@@ -5488,6 +5488,30 @@ defineExpose({ restart, seekTo, getTime, pause })
       -->
       <div class="md:hidden">
         <!-- 窄屏底栏放不下选集/线路，在这里补入口（sm 以上走底栏按钮） -->
+        <!-- 上/下一集：底栏那对按钮是 md:flex（<768 隐藏），手机没有直接切集，
+             只能开选集网格。这里补两个直连按钮（2026-11-12 指南核验发现） -->
+        <button
+          v-if="canSwitch"
+          class="menu-item"
+          :disabled="!hasPrev"
+          @click="goPrev"
+        >
+          <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M7 5h2v14H7zM19 5v14L9 12z" />
+          </svg>
+          上一集
+        </button>
+        <button
+          v-if="canSwitch"
+          class="menu-item"
+          :disabled="!hasNext"
+          @click="goNext"
+        >
+          <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M15 5h2v14h-2zM5 5v14l10-7z" />
+          </svg>
+          下一集
+        </button>
         <button
           v-if="canSwitch"
           class="menu-item"

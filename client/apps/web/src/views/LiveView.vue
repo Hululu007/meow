@@ -2568,7 +2568,7 @@ onBeforeUnmount(() => {
               <!-- 线路（多地址时才有） -->
               <button
                 v-if="current.urls.length > 1"
-                class="hidden shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20 backdrop-blur sm:flex"
+                class="flex shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20 backdrop-blur"
                 title="切换线路"
                 @click.stop="cycleLine(1)"
               >

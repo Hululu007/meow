@@ -99,7 +99,7 @@ jobs:
           fi
           TAG="${GITHUB_REF#refs/tags/}"
           case "$TAG" in
-            release-v[0-9]*)    set_out tv true;  set_out pc true;  set_out plugins true;  set_out docker true;  set_out tvplugins false; set_out release true;  set_out plugins_only apiserver ;;
+            release-v[0-9]*)    set_out tv true;  set_out pc true;  set_out plugins true;  set_out docker true;  set_out tvplugins false; set_out release true;  set_out plugins_only '' ;;
             tv-v[0-9]*)         set_out tv true;  set_out pc false; set_out plugins false; set_out docker false; set_out tvplugins false; set_out release true;  set_out plugins_only apiserver ;;
             pc-v[0-9]*)         set_out tv false; set_out pc true;  set_out plugins true;  set_out docker false; set_out tvplugins false; set_out release true;  set_out plugins_only apiserver ;;
             plugins-v[0-9]*)    set_out tv false; set_out pc false; set_out plugins true;  set_out docker false; set_out tvplugins false; set_out release true;  set_out plugins_only '' ;;

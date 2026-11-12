@@ -4,7 +4,7 @@
   "capability": "backend",
   "required": true,
   "fatal": false,
-  "version": "1.1.7",
+  "version": "1.2.0",
   "exec": "jre/bin/java",
   "execFallback": [
     "java"
@@ -34,5 +34,5 @@
   "dataDir": "{appData}/data",
   "distDir": "dist",
   "autostart": true,
-  "env": {}
+  "env": { "MEOW_BIND": "127.0.0.1" }
 }

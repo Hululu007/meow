@@ -462,8 +462,9 @@ function pickSite(key: string) {
         桌面（sm+）沿用原来的内联搜索框。
       -->
 
-      <!-- 窄屏「更多」：上面被隐藏的入口必须在这里找得到，否则等于功能消失 -->
-      <div class="relative sm:hidden" data-more-menu>
+      <!-- 窄屏「更多」：上面被隐藏的入口必须在这里找得到，否则等于功能消失。
+           覆盖到 md（<768）：直播/片库是 md:flex，640–767 这段只有这里能进 -->
+      <div class="relative md:hidden" data-more-menu>
         <button
           class="rounded-md px-2 py-1.5 text-ink-2 transition hover:bg-card-hover hover:text-ink max-sm:grid max-sm:h-10 max-sm:w-10 max-sm:place-items-center max-sm:rounded-full"
           title="更多"

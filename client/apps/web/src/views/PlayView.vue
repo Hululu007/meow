@@ -1816,9 +1816,9 @@ onBeforeUnmount(() => {
           会把它盖成"找不到 ffmpeg"，用户看到的报错跟影片毫无关系。
         -->
         <p v-if="hopError" class="mt-1.5 text-xs text-ink-3">（{{ hopError }}）</p>
-        <!-- 只有"拿不到地址"才提 parse=1；播放中途失败是另一回事 -->
+        <!-- 只有"拿不到地址"才给这句；播放中途失败是另一回事 -->
         <p v-if="isFetchError" class="mt-2 text-xs text-ink-3">
-          提示：部分源返回 <code>parse=1</code>，需要第三方解析器，Web 端暂不支持
+          提示：这条线路没能取到播放地址（源站可能临时不可用），换个线路或换个源试试
         </p>
         <p v-else-if="allLinesFailed" class="mt-2 text-xs text-ink-3">
           已尝试 {{ lines.length }} 条线路均失败，通常是源站整体不可用

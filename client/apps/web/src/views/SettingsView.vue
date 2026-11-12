@@ -3332,6 +3332,11 @@ const availablePlugins = computed(() => {
     (e) =>
       !e.hidden &&
       !have.has(e.id) &&
+      // 只列能在本机装的包：tv-node-* 是 Android 运行模块（platform=android-*），
+      // 出现在 PC「本机插件」里点安装只会解压失败；清单是外部输入，这里挡一层。
+      Array.isArray(e.platform) &&
+      e.platform.includes('windows-x64') &&
+
       // 应用自身的安装包条目（meow-pc / meow-tv 及旧 id app-pc / app-tv / app）
       // 不是插件：走了插件安装器会解压找不到 manifest.json 而失败。
       // 清单里已经写了 hidden:true，这里再挡一层——清单可能是别人手写的，
