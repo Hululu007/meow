@@ -1130,7 +1130,9 @@ export async function clearUpdateCache(): Promise<number> {
  * `crypto.subtle` 直接是 undefined，而 TV 恰恰是最需要校验的一端。
  */
 export async function sha256Hex(data: Uint8Array): Promise<string> {
-  const c = globalThis.crypto
+  // ★ 不用 globalThis：它是 Chrome 71+，Chromium 66（电视/投影仪 WebView）
+  //   上连这个标识符都没有，直接 ReferenceError。用 typeof 守卫的 crypto。
+  const c = typeof crypto !== 'undefined' ? crypto : undefined
   if (c?.subtle) {
     try {
       const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)

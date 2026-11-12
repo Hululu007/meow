@@ -1,3 +1,7 @@
+// ★ 必须排在最前：Chromium 66（Android 9 电视/投影仪）缺 Promise.allSettled /
+//   Object.fromEntries / flatMap / matchAll / at —— 这些是运行时 API，
+//   esbuild 的 target 只转语法不补 API。业务模块评估前必须先装好。
+import './compat/legacyPolyfills'
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'

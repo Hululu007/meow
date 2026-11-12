@@ -127,8 +127,9 @@ for (const r of rules) {
   const cls = cm[1]
 
   // 逻辑属性
-  const lm = /(padding-inline|padding-block|margin-inline|margin-block|inset-inline|inset-block)\s*:\s*([^;]+)/.exec(r.body)
-  if (lm) logical.push({ cls, media: r.media, prop: lm[1], value: lm[2].trim() })
+  // ★ inset 简写（inset:0）是 Chrome 87+，Chromium 66 整条丢弃 → 弹层/遮罩定位全丢。
+  const lm = /(^|[;{\s])(padding-inline|padding-block|margin-inline|margin-block|inset-inline|inset-block|inset)\s*:\s*([^;]+)/.exec(r.body)
+  if (lm) logical.push({ cls, media: r.media, prop: lm[2], value: lm[3].trim() })
 
   // gap 单值（双向）
   const gm = /(?:^|;)\s*gap\s*:\s*([^;]+)/.exec(r.body)
@@ -208,23 +209,29 @@ for (const it of logical) {
     'margin-block': ['margin-top', 'margin-bottom'],
     'inset-inline': ['left', 'right'],
     'inset-block': ['top', 'bottom'],
+    inset: ['top', 'right', 'bottom', 'left'],
   }[it.prop]
   if (pair) emit(`${P} .${it.cls} { ${pair[0]}: ${v}; ${pair[1]}: ${v}; }`, it.media)
 }
 
 lines.push('')
 lines.push('/* ── flex gap → 后代 margin ──')
-lines.push(' * 排除 flex-wrap：换行后每行首元素也会拿到 margin-left，整行右移。')
-lines.push(' * flex-col 用 margin-top（主轴纵向），其余用 margin-left（主轴横向）。')
+lines.push(' * ★ 容器判定用属性选择器（[class*="flex"] 等），不能用 .flex 工具类：')
+lines.push(' *   2026-11-12 投影仪实测——详情页容器是 `sm:flex sm:flex-row lg:gap-5`，')
+lines.push(' *   display 来自**带断点前缀的** sm:flex，`.flex` 根本不在 class 里，')
+lines.push(' *   所以 `.flex.gap-*` 的选择器一条都不匹配 → 间距照样是 0。')
+lines.push(' *   改成 [class*="flex"] 后，sm:flex / md:flex / flex-col / flex-wrap 全覆盖。')
+lines.push(' * 排除 grid：grid 的 gap 在 Chromium 66 是支持的，加 margin 会叠加双倍间距。')
+lines.push(' * flex-wrap 容器：换行后相邻兄弟会把每行首元素顶偏，改为"每子项都带 margin"。')
 lines.push(' */')
+const FLEX_ANY = '[class*="flex"]:not([class*="flex-col"]):not([class*="flex-wrap"]):not([class*="grid"])'
+const FLEX_COL = '[class*="flex-col"]:not([class*="grid"])'
+const FLEX_WRAP = '[class*="flex-wrap"]:not([class*="grid"])'
 for (const it of gaps) {
   const v = toRem(it.value) ?? it.value
-  emit(`${P} .flex:not(.flex-wrap).${it.cls} > * + * { margin-left: ${v}; }`, it.media)
-  emit(`${P} .flex-col.${it.cls} > * + * { margin-top: ${v}; }`, it.media)
-  // ★ flex-wrap 容器（2026-11-12 补）：相邻兄弟在换行后会把每行首元素顶偏，
-  //   改用"每个子项都带 margin"。代价是每行末尾/容器末尾多一份外边距
-  //   （无背景容器看不出来），换来换行后行间也有间距——比完全没有间距好。
-  emit(`${P} .flex-wrap.${it.cls} > * { margin-right: ${v}; margin-bottom: ${v}; }`, it.media)
+  emit(`${P} ${FLEX_ANY}.${it.cls} > * + * { margin-left: ${v}; }`, it.media)
+  emit(`${P} ${FLEX_COL}.${it.cls} > * + * { margin-top: ${v}; }`, it.media)
+  emit(`${P} ${FLEX_WRAP}.${it.cls} > * { margin-right: ${v}; margin-bottom: ${v}; }`, it.media)
 }
 
 lines.push('')
@@ -238,11 +245,11 @@ lines.push(' */')
 for (const it of axisGaps) {
   const v = toRem(it.value) ?? it.value
   if (it.axis === 'x') {
-    emit(`${P} .flex:not(.flex-wrap).${it.cls} > * + * { margin-left: ${v}; }`, it.media)
-    emit(`${P} .flex-wrap.${it.cls} > * { margin-right: ${v}; }`, it.media)
+    emit(`${P} ${FLEX_ANY}.${it.cls} > * + * { margin-left: ${v}; }`, it.media)
+    emit(`${P} ${FLEX_WRAP}.${it.cls} > * { margin-right: ${v}; }`, it.media)
   } else {
-    emit(`${P} .flex-col.${it.cls} > * + * { margin-top: ${v}; }`, it.media)
-    emit(`${P} .flex-wrap.${it.cls} > * { margin-bottom: ${v}; }`, it.media)
+    emit(`${P} ${FLEX_COL}.${it.cls} > * + * { margin-top: ${v}; }`, it.media)
+    emit(`${P} ${FLEX_WRAP}.${it.cls} > * { margin-bottom: ${v}; }`, it.media)
   }
 }
 

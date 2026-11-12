@@ -97,8 +97,8 @@ describe('构建产物：老内核（Chrome 66）兼容性', () => {
     //   读源文件的断言会假绿（实测踩过：故意把 gap-y 改成 margin-left，
     //   测试仍 11 passed，因为比对的是源文件、产物还是旧的）。
     const css = allCss()
-    const x = [...css.matchAll(/\.flex:not\(\.flex-wrap\)\.gap-x-[^{]*\{[^}]*margin-left/g)]
-    const y = [...css.matchAll(/\.flex-col\.gap-y-[^{]*\{[^}]*margin-top/g)]
+    const x = [...css.matchAll(/\[class\*=(?:"flex"|flex)\][^{]*\.gap-x-[^{]*\{[^}]*margin-left/g)]
+    const y = [...css.matchAll(/\[class\*=(?:"flex-col"|flex-col)\][^{]*\.gap-y-[^{]*\{[^}]*margin-top/g)]
     expect(x.length, 'gap-x 的兜底缺失或方向错（应只加 margin-left）').toBeGreaterThan(0)
     expect(y.length, 'gap-y 的兜底缺失或方向错（应只加 margin-top）').toBeGreaterThan(0)
     // ★ 反向校验：gap-x 绝不能出现 margin-top（那会让横向间距变成纵向偏移）
@@ -314,10 +314,10 @@ describe('flex-wrap 与手写 gap 的兜底', () => {
   const HAND = readFileSync(join(__dirname, '..', 'src', 'styles', 'legacy-css.css'), 'utf8')
 
   it('生成物给 flex-wrap 的 gap 工具类兜底（每子项 margin）', () => {
-    const wrap = [...GEN.matchAll(/\.flex-wrap\.gap-[^{]*\{[^}]*margin-right/g)]
+    const wrap = [...GEN.matchAll(/\[class\*="flex-wrap"\]:not\(\[class\*="grid"\]\)\.gap-[^{]*\{[^}]*margin-right/g)]
     expect(wrap.length, 'flex-wrap 的 gap 兜底缺失').toBeGreaterThan(0)
     // 反向：不许退回"相邻兄弟"写法（换行会顶偏整行）
-    expect(GEN).not.toMatch(/\.flex-wrap\.gap-[^{]*>\s*\*\s*\+\s*\*/)
+    expect(GEN).not.toMatch(/\[class\*="flex-wrap"\]:not\(\[class\*="grid"\]\)\.gap-[^{]*>\s*\*\s*\+\s*\*/)
   })
 
   it('手写类 .set-head/.tile/.set-sub/.menu-item 有 gap 兜底', () => {
@@ -326,5 +326,125 @@ describe('flex-wrap 与手写 gap 的兜底', () => {
     }
     // .set-head 是 flex-wrap，必须是"每子项 margin"而不是相邻兄弟
     expect(HAND).toMatch(/\.set-head > \*\s*\{[^}]*margin-right/)
+  })
+})
+
+/**
+ * inset 简写与 aspect-square 的兜底（2026-11-12 第二轮盘点）。
+ *
+ * - `inset: 0` 是 Chrome 87+ 的简写；Chromium 66 整条丢弃 → fixed 遮罩/弹层
+ *   失去定位（铺不满屏）。生成器本轮补了 inset → top/right/bottom/left。
+ * - `aspect-square` 只在播放统计用了一次，此前手写层只覆盖了 [2/3] 和 [16/9]。
+ */
+describe('inset 简写与 aspect-square 兜底', () => {
+  it('inset-0 必须展开成四边（不能用 inset 简写打发）', () => {
+    const css = readdirSync(DIST)
+      .filter((f) => f.endsWith('.css'))
+      .map((f) => readFileSync(join(DIST, f), 'utf8'))
+      .join(String.fromCharCode(10))
+    expect(css).toMatch(/\.inset-0\s*\{[^}]*top:\s*0[^}]*right:\s*0[^}]*bottom:\s*0[^}]*left:\s*0/)
+  })
+
+  it('aspect-square 有 padding-top 占位兜底', () => {
+    const hand = readFileSync(join(__dirname, '..', 'src', 'styles', 'legacy-css.css'), 'utf8')
+    expect(hand).toMatch(/\.aspect-square\s*\{[^}]*padding-top:\s*100%/)
+  })
+})
+
+/**
+ * 运行时 API 补丁（2026-11-12 第三轮：用户问"还有什么缺口"）。
+ *
+ * esbuild 的 `target: es2017` 只转语法，**不补内置对象**。
+ * 投影仪 WebView 66 上这些 API 缺失，调用即 TypeError：
+ *   Promise.allSettled(76) / flatMap(69) / Object.fromEntries(73) /
+ *   String.matchAll(73) / Array.at(92)
+ * 业务影响不是样式，是功能：收藏保存、AI 多源合并、WebDAV 同步、更新中心检查。
+ */
+describe('运行时 API 补丁', () => {
+  const MAIN = readFileSync(join(__dirname, '..', 'src', 'main.ts'), 'utf8')
+  const POLY = readFileSync(join(__dirname, '..', 'src', 'compat', 'legacyPolyfills.ts'), 'utf8')
+
+  it('main.ts 在业务模块之前安装补丁（模块评估即生效）', () => {
+    const importAt = MAIN.indexOf("import './compat/legacyPolyfills'")
+    expect(importAt, 'main.ts 没导入补丁模块').toBeGreaterThan(-1)
+    expect(importAt, '补丁导入必须排在业务导入之前').toBeLessThan(MAIN.indexOf("from 'vue'"))
+  })
+
+  it('覆盖投影仪实测缺失的 5 个 API', () => {
+    for (const api of [
+      'allSettled',
+      'flatMap',
+      "'flat'",
+      "'at'",
+      'matchAll',
+      'fromEntries',
+    ]) {
+      expect(POLY, `补丁缺少 ${api}`).toContain(api)
+    }
+  })
+})
+
+/**
+ * 未来 API 的使用门禁（2026-11-12 用户建议落地）。
+ *
+ * 背景：polyfill 只补"已经用到"的 API。以后新代码随手用了
+ * `structuredClone` / `Object.groupBy` / `toSorted` 这类（都是 Chrome 90+），
+ * 在新内核上开发完全无感，到投影仪上才 TypeError。
+ *
+ * 判据：源码里出现某个"Chromium 66 没有"的 API 调用时，
+ * legacyPolyfills.ts 必须有对应实现；没有就红，并告诉开发者版本号。
+ * 不想补的，改成等价的老写法即可（比"静默坏在用户机器上"便宜）。
+ */
+describe('新 API 使用门禁（Chromium 66）', () => {
+  const SRC = join(__dirname, '..', 'src')
+  const POLY = readFileSync(join(SRC, 'compat', 'legacyPolyfills.ts'), 'utf8')
+
+  const sources: string[] = []
+  const walk = (dir: string): void => {
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, ent.name)
+      if (ent.isDirectory()) {
+        if (ent.name === 'compat') continue // 补丁自身不算"使用"
+        walk(p)
+      } else if (/\.(ts|vue)$/.test(ent.name) && !p.endsWith('legacyPolyfills.ts')) {
+        sources.push(readFileSync(p, 'utf8'))
+      }
+    }
+  }
+  walk(SRC)
+  const all = sources.join('\n')
+
+  /** api：展示名；pattern：源码里的调用形态；marker：补丁里的实现标记；since：起始版本 */
+  const WATCH: Array<{ api: string; pattern: RegExp; marker: string; since: number }> = [
+    { api: 'Promise.allSettled', pattern: /Promise\.allSettled\s*\(/, marker: 'allSettled', since: 76 },
+    { api: 'Object.fromEntries', pattern: /Object\.fromEntries\s*\(/, marker: 'fromEntries', since: 73 },
+    { api: 'Array.prototype.flatMap', pattern: /\.flatMap\s*\(/, marker: 'flatMap', since: 69 },
+    { api: 'Array.prototype.flat', pattern: /\.flat\s*\(/, marker: "'flat'", since: 69 },
+    { api: 'Array.prototype.at', pattern: /\.at\s*\(\s*-?[0-9]/, marker: "'at'", since: 92 },
+    { api: 'String.prototype.matchAll', pattern: /\.matchAll\s*\(/, marker: 'matchAll', since: 73 },
+    { api: 'Object.hasOwn', pattern: /Object\.hasOwn\s*\(/, marker: 'hasOwn', since: 93 },
+    { api: 'String.prototype.replaceAll', pattern: /\.replaceAll\s*\(/, marker: 'replaceAll', since: 85 },
+    { api: 'Array.prototype.findLast', pattern: /\.findLast(Index)?\s*\(/, marker: 'findLast', since: 97 },
+    { api: 'Promise.any', pattern: /Promise\.any\s*\(/, marker: "'any'", since: 85 },
+    { api: 'structuredClone', pattern: /\bstructuredClone\s*\(/, marker: '@@none@@', since: 98 },
+    { api: 'Object.groupBy', pattern: /Object\.groupBy\s*\(/, marker: '@@none@@', since: 117 },
+    { api: 'Array.prototype.toSorted', pattern: /\.toSorted\s*\(/, marker: '@@none@@', since: 110 },
+    { api: 'Array.prototype.toReversed', pattern: /\.toReversed\s*\(/, marker: '@@none@@', since: 110 },
+    // globalThis 是 Chrome 71+ 的全局标识符；Chromium 66 上引用即 ReferenceError
+    { api: 'globalThis', pattern: /globalThis/, marker: '@@none@@', since: 71 },
+  ]
+
+  it('源码用到的每个新 API 都必须在 legacyPolyfills 里有实现', () => {
+    const missing: string[] = []
+    for (const w of WATCH) {
+      if (!w.pattern.test(all)) continue // 没用到就不要求
+      if (w.marker === '@@none@@' || !POLY.includes(w.marker)) {
+        missing.push(`${w.api}（Chrome ${w.since}+）`)
+      }
+    }
+    expect(
+      missing,
+      `这些 API 在 Chromium 66 上不存在，先加 polyfill 或换老写法：${missing.join('、')}`,
+    ).toEqual([])
   })
 })
