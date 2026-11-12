@@ -112,7 +112,7 @@ adb install -r meow-TV-<版本>.apk
 | 飞牛版内置弹幕插件 | 1.1.0 | 复用应用中心 Node 22 |
 | fnOS 应用内更新 | 1.1.3 | 旧版只能走应用中心 |
 | 配置支持 `spiderJvm` | 1.1.6 | 旧版不认该字段，仍需 `config.jvm.json` |
-| JVM 导入期 dex→class（dex2jvm） | 当前主分支 | 源包只需 dex；旧 JVM 仍要 `config.jvm.json` 的 class jar |
+| JVM 导入期 dex→class（dex2jvm） | 1.1.7 | 源包只需 dex；旧 JVM 仍要 `config.jvm.json` 的 class jar |
 
 更早的能力（端内网关、扫码推送）没有逐版本记录，判断依据以实际界面为准。
 完整对照见 [版本兼容矩阵](/reference/compatibility)。

@@ -110,14 +110,15 @@ jar 的**内部形态**决定三端能不能用——同一份配置，端不同
 
 | jar 形态 | 猫窝 TV / Fongmi | 猫窝 Web / PC / Docker |
 |---|---|---|
-| dex jar（ZIP 内含 `classes.dex`） | ✅ 直接加载 | ✅ 导入时自动转成 class |
+| dex jar（ZIP 内含 `classes.dex`） | ✅ 直接加载 | ✅ 支持，导入期 Dex2Jvm 转 class |
 | class jar（只有 `.class`） | ❌ 加载失败 | ✅ 原生加载 |
 | 加固 jar（含 native `.so`） | ✅ 原生库随设备架构 | ❌ 转不出来，对应站点不可用 |
 
 ::: tip 社区聚合配置先看 jar 形态
-饭太硬、肥猫、qist 这类社区配置大多是 TVBox 老格式：TV 端大部分能用；Web / PC 端
-能不能用取决于 jar 是不是纯 dex——含 native 库的加固 jar 转不出来。导完对照
-「导入后自检」看站点数与实际可用数是否一致。
+饭太硬、肥猫、qist 这类社区配置大多是 TVBox 老格式。**三端对 dex jar 都可用**：
+TV / Fongmi 直接加载；Web / PC / Docker（JVM 运行时）1.1.7 起在导入期经
+Dex2Jvm 自动转 class。唯一例外是含 native `.so` 的加固 jar——TV 能用，
+JVM 端对应站点转不出来。导完对照「导入后自检」核对站点数与实际可用数。
 :::
 
 ## 导入后自检
