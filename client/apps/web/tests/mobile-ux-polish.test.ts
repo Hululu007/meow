@@ -141,7 +141,8 @@ describe('⑦ 竖屏直播页：返回键跟底栏同显隐 + 面板里不显示
     const body = live.slice(i, i + 400)
     expect(body).toContain('current.value')
     expect(body).toContain('showCtrl.value')
-    expect(body).toContain('!showGuide.value')
+    // 面板改成浮动卡片后不再遮住左上角，返回键不必让位
+    expect(body).not.toContain('!showGuide.value')
     expect(body).toContain('isTouch.value')
     expect(body).toContain('compactViewport.value')
   })
@@ -164,6 +165,26 @@ describe('⑦ 竖屏直播页：返回键跟底栏同显隐 + 面板里不显示
     expect(body).toContain('env(safe-area-inset-top)')
     expect(body).toContain('@click="leaveLive"')
     expect(body).toContain('aria-label="返回"')
+  })
+
+  it('「分类-台」是浮起来的圆角卡片（竖屏顶部留出返回键的位置）', () => {
+    expect(live).toContain('overflow-hidden rounded-xl border border-white/10 bg-black/75')
+    // 横屏贴边、竖屏顶部留 3.5rem（返回键 48px 高 + 8px 间隙）
+    expect(live).toContain('top-14 bottom-3')
+    expect(live).toContain('top-3 bottom-3')
+    // 不再贴着左/上边缘（原来 inset-y-0 left-0 把返回键压在下面）
+    expect(live).not.toContain('absolute inset-y-0 left-0 flex w-1/3')
+  })
+
+  it('ESC = 返回：面板→全屏→调试面板→离开页面，逐层退出', () => {
+    const i = live.indexOf('ESC 的优先级')
+    expect(i).toBeGreaterThan(0)
+    const body = live.slice(i, i + 700)
+    expect(body).toContain('toggleFullscreen()')
+    expect(body).toContain('debugOn.value')
+    expect(body).toContain('leaveLive()')
+    // 面板开着时由 guide 分支先吃掉了 ESC，不会走到这里直接退页
+    expect(live).toContain('showGuide.value = false')
   })
 
   it('方向键提示只给非触屏设备；手机上行内提示整条不渲染', () => {

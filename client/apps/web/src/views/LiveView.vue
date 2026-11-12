@@ -308,7 +308,8 @@ const showLiveBack = computed(
     !landscape.value &&
     !!current.value &&
     showCtrl.value &&
-    !showGuide.value &&
+    // ★ 面板打开时**不再**隐藏（2026-11-12）：面板改成浮起来的圆角卡片后
+    //   顶部留了 3.5rem 的边距，左上角返回键完全露在外面，可以继续点。
     isTouch.value &&
     (!isTvEnv() || compactViewport.value),
 )
@@ -1968,10 +1969,25 @@ function onKeydown(e: KeyboardEvent) {
       toggleDebug()
       break
     case 'Escape':
-      if (pseudoFs.value || document.fullscreenElement) {
-        e.preventDefault()
+      /*
+       * ESC 的优先级（web / PC 的通用直觉，2026-11-12 用户要求）：
+       *   真全屏 → **不拦**，交给浏览器自己退（一拦原生退出就没了，而 WebView2 里 exitFullscreen() 在没有用户手势时可能被拒 → 卡在全屏）；
+       *   伪全屏 → 自己退；
+       *   调试面板开着 → 只关面板；
+       *   其余 → 返回上一页（与左上角返回键同一个出口）。
+       * 「分类-台」面板的 ESC 在上面 guide 分支里已经处理掉了。
+       */
+      if (document.fullscreenElement) break
+      e.preventDefault()
+      if (pseudoFs.value) {
         void toggleFullscreen()
+        break
       }
+      if (debugOn.value) {
+        toggleDebug()
+        break
+      }
+      leaveLive()
       break
     default:
       return
@@ -2852,7 +2868,8 @@ onBeforeUnmount(() => {
       >
         <!-- 左侧 1/3 透明面板：左右两块，各自滚动 -->
         <div
-          class="absolute inset-y-0 left-0 flex w-1/3 min-w-[18rem] max-w-[34rem] bg-black/72 backdrop-blur-md"
+          class="absolute left-3 flex w-1/3 max-sm:w-[86%] min-w-[16rem] max-w-[34rem] overflow-hidden rounded-xl border border-white/10 bg-black/75 shadow-2xl backdrop-blur-md"
+          :class="landscape ? 'top-3 bottom-3' : 'top-14 bottom-3'"
           data-guide-panel
           :style="guidePanelStyle"
           @click.stop
@@ -3078,9 +3095,12 @@ onBeforeUnmount(() => {
 .guide-resize:active::after {
   background: var(--color-accent, #03dac5);
 }
-/* 面板右边缘、两列分界各半个命中区压在边线上 */
+/*
+ * 面板现在 overflow-hidden + 圆角：命中区不能再往外伸（会被裁掉），
+ * 改成贴着内沿 10px —— 视觉上仍压在边线上，拖动命中不受影响。
+ */
 .guide-resize--edge,
 .guide-resize--split {
-  right: -5px;
+  right: 0;
 }
 </style>
