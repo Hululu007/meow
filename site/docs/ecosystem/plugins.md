@@ -25,10 +25,11 @@ PC 版安装包只有壳（约 6 MB）。后端、drpy、弹幕、Node 运行时
 认后端，靠 `capability: "danmaku"` 认弹幕服务。其他 id 也能装、也能被启停，
 但应用不知道它们的用途，不会自动接线。
 
-::: warning 官方清单暂只含影视后端
-当前官方更新清单只提供 `apiserver` 条目；`drpy`、`danmu-api` 与 `node` 条目待补。
-没有 drpy 时 `.js` 源全部「不可用」，弹幕只有内置直连——需要它们的用户可以先
-自建源托管，见 [自建插件源](/ecosystem/plugin-source)。
+::: warning 官方清单当前是空的（已知问题）
+官方清单把插件条目都标记成了隐藏，应用里「可安装」列表可能为空。当前可在
+[Releases](https://github.com/upchr/meow/releases) 手动下载 `apiserver-<版本>.zip`，
+用「导入本地包」安装；`drpy`、`danmu-api`、`node` 条目待补，可先自建源
+（见 [自建插件源](/ecosystem/plugin-source)）。
 :::
 
 ## 安装流程

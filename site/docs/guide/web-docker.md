@@ -74,7 +74,8 @@ docker compose up -d web                         # 只起前端，连远端后�
 | `MEOW_CORS` | 跨域策略：`*` / `none` / 白名单 | `*` |
 | `MEOW_JS_RUNTIME` | drpy 地址 | `http://drpy:9330` |
 | `MEOW_DANMAKU_API` | 弹幕聚合地址；**置空写 `MEOW_DANMAKU_API=`** | `http://danmu_api:9321` |
-| `MEOW_DATA` | 后端数据目录 | `/data` |
+
+容器内的 `MEOW_DATA` 固定为 `/data`，不通过 `.env` 改；宿主上的实际目录由编排文件的 bind mount 决定（`./data` 或 `../../data`），要换位置就编辑编排文件。
 
 ::: warning `MEOW_DANMAKU_API=` 与不写不一样
 不写会回退到默认值 `http://danmu_api:9321`；显式写空串才表示「不用聚合服务」。
@@ -88,7 +89,8 @@ docker compose up -d web                         # 只起前端，连远端后�
 
 1. 把 `APISERVER_BIND` 改成 `0.0.0.0`
 2. **同时设置 `MEOW_AUTH_TOKEN`**，否则同一网段任何人都能清空你的收藏与配置
-3. 只在可信网络里这么做，公网暴露请走反向代理 + HTTPS
+3. 设了令牌后，**浏览器端也要在「设置 → 连接 → 写操作令牌」填同一个值**——令牌只注入后端，web 容器不转发它，不填的话导入配置 / 收藏 / 保存设置都会 401
+4. 只在可信网络里这么做，公网暴露请走反向代理 + HTTPS
 
 ## 从源码构建
 
@@ -121,12 +123,17 @@ docker compose logs -f web
 ## 升级
 
 ```bash
-cd deploy/docker
+cd deploy/docker        # 方式二就进编排文件所在目录
 docker compose pull
 docker compose up -d
 ```
 
-数据在 `MEOW_DATA` 挂载的目录里，升级不覆盖。跨大版本前建议先备份该目录。
+**升级要先把版本号换掉**：镜像 tag 由 `MEOW_VERSION` 决定，而 `.env.example` 与下载的编排里都是**钉死的具体版本**——不改版本号时 `pull` 拉到的还是同一个 tag，命令成功但版本没变。两种做法任选：
+
+- 改 `.env` 的 `MEOW_VERSION=<新版本>` 再 `pull`；
+- 或者重新下载最新编排文件（里面的兜底版本随发版自动更新）。
+
+数据在宿主编排文件旁的 `./data`（仓库版是仓库根的 `data/`），bind mount，升级不覆盖。跨大版本前建议先备份该目录。
 
 ## 相关文档
 
