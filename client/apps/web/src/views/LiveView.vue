@@ -41,6 +41,7 @@ let firstPlayDone = false
  * 直播没有进度/续播/片头尾/选集，套上那套只会多出一堆永不触发的分支。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { useOverlayHost } from '@/composables/useOverlayHost'
 import { useRouter } from 'vue-router'
 import Hls from 'hls.js'
 import { addLiveSource, fetchLive, fetchLivePlaylist, proxyStream, type LiveChannel, type LiveGroup } from '@/api'
@@ -311,6 +312,8 @@ let hideTimer: number | undefined
  *   用户看到的是"↑↓ 直接跳到左侧分类列表"。
  */
 const showGuide = ref(false)
+/** 频道指南挂哪儿：默认 body，真全屏时换成全屏元素（否则面板画不出来） */
+const guideOverlayHost = useOverlayHost()
 /** 面板光标：左列分类下标（面板导航由页面接管，见 openGuide 注释） */
 const guideGroup = ref(0)
 /** 面板光标：右列台下标（在去重后的 channels 里） */
@@ -2770,8 +2773,9 @@ onBeforeUnmount(() => {
       ★ 用 Teleport 挂到 body：留在本组件内会被外层容器的定位上下文
         影响（顶栏 sticky / 播放器 fixed 全屏都靠它），实测遮罩盖不住
         顶栏、画面透出来。Teleport 到 body 才是真正的"盖住整个视口"。
+        ★ 真全屏时 body 上的浮层不渲染，所以目标由 useOverlayHost 动态切换。
     -->
-    <Teleport to="body">
+    <Teleport :to="guideOverlayHost">
       <!--
         ★ role="dialog" 而不是 data-tv-scope。
 

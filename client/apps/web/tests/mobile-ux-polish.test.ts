@@ -132,6 +132,27 @@ describe('④ 播放器底栏遮罩', () => {
   })
 })
 
+describe('⑥ 真全屏时浮层仍可见（Teleport 目标跟随 fullscreenElement）', () => {
+  it('有 useOverlayHost：监听 fullscreenchange 并切换目标', () => {
+    const path = 'src/composables/useOverlayHost.ts'
+    expect(existsSync(join(WEB, path))).toBe(true)
+    const mod = read(path)
+    expect(mod).toContain('document.fullscreenElement')
+    expect(mod).toContain("document.addEventListener('fullscreenchange', sync)")
+    expect(mod).toContain("document.removeEventListener('fullscreenchange', sync)")
+    // 退出全屏要回到 body
+    expect(mod).toContain("|| 'body'")
+  })
+
+  it('直播指南面板不再硬编码 to="body"', () => {
+    const live = read('src/views/LiveView.vue')
+    expect(live).toContain('useOverlayHost')
+    expect(live).toContain(':to="guideOverlayHost"')
+    // 全屏容器里时，若还写死 body 就整块画不出来（2026-11-12 实测）
+    expect(live.includes('<Teleport to="body">')).toBe(false)
+  })
+})
+
 describe('⑤ 直播「分类-台」面板：自适应 + 可拖拽', () => {
   const live = read('src/views/LiveView.vue')
 
