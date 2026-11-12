@@ -104,4 +104,4 @@ Windows 桌面应用，Tauri 2 外壳 + 内嵌 Vue 前端 + 按需下载的 side
 | 弹幕装了还是没多源 | `policy.json` 里的 `danmakuApi` 可能被之前手填的地址占着，清空让它自动填 |
 | 应用启动慢 | 后端 JVM 冷启动 + 端口协商，属正常；插件健康检查超时是 45 秒 |
 
-更多插件机制见 [插件生态与安装](/ecosystem/plugins)。
+更多插件机制见 [插件与安装](/ecosystem/plugins)。

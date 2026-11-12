@@ -108,4 +108,4 @@ gradle :runtime-node:assembleRelease
 ## 相关文档
 
 - 模块与壳的完整契约：开发文档 [TV 接入与 Fongmi](/dev/tv-integration)
-- 插件机制（PC 侧）：[插件生态与安装](/ecosystem/plugins)
+- 插件机制（PC 侧）：[插件与安装](/ecosystem/plugins)

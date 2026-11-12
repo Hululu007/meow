@@ -100,5 +100,5 @@ spider jar 是第三方代码，在宿主 JVM（Web/PC）或 TV 进程里**直�
 ## 相关
 
 - 局域网访问与令牌：[Web / Docker](/guide/web-docker#局域网访问)
-- 插件信任模型：[插件生态与安装](/ecosystem/plugins)
+- 插件信任模型：[插件与安装](/ecosystem/plugins)
 - 源包形态：[导入源包](/guide/source-pack)

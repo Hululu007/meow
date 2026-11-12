@@ -57,5 +57,5 @@
 ## 相关
 
 - 源包怎么用：[导入源包](/guide/source-pack)
-- 插件是什么：[插件生态与安装](/ecosystem/plugins)
+- 插件是什么：[插件与安装](/ecosystem/plugins)
 - 配置字段：[源包与配置格式](/ecosystem/source-format)

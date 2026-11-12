@@ -119,9 +119,9 @@ const guideSidebar = [
 
 const ecosystemSidebar = [
   {
-    text: '插件',
+    text: '插件与运行时',
     items: [
-      { text: '插件生态与安装', link: '/ecosystem/plugins' },
+      { text: '插件与安装', link: '/ecosystem/plugins' },
       { text: '插件 manifest 规范', link: '/ecosystem/plugin-manifest' },
       { text: '自建插件源', link: '/ecosystem/plugin-source' },
       { text: 'TV 运行时模块', link: '/ecosystem/runtime-module' },

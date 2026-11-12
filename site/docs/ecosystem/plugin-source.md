@@ -158,4 +158,4 @@ python -m http.server 8099
 ## 相关文档
 
 - manifest 字段：[插件 manifest 规范](/ecosystem/plugin-manifest)
-- 插件机制与回滚：[插件生态与安装](/ecosystem/plugins)
+- 插件机制与回滚：[插件与安装](/ecosystem/plugins)
