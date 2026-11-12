@@ -269,7 +269,7 @@ function syncCompactViewport() {
 /**
  * 全屏时左上角的「退出全屏」按钮（手机上唯一的出口）。
  *
- * <p>判据直接复用点播播放器那套（VideoPlayer 的 showBackButton + showFloatingBack），
+ * <p>判据直接复用点播播放器那套（VideoPlayer 的 showBackButton；浮层返回键已按用户要求删除），
  * 用户口径：**大屏 TV 不显示，竖屏设备切换成横屏的正常显示**。
  *
  *   真电视（TV 壳 + 非紧凑视口）→ 不给：遥控器有返回键，而且左上角按钮在
@@ -287,6 +287,25 @@ const showExitFsButton = computed(
   () =>
     (fullscreen.value || pseudoFs.value) &&
     !showCtrl.value &&
+    isTouch.value &&
+    (!isTvEnv() || compactViewport.value),
+)
+
+/**
+ * 手机形态播放中，左上角的「返回」按钮。
+ *
+ * <p>直播页是路由级满屏（App 的顶栏按 isLive 隐藏），有台在播时屏幕上原本
+ * 只有底栏，而底栏 5 秒自动收起 —— 收起后手机只剩系统返回手势。
+ *
+ * <p>显隐跟**底栏**同一个节奏（showCtrl），并且「分类-台」面板打开时隐藏：
+ * 面板占着屏幕左侧三分之一（含左上角），按钮留着只会压在面板标题上。
+ * 真电视不给（遥控器有返回键，而且左上角按钮会被几何选焦最先命中）。
+ */
+const showLiveBack = computed(
+  () =>
+    !!current.value &&
+    showCtrl.value &&
+    !showGuide.value &&
     isTouch.value &&
     (!isTvEnv() || compactViewport.value),
 )
@@ -2303,6 +2322,22 @@ onBeforeUnmount(() => {
         手机没有物理返回键就卡在这一屏。有台在播时不显示（全屏画面里另有
         悬浮退出按钮，见 showExitFsButton）。
     -->
+    <!--
+      播放中的「返回」：与底栏同显隐；面板打开时让位（面板占着左上角）。
+      手机/TV 壳跑在紧凑视口时给，真电视不给（遥控器有返回键，且会抢焦点）。
+    -->
+    <button
+      v-if="showLiveBack"
+      class="absolute z-30 grid h-9 w-9 place-items-center rounded-full bg-white/10 text-white backdrop-blur transition hover:bg-white/20 active:scale-95"
+      style="left: calc(0.75rem + env(safe-area-inset-left)); top: calc(0.75rem + env(safe-area-inset-top))"
+      aria-label="返回"
+      title="返回"
+      @click="leaveLive"
+    >
+      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="m15 18-6-6 6-6" />
+      </svg>
+    </button>
     <button
       v-if="!current"
       class="absolute z-30 flex items-center gap-1 rounded-full bg-white/12 py-1.5 pl-2 pr-3 text-xs text-white/85 backdrop-blur transition hover:bg-white/20 active:scale-95"
@@ -2925,8 +2960,13 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- 底部操作提示 + 源聚合统计（原顶栏信息移到这里） -->
+        <!--
+          底部操作提示 + 源聚合统计（原顶栏信息移到这里）。
+          ★ 触屏设备整条不渲染（2026-11-12 用户要求）：手机上既没有方向键，
+            这条提示只会压在「分类-台」面板的台列表上。源统计是给电视/PC 排查用的。
+        -->
         <div
+          v-if="!isTouch"
           class="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded bg-black/60 px-3 py-1 text-center text-[11px] text-white/70"
         >
           <span v-if="stats" class="mr-2 text-white/45">
@@ -2935,7 +2975,11 @@ onBeforeUnmount(() => {
           <!-- 多源合并时把"这一台的线路都来自哪几个源"摊开：用户才知道
                「6 线」是哪来的，换线路换的是哪个源 -->
           <span v-if="guideSrcHint" class="mr-2 text-white/60">{{ guideSrcHint }}</span>
-          ←→ 换列 · ↑↓ 本列移动 · OK 选择 · BACK 关闭
+          <!--
+            方向键说明只给电视/PC：手机上根本没有方向键，占着一行字还挡画面
+            （2026-11-12 用户要求竖屏设备不显示这条提示栏）。源统计仍然保留。
+          -->
+          <span v-if="!isTouch">←→ 换列 · ↑↓ 本列移动 · OK 选择 · BACK 关闭</span>
         </div>
       </div>
     </Teleport>

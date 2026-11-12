@@ -132,6 +132,39 @@ describe('④ 播放器底栏遮罩', () => {
   })
 })
 
+describe('⑦ 竖屏直播页：返回键跟底栏同显隐 + 面板里不显示方向键提示', () => {
+  const live = read('src/views/LiveView.vue')
+
+  it('有 showLiveBack：播放中 + 控制栏可见 + 面板未开 + 触屏（真电视不给）', () => {
+    const i = live.indexOf('const showLiveBack = computed(')
+    expect(i).toBeGreaterThan(0)
+    const body = live.slice(i, i + 400)
+    expect(body).toContain('current.value')
+    expect(body).toContain('showCtrl.value')
+    expect(body).toContain('!showGuide.value')
+    expect(body).toContain('isTouch.value')
+    expect(body).toContain('compactViewport.value')
+  })
+
+  it('按钮贴在左上角安全区，点了走 leaveLive', () => {
+    const i = live.indexOf('v-if="showLiveBack"')
+    expect(i).toBeGreaterThan(0)
+    const body = live.slice(i, i + 700)
+    expect(body).toContain('env(safe-area-inset-left)')
+    expect(body).toContain('env(safe-area-inset-top)')
+    expect(body).toContain('@click="leaveLive"')
+    expect(body).toContain('aria-label="返回"')
+  })
+
+  it('方向键提示只给非触屏设备；手机上行内提示整条不渲染', () => {
+    expect(live).toContain('v-if="!isTouch"')
+    expect(live).not.toContain('v-if="!isTouch || stats || guideSrcHint"')
+    expect(live).toContain('<span v-if="!isTouch">←→ 换列')
+    // 方向键文案不能再是无条件文本
+    expect(live.includes('          ←→ 换列')).toBe(false)
+  })
+})
+
 describe('⑥ 真全屏时浮层仍可见（Teleport 目标跟随 fullscreenElement）', () => {
   it('有 useOverlayHost：监听 fullscreenchange 并切换目标', () => {
     const path = 'src/composables/useOverlayHost.ts'
