@@ -8,11 +8,6 @@
 清单文件是 **`packages.json`**（官方 Release 资产里的同名文件就是标准样例）；
 `index.json` 是早期别名，仍兼容。填**目录地址**时应用依次试这两个，填完整文件地址则直接用。
 
-::: tip 别和 `fnpack.json` 混了
-`fnpack.json` 是**飞牛应用中心**的第三方源索引（`schema_version: 2` + `apps` 结构），
-和 PC 插件清单（`schema_version: 1` + `packages` 结构）是两套格式，不能互相喂。
-:::
-
 支持三种源地址写法：
 
 ```

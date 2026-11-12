@@ -122,8 +122,7 @@ Rust 侧默认不预置插件源（`SourceList::default` 为空）——写死�
 
 ### 3.1 源地址写法
 
-插件源文件名是 **`packages.json`**，不是 `fnpack.json`
-（后者是 fpk 应用索引，属于另一条链路）。
+插件源文件名是 **`packages.json`**（`index.json` 是早期别名，仍兼容）。
 
 | 写法 | 行为 |
 |---|---|
