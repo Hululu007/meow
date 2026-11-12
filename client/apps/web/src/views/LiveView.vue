@@ -1139,6 +1139,14 @@ async function guideOk() {
  * 就会永远转圈或永远不转）。
  */
 const buffering = ref(false)
+/** 卡住瞬间的 currentTime（timeupdate 自愈用） */
+let bufStalledAt = 0
+/** timeupdate 最后一次推进时的 currentTime / 时刻（看门狗用） */
+let lastAdvanceCt = -1
+let lastAdvanceAt = 0
+/** 本次卡顿是否已经拉过 hls（避免每 2 秒狂调 startLoad） */
+let bufRecovered = false
+let bufWatchdogTimer: number | undefined
 
 /** 起播耗时（切源 → 首个 playing），调试面板里看 */
 const loadStartedAt = ref(0)
@@ -1522,6 +1530,58 @@ function onStageClick() {
 /** 缓冲态：waiting/stalled 置位，playing/canplay 复位（成对，缺一边就会一直转圈） */
 function onVideoWaiting() {
   buffering.value = true
+  // 记下卡住瞬间的时间点：timeupdate 里用它判断"画面真的往前走了"
+  bufStalledAt = video.value?.currentTime ?? 0
+}
+
+/**
+ * 缓冲提示的自愈（2026-11-12 投影仪实测）。
+ *
+ * Chromium 66（Android 9 电视/投影仪）上，MSE 直播从卡顿恢复时**不一定再派发
+ * `playing` / `canplay`** —— 实测挂上事件计数器后一次都没来，而画面明明在播。
+ * 于是 buffering 永久卡 true：「正在加载 XXX」大盖在正在播放的画面上。
+ *
+ * 判据改成"画面时间往前走了 50ms 就算缓冲结束"：timeupdate 只在真正推进时
+ * 触发（实测 4Hz），卡住时不发，语义上正好等价于"不在缓冲"。
+ * 与 VideoPlayer.vue 的弹幕冻结自愈同一套思路。
+ */
+function onVideoTimeUpdate() {
+  const v = video.value
+  if (!v) return
+  lastAdvanceCt = v.currentTime
+  lastAdvanceAt = performance.now()
+  bufRecovered = false
+  if (buffering.value && v.currentTime > bufStalledAt + 0.05) buffering.value = false
+}
+
+/**
+ * 缓冲看门狗（2026-11-12 投影仪实测：这台内核的 MediaSource 媒体事件极不可靠）。
+ *
+ * 两个方向都靠不住：
+ *   · 画面在播 → `playing`/`canplay` 不重发 → 提示永远不消失；
+ *   · 画面卡死 → `waiting`/`stalled` 也不发 → 用户看到一张静止画面、没有任何提示。
+ *
+ * 唯一可靠的信号是 currentTime 有没有往前走（timeupdate 只在推进时发，4Hz）。
+ * 每 2 秒对一次：3 秒没推进就进缓冲态；8 秒没推进就让 hls.js 重新 startLoad。
+ */
+function checkBufferWatchdog() {
+  const v = video.value
+  if (!v || v.paused) return
+  const now = performance.now()
+  const stalledFor = now - lastAdvanceAt
+  if (v.currentTime !== lastAdvanceCt || stalledFor <= 3000) return
+  if (!buffering.value) {
+    buffering.value = true
+    bufStalledAt = v.currentTime
+  }
+  if (stalledFor > 8000 && !bufRecovered) {
+    bufRecovered = true
+    try {
+      hls.value?.startLoad()
+    } catch {
+      /* hls 已销毁或未初始化，忽略 */
+    }
+  }
 }
 
 function onVideoPlaying() {
@@ -1805,6 +1865,10 @@ function switchUrl(url: string) {
   buffering.value = true
   loadStartedAt.value = Date.now()
   firstFrameMs.value = null
+  // 看门狗基线：新流从 currentTime=0 起算，起播即卡死也能在 3 秒后出提示
+  lastAdvanceCt = 0
+  lastAdvanceAt = performance.now()
+  bufRecovered = false
   clearTimeout(badTimer)
   const v = video.value
   if (!v) return
@@ -2013,6 +2077,7 @@ function handleTvMenuHere(): boolean {
 onMounted(() => {
   void load()
   syncCompactViewport()
+  bufWatchdogTimer = window.setInterval(checkBufferWatchdog, 2000)
   window.addEventListener('keydown', onKeydown)
   document.addEventListener('fullscreenchange', onFsChange)
   // 横竖屏跟随（手机旋转时底栏出现/消失，横屏 TV 不受影响）
@@ -2048,6 +2113,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   // 先停媒体再拆 hls（见 stopMedia 的说明）
+  if (bufWatchdogTimer) { clearInterval(bufWatchdogTimer); bufWatchdogTimer = undefined }
   stopMedia()
   destroyHls()
   // 磁盘缓存是防抖写的：退出时补一笔，否则刚合并完就离开会丢掉这次结果
@@ -2293,6 +2359,7 @@ onBeforeUnmount(() => {
             @waiting="onVideoWaiting"
             @stalled="onVideoWaiting"
             @canplay="buffering = false"
+            @timeupdate="onVideoTimeUpdate"
             @enterpictureinpicture="pipOn = true"
             @leavepictureinpicture="pipOn = false"
           />
