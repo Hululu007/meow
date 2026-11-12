@@ -51,7 +51,7 @@ TV   ─┘
 >   JVM 优化/旧版兼容字段，不是必需产物。
 > - 规则、校验脚本与 OECT 源服务部署见 [`deploy/source-pack/`](deploy/source-pack/README.md)
 >   和 [`deploy/SOURCE_PACK.md`](deploy/SOURCE_PACK.md)。
-> - 导入入口：Web/PC 设置 →「配置源」；TV 设置 →「本机执行」→ 配置地址；
+> - 导入入口：Web/PC 设置 →「搜索与源」→「配置源」；TV 设置 →「本机执行」→ 填配置地址后点**「导入到本机」**；
 >   手机扫码可把**后端地址 + 配置地址**推给 TV（走后端模式）。
 > - 源包放在私有 Release / NAS / 对象存储即可，仓库只保留加载器、示例配置和构建脚本。
 > - **PC 安装包与公开 Release 都不内置源包**：装完是空壳，导入源包后恢复 jar 站。
@@ -87,8 +87,8 @@ meow/
 │   ├── drpy/           drpy 外挂 Node 运行时（打成插件）
 │   ├── plugin-manifests/  插件清单模板
 │   └── build-plugin*.ps1  插件构建（fat jar + jlink JRE）
-├── site/docs/dev/   架构/契约/前端/TV/插件/部署等技术文档（与文档站共用）
-├── deploy/          部署与发版（Dockerfile ×3 + compose ×2 + 脚本）
+├── site/            文档站（VitePress）：guide/ 使用指南 + ecosystem/ 源包插件 + reference/ 参考 + dev/ 技术文档
+├── deploy/          部署与发版（Dockerfile ×3 + compose ×4，含「不 clone 直接下」的 standalone + 脚本）
 └── data/            运行时数据（apiserver 与 danmu 各自挂载）
 ```
 
@@ -98,19 +98,19 @@ meow/
 
 ## 功能现状
 
-当前版本 1.1.5 的实际能力：
+当前能力概况（具体版本见 [Releases](https://github.com/upchr/meow/releases)）：
 
 | 模块 | 能力 |
 |---|---|
 | 浏览与搜索 | 首页推荐、分类分页、详情、聚合搜索（自适应预算 / 失效跳过 / 结果缓存）、搜索历史、收藏与追剧更新 |
-| 播放 | HLS/DASH、`parse=1` 解析、手动/自动换线、续播、0.5–3x 倍速、片头尾与中插跳过、选集连播、字幕（SRT/ASS/HLS 内嵌）、画中画、DLNA 投屏、假死与 404 看门狗 |
+| 播放 | HLS/DASH、`parse=1` 解析（type 1/4）、手动/自动换线、续播、0.5–3x 倍速、片头尾与中插跳过、选集连播、字幕（SRT/ASS/HLS 内嵌）、画中画、DLNA 投屏、假死与 404 看门狗 |
 | 弹幕 | 多源降级（顺序可配）、手动搜索、屏蔽/密度/透明度/字号/速度、本地缓存、canvas 60fps、片尾预取 |
 | 直播 | 站点聚合 + IPTV m3u/txt、换台、坏台自动跳、左右切线路 |
 | 片库与缓存 | WebDAV / 本地 / SMB 片库，Range 直连，按需转 HLS，海报刮削；单集/整季离线缓存、断点续传、离线优先 |
 | 跨端状态 | 收藏/进度/历史/观看统计/偏好跨端通道；WebDAV 同步与备份（快照式，非实时） |
 | 源与配置 | 多仓配置导入（探测 + 自动备份）、站点健康/停用/批量管理、安全 DNS/DoH、drpy JS 运行时 |
 | 设置与 AI | 外观/网络/弹幕/播放/搜索/数据维护；AI 助手（规则 + 语义工具 + 模型层） |
-| 三端形态 | Web 四容器；PC 插件化 + 内置 MCP + 在线更新；TV 端内网关 41 路由 + DexClassLoader + 遥控导航 + 扫码配置 + 远程调试 |
+| 三端形态 | Web 四容器；PC 插件化 + 内置 MCP + 在线更新；TV 端内网关 41 路由 + DexClassLoader + 遥控导航 + 扫码配置 + 远程调试（**同一 APK 也可装安卓手机 / 平板**，触屏竖屏布局） |
 
 已知限制：
 
@@ -157,6 +157,14 @@ docker compose up -d
 # 浏览器打开 http://localhost:30010
 ```
 
+**或者连仓库都不 clone**：下载独立编排直接起（默认值已内联，不需要 `.env`，数据落在同级 `./data`）：
+
+```bash
+mkdir meow && cd meow
+curl -O https://upchr.github.io/meow/docker-compose.yml
+docker compose up -d
+```
+
 **从源码构建**：
 
 ```bash
@@ -171,7 +179,11 @@ cd deploy/docker && docker compose -f docker-compose.build.yml up -d --build
 | `danmu_api` | 弹幕聚合（可选） | 30012（默认只绑本机） |
 
 `web` 与 `apiserver` 都含 **amd64 + arm64**，Docker 按本机架构自动选。
-`drpy` 不建议省：导入 270 站配置时，222 个 drpy 站没有它会被判"不可用"。
+`drpy` 不建议省：大型配置里几百个 `.js` 站，没有它会全部被判「不可用」。
+
+需要现成的源分发点（给 TV / Fongmi 提供 `config.all.json`）：可跑社区源服务镜像
+`chrplus/meow-sources`（镜像自带 41 站 + Jable，独立版本线），用法见文档站《导入源包》的
+[「现成的源服务镜像」](https://upchr.github.io/meow/guide/source-pack.html#现成的源服务镜像)。
 
 按需组合：
 
