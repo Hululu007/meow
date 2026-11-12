@@ -212,6 +212,36 @@ jobs:
         run: |
           set -euo pipefail
           [ "$(ls | wc -l)" -gt 0 ] && sha256sum * > SHA256SUMS.txt
+      # ★ 更新说明进 Release 正文（2026-11-12 用户指出 1.2.0 页面上没有说明）。
+      #   以前正文是纯静态资产表，用户只在应用内弹框里才看得到 CHANGELOG。
+      #   解析口径与 fpk.yml 的「取更新说明」完全一致（`## <版本>` 小节）。
+      - name: 取更新说明
+        id: notes
+        shell: bash
+        env:
+          VER: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          NOTES="$(awk -v v="$VER" '
+            /^##[[:blank:]]/ {
+              h = $0
+              sub(/^##[[:blank:]]+/, "", h)
+              sub(/[[:blank:]]+$/, "", h)
+              if (h == v || h == "[" v "]") { hit = 1; next }
+              if (hit) exit
+            }
+            hit {
+              t = $0
+              gsub(/^[[:blank:]]+|[[:blank:]]+$/, "", t)
+              if (t == "") next
+              print t
+            }
+          ' CHANGELOG.md)"
+          {
+            echo "notes<<MEOW_EOF"
+            echo "$NOTES"
+            echo "MEOW_EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: 建 Release
         uses: softprops/action-gh-release@v2
         with:
@@ -221,6 +251,10 @@ jobs:
           generate_release_notes: false
           files: upload/*
           body: |
+            ## 更新说明
+
+            ${{ steps.notes.outputs.notes }}
+
             ## 公开壳产物
 
             本 Release 只含空壳，不含 spider jar / 真实站点配置 / payload。
@@ -231,6 +265,9 @@ jobs:
             | `meow-TV-*.apk` | TV 空壳（release 签名） |
             | `meow-setup-*.exe` / `meow-bare-*.exe` | PC 空壳 |
             | `apiserver-*.zip` | 后端插件（空壳） |
+            | `drpy-*.zip` / `danmu-api-*.zip` / `node-*.zip` / `ffmpeg-*.zip` | 本机插件（发布后由清单引用） |
+            | `tv-node-*.apk` | TV 运行时模块（发布后由清单复制） |
+            | `packages.json` | 客户端更新清单（发布后生成） |
             | `SHA256SUMS.txt` | 校验 |
 
   sync-packages:
