@@ -82,3 +82,47 @@ describe('菜单键：无卡片动作时兜底打开 AI 助手', () => {
     expect(body).toMatch(/try \{[\s\S]{0,60}__meowAiOpen/)
   })
 })
+
+/**
+ * 斜杠命令的 UI 挂载点（2026-11-11）。
+ *
+ * 逻辑在 `src/ai/commands.ts`，已有 `ai-commands.test.ts` 覆盖；这里只锁
+ * **面板真的把它接上了**——漏了 @input/@keydown 的话命令列表永远不出现，
+ * 而纯逻辑测试照样全绿。
+ */
+describe('AI 面板：斜杠命令入口', () => {
+  const src = readFileSync(PANEL, 'utf8')
+
+  it('输入框接了候选计算与键盘处理', () => {
+    expect(src).toContain('@input="onInput"')
+    expect(src).toContain('@keydown="onInputKeydown"')
+    // v-model 在原生 input 上是运行时指令，@input 先触发；
+    // 用 q.value 过滤会慢一个字符，必须从事件取值
+    expect(src).toMatch(/function onInput\(e\?: Event\)[\s\S]{0,220}e\?\.target/)
+  })
+
+  it('有 `/` 按钮（TV 遥控器打不出斜杠，这是唯一可达入口）', () => {
+    expect(src).toContain('@click="openCommands"')
+    expect(src).toContain('打开命令列表')
+    /*
+     * 焦点转移必须走 tv-nav 的 `__meowTvFocus`：tv-nav 对 OK 键只 click() 不转移
+     * DOM 焦点，programmatic focus() 后它的状态机不知道 —— 方向键仍从旧位置出发
+     * （2026-11-11 TV 实测：列表打开后焦点框留在 `/` 按钮，按「上」从按钮几何
+     * 出发进了列表**尾部**）。桌面浏览器没有该钩子时才退回原生 focus()。
+     */
+    expect(src).toContain('focusViaTvNav')
+    expect(src).toMatch(/function focusViaTvNav[\s\S]{0,420}__meowTvFocus/)
+    expect(src).toMatch(/focusViaTvNav\(cmdListEl\.value\?\.querySelector/)
+    expect(src).toMatch(/focusViaTvNav\(input\.value, true\)/)
+  })
+
+  it('候选列表是遥控器可达的（首项 data-tv-first）', () => {
+    expect(src).toContain(':data-tv-first="i === 0 ? \'\' : undefined"')
+  })
+
+  it('工具轨迹用中文动作名，不能把 meow_* 内部名显示给用户', () => {
+    // 命令列表叫「搜索」，轨迹里再出现 meow_search 就是两套叫法
+    expect(src).toContain('toolLabel(c.tool)')
+    expect(src).not.toMatch(/trace\.value\s*=\s*r\.calls\.map\(\(c\) => `\$\{c\.tool\}/)
+  })
+})
