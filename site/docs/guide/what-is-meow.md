@@ -23,8 +23,8 @@
 | 端 | 形态 | 后端 | 加载方式 | 适合谁 |
 |---|---|---|---|---|
 | **Web** | Docker 四容器 | 容器内 apiserver | JVM `classpath` | NAS / 服务器用户，浏览器直接看 |
-| **PC** | Tauri 2 桌面应用 | 随应用启动的 sidecar | 同上 | Windows 桌面，需要离线缓存与投屏 |
-| **TV** | Android WebView 壳 | 无，端内执行 | `DexClassLoader` | 电视盒子、投影仪，遥控器操作 |
+| **PC** | Tauri 2 桌面应用 | 随应用启动的 sidecar | 同上 | Windows 桌面 |
+| **TV** | Android WebView 壳 | 无，端内执行 | `DexClassLoader` | 安卓手机、电视盒子、投影仪，可遥控器操作 |
 
 三端共用同一份 Vue 前端（`client/apps/web`），PC 与 TV 只是不同的外壳：
 PC 壳负责进程管理与插件安装，TV 壳负责遥控器导航与端内网关。
