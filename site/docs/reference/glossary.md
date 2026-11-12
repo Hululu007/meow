@@ -27,7 +27,7 @@
 |---|---|
 | **CatVod** | 一类影视客户端的配置协议，`/config.json` 九字段来自它 |
 | **TVBox / Fongmi** | 同生态的客户端，配置与 jar 格式互通 |
-| **fnpack** | 插件源清单文件，列出可下载的插件与 SHA256 |
+| **packages.json** | 插件源清单文件，列出可下载的插件与 SHA256（`index.json` 是旧别名；`fnpack.json` 是飞牛应用中心的索引，两套格式别混用） |
 | **manifest** | 插件自己的描述文件，声明怎么启动、怎么判活 |
 | **sidecar** | 随主进程启动的独立进程，PC 的后端就是 |
 | **DexClassLoader** | Android 动态加载 dex 的机制，TV 端靠它跑 jar |

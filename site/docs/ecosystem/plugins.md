@@ -34,7 +34,7 @@ PC 版安装包只有壳（约 6 MB）。后端、drpy、弹幕、Node 运行时
 ## 安装流程
 
 ```
-读插件源 → 拿 fnpack.json → 选插件 → 下载 zip
+读插件源 → 拿 packages.json → 选插件 → 下载 zip
    → 校验 SHA256 → 解压到 plugins.d/ → 原子 rename 到 plugins/
    → 启动进程（Job Object 随主进程清理）→ 健康检查
 ```

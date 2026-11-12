@@ -5,14 +5,20 @@
 
 ## 文件位置与命名
 
-通常叫 `fnpack.json`，也接受 `index.json`。
+清单文件是 **`packages.json`**（官方 Release 资产里的同名文件就是标准样例）；
+`index.json` 是早期别名，仍兼容。填**目录地址**时应用依次试这两个，填完整文件地址则直接用。
+
+::: tip 别和 `fnpack.json` 混了
+`fnpack.json` 是**飞牛应用中心**的第三方源索引（`schema_version: 2` + `apps` 结构），
+和 PC 插件清单（`schema_version: 1` + `packages` 结构）是两套格式，不能互相喂。
+:::
 
 支持三种源地址写法：
 
 ```
-http://host:8099/                                 → 自动拼 index.json
-http://host:8099/fnpack.json                      → 直接用
-https://example.com/path/fnpack.json              → 直接用
+http://host:8099/                                 → 依次试 packages.json / index.json
+http://host:8099/packages.json                    → 直接用
+https://example.com/path/packages.json            → 直接用
 ```
 
 末尾是否带斜杠：**以 `.json` 结尾时不补斜杠**，否则会拼成
@@ -79,7 +85,7 @@ https://example.com/path/fnpack.json              → 直接用
 
 ## url 的四种写法
 
-以源地址 `http://h:9000/plugins/fnpack.json` 为例：
+以源地址 `http://h:9000/plugins/packages.json` 为例：
 
 | 写法 | 示例 | 解析结果 |
 |---|---|---|
@@ -100,11 +106,11 @@ https://example.com/path/fnpack.json              → 直接用
 
 ### 静态目录
 
-把 `fnpack.json` 和所有 zip 放同一目录：
+把 `packages.json` 和所有 zip 放同一目录：
 
 ```
 plugins/
-├── fnpack.json
+├── packages.json
 ├── apiserver-1.1.6.zip
 ├── drpy-1.1.6.zip
 └── danmu-api-1.0.0.zip
@@ -130,7 +136,7 @@ cd plugins
 python -m http.server 8099
 ```
 
-应用里填 `http://127.0.0.1:8099/fnpack.json`，点「测试」应显示插件数与版本。
+应用里填 `http://127.0.0.1:8099/packages.json`，点「测试」应显示插件数与版本。
 
 手机 / 电视测试时把 `127.0.0.1` 换成电脑的局域网 IP。
 
@@ -138,7 +144,7 @@ python -m http.server 8099
 
 1. 改插件代码，升 `manifest.json` 里的 `version`
 2. 重新打包，算新的 SHA256 与 size
-3. 上传新 zip，覆盖 `fnpack.json`（旧 zip 可以保留）
+3. 上传新 zip，覆盖 `packages.json`（旧 zip 可以保留）
 4. 客户端列表里出现「可升级」
 
 版本比较是逐段比数字。远端版本高于本地才提示升级，降级不会自动发生。

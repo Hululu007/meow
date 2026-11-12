@@ -132,7 +132,7 @@ UI 上显示「已就绪」而不是「运行中」，没有启停按钮，状�
 - [ ] 提供 `/health` 或等价探针，`healthExpect` 填实际会出现的字符串
 - [ ] 数据写 `{dataDir}`，不要写插件目录（升级会替换整个目录）
 - [ ] 不需要常驻的用 `tool: true`
-- [ ] 版本号与 `fnpack.json` 里的 `version` 一致
+- [ ] 版本号与 `packages.json` 里的 `version` 一致
 
 ## 发布
 

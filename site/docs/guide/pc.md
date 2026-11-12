@@ -28,8 +28,8 @@ Windows 桌面应用，Tauri 2 外壳 + 内嵌 Vue 前端 + 按需下载的 side
 
 只有三种情况才需要动这个地址：
 
-- **自建 / 换镜像源**：填你的 `fnpack.json` 或 `index.json` 地址
-- **本机测试**：点「填入本机测试源」，一步填好 `http://127.0.0.1:9000/fnpack.json`
+- **自建 / 换镜像源**：填你的 `packages.json` 地址（`index.json` 是旧别名，仍兼容）
+- **本机测试**：点「填入本机测试源」，一步填好 `http://127.0.0.1:9000/packages.json`
 - **没有网络**：点「粘贴 JSON」，把清单内容贴进去，直接变成 `file://` 源
 
 ### 第二步：下载「影视后端」
@@ -74,12 +74,12 @@ Windows 桌面应用，Tauri 2 外壳 + 内嵌 Vue 前端 + 按需下载的 side
 
 两条通道，都需要先有插件 zip：
 
-1. **粘贴 JSON**：把 `fnpack.json` 的清单内容贴进设置页，应用存成本地清单。
+1. **粘贴 JSON**：把 `packages.json` 的清单内容贴进设置页，应用存成本地清单。
    这种模式没有可拼接的相对目录，清单里的 `url` 必须写**绝对地址**。
 2. **导入本地包**：直接选 `.zip`。这条路径**完全不依赖插件源**，也不校验清单，
    只校验 zip 内的 manifest。
 
-`fnpack.json` 的写法见 [自建插件源](/ecosystem/plugin-source)。
+`packages.json` 的写法见 [自建插件源](/ecosystem/plugin-source)。
 
 ## 更新
 
