@@ -86,16 +86,16 @@ const guideSidebar = [
     items: [
       { text: '这是什么', link: '/guide/what-is-meow' },
       { text: '快速开始', link: '/guide/quick-start' },
-      { text: '导入源包', link: '/guide/source-pack' },
     ],
   },
   {
-    text: '各端安装',
+    text: '安装与导入',
     items: [
       { text: 'Web / Docker', link: '/guide/web-docker' },
       { text: 'PC 桌面端', link: '/guide/pc' },
       { text: 'TV / 投影仪 / 手机', link: '/guide/tv' },
       { text: '飞牛 fnOS', link: '/guide/fnos' },
+      { text: '导入源包', link: '/guide/source-pack' },
     ],
   },
   {
