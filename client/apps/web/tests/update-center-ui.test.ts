@@ -176,3 +176,66 @@ describe('模块链参与 git 加速', () => {
     expect(br, '候选没有"必须包含原 url"的安全闸').toContain('if (!c.contains(real)) continue;')
   })
 })
+
+/**
+ * 更新检查的性能/体验护栏（2026-11-12）。
+ *
+ * 这几条都是"性能与体验"，跑不出单元测试，只能断言源码形态：
+ *   - 候选线路必须**并发**（串行时一次检查 30–40 秒，全在等前面失败的线路）
+ *   - 检查要有取消出口（最多 4 条线路并发，最坏要等几十秒）
+ *   - `/api/health` 要合并（同一次进设置页会打两三次）
+ *   - 设置页分区要懒挂载（14 个分区一次性建几千个节点，TV 的焦点扫描变重）
+ *   - 直播源要进分区才拉（冷缓存要现拉远端 m3u）
+ */
+describe('更新检查与设置页的性能护栏', () => {
+  const UPDATER = join(
+    ROOT,
+    'client',
+    'apps',
+    'tv',
+    'app',
+    'src',
+    'main',
+    'java',
+    'com',
+    'meow',
+    'tv',
+    'AppUpdater.java',
+  )
+  const API = join(ROOT, 'client', 'apps', 'web', 'src', 'api', 'index.ts')
+  const UPD = join(ROOT, 'client', 'apps', 'web', 'src', 'api', 'appUpdate.ts')
+  const SETTINGS = join(ROOT, 'client', 'apps', 'web', 'src', 'views', 'SettingsView.vue')
+
+  it('候选线路并发竞速，不是一个一个串行试', () => {
+    const up = readFileSync(UPDATER, 'utf8')
+    const body = up.slice(up.indexOf('public static String fetchManifestAny'))
+    expect(body, 'fetchManifestAny 里没有并发线程').toContain('new Thread(')
+    expect(body, 'fetchManifestAny 里没有并发线程').toContain('meow-manifest-race')
+    // 旧的串行写法（for 里直接 fetchManifest 并逐个判断）不能再出现
+    expect(body).not.toMatch(
+      /for \(String raw : urlsPipe[\s\S]{0,240}?String text = fetchManifest\(u, token\)/,
+    )
+  })
+
+  it('检查可以取消', () => {
+    const upd = readFileSync(UPD, 'utf8')
+    expect(upd, '缺取消入口').toContain('export function cancelAppUpdateCheck')
+    const s = readFileSync(SETTINGS, 'utf8')
+    expect(s, '设置页没有取消按钮').toContain('cancelUpdCheck')
+    expect(s, '检查按钮没有耗时').toContain('检查中…')
+  })
+
+  it('/api/health 合并同一次请求', () => {
+    const api = readFileSync(API, 'utf8')
+    expect(api, '缺 health 合并缓存').toContain('HEALTH_TTL_MS')
+    expect(api, '缺 health 合并缓存').toContain('healthInflight')
+  })
+
+  it('设置页分区懒挂载 + 直播源进分区才拉', () => {
+    const s = readFileSync(SETTINGS, 'utf8')
+    expect(s, '缺分区懒挂载').toContain('visitedSec')
+    expect(s, '缺分区懒挂载').toContain('min-h-[20rem]')
+    expect(s, '直播源仍在 onMounted 里拉').not.toContain('void refreshLives()')
+    expect(s, '缺 ensureLives').toContain('ensureLives')
+  })
+})

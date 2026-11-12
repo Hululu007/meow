@@ -331,6 +331,18 @@ export function setRuntimeBase(url: string | null) {
 }
 
 /**
+ * `/api/health` 的 8 秒合并缓存。
+ *
+ * 判据：一次打开设置页至少打两次（顶栏连接状态 + 「连接」分区 + 启动时的
+ * 能力探测），而健康状态本来就是秒级变化，8 秒内重复真的不会看到差别。
+ * 合并的是**同一份数据**，不是"跳过刷新"：过期后照常重新请求。
+ */
+let healthCache: { at: number; data: unknown } | null = null
+let healthInflight: Promise<unknown> | null = null
+
+const HEALTH_TTL_MS = 8_000
+
+/**
  * 轻量 HTTP 封装。
  *
  * 不用 ofetch：它在 Tauri 的 `tauri://localhost` 协议下会访问
@@ -338,6 +350,34 @@ export function setRuntimeBase(url: string | null) {
  * 直接用原生 fetch，行为在 Web/桌面一致。
  */
 async function request<T>(
+  path: string,
+  options: { method?: string; body?: unknown; timeout?: number; keepalive?: boolean } = {},
+): Promise<T> {
+  const { method = 'GET', body, timeout = 60_000, keepalive } = options
+  const isHealth = method === 'GET' && path === '/api/health'
+  if (isHealth) {
+    const hit = healthCache
+    if (hit && Date.now() - hit.at < HEALTH_TTL_MS) return hit.data as T
+    if (healthInflight) return (await healthInflight) as T
+  }
+  const p = requestUncached<T>(path, { method, body, timeout, keepalive })
+  if (!isHealth) return p
+  healthInflight = p.then(
+    (data) => {
+      healthCache = { at: Date.now(), data }
+      healthInflight = null
+      return data
+    },
+    (e) => {
+      // 失败不缓存：否则一次抖动会让"已连接"卡住 8 秒
+      healthInflight = null
+      throw e
+    },
+  )
+  return (await healthInflight) as T
+}
+
+async function requestUncached<T>(
   path: string,
   options: { method?: string; body?: unknown; timeout?: number; keepalive?: boolean } = {},
 ): Promise<T> {

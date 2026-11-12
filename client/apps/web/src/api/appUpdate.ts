@@ -780,11 +780,14 @@ async function fetchRawTextCandidates(
   })
   let last = ''
   for (const c of cands) {
+    if (cancelled) throw new Error('已取消')
     try {
       const text = await fetchRawText(c.url, token)
       markAccelResult(c, true)
       return text
     } catch (e) {
+      // 用户取消不算这条线路失败：否则会把一个没问题的代理打进冷却
+      if ((e as Error).message === '已取消') throw e
       markAccelResult(c, false)
       last = (e as Error).message || String(e)
     }
@@ -797,6 +800,8 @@ async function fetchManifestText(url: string, token: string): Promise<string> {
   try {
     return await fetchManifestPrimary(url, token)
   } catch (e) {
+    // 用户取消 → 不要再连备用源/镜像，"不想等了"就该立刻停
+    if ((e as Error)?.message === '已取消') throw e
     firstErr = e
   }
 
@@ -933,6 +938,7 @@ export async function fetchTextViaNativeJob(
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 120))
+      if (cancelled) throw new Error('已取消')
       let j: { running?: boolean; text?: string; error?: string } = {}
       try {
         j = JSON.parse(String(b.netJobPoll!(id) || '{}')) as typeof j
@@ -956,12 +962,32 @@ function jobSerial<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * 取消正在进行的更新检查（只影响前端等待，不打断原生线程）。
+ *
+ * 原生那边没法可靠中断 OkHttp 的 socket 读，但"用户不想等了"这个诉求
+ * 只需要停止等待 + 报一句"已取消"；下一次检查会用新任务取代它（见
+ * TvBridge.netJobStart 的取代语义）。
+ */
+let cancelled = false
+
+export function cancelAppUpdateCheck(): void {
+  cancelled = true
+}
+
+/** 每次新检查开始时清零 */
+function resetCancel(): void {
+  cancelled = false
+}
+
+/**
  * 检查更新。
  *
  * @param sourceUrl 清单地址；不传则用设置里的更新源
  * @returns 有更新返回详情，否则 null
  */
 export async function checkAppUpdate(sourceUrl?: string): Promise<AppUpdate | null> {
+  // 每次新检查都从"未取消"开始（用户点了取消后又点一次检查）
+  resetCancel()
   const platform = currentPlatform()
   if (platform === 'web') return null // 纯 Web 没有"安装包"这个概念
 

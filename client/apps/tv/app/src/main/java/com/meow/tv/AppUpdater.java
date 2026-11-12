@@ -141,16 +141,65 @@ public final class AppUpdater {
             lastError = "清单地址为空";
             return null;
         }
-        String last = "";
-        for (String raw : urlsPipe.split("\\|")) {
-            String u = raw == null ? "" : raw.trim();
-            if (u.isEmpty()) continue;
-            String text = fetchManifest(u, token);
-            if (text != null && text.contains("\"packages\"")) return text;
-            last = lastError;
+        java.util.List<String> urls = new java.util.ArrayList<>();
+        if (urlsPipe != null) {
+            for (String raw : urlsPipe.split("\\|")) {
+                String u = raw == null ? "" : raw.trim();
+                if (!u.isEmpty() && !urls.contains(u)) urls.add(u);
+            }
         }
-        lastError = last.isEmpty() ? "所有候选地址都失败" : last;
-        return null;
+        if (urls.isEmpty()) {
+            lastError = "所有候选地址都失败";
+            return null;
+        }
+        if (urls.size() == 1) {
+            String t = fetchManifest(urls.get(0), token);
+            return (t != null && t.contains("\"packages\"")) ? t : null;
+        }
+        // ★ 并发竞速，不是串行逐个试（2026-11-12）。
+        //   串行的代价：直连被墙时要等满 15s 连接超时才开始下一个候选，
+        //   实测一次"已是最新"要 30–40 秒。并发之后总耗时 ≈ **最慢的那一条**。
+        //   判据仍是内容含 "packages"（代理的 HTML 错误页会 200）。
+        final String[] box = new String[1];
+        java.util.List<Thread> threads = new java.util.ArrayList<>();
+        final Object lock = new Object();
+        for (final String u : urls) {
+            Thread t = new Thread(() -> {
+                try {
+                    String text = fetchManifest(u, token);
+                    if (text == null || !text.contains("\"packages\"")) return;
+                    synchronized (lock) {
+                        if (box[0] == null) {
+                            box[0] = text;
+                            lock.notifyAll();
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+            }, "meow-manifest-race");
+            t.setDaemon(true);
+            threads.add(t);
+            t.start();
+        }
+        synchronized (lock) {
+            long deadline = System.currentTimeMillis() + 50_000L;
+            while (box[0] == null) {
+                long left = deadline - System.currentTimeMillis();
+                if (left <= 0) break;
+                try {
+                    lock.wait(Math.min(left, 500L));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        // 剩下的线程自己会因 OkHttp 的 15s/30s 超时结束；不必强杀（中断也拦不住 socket 读）
+        if (box[0] == null) {
+            lastError = "所有候选地址都失败";
+            return null;
+        }
+        return box[0];
     }
 
     /**

@@ -82,6 +82,7 @@ import {
 //   各留一份会出现「弹框说发现新版本、这里仍显示已是最新」。
 import {
   clearUpdateCache,
+  cancelAppUpdateCheck,
   downloadCandidates,
   fetchTextViaNativeJob,
   getBackupUpdateSource,
@@ -2363,6 +2364,21 @@ async function refreshLives() {
   }
 }
 
+/**
+ * 直播源改成**进这一栏才拉**。
+ *
+ * 原来在 onMounted 里会直接拉一次 /api/live：只要打开设置页就打一次，
+ * 而冷缓存时后端要现拉远端 m3u（实测有 6 秒量级的）。用户可能只想改个主题，
+ * 不该为此付一次外网请求 + 大 JSON 解析。判据同「维护」分区：滚到/点到才拉。
+ */
+const livesLoaded = ref(false)
+
+async function ensureLives() {
+  if (livesLoaded.value) return
+  livesLoaded.value = true
+  await refreshLives()
+}
+
 async function doAddLive() {
   const url = liveUrlInput.value.trim()
   if (!/^https?:\/\//i.test(url)) {
@@ -3267,6 +3283,31 @@ async function checkUpdateNow(): Promise<void> {
   if (up) openUpdDialog()
 }
 
+/**
+ * 检查中的计时 + 取消。
+ *
+ * 为什么要有：候选线路最多 4 条，网络差时一次检查几十秒。以前只有一个
+ * 「检查中…」，用户既不知道还要等多久，也没有"我不想等了"的出口。
+ * 取消只停前端等待（原生线程会被下一次检查取代），不影响已经拿到的结果。
+ */
+const updSecs = ref(0)
+let updSecTimer: number | undefined
+
+watch(updChecking, (on: boolean) => {
+  if (updSecTimer) {
+    window.clearInterval(updSecTimer)
+    updSecTimer = undefined
+  }
+  if (!on) return
+  updSecs.value = 0
+  updSecTimer = window.setInterval(() => (updSecs.value += 1), 1000)
+})
+
+function cancelUpdCheck() {
+  cancelAppUpdateCheck()
+  updSecs.value = 0
+}
+
 /** 下载并安装（进度由 store 统一轮询，这里不再自己 setInterval） */
 async function downloadAndInstall(): Promise<void> {
   // 已下载 → 这次点的是「安装」；否则走下载
@@ -3803,8 +3844,10 @@ onMounted(async () => {
   window.addEventListener('meow:sync-pull-error', onPullErrorChanged)
   searchWordCount.value = listSearchHistory().length
   await loadPolicy()
-  void refreshLives()
+  // 直播源改到进入该分区时才拉（见 ensureLives 的注释）
   if (!store.sites.length && !store.loading) store.boot()
+  // TV：开机不跑的模块/插件/fpk 后台检查，放到这里补（见 App.vue 的说明）
+  if (isTvShell()) void runBackgroundChecks()
   if (dav.value.url) void refreshSnapshots()
   // 插件状态：首刷 + 每 3s 轮询（用户可能在别处手动启停）
   await refreshPlugins()
@@ -4132,14 +4175,20 @@ watch(
   },
 )
 
-function scrollToSec(id: string) {
+async function scrollToSec(id: string) {
   const el = document.querySelector<HTMLElement>(`section[data-sec="${id}"]`)
   if (!el) return
   activeSec.value = id
   lastNavSec.value = id
+  // 懒挂载：先把这一段的内容挂上，等一帧再算落点，
+  // 否则跳过去看到的还是空占位（高度也不对）。
+  markSec(id)
+  await nextTick()
   // 进"数据与维护"时刷新一次缓存统计：数字是文案的一部分，
   // 不刷新会一直显示上次打开时的旧值
   if (id === 'maint') void loadSearchCacheStats()
+  // 直播源同理：点到这一栏才拉（见 ensureLives 的注释）
+  if (id === 'live') void ensureLives()
   // 锁 700ms：等平滑滚动结束（或降级后的瞬时跳转）再恢复 scroll spy，
   // 否则滚动过程中高亮会被 spy 抢走。
   navLock = Date.now() + 700
@@ -4164,6 +4213,11 @@ function scrollToSec(id: string) {
     window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
   }
 }
+
+// 滚到「直播源」时补拉：点导航由 scrollToSec 触发，纯滚动由这里补
+watch(activeSec, (id) => {
+  if (id === 'live') void ensureLives()
+})
 
 function onScrollSpy() {
   if (Date.now() < navLock) return
@@ -4351,6 +4405,8 @@ onBeforeUnmount(() => {
   }
   if (w.__meowTvPageBack === handleTvBackHere) w.__meowTvPageBack = undefined
   if (w.__meowTvMenuHook === handleTvMenuHere) w.__meowTvMenuHook = undefined
+  // 检查计时器：离页后不能再跳秒（否则回到设置页显示一个假的"检查中 999s"）
+  if (updSecTimer) window.clearInterval(updSecTimer)
 
   window.removeEventListener('meow:tv-focus', onTvFocus)
   window.removeEventListener('meow:prefs', onPrefsChanged)
@@ -6889,7 +6945,15 @@ onBeforeUnmount(() => {
           :disabled="updChecking || updBusy"
           @click="checkUpdateNow()"
         >
-          {{ updChecking ? '检查中…' : '用此源检查' }}
+          {{ updChecking ? `检查中… ${updSecs}s` : '用此源检查' }}
+        </button>
+        <!-- 长检查的出口：最多 4 条线路并发，网络差时几十秒 -->
+        <button
+          v-if="updChecking"
+          class="rounded-md bg-card px-2.5 py-1 text-[11px] text-ink-3 hover:bg-card-hover"
+          @click="cancelUpdCheck()"
+        >
+          取消
         </button>
       </div>
       <div class="pb-3 text-[11px]">
