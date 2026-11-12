@@ -6,7 +6,9 @@
 
 ### 应用中心
 
-在飞牛应用中心添加应用源后搜索「猫窝」，按机器架构自动匹配 x86 / arm 包。
+在飞牛应用中心添加第三方源 `https://github.com/upchr/FnDepot`
+（国内镜像 `https://gitee.com/upchr/FnDepot`），搜索「猫窝」安装，
+按机器架构自动匹配 x86 / arm 包。
 
 ### 手动安装 fpk
 

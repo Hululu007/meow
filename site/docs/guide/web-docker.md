@@ -46,7 +46,7 @@ docker compose up -d web                         # 只起前端，连远端后�
 
 | 变量 | 作用 | 默认 |
 |---|---|---|
-| `MEOW_VERSION` | 镜像 tag | 与应用版本一致 |
+| `MEOW_VERSION` | 镜像 tag | compose 兜底值，随发版更新 |
 | `APISERVER_BIND` | 后端监听地址 | `127.0.0.1`（只给本机反代用） |
 | `DANMU_BIND` | 弹幕服务监听地址 | `127.0.0.1` |
 | `MEOW_AUTH_TOKEN` | 前端调后端时带的令牌 | 空 |

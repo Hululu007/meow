@@ -79,7 +79,7 @@ TV 支持像插件一样安装运行时模块（Fongmi 形态）：独立 APK，
 安装：
 
 1. 设置 →「运行时模块」
-2. 选择对应 ABI 的模块下载（arm64-v8a / armeabi-v7a / x86_64）
+2. 选择对应 ABI 的模块下载——绝大多数电视 / 盒子是 `arm64-v8a`，老投影仪常见 `armeabi-v7a`，`x86_64` 少见
 3. 安装后应用会自动重启并加载
 
 模块走 `packages.json` 清单校验 SHA256，按 `platform` 匹配 ABI。
