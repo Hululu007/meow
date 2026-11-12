@@ -33,6 +33,7 @@ import {
   type DanmakuSourceGroup,
 } from '@/api'
 import { isDesktopShell } from '@/api/appUpdate'
+import { createIdleCursor } from './idleCursor'
 import type { PlayErrorKind, PlayErrorPayload } from './playError'
 import { hasNativeHls, looksLikeHls } from './mediaKind'
 import {
@@ -2501,6 +2502,45 @@ function flashFsHint(msg: string) {
 const pseudoFs = ref(false)
 
 /**
+ * 全屏播放的空闲光标：3 秒不动就隐藏，任何指针活动立刻恢复。
+ *
+ * <p>为什么不能只靠 CSS `cursor: none`：WebView2 的全屏合成场景里样式层
+ * 的 cursor 指令不一定传给窗口系统，指针会残留；桌面端额外调 Tauri 的
+ * `setCursorVisible`。网页端仍用 CSS class（浏览器内足够）。
+ *
+ * <p>canHide 用 `(pointer: fine)` 而不是 `!isTouch`：带触摸屏的笔记本
+ * 也可能有鼠标，`ontouchstart` 为真会让光标永远不隐藏。
+ */
+const finePointer =
+  typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(pointer: fine)').matches
+    : false
+const cursorIdle = createIdleCursor({
+  isFullscreen: () => fullscreen.value || pseudoFs.value,
+  canHide: () => finePointer,
+  apply: (hidden) => {
+    if (typeof document !== 'undefined') {
+      document.documentElement.classList.toggle('meow-cursor-none', hidden)
+    }
+    if (isDesktopShell()) {
+      // 原生光标：Tauri 2 的窗口 API，Windows 上只在窗口内生效
+      void tauriInvoke('desktop_set_cursor_visible', { visible: !hidden }).catch(() => {})
+    }
+  },
+})
+
+/** 指针活动：显示光标并重新计时（挂到播放器根节点的 pointer 事件） */
+function noteCursorActivity() {
+  cursorIdle.activity()
+}
+
+watch([fullscreen, pseudoFs], ([fs, pfs]) => {
+  // 进入全屏先亮出光标再计时；退出全屏必须恢复，否则桌面端指针会一直藏着
+  if (fs || pfs) cursorIdle.activity()
+  else cursorIdle.stop()
+})
+
+/**
  * 手机形态视口（最短边 < 480）。
  *
  * <p>TV 壳也可能跑在手机模拟器上：UA 带 MeowTV，但视口是 384×811。
@@ -4558,6 +4598,7 @@ onBeforeUnmount(() => {
   const w = window as unknown as { __meowPauseMedia?: () => void }
   if (w.__meowPauseMedia === pauseMediaOnHide) w.__meowPauseMedia = undefined
   // 所有一次性定时器都要清：组件销毁后它们仍会触发 ref 写入
+  cursorIdle.stop()
   clearTimeout(hideTimer)
   clearTimeout(seekHintTimer)
   clearTimeout(backHintTimer)
@@ -4692,6 +4733,8 @@ defineExpose({ restart, seekTo, getTime, pause })
     class="meow-player-root group relative h-full w-full select-none overflow-hidden bg-black"
     :class="pseudoFs ? 'fixed inset-0 z-[100] h-full w-full' : ''"
     @mousemove="wake"
+    @pointermove.passive="noteCursorActivity"
+    @pointerdown.passive="noteCursorActivity"
     @click="onWrapClick"
   >
     <!-- 视频 + 弹幕层 -->
@@ -6053,7 +6096,7 @@ defineExpose({ restart, seekTo, getTime, pause })
           max-w-lg/86vh 收到 max-w-md/72vh。遮罩仍能聚焦，但视频可见。
       -->
       <div
-        class="flex max-h-[72vh] w-full max-w-md flex-col rounded-xl border border-white/10 bg-elevated p-3.5"
+        class="flex max-h-[72vh] w-full max-w-md flex-col rounded-xl border border-white/10 bg-elevated p-3.5 meow-light-card"
         @click.stop
       >
         <div class="mb-3 flex shrink-0 items-center justify-between">

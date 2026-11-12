@@ -999,6 +999,18 @@ html[data-tv='1'] * {
 }
 
 /*
+ * ── 全屏播放空闲时隐藏光标（Web / PC） ────────────────────────
+ *
+ * 由 VideoPlayer 的 idleCursor 逻辑在「全屏 + 鼠标空闲 3 秒」时挂到 <html>，
+ * 任何 pointermove/pointerdown 立刻摘掉。桌面端同时调 Tauri 的
+ * setCursorVisible —— WebView2 的全屏合成里样式层 cursor 不一定生效。
+ */
+html.meow-cursor-none,
+html.meow-cursor-none * {
+  cursor: none !important;
+}
+
+/*
  * ── 非电视环境不画 :focus-visible 轮廓 ────────────────────────
  *
  * 那圈轮廓是键盘可达性的标准做法，但在鼠标操作的环境里很碍眼：

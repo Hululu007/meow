@@ -168,6 +168,48 @@ public class MainActivity extends Activity {
     private String pendingConfig;
 
     @SuppressLint("SetJavaScriptEnabled")
+    /** 鼠标空闲 3 秒后隐藏系统指针；一移动立刻恢复（电视/模拟器） */
+    private final android.os.Handler pointerHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable hidePointerIcon = new Runnable() {
+        @Override public void run() { setPointerIcon(android.view.PointerIcon.TYPE_NULL); }
+    };
+
+    /** 只在状态切换时打一行日志：便于 adb/logcat 验收，不会每次 hover 刷屏 */
+    private int lastPointerType = Integer.MIN_VALUE;
+
+    private void setPointerIcon(int type) {
+        try {
+            web.setPointerIcon(android.view.PointerIcon.getSystemIcon(this, type));
+            if (type != lastPointerType) {
+                lastPointerType = type;
+                android.util.Log.i("MeowPointer",
+                        type == android.view.PointerIcon.TYPE_NULL ? "pointer hidden" : "pointer shown");
+            }
+        } catch (Throwable ignored) {
+            /* 个别 ROM 没有 PointerIcon：CSS 的 cursor:none 仍是兜底 */
+        }
+    }
+
+    private void installPointerAutoHide() {
+        setPointerIcon(android.view.PointerIcon.TYPE_NULL);
+        try {
+            web.setOnHoverListener((v, e) -> {
+                int a = e.getActionMasked();
+                if (a == android.view.MotionEvent.ACTION_HOVER_MOVE
+                        || a == android.view.MotionEvent.ACTION_HOVER_ENTER) {
+                    setPointerIcon(android.view.PointerIcon.TYPE_DEFAULT);
+                    pointerHandler.removeCallbacks(hidePointerIcon);
+                    pointerHandler.postDelayed(hidePointerIcon, 3000);
+                }
+                // 不能吞事件：WebView 还要靠 hover 做 CSS :hover / 控件悬停
+                return false;
+            });
+        } catch (Throwable ignored) {
+            /* 不支持 hover 的 ROM：保持 NULL（电视本来就是遥控器优先） */
+        }
+    }
+
     private void ensureWeb() {
         if (web != null) return;
         // 调试构建开启 WebView 远程调试：电视上"能看见但点不动/不播"只能靠它定位。
@@ -914,6 +956,11 @@ public class MainActivity extends Activity {
         }
         prefs.edit().remove("webview_too_old").apply();
         ensureWeb();
+        /*
+         * 电视/模拟器：CSS cursor:none 在部分 WebView（MuMu、投影仪）管不到
+         * 系统指针图标。这里用系统 pointer icon 做同一套「3 秒空闲隐藏」。
+         */
+        installPointerAutoHide();
         setContentView(web);
         failed = false;
         // 重试/重新进入时探针的重试预算也要归零，否则"错误页 → 重试"永远不会再探一次
@@ -1627,6 +1674,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         DebugServer.stop();
+        pointerHandler.removeCallbacks(hidePointerIcon);
         // 选择器还开着时 Activity 被销毁（低内存回收）：先按取消回填，
         // 否则 WebView 内部会一直挂着一个等结果的回调
         if (fileChooserCallback != null) {

@@ -245,6 +245,21 @@ fn desktop_set_window_bg(app: tauri::AppHandle, color: String) -> Result<(), Str
         .map_err(|e| format!("设置窗口底色失败: {e}"))
 }
 
+/// 全屏播放时隐藏/恢复系统鼠标指针。
+///
+/// 为什么需要原生调用：CSS `cursor: none` 在 WebView2 的全屏合成场景里
+/// 不一定传给窗口系统，指针会残留；`set_cursor_visible` 直接问窗口系统要。
+/// 只在前端判定「全屏 + 指针空闲」后调用，退出全屏/卸载必须传 true。
+#[tauri::command]
+fn desktop_set_cursor_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    use tauri::Manager;
+    let w = app
+        .get_webview_window("main")
+        .ok_or_else(|| "找不到主窗口".to_string())?;
+    w.set_cursor_visible(visible)
+        .map_err(|e| format!("设置光标可见性失败: {e}"))
+}
+
 /// 手动/自动化触发「重启后端」，与托盘菜单共用 `PluginManager::restart_backend`。
 ///
 /// 同步命令会跑在主线程，而 start 的健康检查最长 45 秒，所以这里必须
@@ -872,6 +887,7 @@ pub fn run() {
             desktop_hide_to_tray,
             desktop_quit,
             desktop_set_window_bg,
+            desktop_set_cursor_visible,
             desktop_tray_hint_shown,
             desktop_reset_tray_hint,
             desktop_set_fullscreen,
