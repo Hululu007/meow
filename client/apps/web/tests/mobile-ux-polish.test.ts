@@ -173,6 +173,20 @@ describe('⑤ 直播「分类-台」面板：自适应 + 可拖拽', () => {
     expect(live).toContain("window.addEventListener('pointermove', move)")
   })
 
+  it('拖分界时面板一起变宽，右列台列表宽度不被挤压', () => {
+    const i = live.indexOf('function startGuideSplitResize')
+    expect(i).toBeGreaterThan(0)
+      const body = live.slice(i, i + 1200)
+    // 起始时记住右列宽度
+    expect(body).toContain('startPanelW')
+    expect(body).toContain('rightW')
+    // 每次移动：左列 = left，面板 = left + 右列
+    expect(body).toContain('guideSplitW.value = left')
+    expect(body).toContain('guidePanelW.value = left + rightW')
+    // 面板宽度也要落盘，否则重开又按默认 w-1/3 挤压右列
+    expect(body).toContain('saveGuideSize(GUIDE_W_KEY')
+  })
+
   it('拖拽条样式带 touch-action:none（否则手机按下会被当成滚动）', () => {
     const i = live.indexOf('.guide-resize {')
     expect(i).toBeGreaterThan(0)

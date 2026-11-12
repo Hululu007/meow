@@ -390,23 +390,38 @@ function startGuidePanelResize(e: PointerEvent) {
   window.addEventListener('pointerup', up)
   window.addEventListener('pointercancel', up)
 }
-/** 拖两列之间：104px ~ 面板宽 - 168px */
+/**
+ * 拖两列之间：**面板跟着一起变宽**，右列宽度保持不变（2026-11-12 用户要求）。
+ *
+ * <p>原来只改左列 px、面板宽度不动 → 拖分界等于**挤压右侧台列表**，
+ * 台名越拖越窄。用户要的是「左列变宽时把面板一起撑开」。
+ *
+ * <p>所以：先记住右列当前宽度，每次移动同时写 `guideSplitW`（左列）和
+ * `guidePanelW = 左列 + 右列`。上限仍是视口 62% —— 到顶后左列停住
+ * （右列永远不许被压到 0，所以不是继续挤它）。
+ */
 function startGuideSplitResize(e: PointerEvent) {
   const side = (e.currentTarget as HTMLElement).closest('[data-guide-side]') as HTMLElement | null
   const panel = (e.currentTarget as HTMLElement).closest('[data-guide-panel]') as HTMLElement | null
   if (!side || !panel) return
   const startX = e.clientX
   const startW = side.getBoundingClientRect().width
-  const panelW = panel.getBoundingClientRect().width
-  const cap = Math.max(104, panelW - 168)
+  const startPanelW = panel.getBoundingClientRect().width
+  // 右列要守住的那份宽度（起始时右列多宽，拖完还是多宽）
+  const rightW = Math.max(168, Math.round(startPanelW - startW))
+  const maxPanelW = Math.round(window.innerWidth * 0.62)
+  const maxLeft = Math.max(104, maxPanelW - rightW)
   const move = (ev: PointerEvent) => {
-    guideSplitW.value = Math.round(Math.min(cap, Math.max(104, startW + ev.clientX - startX)))
+    const left = Math.round(Math.min(maxLeft, Math.max(104, startW + ev.clientX - startX)))
+    guideSplitW.value = left
+    guidePanelW.value = left + rightW
   }
   const up = () => {
     window.removeEventListener('pointermove', move)
     window.removeEventListener('pointerup', up)
     window.removeEventListener('pointercancel', up)
     saveGuideSize(GUIDE_SPLIT_KEY, guideSplitW.value)
+    saveGuideSize(GUIDE_W_KEY, guidePanelW.value)
   }
   window.addEventListener('pointermove', move)
   window.addEventListener('pointerup', up)
