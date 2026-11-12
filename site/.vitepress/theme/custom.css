@@ -136,6 +136,14 @@ body {
   border-radius: 10px;
 }
 
+/* 竖屏手机截图：限制宽度并居中，避免按内容宽度铺满 */
+.vp-doc img[src$="android-phone.png"] {
+  display: block;
+  width: 320px;
+  max-width: 100%;
+  margin: 12px auto;
+}
+
 .vp-doc a {
   text-underline-offset: 3px;
 }
