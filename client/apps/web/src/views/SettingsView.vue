@@ -821,7 +821,10 @@ async function testDav() {
   davMsg.value = null
   try {
     const r = await webdavPing(apiBase(), dav.value)
-    davMsg.value = { ok: r.ok, text: r.ok ? `连接成功（HTTP ${r.status}）` : r.msg }
+    // 直接用 webdavPing 的文案：成功时它数了目录里已有几个文件
+    // （「连接成功（3 个文件）」），比裸的 HTTP 207 更有用；失败时的
+    // 401/404/连不上也都是它区分好的。
+    davMsg.value = { ok: r.ok, text: r.msg }
   } finally {
     davBusy.value = false
   }
@@ -956,7 +959,8 @@ async function backupNow() {
 
 /** 还原到选中的时间点 */
 async function restoreSnapshotAt(s: Snapshot) {
-  const when = new Date(s.at).toLocaleString()
+  // 优先服务器时间：文件名用的是客户端时钟，多端不齐时会显示成过去
+  const when = new Date(s.mtime ?? s.at).toLocaleString()
   if (!confirm(`会把这个时间点的设置覆盖到本地（历史不受影响）：\n\n${when}\n${s.name}\n\n确定？`))
     return
   snapBusy.value = true
@@ -3588,7 +3592,11 @@ async function tauriPickFile(): Promise<string | null> {
   if (!invoke) return null
   try {
     const r = (await invoke('plugin:dialog|open', {
-      options: { multiple: false, filters: [{ name: '插件包', extensions: ['zip'] }] },
+      options: {
+        multiple: false,
+        title: '选择插件包（.zip）',
+        filters: [{ name: '插件包', extensions: ['zip'] }],
+      },
     })) as string | string[] | null
     if (!r) return null
     return Array.isArray(r) ? r[0] : r
@@ -6472,7 +6480,7 @@ onBeforeUnmount(() => {
             class="flex items-center gap-2 px-2 py-1.5 text-[11px]"
           >
             <span class="min-w-0 flex-1 truncate text-ink-2">
-              {{ new Date(s.at).toLocaleString() }}
+              {{ new Date(s.mtime ?? s.at).toLocaleString() }}
             </span>
             <button
               class="shrink-0 rounded px-1.5 py-0.5 text-ink-3 transition hover:bg-accent/15 hover:text-accent"

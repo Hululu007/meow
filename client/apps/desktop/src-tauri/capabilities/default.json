@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口默认权限。dialog 用于「本机插件 → 导入本地包」的原生文件选择器（2026-11-12 补：此前没注册插件，前端只能退回 window.prompt 手打 zip 路径）。",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default"]
+}

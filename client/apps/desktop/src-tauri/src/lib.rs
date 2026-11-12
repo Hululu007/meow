@@ -767,6 +767,9 @@ async fn plugin_uninstall(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 文件选择器（导入插件包选 zip）。前端调 plugin:dialog|open，
+        // 未注册时前端会退回 window.prompt 手打路径（2026-11-12 补）。
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             use tauri::Manager;
 

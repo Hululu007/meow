@@ -39,6 +39,9 @@ serde_json = "1"
 # 插件包完整性校验（下载后比对远端 index.json 里的 SHA256）。
 # 本地 registry 已缓存源码，不引入网络请求栈。
 sha2 = "0.10"
+# 原生文件选择器：插件「导入本地包」用。没有它前端只能退回 window.prompt
+# 让用户手打完整路径（2026-11-12 用户截图指出）。
+tauri-plugin-dialog = "2"
 
 # Windows 专用：Job Object，保证 sidecar 随主进程一起结束。
 #
