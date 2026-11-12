@@ -17,15 +17,16 @@
 改完跑自检（十余项，含 `docker compose config` 校验）：
 `powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/verify.ps1`。
 
-## 二、版本号：脚本清单里的 15 个位置
+## 二、版本号：脚本清单里的 17 个位置
 
 `powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/bump-version.ps1 -Version 1.2.0`
 
-覆盖 15 个位置（`deploy/docker/.env` 存在时 16 个）：三个 `package.json`、Tauri 配置与
+覆盖 17 个位置（`deploy/docker/.env` 存在时 18 个）：三个 `package.json`、Tauri 配置与
 两个 `Cargo.lock`、`ApiServer.java` 的 `VERSION`、`apiserver.manifest.json`、TV
-`build.gradle`、`.env.example`、两个 compose 的兜底、fnOS 的 `fpk/manifest` 与 `meowd`
-的 Cargo 文件。**compose 兜底只覆盖 `docker-compose.yml` / `.build.yml` 两个文件**，
-`docker-compose.with-sources.yml` 不在清单里，升版本要手改。
+`build.gradle`、`.env.example`、**四个 compose 的兜底**（`docker-compose.yml` /
+`.build.yml` / `.with-sources.yml` / `.standalone.yml`）、fnOS 的 `fpk/manifest` 与
+`meowd` 的 Cargo 文件。`standalone.yml` 是站点「下载即用」那份，靠这里自动跟进；
+`with-sources.yml` 曾因不在清单里残留过旧版本，现已纳入。
 
 **硬规则**：必须三段数字；**禁止倒退**（`versionCode` 只能增大，镜像 tag 倒退会让人以为
 拉到了新包）；`versionCode = major*1000 + minor*100 + patch`（`1.1.6` → `1106`）。写盘后

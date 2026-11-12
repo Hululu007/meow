@@ -8,7 +8,9 @@
 # 或临时加前缀，比如 WEB_PORT=30020 docker compose up -d。常用：
 #   WEB_PORT=30010            前端端口（浏览器访问）
 #   APISERVER_BIND=0.0.0.0    后端给 TV / 局域网直连（同时务必设 MEOW_AUTH_TOKEN）
-#   MEOW_VERSION=1.1.7        镜像 tag（web / apiserver）
+#   MEOW_VERSION=<版本>       镜像 tag（默认已写在下面 image 行，随发版自动更新）
+#                             想始终跟随最新可设 latest，但 up -d 不会自动拉，
+#                             升级仍要 docker compose pull
 #   MEOW_DANMAKU_API=         置空 = 不用弹幕聚合服务
 #   MEOW_AUTH_TOKEN=xxxx      写操作令牌（后端不只监听本机时建议设）
 #
