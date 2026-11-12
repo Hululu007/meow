@@ -136,6 +136,14 @@ if ($rel.draft) { throw "该 release 还是 draft，Publish 之后才有资产�
 $tag = $rel.tag_name
 Write-Host "解析到：$tag（资产 $($rel.assets.Count) 个）" -ForegroundColor Green
 
+# ★ 本次 release 的上传端点必须在这里就快照下来。
+#   下面的「清单自检」循环会把 $rel 逐条覆盖成"被检查条目自己的 release"
+#   （:558），最后一条往往是沿用旧 release 的条目 —— 若复制循环再用
+#   $rel.upload_url，就会把继承资产传回**旧 release**（同名资产返回
+#   already_exists 还被判成功），url 却改写成新 tag，用户下载必 404。
+#   2026-11-12 release-v1.1.7 的 tv-node 三件套就是这么丢的。
+$curUploadBase = ([string]$rel.upload_url) -replace '\{.*\}$', ''
+
 # tag 前缀 → 本次要更新哪些条目（与 release.yml 的 scope 一致）
 $scope = switch -Regex ($tag) {
     '^docker-v[0-9]'    { @() }
@@ -644,9 +652,8 @@ if ((-not $NoCopyAssets) -and $archival) {
                     -o $tmpA "https://api.github.com/repos/$Repo/releases/assets/$($srcAsset.id)" 2>$null
                 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmpA)) { throw "下载源资产失败" }
 
-                # 上传到本次 release
-                $uploadBase = ($rel.upload_url -replace '\{.*\}$', '')
-                $upA = "${uploadBase}?name=$fname"
+                # 上传到本次 release（用开头快照的端点；$rel 此时已被自检循环覆盖）
+                $upA = "${curUploadBase}?name=$fname"
                 $okA = $false
                 for ($i = 1; $i -le 4; $i++) {
                     $respA = & $CurlBin -s -X POST --max-time 300 `

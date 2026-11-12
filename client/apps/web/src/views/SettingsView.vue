@@ -2835,7 +2835,12 @@ async function modInstall() {
     for (let i = 0; i < 260; i++) {
       await new Promise((r) => setTimeout(r, 700))
       const st = JSON.parse(b.appUpdateState())
-      if (st.state === 'done') {
+      // ★ 原生状态机是 idle|downloading|verifying|ready|failed|cancelled
+      //   （AppUpdater.java:52），**没有 'done'**。这里曾经写成 'done'，
+      //   下载到 100% 后轮询永远不命中，3 分钟超时后安装器根本不拉起
+      //   （2026-11-12 极米投影仪全新安装实测卡死）。与 stores/appUpdate.ts
+      //   的 stage === 'ready' 保持同一套词表。
+      if (st.state === 'ready') {
         modMsg.value = '下载完成，拉起安装器…'
         b.appUpdateInstall()
         break
@@ -2844,7 +2849,10 @@ async function modInstall() {
         modMsg.value = '下载失败：' + st.message
         break
       }
-      modMsg.value = `下载中 ${st.percent}%（${fmtSize(st.received || 0)} / ${fmtSize(st.total || 0)}）`
+      modMsg.value =
+        st.state === 'verifying'
+          ? '校验中…'
+          : `下载中 ${st.percent}%（${fmtSize(st.received || 0)} / ${fmtSize(st.total || 0)}）`
     }
   } catch (e) {
     modMsg.value = '安装失败：' + String(e)

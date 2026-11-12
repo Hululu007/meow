@@ -78,3 +78,47 @@ describe('更新中心：状态不重复、按钮不重复', () => {
     expect(src).toContain('text-[11px] text-ink-2" data-update-center')
   })
 })
+
+/**
+ * 模块下载轮询必须用原生的状态词表（2026-11-12 极米投影仪实测）。
+ *
+ * 原生 AppUpdater 的状态机是 idle|downloading|verifying|ready|failed|cancelled，
+ * **没有 'done'**。设置页 modInstall() 曾写成 `st.state === 'done'`——
+ * 下载到 100% 后轮询永远不命中，3 分钟超时退出，系统安装器根本不拉起，
+ * 用户看到的是「下载中 100%」永久卡死。应用自更新链（stores/appUpdate.ts）
+ * 用的是 `stage === 'ready'`，所以那条链一直是好的。
+ */
+describe('模块安装：轮询状态与原生词表一致', () => {
+  const SETTINGS = join(ROOT, 'client', 'apps', 'web', 'src', 'views', 'SettingsView.vue')
+
+  it('modInstall 判 ready（原生词表），不再判不存在的 done', () => {
+    const src = readFileSync(SETTINGS, 'utf8')
+    expect(src, '轮询还在判原生不存在的 done').not.toContain("st.state === 'done'")
+    expect(src, '没有判 ready，安装器永远不会被拉起').toContain("st.state === 'ready'")
+  })
+
+  it('sync-packages 复制继承资产用快照的本次上传端点，不用被覆盖的 $rel', () => {
+    /*
+     * 自检循环（:558 起）会逐条把 $rel 覆盖成"被查条目自己的 release"，
+     * 最后一条往往是沿用旧 release 的模块条目。复制循环若再用
+     * $rel.upload_url，继承资产会被传回旧 release（already_exists 被当
+     * 成功），url 却改写成新 tag——release-v1.1.7 的 tv-node 三件套就是这么
+     * 丢的，全新安装模块下载 404。
+     */
+    const p = readFileSync(join(ROOT, 'deploy', 'scripts', 'sync-packages.ps1'), 'utf8')
+    expect(p, '没有在 $rel 被覆盖前快照本次上传端点').toContain('$curUploadBase')
+    const snapshotAt = p.indexOf('$curUploadBase =')
+    const relOverwriteAt = p.indexOf('$rel = Get-GhApi "/repos/$Repo/releases/tags/$uTag"')
+    expect(snapshotAt, '快照必须在自检循环覆盖 $rel 之前').toBeGreaterThan(-1)
+    expect(relOverwriteAt).toBeGreaterThan(snapshotAt)
+    // 复制循环的上传目标必须用快照（834 行那处 $rel.upload_url 是清单上传，
+    // 它前面 810 行刚重新取过 $rel，合法）——只检查复制循环区间内
+    const copyStart = p.indexOf('复制继承资产')
+    const copyEnd = p.indexOf('继承条目的存活校验')
+    expect(copyStart, '找不到复制循环').toBeGreaterThan(-1)
+    expect(copyEnd).toBeGreaterThan(copyStart)
+    const copyBlock = p.slice(copyStart, copyEnd)
+    expect(copyBlock, '复制循环没改用快照端点').toContain('${curUploadBase}?name=$fname')
+    expect(copyBlock, '复制循环还在用被覆盖的 $rel.upload_url').not.toContain('$rel.upload_url')
+  })
+})
