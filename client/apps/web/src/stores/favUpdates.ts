@@ -390,3 +390,35 @@ export function pruneRemarks(aliveKeys: string[]): void {
   }
   if (changed) save(st)
 }
+
+/**
+ * 导出追剧基准（WebDAV 快照用）。
+ *
+ * 要的是 `seen`（收藏时看到的 remarks），不是 `hits`（本轮检查发现的更新）：
+ * 前者是长期基线，换机后没有它，第一次检查会把所有收藏都当"已更新"；
+ * 后者是一次检查的临时结果，6 小时后本来就会重算。
+ */
+export function exportSeenRemarks(): Record<string, string> {
+  return load().seen
+}
+
+/**
+ * 合并远端基准（WebDAV 快照还原用）。
+ *
+ * 本地已有的 key 一律不动，只补缺失：`seen` 没有时间戳可比，而"本机
+ * 已经看过哪一集"以本机为准更安全——还原旧快照不该把新集重新标成未看。
+ */
+export function mergeSeenRemarks(input: Record<string, string>): number {
+  const remote = input && typeof input === 'object' ? input : {}
+  const st = load()
+  let changed = 0
+  for (const [k, v] of Object.entries(remote)) {
+    if (!k || typeof v !== 'string' || !v) continue
+    if (!(k in st.seen)) {
+      st.seen[k] = v
+      changed++
+    }
+  }
+  if (changed) save(st)
+  return changed
+}

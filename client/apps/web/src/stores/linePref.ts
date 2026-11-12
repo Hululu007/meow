@@ -72,3 +72,46 @@ export function clearLinePref(site: string, vodId: string): void {
     /* 忽略 */
   }
 }
+
+/**
+ * 全部偏好（进 WebDAV 快照用）。
+ *
+ * 单独给导出函数而不是把 `LineMap` 公开：外部只读，写路径必须走
+ * `setLinePref`（那里有 200 条上限的裁剪）。
+ */
+export function exportLinePrefs(): Record<string, { name: string; at: number }> {
+  return readAll()
+}
+
+/** 合并远端偏好：同一条取 `at` 较新的；只增改、不删本地（还原旧快照不抹新选择）。 */
+export function mergeLinePrefs(input: Record<string, { name?: unknown; at?: unknown }>): number {
+  const remote = input && typeof input === 'object' ? input : {}
+  const all = readAll()
+  let changed = 0
+  for (const [key, v] of Object.entries(remote)) {
+    if (!key || !v || typeof v !== 'object') continue
+    const name = typeof v.name === 'string' ? v.name : ''
+    if (!name) continue
+    const at = Number(v.at) || 0
+    const cur = all[key]
+    if (!cur || at > (Number(cur.at) || 0)) {
+      all[key] = { name, at }
+      changed++
+    }
+  }
+  if (changed) {
+    const keys = Object.keys(all)
+    if (keys.length > 200) {
+      keys
+        .sort((a, b) => (all[a].at || 0) - (all[b].at || 0))
+        .slice(0, keys.length - 200)
+        .forEach((k) => delete all[k])
+    }
+    try {
+      localStorage.setItem(KEY, JSON.stringify(all))
+    } catch {
+      /* 配额满时忽略 */
+    }
+  }
+  return changed
+}

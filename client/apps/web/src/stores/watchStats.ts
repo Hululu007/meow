@@ -257,3 +257,36 @@ export function overview(): StatsOverview {
     avgPerActiveDay: active.length ? Math.round(monthly / active.length) : 0,
   }
 }
+
+/**
+ * 合并远端每日时长（WebDAV 快照还原用）。
+ *
+ * 按**天取较大值**而不是相加：两台设备各自统计的是"这台机器上看了多久"，
+ * 相加会把同一天在两台机器上重叠观看的时间算两遍；取 max 至少不会虚高。
+ * 合并后重算 total，避免与 `days` 不一致（SettingsView 直接读 total）。
+ */
+export function mergeWatchDays(days: Record<string, number>): number {
+  const input = days && typeof days === 'object' ? days : {}
+  const cur = getWatchStats()
+  let changed = 0
+  for (const [d, v] of Object.entries(input)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue
+    const n = Math.max(0, Math.floor(Number(v) || 0))
+    if (!n) continue
+    if (n > (cur.days[d] || 0)) {
+      cur.days[d] = n
+      changed++
+    }
+  }
+  if (!changed) return 0
+  const total = Object.values(cur.days).reduce((a, b) => a + b, 0)
+  try {
+    localStorage.setItem(KEY, JSON.stringify({ days: cur.days, total, at: Math.max(cur.at, Date.now()) }))
+  } catch {
+    /* 忽略 */
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('meow:watch-stats'))
+  }
+  return changed
+}

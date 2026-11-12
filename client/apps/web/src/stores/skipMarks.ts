@@ -100,3 +100,30 @@ export function clearSkipMarks(site: string, vodId: string) {
 export function listSkipMarks(): Array<{ key: string; marks: SkipMarks }> {
   return Object.entries(readAll()).map(([key, marks]) => ({ key, marks }))
 }
+
+/**
+ * 合并远端标记（WebDAV 备份还原用）。
+ *
+ * 同一个 `site|vod_id` 取 `at` 较新的一条；只增改、不删除本地——
+ * 还原旧快照不该抹掉用户后来手标的内容。
+ */
+export function mergeSkipMarks(entries: Array<{ key: string; marks: SkipMarks }>): number {
+  if (!Array.isArray(entries)) return 0
+  const all = readAll()
+  let changed = 0
+  for (const e of entries) {
+    if (!e || typeof e.key !== 'string' || !e.key || !e.marks) continue
+    const m = e.marks
+    const intro = Number(m.intro)
+    const outro = Number(m.outro)
+    if (!Number.isFinite(intro) || !Number.isFinite(outro)) continue
+    const at = Number(m.at) || 0
+    const cur = all[e.key]
+    if (!cur || at > (Number(cur.at) || 0)) {
+      all[e.key] = { intro, outro, at }
+      changed++
+    }
+  }
+  if (changed) writeAll(all)
+  return changed
+}

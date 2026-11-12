@@ -114,7 +114,9 @@ async function ensureDir(apiBase: string, cfg: WebdavConfig, sub = ''): Promise<
   if (r.status === 401) throw new Error('WebDAV 认证失败')
   if (r.status === 403) throw new Error('没有创建目录的权限')
   if (r.status === 404) throw new Error('WebDAV 路径不存在（检查共享文件夹是否已放开）')
-  throw new Error(`创建目录失败 HTTP ${r.status}`)
+  // status=0 = 代理层连不上（后端把异常摘要放在 msg 里）。透出真实原因，
+  // 否则用户只看到「HTTP 0」——分不清是网络、端口还是地址写错（2026-11-12 实测）。
+  throw new Error(`创建目录失败：${reason(r)}`)
 }
 
 function requireCfg(): WebdavConfig {
@@ -276,8 +278,15 @@ export async function pullSearchHistory(
 export interface Snapshot {
   /** 文件名，如 prefs-20261021-093012.json */
   name: string
-  /** 备份时间（毫秒） */
+  /** 备份时间（毫秒，来自文件名里的**设备本地时间**） */
   at: number
+  /**
+   * 远端 Last-Modified（毫秒）。
+   *
+   * 文件名是客户端时钟生成的——多端时钟不齐时（实测 76 号机慢 9 小时）
+   * 按名排序会把旧快照当"最新"。有服务器时间就优先用它排序和展示。
+   */
+  mtime?: number
   /** 设置里的历史条数（展示用） */
   historyCount: number
   /** 当时的源 */
@@ -368,14 +377,37 @@ export async function listSnapshots(apiBase: string): Promise<Snapshot[]> {
     if (r.status === 404) return []
     throw new Error(`读取备份列表失败：${reason(r)}`)
   }
-  const hrefs = [...r.body.matchAll(/<D:href>([^<]+)<\/D:href>/g)].map((m) => m[1])
+  /*
+   * 每个 <D:response> 自带 href 与 getlastmodified，按块配对；
+   * 全局扫会张冠李戴。服务器前缀不统一（D: / d: / dav:），正则放宽。
+   * 没有 response 包裹的实现退回纯 href 扫描（拿不到 mtime）。
+   */
+  const blocks = r.body.split(/<(?:\w+:)?response\b/gi).slice(1)
+  const entries = blocks.length
+    ? blocks.map((b) => ({
+        href: /<(?:\w+:)?href>([^<]+)<\/(?:\w+:)?href>/i.exec(b)?.[1] || '',
+        lm: /<(?:\w+:)?getlastmodified>([^<]+)<\/(?:\w+:)?getlastmodified>/i.exec(b)?.[1] || '',
+      }))
+    : [...r.body.matchAll(/<(?:\w+:)?href>([^<]+)<\/(?:\w+:)?href>/gi)].map((m) => ({
+        href: m[1],
+        lm: '',
+      }))
+
   const out: Snapshot[] = []
-  for (const h of hrefs) {
-    const name = decodeURIComponent(h.split('/').filter(Boolean).pop() || '')
+  for (const { href, lm } of entries) {
+    if (!href) continue
+    const name = decodeURIComponent(href.split('/').filter(Boolean).pop() || '')
     if (!name.startsWith('prefs-') || !name.endsWith('.json')) continue
-    out.push({ name, at: parseStamp(name), historyCount: 0 })
+    const ms = lm ? Date.parse(lm) : NaN
+    out.push({
+      name,
+      at: parseStamp(name),
+      mtime: Number.isFinite(ms) ? ms : undefined,
+      historyCount: 0,
+    })
   }
-  return out.sort((a, b) => b.at - a.at)
+  // 服务器时间优先；没有 Last-Modified 的服务器退回文件名时间。
+  return out.sort((a, b) => (b.mtime ?? b.at) - (a.mtime ?? a.at))
 }
 
 /** 只保留最近 MAX_SNAPSHOTS 份 */

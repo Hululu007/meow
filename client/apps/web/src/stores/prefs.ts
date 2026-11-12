@@ -11,6 +11,13 @@
 import { replaceFavorites } from './favorites'
 import { WALLPAPER_IDS } from './wallpapers'
 import { DEFAULT_GIT_ACCEL, normalizeGitAccel, type GitAccelPrefs } from '../api/gitAccel'
+// 快照里的「辅助数据」：手工标记 / 线路偏好 / 追剧基准 / 观看统计。
+// 它们各自独立存 localStorage（不属于设置、也不该被 historyLimit 裁掉），
+// 但换机时丢了很疼，所以随快照走一遍。四个 store 都不 import 本文件，无环。
+import { listSkipMarks, mergeSkipMarks } from './skipMarks'
+import { exportLinePrefs, mergeLinePrefs } from './linePref'
+import { exportSeenRemarks, mergeSeenRemarks } from './favUpdates'
+import { getWatchStats, mergeWatchDays } from './watchStats'
 
 export interface Prefs {
   // ---------------------------------------------------------------- 更新源
@@ -604,6 +611,26 @@ export interface Backup {
   favorites?: unknown[]
   /** 用户在用的源 */
   site?: string
+  /**
+   * 辅助数据：换机/重装后手工重建代价最高的几类。
+   *
+   * <p>它们不属于 `prefs`（不是设置项），也不属于 `history`（不该被
+   * historyLimit 裁掉），但都只存在本机 localStorage —— 没有这一块，
+   * 用户换台电视就发现"片头标记、追剧进度、观看统计全没了"。
+   *
+   * <p>还原语义一律是**只合并不删除**（见 applyBackup）：
+   * 旧快照不能抹掉本机后来产生的新数据。
+   */
+  aux?: {
+    /** 手动片头/片尾标记（site|vod_id → 秒数） */
+    skipMarks?: Array<{ key: string; marks: { intro: number; outro: number; at: number } }>
+    /** 线路偏好（site|vod_id → 线路名 + 选择时间） */
+    linePrefs?: Record<string, { name: string; at: number }>
+    /** 追剧基准（site|vod_id → 收藏时看到的 remarks） */
+    favRemarks?: Record<string, string>
+    /** 观看时长（'YYYY-MM-DD' → 秒） */
+    watchDays?: Record<string, number>
+  }
 }
 
 /**
@@ -618,8 +645,12 @@ export interface Backup {
  * <p>用**黑名单**而不是白名单：prefs 会不断加字段，白名单式漏加一个
  * 新字段顶多"没备份"，而黑名单式漏加一个密钥字段就是泄密。
  * 所以这里只列敏感项，其余照旧全量走。
+ *
+ * <p><b>updateToken 也在这张名单里</b>（2026-11-12 审计）：私有仓访问令牌
+ * 是 PAT，写进 NAS/云盘上的快照等于把仓库读写能力交给存储方。用户能接受
+ * “备份丢了重填”，不能接受“备份泄露”。
  */
-const SECRET_PREF_KEYS = ['llmApiKey'] as const
+const SECRET_PREF_KEYS = ['llmApiKey', 'updateToken'] as const
 
 /** 剥掉敏感字段，其余原样返回（导出/上传的唯一入口）。 */
 export function redactPrefs(p: Prefs): Prefs {
@@ -644,6 +675,12 @@ export function makeBackup(
     searchHistory,
     favorites,
     site: localStorage.getItem('meow.site') || undefined,
+    aux: {
+      skipMarks: listSkipMarks(),
+      linePrefs: exportLinePrefs(),
+      favRemarks: exportSeenRemarks(),
+      watchDays: getWatchStats().days,
+    },
   }
 }
 
@@ -677,7 +714,17 @@ export function applyBackup(
      */
     const patch = { ...(b.prefs as Partial<Prefs>) }
     delete (patch as Record<string, unknown>).llmApiKey
+    delete (patch as Record<string, unknown>).updateToken
     savePrefs(patch)
+  }
+  // 辅助数据：只合并不删除（旧快照不许抹掉本机后来产生的标记/统计）。
+  // 放在 prefsOnly 的 return 之前——设置页「还原到某个时间点」也该带回它们。
+  if (b.aux && typeof b.aux === 'object') {
+    const aux = b.aux
+    if (Array.isArray(aux.skipMarks)) mergeSkipMarks(aux.skipMarks)
+    if (aux.linePrefs && typeof aux.linePrefs === 'object') mergeLinePrefs(aux.linePrefs)
+    if (aux.favRemarks && typeof aux.favRemarks === 'object') mergeSeenRemarks(aux.favRemarks)
+    if (aux.watchDays && typeof aux.watchDays === 'object') mergeWatchDays(aux.watchDays)
   }
   if (opts.prefsOnly) return true
   if (Array.isArray(b.history)) {
@@ -719,7 +766,17 @@ export async function webdavPing(
       }),
     })
     if (!res.ok) return { ok: false, status: res.status, msg: `代理错误 ${res.status}` }
-    const r = (await res.json()) as { ok: boolean; status: number; body: string }
+    const r = (await res.json()) as { ok: boolean; status: number; body: string; msg?: string }
+    // ★ status=0 是代理层失败（后端连不上/超时），不是 WebDAV 的响应码。
+    //   不先拦住它，`0 < 300` 会让「地址写错」显示成「连接成功」——
+    //   用户以为配置没问题，等到上传才报错，排查方向全错（2026-11-12 实测）。
+    if (r.status === 0) {
+      return {
+        ok: false,
+        status: 0,
+        msg: r.msg ? `连接失败：${r.msg}` : '连接失败（检查地址与端口）',
+      }
+    }
     if (r.status < 300) {
       // 数一下目录里已有几个文件，用户能直观看到同步状态
       const files = (r.body.match(/<D:href>/g) || []).length
