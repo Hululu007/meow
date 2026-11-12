@@ -4,13 +4,9 @@
 
 ## 安装
 
-### 应用中心
+两条路，装完效果相同：不常折腾的用应用中心手动安装；想统一管理多个应用源就用 FnDepot 第三方商店。
 
-在飞牛应用中心添加第三方源 `https://github.com/upchr/FnDepot`
-（国内镜像 `https://gitee.com/upchr/FnDepot`），搜索「猫窝」安装，
-按机器架构自动匹配 x86 / arm 包。
-
-### 手动安装 fpk
+### 方式一：应用中心手动安装 fpk
 
 从 [Releases](https://github.com/upchr/meow/releases) 下载对应架构：
 
@@ -19,7 +15,9 @@
 | `meow_<版本>_x86.fpk` | x86_64 |
 | `meow_<版本>_arm.fpk` | arm64 |
 
-应用中心 → 手动安装 → 选择 fpk。
+打开应用中心 → 左下角「手动安装」→ 选择存储空间 → 「从电脑上传」（文件已在 NAS 上就选「从 NAS 添加」）。
+
+![飞牛应用中心「手动安装」：选存储空间，从电脑上传 fpk](/screenshots/fnos-manual-install.png)
 
 ::: tip 装不上的两种情况
 - **架构不对**：x86 机器装 arm 包会直接拒绝
@@ -27,6 +25,25 @@
 :::
 
 安装向导里的端口是**数值范围校验**（1024–65535），填字符串或超范围会卡在下一步。
+
+### 方式二：FnDepot 第三方商店
+
+[FnDepot](https://github.com/EWEDLCM/FnDepot) 是飞牛的第三方应用商店，本身也是一个应用；
+装好后可以同时挂多个应用源，Meow 是其中一个。
+
+1. 先按 FnDepot 仓库的说明把 FnDepot 装好
+2. 打开 FnDepot → 左侧「外部源管理」→ 右上「添加源」
+3. 源名称随意（如「CHRPLUS 应用源」），源地址填 `https://github.com/upchr/FnDepot`
+   （国内镜像 `https://gitee.com/upchr/FnDepot`）
+4. 保存后等列表里状态变成「成功」，到「应用仓库」搜「猫窝」→ 进详情 → 「下载」
+
+![FnDepot 的「外部源管理」：左侧进入，右上「添加源」，列表里能看到每个源的同步状态](/screenshots/fndepot-add-source.png)
+
+![添加 Meow 商店源：名称随意，源地址填 CHRPLUS 应用源的仓库根地址](/screenshots/fndepot-meow-source.png)
+
+![FnDepot 里的猫窝详情：来源 CHRPLUS 应用源，按机器架构自动匹配安装包](/screenshots/fndepot-install-meow.png)
+
+源同步失败（状态显示「全部失败」）时，先确认 NAS 能访问 GitHub，不行就换 Gitee 镜像再试。
 
 ## 装完之后
 

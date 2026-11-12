@@ -71,7 +71,7 @@ docker compose up -d
 
 ## 四、飞牛 fnOS
 
-1. 在飞牛应用中心添加第三方源 `https://github.com/upchr/FnDepot`（国内镜像 `https://gitee.com/upchr/FnDepot`），搜索「猫窝」安装；或直接安装 Releases 里的 `meow_<版本>_x86.fpk` / `_arm.fpk`。
+1. 从 Releases 下载 `meow_<版本>_x86.fpk` / `_arm.fpk`，应用中心 → 手动安装上传；或通过 FnDepot 第三方商店安装（两条路见 [飞牛 fnOS](/guide/fnos)）。
 2. 装完从应用中心入口打开。
 3. 在设置页导入源包。
 
