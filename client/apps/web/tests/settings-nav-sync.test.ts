@@ -211,8 +211,10 @@ describe('片库影片层的刮削绑定操作', () => {
   })
 
   it('重新搜刮必须跳过缓存（否则命中旧结果，看起来像没反应）', () => {
-    const start = LIB_VIEW.indexOf('async function rescrapeActive')
-    expect(start, 'rescrapeActive 改名了，测试需同步').toBeGreaterThan(-1)
+    // 详情页按钮 rescrapeActive 只是转调 rescrapeGroup（卡片浮层也用同一个），
+    // 真正打外网的是 rescrapeGroup —— 断言必须盯它
+    const start = LIB_VIEW.indexOf('async function rescrapeGroup')
+    expect(start, 'rescrapeGroup 改名了，测试需同步').toBeGreaterThan(-1)
     const body = LIB_VIEW.slice(start, LIB_VIEW.indexOf('\n}', start))
     // 第 3 个实参必须是 true（refresh）。后面可能还有 lib（缓存 key 的库维度），
     // 所以不能要求 `true)` 收尾——用「,true 之后是 , 或 )」。
@@ -224,7 +226,8 @@ describe('片库影片层的刮削绑定操作', () => {
   })
 
   it('解除绑定后清掉「这个位置刮过了」，否则再进目录不会重刮', () => {
-    const start = LIB_VIEW.indexOf('async function unbindActive')
+    const start = LIB_VIEW.indexOf('async function unbindGroup')
+    expect(start, 'unbindGroup 改名了，测试需同步').toBeGreaterThan(-1)
     const body = LIB_VIEW.slice(start, LIB_VIEW.indexOf('\n}', start))
     expect(body).toContain('scrapedFor.value = ')
   })

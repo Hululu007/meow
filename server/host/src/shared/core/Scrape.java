@@ -379,6 +379,23 @@ public final class Scrape {
      * 不带 apikey 返回 400，而 subject_suggest 直接 200，且字段够用
      * （片名、年份、条目 id）。它没给海报，海报另按 id 取。
      */
+    /**
+     * 把 suggest 给的小图换成大图。
+     *
+     * <p>subject_suggest 的 {@code img} 是 {@code s_ratio_poster}：实测同一张图
+     * s_ 17.6 KB、m_ 52 KB、l_ 173 KB，三者都返回 200。片库卡片在 4K 电视上
+     * 宽 300+ CSS px，小图明显糊，所以统一取 l_。
+     *
+     * <p>旧缓存里仍是 s_ 地址 → 前端 {@code posterUrl()} 做同样的替换；
+     * 万一某个条目没有 l_，前端 img 的 @error 会退回 s_（见 PosterImage 与
+     * LibraryView 的 onPosterError）。
+     */
+    private static String bigPoster(String url) {
+        if (url == null || url.isEmpty()) return url;
+        return url.replace("/s_ratio_poster/", "/l_ratio_poster/")
+                .replace("/m_ratio_poster/", "/l_ratio_poster/");
+    }
+
     private static JSONArray searchDouban(String title) {
         JSONArray out = new JSONArray();
         HttpURLConnection c = null;
@@ -419,7 +436,7 @@ public final class Scrape {
                 // **不要按 id 拼**：豆瓣图床的文件名是 p<图片id>，与条目 id 无关，
                 // 拼出来的地址必然 404（实测踩过）。
                 String img = o.optString("img", "");
-                if (!img.isEmpty()) item.put("poster", img);
+                if (!img.isEmpty()) item.put("poster", bigPoster(img));
                 int ep = parseIntSafe(o.optString("episode", ""));
                 if (ep > 0) item.put("episodes", ep);
                 out.put(item);

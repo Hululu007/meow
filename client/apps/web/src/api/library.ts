@@ -684,7 +684,13 @@ export interface ScrapeBatchResult {
 export function posterUrl(src: string): string {
   if (!src) return ''
   const b = apiBase()
-  const q = new URLSearchParams({ url: src, referer: 'https://movie.douban.com/' })
+  // 豆瓣的小图（s_/m_）在 4K 电视上糊：同一文件 l_ 有 173 KB、s_ 只有 17 KB
+  // （实测三者都 200）。这里统一抬到大图，**旧缓存里的 s_ 也被抬上去**；
+  // 个别没有 l_ 的条目由 UI 的 @error 退回 s_（见 LibraryView.onPosterError）。
+  const big = src
+    .replace('/s_ratio_poster/', '/l_ratio_poster/')
+    .replace('/m_ratio_poster/', '/l_ratio_poster/')
+  const q = new URLSearchParams({ url: big, referer: 'https://movie.douban.com/' })
   return `${b}/api/proxy/image?${q}`
 }
 

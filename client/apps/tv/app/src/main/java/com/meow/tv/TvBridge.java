@@ -770,6 +770,88 @@ public class TvBridge {
         return AppUpdater.lastError();
     }
 
+    // ------------------------------------------------ 非阻塞的文本拉取任务
+    //
+    // ★ 为什么需要：`appUpdateManifest` / `moduleCheck*` 是**同步**桥方法，
+    //   网络在 WebView 的 JS 线程上跑。连上却不回数据的地址（被墙的 GitHub、
+    //   黑洞代理）会把整页 JS 冻住，用户看到的就是"偶尔卡死、点了没反应"。
+    //   改成"原生后台线程拉 + JS 轮询"：UI 全程可交互，任务本身仍有超时
+    //   （见 AppUpdater.http() 的 readTimeout）。
+    //
+    // 一次只允许一个任务：清单并发拉没有意义，还会互相拖慢。
+    private static final Object NETJOB_LOCK = new Object();
+    private static volatile String netJobId = "";
+    private static volatile boolean netJobRunning = false;
+    private static volatile String netJobText = null;
+    private static volatile String netJobErr = "";
+
+    /**
+     * 起一个文本拉取任务。
+     *
+     * @param kind "manifest"（单地址，原样返回）或 "manifest-any"
+     *             （`|` 分隔的候选，逐个试，命中含 packages 的那份）
+     * @return 任务 id；空串 = 被拒（非可信 origin）
+     */
+    @JavascriptInterface
+    public String netJobStart(String kind, String urls, String token) {
+        if (!trustedOrigin()) return "";
+        final boolean any = "manifest-any".equals(kind);
+        final String target = urls == null ? "" : urls;
+        final String id = Long.toString(System.nanoTime(), 36);
+        synchronized (NETJOB_LOCK) {
+            // ★ 新任务**直接取代**旧任务，不做"忙就拒绝"。
+            //   理由：JS 侧可能因为自己的 deadline 先放弃，而旧线程还在等一个
+            //   黑洞地址；此时用户再点一次「检查」必须能立刻重来，而不是被
+            //   "已有任务在跑"挡住（那会变成"点了没反应"）。旧线程的结果靠
+            //   id 比对丢弃，不会覆盖新任务。
+            netJobId = id;
+            netJobRunning = true;
+            netJobText = null;
+            netJobErr = "";
+        }
+        new Thread(() -> {
+            String text = null;
+            String err = "";
+            try {
+                text = any
+                        ? AppUpdater.fetchManifestAny(target, token)
+                        : AppUpdater.fetchManifest(target, token);
+                if (text == null) err = AppUpdater.lastError();
+            } catch (Throwable e) {
+                err = String.valueOf(e);
+            }
+            synchronized (NETJOB_LOCK) {
+                // 已被更新的任务取代 → 结果没有任何人等，直接丢弃
+                if (!id.equals(netJobId)) return;
+                netJobText = text;
+                netJobErr = err;
+                netJobRunning = false;
+            }
+        }, "meow-netjob").start();
+        return id;
+    }
+
+    /**
+     * 轮询任务状态：{@code {"running":true}} 或
+     * {@code {"running":false,"text":"..."}} / {@code {"running":false,"error":"..."}}。
+     */
+    @JavascriptInterface
+    public String netJobPoll(String id) {
+        org.json.JSONObject o = new org.json.JSONObject();
+        try {
+            boolean mine = id != null && id.equals(netJobId);
+            o.put("running", mine && netJobRunning);
+            if (!mine) {
+                o.put("error", "任务已被更新的检查取代");
+            } else if (!netJobRunning) {
+                if (netJobText != null) o.put("text", netJobText);
+                else o.put("error", netJobErr == null || netJobErr.isEmpty() ? "拉取失败" : netJobErr);
+            }
+        } catch (Throwable ignored) {
+        }
+        return o.toString();
+    }
+
     /**
      * 开始下载安装包（立即返回，进度用 {@link #appUpdateState()} 轮询）。
      *
@@ -1584,6 +1666,110 @@ public class TvBridge {
     @JavascriptInterface
     public boolean pickCacheDir() {
         return CacheDownloader.pickDir(activity);
+    }
+
+    // ------------------------------------------------ 片库「本地目录」选择器
+    //
+    // 与缓存目录不同，片库的路径要交给**后端**（本机网关）用 java.io.File 去
+    // 列举/流式/转码，所以不能要 SAF 的 content:// 树 URI，必须是真实路径。
+    // Android 11+ 读任意目录唯一能拿到真实路径的办法就是「所有文件访问权限」。
+    // 这三个方法读文件系统 → 必须过 trustedOrigin()（见类注释）。
+
+    /** 是否已授予「所有文件访问权限」（Android 10 及以下不需要）。 */
+    @JavascriptInterface
+    public boolean hasAllFiles() {
+        if (!trustedOrigin()) return false;
+        try {
+            return android.os.Build.VERSION.SDK_INT < 30 || android.os.Environment.isExternalStorageManager();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 打开系统的「所有文件访问权限」页面。结果异步，JS 侧回来再查 hasAllFiles()。 */
+    @JavascriptInterface
+    public boolean requestAllFiles() {
+        if (!trustedOrigin()) return false;
+        if (android.os.Build.VERSION.SDK_INT < 30) return true;
+        try {
+            android.content.Intent i = new android.content.Intent(
+                    android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    android.net.Uri.parse("package:" + activity.getPackageName()));
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            activity.startActivity(i);
+            return true;
+        } catch (Throwable t) {
+            try {
+                activity.startActivity(new android.content.Intent(
+                        android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                return true;
+            } catch (Throwable t2) {
+                return false;
+            }
+        }
+    }
+
+    /**
+     * 列子目录（片库本地目录选择器）。
+     *
+     * @param path 绝对路径；空串 = 返回可用的存储卷根（内置存储 + U 盘/SD 卡）
+     * @return JSON 数组 [{"name","path"}]，读不到返回 []
+     */
+    @JavascriptInterface
+    public String listDirs(String path) {
+        org.json.JSONArray out = new org.json.JSONArray();
+        if (!trustedOrigin()) {
+            android.util.Log.w("MeowBridge", "listDirs denied: url=" + MainActivity.currentUrl());
+            return out.toString();
+        }        // ★ 每一步各自兜错：整段包一个 try 的话，getExternalFilesDirs 之类
+        //   一抛异常连"内置存储"都出不来，界面表现为选择器一片空白（实测踩过）。
+        java.util.List<java.io.File> list = new java.util.ArrayList<>();
+        if (path == null || path.trim().isEmpty()) {
+            try {
+                java.io.File ext = android.os.Environment.getExternalStorageDirectory();
+                if (ext != null) list.add(ext);
+            } catch (Throwable t) {
+                android.util.Log.w("MeowBridge", "ext dir: " + t);
+            }
+            try {
+                java.io.File[] dirs = activity.getExternalFilesDirs(null);
+                if (dirs != null) {
+                    for (java.io.File f : dirs) {
+                        if (f == null) continue;
+                        // /storage/XXXX/Android/data/<pkg>/files → 上溯 4 级拿到卷根
+                        java.io.File vol = f;
+                        for (int i = 0; i < 4 && vol != null; i++) vol = vol.getParentFile();
+                        if (vol == null || !vol.canRead()) continue;
+                        if (!list.contains(vol)) list.add(vol);
+                    }
+                }
+            } catch (Throwable t) {
+                android.util.Log.w("MeowBridge", "external dirs: " + t);
+            }
+        } else {
+            try {
+                java.io.File[] kids = new java.io.File(path).listFiles();
+                if (kids != null) {
+                    java.util.Arrays.sort(kids, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
+                    for (java.io.File f : kids) {
+                        if (!f.isDirectory() || f.getName().startsWith(".")) continue;
+                        list.add(f);
+                    }
+                }
+            } catch (Throwable t) {
+                android.util.Log.w("MeowBridge", "list " + path + ": " + t);
+            }
+        }
+        for (java.io.File f : list) {
+            try {
+                org.json.JSONObject o = new org.json.JSONObject();
+                o.put("name", f.getName());
+                o.put("path", f.getAbsolutePath());
+                out.put(o);
+            } catch (Throwable ignored) {
+            }
+        }
+        return out.toString();
     }
 
     /** 把一集缓存导出到已授权目录；返回立即结果，进度用 cacheState() 轮询。 */

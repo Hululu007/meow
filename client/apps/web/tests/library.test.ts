@@ -10,6 +10,7 @@ import {
   libraryStream,
   parseFolderName,
   parseVideoName,
+  posterUrl,
   scrapeTitleOf,
   seasonTitle,
   showTitleFrom,
@@ -408,6 +409,46 @@ describe('目录封面祖先链', () => {
       /ancestors = trail\.value\.slice\(0,\s*-1\)/,
     )
     expect(VIEW.match(/ancestors = trail\.value\.map\(\(t\) => t\.name\)/g) || []).toHaveLength(2)
+  })
+})
+
+/**
+ * 海报地址与刮削队列的三条门禁。
+ *
+ * 前两条是纯函数；后两条是组件里的写法，只能断言源码形态（同「元数据持久化约定」
+ * 的理由：跑不了组件）。
+ */
+describe('海报地址', () => {
+  const dec = (u: string) => decodeURIComponent(u)
+
+  it('豆瓣小图抬成大图', () => {
+    expect(dec(posterUrl('https://img9.doubanio.com/view/photo/s_ratio_poster/public/p1.jpg')))
+      .toContain('/l_ratio_poster/')
+    expect(dec(posterUrl('https://img9.doubanio.com/view/photo/m_ratio_poster/public/p1.jpg')))
+      .toContain('/l_ratio_poster/')
+  })
+
+  it('已经是 l_ 或非豆瓣地址时不动它', () => {
+    const big = 'https://img9.doubanio.com/view/photo/l_ratio_poster/public/p1.jpg'
+    expect(dec(posterUrl(big))).toContain('/l_ratio_poster/')
+    expect(dec(posterUrl('https://example.com/a.jpg'))).toContain('https://example.com/a.jpg')
+  })
+})
+
+describe('片库刮削与海报 key（组件源码门禁）', () => {
+  const VIEW = readFileSync(join(process.cwd(), 'src/views/LibraryView.vue'), 'utf8')
+
+  it('刮削走队列，不再"正在刮就整层丢弃"', () => {
+    expect(VIEW, '又退回单飞丢弃（并发导航会丢整层海报）').not.toMatch(
+      /if \(scraping\.value \|\| scrapedFor\.value === where\) return/,
+    )
+    expect(VIEW).toContain('function enqueueScrape')
+    expect(VIEW).toContain('function scheduleScrapeRetry')
+  })
+
+  it('海报 key 带库 id（两个库同名目录/同名影片不串图）', () => {
+    expect(VIEW).toContain('dir:${lib}|${path}')
+    expect(VIEW).toContain('${lib}|${title}|${year}')
   })
 })
 

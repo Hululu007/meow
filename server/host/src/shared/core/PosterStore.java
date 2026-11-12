@@ -48,8 +48,14 @@ public final class PosterStore {
     private static final String DIR = "posters";
     private static final String INDEX = "posters/.index.json";
 
-    /** 配额上限。超过就按最后访问时间淘汰最旧的。 */
-    private static final long MAX_BYTES = 500L * 1024 * 1024;
+    /**
+     * 配额上限。超过就按最后访问时间淘汰最旧的。
+     *
+     * <p>1 GB 而不是 500 MB：海报改取豆瓣 {@code l_ratio_poster} 之后单张约
+     * 170 KB（原 s_ 只有 17 KB），500 MB 只够约 3000 张；一部剧按季各一张、
+     * 上千部片子很容易顶到。1 GB ≈ 6000 张，仍是有界值。
+     */
+    private static final long MAX_BYTES = 1000L * 1024 * 1024;
     /** 单张超过这个大小就不存（防止把视频/畸形响应当图片存进来）。 */
     private static final int MAX_ONE = 8 * 1024 * 1024;
 

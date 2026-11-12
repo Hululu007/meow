@@ -68,12 +68,21 @@ const trail = ref<Array<{ lib: string; path: string; name: string }>>([])
 const dirs = ref<LibraryEntry[]>([])
 const groups = ref<TitleGroup[]>([])
 const error = ref('')
-/** 片名 → 海报地址（刮削结果，异步补上，不阻塞列目录） */
+/**
+ * 海报表：key → 已经过 `posterUrl()` 的代理地址。
+ *
+ * ★ **key 必须带库 id**（`<lib>|片名|年份` / `dir:<lib>|相对路径`）：
+ *   路径是相对库根的，两个库都有 `电影/教父` 时，不带库就会互相覆盖，
+ *   表现为"另一个库的片子挂了这个库的海报"。
+ */
 const posters = ref<Record<string, string>>({})
 /** 这次目录的刮削是否已经跑过（避免每次进出都重打外网） */
 const scrapedFor = ref('')
 /** 已经探过封面的目录位置（目录封面要逐个子目录列一次，不能重复打） */
 const dirCovered = ref<string[]>([])
+/** 队列里/正在跑的刮削位置（同一位置不重复入队） */
+const scrapeQueued = new Set<string>()
+/** 有刮削在排队或执行（模板上的"正在补海报…"） */
 const scraping = ref(false)
 /**
  * 豆瓣限流中。
@@ -191,34 +200,117 @@ async function open(lib: string, path: string, name: string) {
  *   与 `where` 同理由调用方传入，同样不能读 currentLib。
  */
 async function doScrape(where: string, g: TitleGroup[], lib: string) {
-  if (scraping.value || scrapedFor.value === where) return
   // 刮削名 ≠ 卡片名：`教父 第1部` 这种带部号的卡片要拿「教父」去搜（scrapeTitle），
   // 存/读也都按刮削名做 key，两边才对得上（见 posterOf 的调用处）。
   const wanted = g.map((x) => ({ title: scrapeTitleOf(x), year: x.year })).filter((x) => x.title)
   if (!wanted.length) return
+  // 首屏只等前 N 张（看得见的那些），剩下的排进同一队列的第二波
+  enqueueScrape(where, () => runScrape(where, wanted.slice(0, VISIBLE_FIRST), lib))
+  if (wanted.length > VISIBLE_FIRST) {
+    enqueueScrape(`${where}#rest`, () =>
+      runScrape(`${where}#rest`, wanted.slice(VISIBLE_FIRST), lib, true),
+    )
+  }
+}
+
+/**
+ * 刮削串行队列。
+ *
+ * ★ 原来是 `if (scraping.value) return` 的单飞：用户在 A 目录还没刮完就进 B，
+ *   B 那一批会被**直接丢掉而且不会补**，只能退出去再进一次（实测）。现在谁都要
+ *   刮，只是排队——后端每条之间固定 900ms，并发发只会被豆瓣限流，所以串行是对的。
+ */
+const scrapeQueue: Array<{ where: string; run: () => Promise<void> }> = []
+
+async function pumpScrapes() {
+  if (scraping.value) return
   scraping.value = true
   try {
-    const { items, rateLimited } = await scrapeGroups(wanted, lib)
-    // 合并而不是替换：各层的海报要能共存，否则从子目录退回根层时
-    // 根层的目录卡片又变回灰块（用户看到的是"海报一闪就没了"）。
-    const next = { ...posters.value }
-    items.forEach((m, i) => {
-      const w = wanted[i]
-      if (!w || !m.poster) return
-      next[`${w.title}|${w.year}`] = posterUrl(m.poster)
-    })
-    posters.value = next
-    // TV 壳：把这批海报顺手存进应用私有目录，后端不可达时兜底（见 doMirror）。
-    void doMirror(items)
-    // 被豆瓣限流时**不要把 where 记成已刮**，否则这一层在本次会话里
-    // 再也不会重试——用户点「刷新」也看不到海报。
-    // ★ 两个方向都要动：限流时置位；**成功时必须清掉**，否则一旦被限过一次，
-    //   这个提示就永久挂在标题栏（实测踩过：后端早已恢复，界面一直说"限流"）。
-    scrapeLimit.value = rateLimited
-    if (!rateLimited) scrapedFor.value = where
+    while (scrapeQueue.length) {
+      const job = scrapeQueue.shift() as { where: string; run: () => Promise<void> }
+      try {
+        await job.run()
+      } catch {
+        /* 单条失败不影响后面的 */
+      }
+      scrapeQueued.delete(job.where)
+    }
   } finally {
     scraping.value = false
   }
+}
+
+function enqueueScrape(where: string, run: () => Promise<void>) {
+  if (scrapeQueued.has(where) || scrapedFor.value === where) return
+  scrapeQueued.add(where)
+  scrapeQueue.push({ where, run })
+  void pumpScrapes()
+}
+
+/**
+ * 真正打外网的那一段（由队列串行调用）。
+ *
+ * @param quiet 第二波（`#rest`）传 true：不参与"这一层刮过了"与限流提示的判定，
+ *   否则第二波回来会把第一波刚设置的提示又改一遍。
+ */
+async function runScrape(
+  where: string,
+  wanted: Array<{ title: string; year: number }>,
+  lib: string,
+  quiet = false,
+) {
+  const { items, rateLimited } = await scrapeGroups(wanted, lib)
+  // 合并而不是替换：各层的海报要能共存，否则从子目录退回根层时
+  // 根层的目录卡片又变回灰块（用户看到的是"海报一闪就没了"）。
+  const next = { ...posters.value }
+  items.forEach((m, i) => {
+    const w = wanted[i]
+    if (!w || !m.poster) return
+    next[posterKey(lib, w.title, w.year)] = posterUrl(m.poster)
+  })
+  posters.value = next
+  // TV 壳：把这批海报顺手存进应用私有目录，后端不可达时兜底（见 doMirror）。
+  void doMirror(items)
+  if (rateLimited) {
+    // 被限流就排一次自动重试，别让用户自己盯着点「刷新」
+    scheduleScrapeRetry()
+  } else {
+    retryCount = 0
+  }
+  // 被豆瓣限流时**不要把 where 记成已刮**，否则这一层在本次会话里
+  // 再也不会重试——用户点「刷新」也看不到海报。
+  // ★ 两个方向都要动：限流时置位；**成功时必须清掉**，否则一旦被限过一次，
+  //   这个提示就永久挂在标题栏（实测踩过：后端早已恢复，界面一直说"限流"）。
+  if (!quiet) {
+    scrapeLimit.value = rateLimited
+    if (!rateLimited) scrapedFor.value = where
+  }
+}
+
+/** 首屏优先刮多少张（其余排后续波次，避免几百张把首屏拖到几十秒） */
+const VISIBLE_FIRST = 12
+
+/** 限流自动重试的次数与计时器 */
+let retryTimer: ReturnType<typeof setTimeout> | undefined
+let retryCount = 0
+
+/**
+ * 被豆瓣限流后自动重试（1 / 2 / 4 分钟，最多三次）。
+ *
+ * 原来限流就整层放弃，用户看到的是"海报突然全没了"，只能自己点「刷新」。
+ * 只重跑**当前这一层**，而且不在详情页/别的层级里打断用户。
+ */
+function scheduleScrapeRetry() {
+  if (retryTimer || retryCount >= 3) return
+  const delay = 60_000 * 2 ** retryCount
+  retryCount++
+  retryTimer = setTimeout(() => {
+    retryTimer = undefined
+    if (activeGroup.value || !trail.value.length) return
+    scrapedFor.value = ''
+    dirCovered.value = []
+    void openReplace(currentLib.value, currentPath.value, currentName.value)
+  }, delay)
 }
 
 /**
@@ -302,18 +394,35 @@ function restoreMirror(keys: string[]) {
  */
 const MAX_DEPTH = 3
 
-async function doScrapeDirs(
+function doScrapeDirs(
   lib: string,
   where: string,
-  dirs: LibraryEntry[],
+  dirList: LibraryEntry[],
   ancestors: string[] = [],
 ) {
-  if (!dirs.length) return
+  if (!dirList.length) return
   // 已经刮过这个位置就不再打外网
   if (dirCovered.value.includes(where)) return
   dirCovered.value = [...dirCovered.value, where]
+  // 首屏只先探前 N 个目录：探测要逐个列目录，几十上百个会把首屏拖到几十秒
+  enqueueScrape(where, () => runScrapeDirs(lib, where, dirList.slice(0, VISIBLE_FIRST), ancestors))
+  if (dirList.length > VISIBLE_FIRST) {
+    enqueueScrape(`${where}#rest`, () =>
+      runScrapeDirs(lib, `${where}#rest`, dirList.slice(VISIBLE_FIRST), ancestors, true),
+    )
+  }
+}
+
+async function runScrapeDirs(
+  lib: string,
+  where: string,
+  dirList: LibraryEntry[],
+  ancestors: string[],
+  quiet = false,
+) {
+  if (!dirList.length) return
   const candidates: Array<{ dir: LibraryEntry; title: string; fallback?: string }> = []
-  const queue = [...dirs]
+  const queue = [...dirList]
   const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
     for (;;) {
       const d = queue.shift()
@@ -335,11 +444,12 @@ async function doScrapeDirs(
   if (rateLimited) {
     // 整层封面都没拿到：允许下次进这一层再试（不要留在 dirCovered 里）
     dirCovered.value = dirCovered.value.filter((x) => x !== where)
-    scrapeLimit.value = true
+    if (!quiet) scrapeLimit.value = true
+    scheduleScrapeRetry()
     return
   }
   // 封面这批成功了，就把限流提示收起来（同 doScrape 的理由）
-  scrapeLimit.value = false
+  if (!quiet) scrapeLimit.value = false
   const next = { ...posters.value }
   // 季名（`瑞克和莫蒂 第一季`）没命中、或者命中的条目根本不沾亲时，
   // 记下来等第二轮用剧名再刮一次 —— 一排同图也好过一张错图。
@@ -350,8 +460,7 @@ async function doScrapeDirs(
     if (!c) return
     const kin = !c.fallback || !m.matchedTitle || titleKin(m.matchedTitle, c.fallback)
     if (m.poster && kin) {
-      // 目录封面单独一个 key 空间：`dir:<path>`，避免和影片组的海报互相覆盖
-      next[`dir:${c.dir.path}`] = posterUrl(m.poster)
+      next[dirKey(lib, c.dir.path)] = posterUrl(m.poster)
       mirrored.push(m)
       return
     }
@@ -367,7 +476,7 @@ async function doScrapeDirs(
       const x = missed[j]
       const c = x && candidates[x.i]
       if (!m?.poster || !c) return
-      next[`dir:${c.dir.path}`] = posterUrl(m.poster)
+      next[dirKey(lib, c.dir.path)] = posterUrl(m.poster)
       mirrored.push(m)
     })
   }
@@ -406,26 +515,42 @@ async function coverTitleByProbe(
   d: LibraryEntry,
   ancestors: string[] = [],
 ): Promise<{ title: string; fallback?: string }> {
-  const names = [...ancestors, d.name]
-  let cur = d
-  for (let depth = 0; depth < MAX_DEPTH; depth++) {
-    const r = await fetchLibraryDir(lib, cur.path)
-    if (!r.ok) return { title: '' }
-    const videos = (r.files || []).filter((f) => isVideoName(f.name))
-    if (videos.length) {
-      const base = coverTitleFor(names, videos)
-      // 这张卡本身就是季目录（S01 / 毛骗S02）→ 加上季名，让每季有自己的图。
-      // ★ 只看**卡片自己**的名字：`瑞克和莫蒂` 探测时会下探到 S01，但那张卡
-      //   代表整部剧，加季名会把它变成"第一季"。
-      const season = parseFolderName(d.name).season
-      const withSeason = season > 0 ? seasonTitle(base, season) : ''
-      if (withSeason) return { title: withSeason, fallback: base }
-      return { title: base }
-    }
-    const next = (r.dirs || [])[0]
-    if (!next) return { title: '' }
-    names.push(next.name)
-    cur = next
+  // 每张卡最多列 6 次目录：只跟「第一个子目录」时，第一个子目录是花絮/空目录
+  // 就整张卡永远灰（实测片库里有 `纪录片/<空>/正片` 这种结构），所以允许试兄弟目录，
+  // 但必须有预算，否则一棵深目录树会把首屏拖死。
+  const budget = { n: 0 }
+  const hit = await probeDir(lib, d, [...ancestors, d.name], 0, budget)
+  if (!hit.title) return hit
+  // 这张卡本身就是季目录（S01 / 毛骗S02）→ 加上季名，让每季有自己的图。
+  // ★ 只看**卡片自己**的名字：`瑞克和莫蒂` 探测时会下探到 S01，但那张卡
+  //   代表整部剧，加季名会把它变成"第一季"。
+  const season = parseFolderName(d.name).season
+  const withSeason = season > 0 ? seasonTitle(hit.title, season) : ''
+  if (withSeason) return { title: withSeason, fallback: hit.title }
+  return hit
+}
+
+/** 每个目录最多试几个兄弟子目录（3 = 第一个没片还有两次机会） */
+const MAX_BRANCH = 3
+
+/** {@link coverTitleByProbe} 的递归体：先看本层有没有视频，没有就试子目录 */
+async function probeDir(
+  lib: string,
+  dir: LibraryEntry,
+  names: string[],
+  depth: number,
+  budget: { n: number },
+): Promise<{ title: string; fallback?: string }> {
+  if (budget.n >= 6) return { title: '' }
+  budget.n++
+  const r = await fetchLibraryDir(lib, dir.path)
+  if (!r.ok) return { title: '' }
+  const videos = (r.files || []).filter((f) => isVideoName(f.name))
+  if (videos.length) return { title: coverTitleFor(names, videos) }
+  if (depth + 1 >= MAX_DEPTH) return { title: '' }
+  for (const next of (r.dirs || []).slice(0, MAX_BRANCH)) {
+    const hit = await probeDir(lib, next, [...names, next.name], depth + 1, budget)
+    if (hit.title) return hit
   }
   return { title: '' }
 }
@@ -434,12 +559,22 @@ function isVideoName(name: string): boolean {
   return /\.(mp4|mkv|avi|ts|m2ts|mov|wmv|flv|webm|rmvb|iso)$/i.test(name)
 }
 
-function dirPosterOf(d: LibraryEntry): string {
-  return posters.value[`dir:${d.path}`] || ''
+/** 目录封面的 key（带库 id：两个库都有 `电影/教父` 时不能互相覆盖） */
+function dirKey(lib: string, path: string): string {
+  return `dir:${lib}|${path}`
+}
+
+/** 影片海报的 key（带库 id 与刮削名） */
+function posterKey(lib: string, title: string, year: number): string {
+  return `${lib}|${title}|${year}`
+}
+
+function dirPosterOf(d: LibraryEntry, lib = currentLib.value): string {
+  return posters.value[dirKey(lib, d.path)] || ''
 }
 
 function posterOf(title: string, year = 0): string {
-  return posters.value[`${title}|${year}`] || ''
+  return posters.value[posterKey(currentLib.value, title, year)] || ''
 }
 
 /**
@@ -450,6 +585,26 @@ function posterOf(title: string, year = 0): string {
  */
 function groupPosterOf(g: TitleGroup): string {
   return posterOf(scrapeTitleOf(g), g.year)
+}
+
+/**
+ * 海报加载失败。
+ *
+ * 豆瓣大图（`l_ratio_poster`）极少数条目没有 → 先退回小图（`s_`）；
+ * 小图也失败就把这条从表里删掉，让卡片回到「片名占位」，
+ * 而不是留一个浏览器裂图。
+ */
+function onPosterError(key: string, e: Event) {
+  const img = e.target as HTMLImageElement
+  const cur = posters.value[key] || ''
+  if (cur.includes('l_ratio_poster')) {
+    posters.value = { ...posters.value, [key]: cur.replace(/l_ratio_poster/g, 's_ratio_poster') }
+    img.src = posters.value[key]
+    return
+  }
+  const next = { ...posters.value }
+  delete next[key]
+  posters.value = next
 }
 
 // ---------------------------------------------------------------- 刮削绑定
@@ -474,14 +629,13 @@ const scrapeMsg = ref('')
 const scrapeMsgOk = ref(true)
 
 /**
- * 重新搜刮当前影片。
+ * 重新搜刮某一部（详情页按钮与卡片浮层共用）。
  *
  * 必须带 refresh：后端命中缓存会直接返回旧结果，
  * 不带就变成"点了没反应"（缓存里存的就是旧海报）。
  */
-async function rescrapeActive() {
-  const g = activeGroup.value
-  if (!g || scrapeBusy.value) return
+async function rescrapeGroup(g: TitleGroup) {
+  if (scrapeBusy.value) return
   scrapeBusy.value = true
   scrapeMsg.value = ''
   try {
@@ -489,7 +643,10 @@ async function rescrapeActive() {
     const want = scrapeTitleOf(g)
     const m = await scrapeOne(want, g.year, true, currentLib.value)
     if (m.ok && m.poster) {
-      posters.value = { ...posters.value, [`${want}|${g.year}`]: posterUrl(m.poster) }
+      posters.value = {
+        ...posters.value,
+        [posterKey(currentLib.value, want, g.year)]: posterUrl(m.poster),
+      }
       scrapeMsgOk.value = true
       scrapeMsg.value = `已匹配到「${m.title || want}」${m.year ? `（${m.year}）` : ''}`
     } else if (m.ok) {
@@ -505,10 +662,14 @@ async function rescrapeActive() {
   }
 }
 
-/** 解除当前影片的刮削绑定 */
-async function unbindActive() {
+async function rescrapeActive() {
   const g = activeGroup.value
-  if (!g || scrapeBusy.value) return
+  if (g) await rescrapeGroup(g)
+}
+
+/** 解除某一部的刮削绑定（详情页与卡片浮层共用） */
+async function unbindGroup(g: TitleGroup) {
+  if (scrapeBusy.value) return
   if (!confirm(`解除「${g.title}」的刮削绑定？\n海报会被移除，下次进目录会重新匹配。文件本身不受影响。`))
     return
   scrapeBusy.value = true
@@ -517,9 +678,8 @@ async function unbindActive() {
     // 后端缓存 key 用的是刮削名，解除绑定也必须用同一个名字
     const want = scrapeTitleOf(g)
     const ok = await unbindScrape(want, g.year, currentLib.value)
-    const key = `${want}|${g.year}`
     const next = { ...posters.value }
-    delete next[key]
+    delete next[posterKey(currentLib.value, want, g.year)]
     posters.value = next
     scrapeMsgOk.value = ok
     // 解除后清掉"这个位置刮过了"的记录，否则再进同一目录不会重刮
@@ -530,6 +690,60 @@ async function unbindActive() {
   } finally {
     scrapeBusy.value = false
   }
+}
+
+async function unbindActive() {
+  const g = activeGroup.value
+  if (g) await unbindGroup(g)
+}
+
+// ------------------------------------------------------------ 卡片浮层
+//
+// 以前「重新搜刮 / 解除绑定」只有进详情页才能点，而错配一眼就能在卡片墙上
+// 看出来（整排《封神》）。卡片上给同一组操作：长按（触屏/TV 遥控没有右键）
+// 或右键唤出，浮层**贴着被长按的那张卡**出现，不做固定角标。
+
+const cardMenu = ref<{ g: TitleGroup; x: number; y: number } | null>(null)
+let pressTimer: ReturnType<typeof setTimeout> | undefined
+
+function openCardMenu(g: TitleGroup, x: number, y: number) {
+  const w = 200
+  const h = 110
+  cardMenu.value = {
+    g,
+    x: Math.max(8, Math.min(x, window.innerWidth - w - 8)),
+    y: Math.max(8, Math.min(y, window.innerHeight - h - 8)),
+  }
+}
+
+function closeCardMenu() {
+  cardMenu.value = null
+}
+
+function startCardPress(g: TitleGroup, e: PointerEvent) {
+  stopCardPress()
+  // 右键走 contextmenu，不启动长按计时
+  if (e.pointerType === 'mouse' && e.button !== 0) return
+  const x = e.clientX
+  const y = e.clientY
+  pressTimer = setTimeout(() => openCardMenu(g, x, y), 650)
+}
+
+function stopCardPress() {
+  if (pressTimer) {
+    clearTimeout(pressTimer)
+    pressTimer = undefined
+  }
+}
+
+/** 浮层里的两个动作（关掉浮层再执行，避免确认框被浮层盖住） */
+async function cardAct(kind: 'rescrape' | 'unbind') {
+  const m = cardMenu.value
+  if (!m) return
+  const g = m.g
+  closeCardMenu()
+  if (kind === 'rescrape') await rescrapeGroup(g)
+  else await unbindGroup(g)
 }
 
 /** TV 壳：清空本机的海报副本（后端不可达时就没得回退了，所以要先确认）。 */
@@ -840,6 +1054,9 @@ onBeforeUnmount(() => {
   const w = window as unknown as { __meowTvPageBack?: () => boolean }
   if (w.__meowTvPageBack === handleTvBackHere) w.__meowTvPageBack = undefined
   window.dispatchEvent(new Event('meow:tv-pageback'))
+  // 限流重试与长按计时器都要收掉，否则离页后还会去打外网/弹浮层
+  if (retryTimer) clearTimeout(retryTimer)
+  stopCardPress()
 })
 
 </script>
@@ -859,7 +1076,7 @@ onBeforeUnmount(() => {
         class="rounded-full border px-3.5 py-1.5 text-[13px] transition max-sm:py-2"
         :class="
           tab === t.id
-            ? 'border-accent/40 bg-accent/15 text-accent'
+            ? 'border-accent bg-accent font-medium text-on-accent'
             : 'border-line bg-card text-ink-2 hover:bg-card-hover'
         "
         @click="tab = (t.id as Tab)"
@@ -926,6 +1143,11 @@ onBeforeUnmount(() => {
         {{ trail.map((t) => t.name).join(' / ') }}
       </div>
 
+      <!-- 卡片浮层操作的结果（列表页也要能看到：浮层不是详情页专属） -->
+      <div v-if="!activeGroup && scrapeMsg" class="mt-1 text-[11px]" :class="scrapeMsgOk ? 'text-ok' : 'text-hot'">
+        {{ scrapeMsg }}
+      </div>
+
       <div v-if="loading" class="mt-16 grid place-items-center">
         <div class="text-center">
           <div class="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-white/20 border-t-accent" />
@@ -933,9 +1155,17 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <p v-else-if="error" class="mt-16 text-center text-sm text-ink-3">
-        {{ error }}
-      </p>
+      <!-- 错误态要给下一步：只显示一句话，用户只能猜是回去还是重进 -->
+      <div v-else-if="error" class="mt-16 text-center">
+        <p class="text-sm text-ink-3">{{ error }}</p>
+        <button
+          type="button"
+          class="mt-5 rounded-md bg-card px-4 py-2.5 text-sm text-ink-2 hover:bg-card-hover"
+          @click="loadRoot"
+        >
+          重新加载片库
+        </button>
+      </div>
 
       <!-- ────────── 影片层：对齐详情页（海报 + 信息 + 选集）────────── -->
       <template v-else-if="activeGroup">
@@ -1105,25 +1335,25 @@ onBeforeUnmount(() => {
               >
                 <div class="relative aspect-[2/3] overflow-hidden rounded-lg bg-elevated">
                   <img
-                    v-if="dirPosterOf(d)"
-                    :src="dirPosterOf(d)"
+                    v-if="dirPosterOf(d, top.id)"
+                    :src="dirPosterOf(d, top.id)"
                     :alt="d.name"
                     class="h-full w-full object-cover transition duration-300 group-hover:brightness-110"
                     loading="lazy"
+                    @error="onPosterError(dirKey(top.id, d.path), $event)"
                   />
+                  <!-- 没刮到图时不再只给一个灰图标：露出片名，至少能看出"这是哪一部、
+                       到底刮到没有"。灰块 + 图标扫过去是一模一样的。 -->
                   <div
                     v-else
-                    class="grid h-full w-full place-items-center bg-field text-ink-3"
+                    class="flex h-full w-full flex-col items-center justify-center gap-2 bg-field px-3 text-center text-ink-3"
                   >
                     <svg class="h-8 w-8 opacity-40" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z" />
                     </svg>
+                    <span class="line-clamp-3 text-[length:var(--fs-mini)] leading-snug">{{ d.name }}</span>
                   </div>
-                  <span
-                    class="absolute left-2 top-2 rounded bg-black/70 px-1.5 py-0.5 text-[11px] font-medium text-accent backdrop-blur"
-                  >
-                    目录
-                  </span>
+                  <span class="poster-badge font-medium">目录</span>
                   <div
                     class="absolute inset-0 grid place-items-center bg-field opacity-0 transition group-hover:opacity-100"
                   >
@@ -1167,17 +1397,18 @@ onBeforeUnmount(() => {
                   :alt="d.name"
                   class="h-full w-full object-cover transition duration-300 group-hover:brightness-110"
                   loading="lazy"
+                  @error="onPosterError(dirKey(currentLib, d.path), $event)"
                 />
-                <div v-else class="grid h-full w-full place-items-center bg-field text-ink-3">
+                <div
+                  v-else
+                  class="flex h-full w-full flex-col items-center justify-center gap-2 bg-field px-3 text-center text-ink-3"
+                >
                   <svg class="h-8 w-8 opacity-40" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z" />
                   </svg>
+                  <span class="line-clamp-3 text-[length:var(--fs-mini)] leading-snug">{{ d.name }}</span>
                 </div>
-                <span
-                  class="absolute left-2 top-2 rounded bg-black/70 px-1.5 py-0.5 text-[11px] font-medium text-accent backdrop-blur"
-                >
-                  目录
-                </span>
+                <span class="poster-badge font-medium">目录</span>
                 <div
                   class="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/80 to-transparent"
                 />
@@ -1198,6 +1429,11 @@ onBeforeUnmount(() => {
               :key="groupKey(g)"
               class="group block w-full text-left"
               @click="openGroup(g)"
+              @contextmenu.prevent="openCardMenu(g, $event.clientX, $event.clientY)"
+              @pointerdown="startCardPress(g, $event)"
+              @pointerup="stopCardPress"
+              @pointerleave="stopCardPress"
+              @pointercancel="stopCardPress"
             >
               <div class="relative aspect-[2/3] overflow-hidden rounded-lg bg-elevated">
                 <img
@@ -1206,16 +1442,18 @@ onBeforeUnmount(() => {
                   :alt="g.title"
                   class="h-full w-full object-cover transition duration-300 group-hover:brightness-110"
                   loading="lazy"
+                  @error="onPosterError(posterKey(currentLib, scrapeTitleOf(g), g.year), $event)"
                 />
-                <div v-else class="grid h-full w-full place-items-center bg-field text-ink-3">
+                <div
+                  v-else
+                  class="flex h-full w-full flex-col items-center justify-center gap-2 bg-field px-3 text-center text-ink-3"
+                >
                   <svg class="h-8 w-8 opacity-40" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V4h-4z" />
                   </svg>
+                  <span class="line-clamp-3 text-[length:var(--fs-mini)] leading-snug">{{ g.title }}</span>
                 </div>
-                <span
-                  v-if="g.files.length > 1"
-                  class="absolute left-2 top-2 rounded bg-black/70 px-1.5 py-0.5 text-[11px] font-medium text-accent backdrop-blur"
-                >
+                <span v-if="g.files.length > 1" class="poster-badge font-medium">
                   {{ g.files.length }} 集
                 </span>
                 <div
@@ -1247,6 +1485,32 @@ onBeforeUnmount(() => {
           </p>
         </template>
       </template>
+    </template>
+
+    <!-- 卡片浮层：长按（触屏）/ 右键唤出，**贴着那张卡**出现，不做固定角标。
+         错配在卡片墙上就能一眼看出来（整排《封神》），没必要先进详情页再纠错。 -->
+    <template v-if="cardMenu">
+      <div class="fixed inset-0 z-40" @click="closeCardMenu" @contextmenu.prevent="closeCardMenu" />
+      <div
+        class="fixed z-50 w-[200px] overflow-hidden rounded-lg border border-line bg-card py-1 shadow-2xl"
+        :style="{ left: cardMenu.x + 'px', top: cardMenu.y + 'px' }"
+      >
+        <div class="truncate px-3 py-1 text-[length:var(--fs-mini)] text-ink-3">
+          {{ cardMenu.g.title }}
+        </div>
+        <button
+          class="block w-full px-3 py-2 text-left text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink"
+          @click="cardAct('rescrape')"
+        >
+          重新搜刮
+        </button>
+        <button
+          class="block w-full px-3 py-2 text-left text-sm text-ink-2 transition hover:bg-card-hover hover:text-hot"
+          @click="cardAct('unbind')"
+        >
+          解除绑定
+        </button>
+      </div>
     </template>
   </div>
 </template>

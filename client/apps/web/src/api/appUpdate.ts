@@ -139,6 +139,9 @@ export function downloadCandidates(url: string, accel: GitAccelPrefs = currentAc
 interface UpdaterBridge {
   appUpdaterPlatform?(): string
   appUpdateManifest?(url: string, token: string): string | null
+  /** 非阻塞版清单拉取（2026-11-12 加）：原生后台线程 + JS 轮询 */
+  netJobStart?(kind: string, urls: string, token: string): string
+  netJobPoll?(id: string): string
   appUpdateError?(): string
   appUpdateDownload?(url: string, sha: string, token: string, fileName: string): string
   appUpdateState?(): string
@@ -885,6 +888,9 @@ async function fetchRawText(url: string, token: string): Promise<string> {
     return (await inv('app_update_manifest_text', { url, token })) as string
   }
   const b = tvBridge()
+  if (b?.netJobStart && b?.netJobPoll) {
+    return await fetchTextViaNativeJob('manifest', url, token)
+  }
   if (b?.appUpdateManifest) {
     const text = b.appUpdateManifest(url, token)
     if (text == null) {
@@ -895,6 +901,58 @@ async function fetchRawText(url: string, token: string): Promise<string> {
   }
   // 纯 Web / 老壳：明确报错，不要静默当成"已是最新版本"
   throw new Error('当前端不支持检查更新（需要 PC 或 TV 应用）')
+}
+
+/**
+ * 走原生**异步**任务拉文本（TV）。同一时刻只跑一个任务，所以这里串行排队。
+ *
+ * ★ 为什么不能再用同步桥（2026-11-12 用户报「启动后进设置页偶尔卡死」）：
+ *   同步桥把网络跑在 WebView 的 JS 线程上。碰上"连上了却不回数据"的地址
+ *   （被墙的 GitHub、黑洞加速代理），Read 永不返回 → 整页 JS 冻住，CPU 归零，
+ *   只能杀进程。启动 5 秒后的自动更新检查正好会撞上这一刻。
+ *   现在原生在后台线程拉、JS 每 120ms 轮询，UI 全程可交互。
+ *
+ * 对正常检查的影响：走的还是同一套原生取字节逻辑（含加速候选、token、
+ * sha256 校验），只是多了一两次 120ms 粒度的轮询，量级几百毫秒。
+ *
+ * @param kind 'manifest' 单地址；'manifest-any' 按 `|` 逐个试并要求含 packages
+ */
+export async function fetchTextViaNativeJob(
+  kind: 'manifest' | 'manifest-any',
+  urlsPipe: string,
+  token = '',
+  // 单地址最坏 = 连接 15s + 读 30s；候选列表原生是**串行**逐个试，要给足
+  timeoutMs = kind === 'manifest-any' ? 150_000 : 45_000,
+): Promise<string> {
+  const b = tvBridge()
+  if (!b?.netJobStart || !b?.netJobPoll) throw new Error('当前端不支持原生拉取任务')
+  return await jobSerial(async () => {
+    const id = String(b.netJobStart!(kind, urlsPipe, token) || '')
+    // 只有 origin 不受信任才会返回空 id（原生会直接取代旧任务，不会"忙就拒"）
+    if (!id) throw new Error('原生通道被拒绝（页面来源不受信任）')
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 120))
+      let j: { running?: boolean; text?: string; error?: string } = {}
+      try {
+        j = JSON.parse(String(b.netJobPoll!(id) || '{}')) as typeof j
+      } catch {
+        continue
+      }
+      if (j.running) continue
+      if (typeof j.text === 'string' && j.text) return j.text
+      throw new Error(j.error || '拉取失败')
+    }
+    throw new Error(`拉取超时（${Math.round(timeoutMs / 1000)} 秒）`)
+  })
+}
+
+/** 原生同一时刻只允许一个拉取任务 → JS 侧排队，避免并发互踢 */
+let jobChain: Promise<unknown> = Promise.resolve()
+function jobSerial<T>(fn: () => Promise<T>): Promise<T> {
+  const p = jobChain.then(fn, fn)
+  jobChain = p.catch(() => undefined)
+  return p
 }
 
 /**

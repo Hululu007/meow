@@ -1,10 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- 装运行时模块 / 装自己的新版本都要它。缺了系统会直接拒绝：
      日志是 InstallStart: Requesting uid N needs to declare permission ... -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+      片库「本地目录」要读 U 盘/内置存储里的影视文件。
+      Android 11+ 读任意目录只有两条路：SAF（返回 content:// 树 URI，后端
+      listLocal 用 java.io.File 读不了）或「所有文件访问权限」。选后者：拿到的是
+      真实路径，列举/流式/转码整套后端代码零改动（见 LibraryAddView 的磁盘选择器）。
+      侧载分发、不进 Play，不受 MANAGE_EXTERNAL_STORAGE 的政策限制。
+    -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 

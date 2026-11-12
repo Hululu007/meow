@@ -13,6 +13,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import CenterDialog from '@/components/common/CenterDialog.vue'
+import { isDesktop } from '@/api'
 import { fetchLibrary, saveLibrary, testLibrary, type LibraryInfo } from '@/api/library'
 
 const route = useRoute()
@@ -68,6 +69,132 @@ const basePlaceholder = computed(() => {
 
 /** 只有 SMB/WebDAV 需要账号；本地目录留空即可 */
 const needsAuth = computed(() => type.value !== 'local')
+
+// ------------------------------------------------- 「本地目录」的选目录
+//
+// 三种形态的"本地"含义不同，所以入口必须分开：
+//   - PC：后端是应用内置 JVM，和用户同一台机器 → 系统文件夹选择器（路径可直接用）
+//   - TV：后端是机内网关，同一台机器 → 内置目录浏览器（要真实路径，见下）
+//   - Web/Docker：后端在容器里，本地路径是**容器内路径** → 只能手填
+
+const onDesktop = isDesktop()
+
+interface DirBridge {
+  hasAllFiles?: () => boolean
+  requestAllFiles?: () => boolean
+  listDirs?: (path: string) => string
+}
+
+function tvDirBridge(): DirBridge | null {
+  try {
+    const b = (window as unknown as { meowTv?: DirBridge }).meowTv
+    return b && typeof b.listDirs === 'function' ? b : null
+  } catch {
+    return null
+  }
+}
+const canTvBrowse = !!tvDirBridge()
+
+/**
+ * TV 上是否已授予「所有文件访问权限」。
+ *
+ * 片库路径要交给后端（本机网关）用 java.io.File 读；SAF 给的是 content://
+ * 树 URI，后端读不了，所以这里必须走"所有文件访问权限"拿真实路径。
+ */
+const tvAllFiles = ref(true)
+
+function refreshAllFiles() {
+  const b = tvDirBridge()
+  tvAllFiles.value = b && typeof b.hasAllFiles === 'function' ? b.hasAllFiles() : true
+}
+
+function askAllFiles() {
+  const b = tvDirBridge()
+  if (!b || typeof b.requestAllFiles !== 'function') return
+  b.requestAllFiles()
+  // 权限页是异步返回的：回来后再查两次（用户可能在里面停留几秒）
+  window.setTimeout(refreshAllFiles, 1200)
+  window.setTimeout(refreshAllFiles, 4000)
+}
+
+/** PC：系统文件夹选择器（复用 Tauri dialog 插件，和「导入插件包」同一个入口） */
+async function pickNativeDir() {
+  const w = window as unknown as {
+    __TAURI_INTERNALS__?: { invoke?: (c: string, a?: unknown) => Promise<unknown> }
+    __TAURI__?: { core?: { invoke?: (c: string, a?: unknown) => Promise<unknown> } }
+  }
+  const invoke = w.__TAURI_INTERNALS__?.invoke || w.__TAURI__?.core?.invoke
+  if (!invoke) {
+    msgOk.value = false
+    msg.value = '这个环境没有系统文件选择器，请手动填路径'
+    return
+  }
+  try {
+    const r = (await invoke('plugin:dialog|open', {
+      options: { directory: true, multiple: false, title: '选择片库目录' },
+    })) as string | string[] | null
+    const p = Array.isArray(r) ? r[0] : r
+    if (p) {
+      form.value.base = p
+      msg.value = ''
+    }
+  } catch (e) {
+    msgOk.value = false
+    msg.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+/** TV：内置目录浏览器状态 */
+const pickerOpen = ref(false)
+const pickerPath = ref('')
+const pickerDirs = ref<Array<{ name: string; path: string }>>([])
+/** 进入过的路径栈，用于「上一级」（比字符串截断可靠） */
+const pickerStack = ref<string[]>([])
+
+function loadDirs(path: string) {
+  const b = tvDirBridge()
+  if (!b || typeof b.listDirs !== 'function') return
+  try {
+    pickerDirs.value = JSON.parse(b.listDirs(path) || '[]') as Array<{ name: string; path: string }>
+  } catch {
+    pickerDirs.value = []
+  }
+  pickerPath.value = path
+}
+
+function openTvPicker() {
+  refreshAllFiles()
+  if (!tvAllFiles.value) {
+    askAllFiles()
+    return
+  }
+  pickerStack.value = []
+  pickerOpen.value = true
+  loadDirs('')
+}
+
+function enterDir(p: string) {
+  pickerStack.value = [...pickerStack.value, pickerPath.value]
+  loadDirs(p)
+}
+
+function upDir() {
+  const st = [...pickerStack.value]
+  const prev = st.pop()
+  pickerStack.value = st
+  loadDirs(prev || '')
+}
+
+function chooseDir() {
+  if (!pickerPath.value) {
+    msgOk.value = false
+    msg.value = '先进入要作为片库的那个目录，再点「选中此目录」'
+    return
+  }
+  form.value.base = pickerPath.value
+  pickerOpen.value = false
+  msg.value = ''
+}
 
 const canSave = computed(() => form.value.base.trim().length > 0)
 
@@ -174,6 +301,8 @@ function handleTvBackHere(): boolean {
 onMounted(async () => {
   ;(window as unknown as { __meowTvPageBack?: () => boolean }).__meowTvPageBack =
     handleTvBackHere
+  // "所有文件访问权限"可能是在设置页里刚给的，进页面时先探一次
+  refreshAllFiles()
   // App 的 watch(route.path) 早于本组件 onMounted，必须回头通知它重算接管者
   window.dispatchEvent(new Event('meow:tv-pageback'))
   // TV 的 BACK 键由壳翻译成 history.back()，这里保证有上一页可退
@@ -258,6 +387,35 @@ onBeforeUnmount(() => {
         />
       </label>
 
+      <!-- 本地目录：PC 用系统文件夹选择器、TV 用内置目录浏览器 —— 这两端后端与
+           用户同机，选出来的真实路径后端能直接读。Web/Docker 的后端在容器里，
+           本地路径是**容器内路径**，只能手填，所以不给按钮。 -->
+      <div v-if="type === 'local'" class="rounded-lg border border-line bg-field/40 px-3 py-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            v-if="onDesktop"
+            class="rounded-md bg-card px-3 py-1.5 text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink"
+            @click="pickNativeDir"
+          >
+            选择文件夹…
+          </button>
+          <button
+            v-if="canTvBrowse"
+            class="rounded-md bg-card px-3 py-1.5 text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink"
+            @click="openTvPicker"
+          >
+            {{ tvAllFiles ? '浏览本机目录…' : '授予「所有文件访问权限」' }}
+          </button>
+          <span class="text-[length:var(--fs-mini)] text-ink-3">
+            {{
+              onDesktop || canTvBrowse
+                ? '选完会自动填上面的地址；也可以手动粘路径'
+                : '后端在容器/远端，这里要填它那台机器上的路径'
+            }}
+          </span>
+        </div>
+      </div>
+
       <label class="block">
         <span class="text-xs text-ink-3">根路径</span>
         <input
@@ -317,6 +475,61 @@ onBeforeUnmount(() => {
       <p class="text-[11px] leading-relaxed text-ink-3">
         密码存在后端数据目录，不会显示回页面，也不会进 git。
       </p>
+    </div>
+
+    <!-- TV 内置目录浏览器：遥控器可达（按钮 + 「上一级」），不做成右侧抽屉。
+         ★ 底色用 bg-elevated（实色），和 CenterDialog 一致：bg-card 在浅色主题
+           只有 5.5% 不透明度，浮层底下的表单会透上来，看起来像"面板塌了一半"。
+         z 也要和 CenterDialog 同档（z-[120]），否则会被导航/页头盖住。 -->
+    <div
+      v-if="pickerOpen"
+      class="fixed inset-0 z-[120] grid place-items-center bg-black/55 px-5 py-8"
+      @click.self="pickerOpen = false"
+    >
+      <div
+        class="flex w-full max-w-[36rem] flex-col overflow-hidden rounded-xl border border-line bg-elevated shadow-2xl"
+        style="max-height: 74vh"
+      >
+        <div class="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2">
+          <button
+            data-tv-first
+            class="rounded-md bg-field px-2.5 py-1 text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink"
+            @click="upDir"
+          >
+            上一级
+          </button>
+          <div class="min-w-0 flex-1 truncate font-mono text-[length:var(--fs-mini)] text-ink-3">
+            {{ pickerPath || '存储卷' }}
+          </div>
+          <button
+            class="rounded-md bg-accent px-3 py-1 text-sm font-medium text-on-accent"
+            @click="chooseDir"
+          >
+            选中此目录
+          </button>
+        </div>
+        <div class="min-h-0 flex-1 overflow-y-auto p-2">
+          <button
+            v-for="d in pickerDirs"
+            :key="d.path"
+            class="block min-h-9 w-full truncate rounded-md px-3 py-2 text-left text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink"
+            @click="enterDir(d.path)"
+          >
+            📁 {{ d.name }}
+          </button>
+          <p v-if="!pickerDirs.length" class="px-3 py-6 text-center text-xs text-ink-3">
+            这个目录下没有子目录
+          </p>
+        </div>
+        <div class="flex shrink-0 items-center justify-between border-t border-line px-3 py-2">
+          <span class="text-[length:var(--fs-mini)] text-ink-3">
+            共 {{ pickerDirs.length }} 项 · 进入目标目录后点右上「选中此目录」
+          </span>
+          <button class="rounded-md bg-field px-3 py-1 text-sm" @click="pickerOpen = false">
+            取消
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>

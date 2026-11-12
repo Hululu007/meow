@@ -83,6 +83,7 @@ import {
 import {
   clearUpdateCache,
   downloadCandidates,
+  fetchTextViaNativeJob,
   getBackupUpdateSource,
   getUpdateSource,
   getUpdateToken,
@@ -2883,8 +2884,8 @@ async function modInstall() {
     //   被墙用户直连必失败。候选列表由 downloadCandidates 按「网络与加速 →
     //   GitHub 加速」算好（直连 + 代理），逐个试，第一个拿到清单的胜出。
     //   与 App 自更新（fetchRawTextCandidates）同一套语义。
-    // ★ 桥方法名带 Candidates：Android WebView 的 JS 桥不支持同名重载，
-    //   老壳没有新名字时回退到两参版（就没有候选，只能直连）。
+    // ★ 新壳优先走**非阻塞**通道（netJobStart/netJobPoll）：同步桥会把网络跑在
+    //   WebView 的 JS 线程上，一个"连上不回数据"的代理就能冻住整页（实测踩过）。
     const checkOne = (u: string) =>
       JSON.parse(
         String(
@@ -2892,14 +2893,26 @@ async function modInstall() {
             '{}',
         ),
       )
-    let chk: Record<string, unknown> = { ok: false }
-    for (const c of downloadCandidates(src)) {
-      chk = checkOne(c)
-      if (chk.ok !== false) break
+    const checkPipe = async (pipe: string): Promise<Record<string, unknown>> => {
+      if (b.netJobStart && b.netJobPoll) {
+        try {
+          const text = await fetchTextViaNativeJob('manifest-any', pipe, tok)
+          return JSON.parse(text) as Record<string, unknown>
+        } catch (e) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) }
+        }
+      }
+      let out: Record<string, unknown> = { ok: false }
+      for (const c of pipe.split('|')) {
+        out = checkOne(c)
+        if (out.ok !== false) break
+      }
+      return out
     }
+    let chk: Record<string, unknown> = await checkPipe(downloadCandidates(src).join('|'))
     const backup = getBackupUpdateSource()
     if (chk.ok === false && backup && backup !== src) {
-      chk = checkOne(backup)
+      chk = await checkPipe(backup)
     }
     if (chk.ok === false) {
       modMsg.value = '检查失败：' + (chk.error || '未知错误')

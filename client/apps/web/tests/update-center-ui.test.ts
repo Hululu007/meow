@@ -143,7 +143,11 @@ describe('模块链参与 git 加速', () => {
 
   it('设置页：清单按候选逐个试，APK 候选 join 后传给 moduleDownload', () => {
     const src = readFileSync(SETTINGS, 'utf8')
-    expect(src).toContain('for (const c of downloadCandidates(src))')
+    // 2026-11-12：优先把**整个候选列表**交给原生非阻塞任务（netJobStart +
+    // manifest-any，原生线程里逐个试），老壳才回退到 JS 里逐个 moduleCheck。
+    // 两种形态都算"按候选试"，所以两条都要锁住，避免有人只删掉其中一条。
+    expect(src).toContain("downloadCandidates(src).join('|')")
+    expect(src).toContain("for (const c of pipe.split('|'))")
     expect(src).toContain('b.moduleDownloadCandidates(src, tok, assetCands)')
     expect(src).toContain("downloadCandidates(String(chk.url)).join('|')")
     // 轮询超时必须有结论，不能停在「下载中 100%」

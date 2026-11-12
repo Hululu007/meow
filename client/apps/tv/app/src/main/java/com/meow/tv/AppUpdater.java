@@ -67,9 +67,18 @@ public final class AppUpdater {
     private static OkHttpClient http() {
         return new OkHttpClient.Builder()
                 .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-                // 读超时不设上限：11MB 在慢网络上可能要几分钟，
-                // 中途超时会让人以为"下载失败"，而其实只是慢。
-                .readTimeout(0, java.util.concurrent.TimeUnit.SECONDS)
+                /*
+                 * ★ 读超时**必须有上限**（原来是 0 = 永不超时）。
+                 *
+                 * OkHttp 的 readTimeout 是"两次读之间允许的空闲时间"，不是总时长：
+                 * 11MB 的包只要还在冒数据就不会超时，慢网络照样能下完。而 0 的
+                 * 代价是——连上却不回数据的地址（被墙的 GitHub、黑洞代理）会让
+                 * 线程**永远**等下去。这条链路是同步 JS 桥（appUpdateManifest /
+                 * moduleCheck），卡住的就是 WebView 的 JS 线程，表现是整页卡死、
+                 * CPU 归零、只能杀进程（实测踩过：启动 5 秒后的自动检查正好撞上
+                 * 用户在设置页）。30 秒是"确实死了"的判据，不是速度门槛。
+                 */
+                .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
                 .build();
     }
 
