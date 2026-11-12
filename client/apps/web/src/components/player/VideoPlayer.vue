@@ -4862,7 +4862,7 @@ defineExpose({ restart, seekTo, getTime, pause })
     >
       <div class="flex flex-col items-center gap-2">
         <button
-          class="pointer-events-auto grid h-16 w-16 place-items-center rounded-full bg-accent/90 text-on-accent shadow-2xl transition hover:scale-105 hover:bg-accent sm:h-20 sm:w-20"
+          class="pointer-events-auto grid h-16 w-16 place-items-center rounded-full bg-accent text-on-accent shadow-2xl transition hover:scale-105 hover:bg-accent-dim sm:h-20 sm:w-20"
           :aria-label="playing ? '暂停' : '播放'"
           @click.stop="toggle"
           @dblclick.stop="onStageDblClick"
@@ -5200,7 +5200,7 @@ defineExpose({ restart, seekTo, getTime, pause })
 
     <!-- 底部控制栏 -->
     <div
-      class="meow-ctrl-bar meow-ctrl-mask absolute inset-x-0 bottom-0 z-30 px-3 pb-2.5 pt-12 sm:px-5 sm:pb-4 sm:pt-14"
+      class="meow-ctrl-bar meow-ctrl-mask absolute inset-x-0 bottom-0 z-30 px-3 pb-2.5 pt-16 sm:px-5 sm:pb-4 sm:pt-20"
       :class="showCtrl ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
       data-ctrl-root
     >

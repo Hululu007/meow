@@ -221,7 +221,9 @@ describe('直播播放页：全屏退出按钮（手机唯一出口）', () => {
 
   it('★ 不能用 landscape 判据（手机全屏后已转成横屏，按钮会被藏掉）', () => {
     const i = src.indexOf('const showExitFsButton')
-    const seg = src.slice(i, i + 700)
+    // 只取这个 computed 自己的表达式：原来写死 700 字符，后面新增的
+    // showLiveBack（里面合法地用了 landscape）会落进窗口，误报成回归。
+    const seg = src.slice(i, src.indexOf('/**', i))
     expect(seg, 'showExitFsButton 不能用 landscape 判定').not.toContain('landscape')
   })
 
@@ -304,7 +306,9 @@ describe('直播页：空态 / 错误态的出口', () => {
 
   it('空态和错误态有「返回」（顶栏被 isLive 藏了，屏幕上原本没有出口）', () => {
     expect(src, '缺少 leaveLive').toMatch(/function leaveLive\(\)/)
-    expect(src, '没有返回按钮').toMatch(/v-if="!current"[\s\S]{0,400}title="返回"/)
+    expect(src, '没有返回按钮').toMatch(
+      /v-if="!current && !showGuide"[\s\S]{0,400}title="返回"/,
+    )
     expect(src, '返回没接 leaveLive').toMatch(/title="返回"[\s\S]{0,200}leaveLive/)
   })
 

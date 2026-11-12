@@ -274,23 +274,24 @@ function clock(s: number): string {
   return h > 0 ? `${h}:${p(m)}:${p(sec)}` : `${m}:${p(sec)}`
 }
 
-function drop(it: HistoryItem, ev: Event) {
+async function drop(it: HistoryItem, ev: Event) {
   ev.stopPropagation()
   /*
-   * 触屏上删除要确认一次（鼠标不用）。
+   * 删除一律要确认。
    *
-   * <p>桌面上「移除」按钮只在 hover 时出现，误点概率极低；手机没有 hover，
-   * 那个 × 必须常显（否则删不掉），而它就在封面右上角 —— 点封面继续播放时
-   * 手指很容易碰到。这里按输入方式分档，不改变桌面行为。
+   * <p>2026-11-12 之前按 `(hover: none)` 分档（触屏才确认，鼠标不确认），
+   * 实测翻车：同样的设备/同样的点法，有时弹框有时直接删 —— 媒体查询反映的是
+   * **主指针设备**，模拟器/带鼠标的盒子/遥控器都可能让它翻转，不能拿它当
+   * "这次是不是手指点的"的判据。删除是不可恢复操作，统一确认。
    */
-  const touch = typeof window !== 'undefined' && window.matchMedia('(hover: none)').matches
-  if (touch && !confirm(`从历史中移除《${it.vod_name || '这条记录'}》？`)) return
+  if (!(await confirmDialog(`从历史中移除《${it.vod_name || '这条记录'}》？`, { danger: true })))
+    return
   removeHistory(it.site, it.vod_id)
   items.value = listHistory()
 }
 
-function clearAll() {
-  if (!confirm('清空全部观看历史？')) return
+async function clearAll() {
+  if (!(await confirmDialog('清空全部观看历史？', { danger: true }))) return
   clearHistory()
   items.value = []
 }
@@ -367,7 +368,7 @@ onBeforeUnmount(() => {
       </div>
       <button
         v-if="!isEmpty"
-        class="shrink-0 whitespace-nowrap rounded-md bg-card px-3 py-1.5 text-xs text-ink-2 transition hover:bg-hot/15 hover:text-hot max-sm:px-3.5 max-sm:py-2"
+        class="ml-auto shrink-0 whitespace-nowrap rounded-md bg-card px-3 py-1.5 text-xs text-ink-2 transition hover:bg-hot/15 hover:text-hot max-sm:px-3.5 max-sm:py-2"
         @click="clearAll"
       >
         清空
@@ -486,8 +487,13 @@ onBeforeUnmount(() => {
           <div
             class="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 transition group-hover:opacity-100"
           />
+          <!--
+            封面上的浮层（移除 / 集数徽标 / 详情）压的是**海报画面**，
+            文字必须固定白色系：`text-ink-2` 在浅色主题下是深灰
+            （#4a5262），压在半透明黑底上等于看不见（2026-11-12 实测）。
+          -->
           <button
-            class="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-full bg-black/60 text-ink-2 opacity-0 transition hover:bg-hot/80 hover:text-on-hot group-hover:opacity-100 max-sm:h-8 max-sm:w-8 max-sm:bg-black/55 max-sm:opacity-100"
+            class="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-full bg-black/60 text-white/80 opacity-0 transition hover:bg-hot/80 hover:text-on-hot group-hover:opacity-100 max-sm:h-10 max-sm:w-10 max-sm:bg-black/55 max-sm:opacity-100"
             tabindex="-1"
             title="从历史中移除"
             @click="drop(it, $event)"
@@ -498,13 +504,14 @@ onBeforeUnmount(() => {
           </button>
           <span
             v-if="it.vod_remarks"
-            class="absolute bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)] truncate rounded bg-black/65 px-1.5 py-0.5 text-[11px] text-ink-2"
+            class="poster-badge"
+            :class="isScoreRemarks(it.vod_remarks) ? 'poster-badge--score poster-badge--after-action' : ''"
           >
             {{ it.vod_remarks }}
           </span>
           <!-- 详情次级入口：想换线路/跳集而不续播时用 -->
           <button
-            class="absolute bottom-1.5 right-1.5 rounded bg-black/65 px-1.5 py-0.5 text-[10px] text-ink-2 opacity-0 transition hover:bg-black/85 hover:text-ink group-hover:opacity-100 max-sm:hidden"
+            class="absolute bottom-1.5 right-1.5 rounded bg-black/65 px-1.5 py-0.5 text-[10px] text-white/80 opacity-0 transition hover:bg-black/85 hover:text-white group-hover:opacity-100 max-sm:hidden"
             tabindex="-1"
             title="打开详情（换线路 / 选集）"
             @click="openDetail(it, $event)"
@@ -523,7 +530,7 @@ onBeforeUnmount(() => {
             {{ it.vod_name }}
           </span>
           <button
-            class="shrink-0 rounded px-1 py-0.5 text-[10px] text-ink-3 active:text-accent sm:hidden"
+            class="hit-44 shrink-0 rounded px-2 py-1.5 text-[11px] text-ink-3 active:text-accent sm:hidden"
             title="打开详情（换线路 / 选集）"
             @click="openDetail(it, $event)"
           >

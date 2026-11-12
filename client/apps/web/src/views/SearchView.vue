@@ -24,6 +24,7 @@ import {
 } from '@/stores/searchHistory'
 import { hasNativeInput, nativeInputText, shouldUseNativeInput, beginInlineInput } from '@/api/nativeBridge'
 import { useReturnRestore } from '@/composables/useReturnRestore'
+import { isScoreRemarks } from '@/utils/remarks'
 
 // 返回上一页时恢复滚动位置与焦点（TV 上从详情返回不该跳回顶部）
 useReturnRestore('search')
@@ -221,6 +222,7 @@ async function run(force = false) {
         if (groupsNow.length) {
           groups.value = groupsNow
           loading.value = false
+          maybeRevealResults()
         }
         if (snapshot.done) {
           /*
@@ -467,9 +469,10 @@ onBeforeUnmount(() => {
           ref="inputEl"
           v-model="keyword"
           type="search"
+          enterkeyhint="search"
           placeholder="输入片名，回车搜索"
           data-tv-input-owner
-          class="h-12 w-full rounded-full border border-line bg-surface pl-11 pr-4 text-[15px] outline-none transition placeholder:text-ink-3 focus:border-accent/50"
+          class="h-12 w-full rounded-full border border-line bg-surface pl-11 pr-4 text-[15px] outline-none transition placeholder:text-ink-3 focus:border-accent"
           @click="onSearchClick"
           @keyup.enter="submit"
         />
@@ -559,7 +562,9 @@ onBeforeUnmount(() => {
           >
             {{ h }}
             <span
-              class="text-[11px] opacity-0 transition group-hover/chip:opacity-60 hover:!opacity-100"
+              class="hist-del"
+              role="button"
+              aria-label="删除这条搜索记录"
               @click.stop="removeSearchHistory(h); refreshHistory()"
             >
               ✕
@@ -603,6 +608,23 @@ onBeforeUnmount(() => {
     <div v-else-if="error && !list.length && !groups.length" class="mt-16 text-center">
       <div class="text-3xl opacity-40">🔍</div>
       <p class="mt-3 text-sm text-ink-2">{{ error }}</p>
+      <!-- 错误态没有按钮 = 死路：搜索失败/无结果都要能就地再试一次 -->
+      <div class="mt-5 flex flex-wrap items-center justify-center gap-2">
+        <button
+          type="button"
+          class="rounded-md bg-card px-4 py-2.5 text-sm hover:bg-card-hover"
+          @click="run()"
+        >
+          重新搜索
+        </button>
+        <button
+          type="button"
+          class="rounded-md bg-accent px-4 py-2.5 text-sm font-medium text-on-accent hover:bg-accent-dim"
+          @click="scope = scope === 'current' ? 'all' : 'current'; run()"
+        >
+          {{ scope === 'current' ? '搜全部站点' : '只搜当前站点' }}
+        </button>
+      </div>
     </div>
 
     <!-- 聚合结果：每个源一张卡片 -->
@@ -737,7 +759,8 @@ onBeforeUnmount(() => {
               <!-- 备注角标（24集全之类） -->
               <span
                 v-if="h.vod_remarks"
-                class="absolute bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)] truncate rounded bg-black/70 px-1.5 py-0.5 text-[10px] text-white/85"
+                class="poster-badge"
+                :class="isScoreRemarks(h.vod_remarks) ? 'poster-badge--score' : ''"
               >
                 {{ h.vod_remarks }}
               </span>

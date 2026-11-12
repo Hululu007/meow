@@ -319,12 +319,16 @@ public final class DoubanSource implements NativeSource {
             /*
              * 卡片角标：剧集类给「29集全」，电影类没有集数就退到评分。
              * 两者都没有时干脆不写 —— 空角标会在海报上留一个空色块。
+             *
+             * ★ 2026-11-12：评分另起一个 vod_score 字段。原因是剧集的
+             *   episodes_info 已经有内容，评分被这行逻辑丢掉，前端就永远
+             *   看不到「8.1 + 30集全」同时出现。remarks 的兜底保留，是为了
+             *   还没升级的老客户端（它们只认 remarks）。
              */
+            double sc = score(it);
+            if (sc > 0) v.put("vod_score", String.format(java.util.Locale.US, "%.1f", sc));
             String remark = it.optString("episodes_info", "").trim();
-            if (remark.isEmpty()) {
-                double score = score(it);
-                if (score > 0) remark = String.format(java.util.Locale.US, "%.1f", score);
-            }
+            if (remark.isEmpty() && sc > 0) remark = String.format(java.util.Locale.US, "%.1f", sc);
             if (!remark.isEmpty()) v.put("vod_remarks", remark);
             String year = it.optString("year", "").trim();
             if (year.isEmpty()) year = yearOf(it.optString("card_subtitle", ""));

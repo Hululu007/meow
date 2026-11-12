@@ -4,6 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'node:url'
 import { readFileSync } from 'node:fs'
 import { flattenCssLayers } from './vite-plugins/flattenCssLayers'
+import { themeAccentFallback } from './vite-plugins/themeAccentFallback'
 
 // `__APP_VERSION__` 注入的是 **Web 应用自己的版本**（apps/web/package.json，0.2.x），
 // 与桌面端（Cargo.toml / tauri.conf.json 的 0.7.x）是两条独立的版本线。
@@ -26,7 +27,7 @@ const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 
 const updateSource = (process.env.MEOW_UPDATE_SOURCE || '').trim()
 
 export default defineConfig({
-  plugins: [vue(), tailwindcss(), flattenCssLayers()],
+  plugins: [vue(), tailwindcss(), flattenCssLayers(), themeAccentFallback()],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __UPDATE_SOURCE__: JSON.stringify(updateSource),

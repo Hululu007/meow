@@ -1,11 +1,16 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import type { VodItem } from '@/api/types'
 import PosterImage from './PosterImage.vue'
+import { posterBadges } from '@/utils/remarks'
 
 const props = defineProps<{ item: VodItem; site: string }>()
 const emit = defineEmits<{ (e: 'open', item: VodItem): void }>()
 const router = useRouter()
+
+/** 评分（右上）与集数（左下）分开：豆瓣剧集两者都有时同时显示 */
+const badges = computed(() => posterBadges(props.item))
 
 function open() {
   emit('open', props.item)
@@ -37,12 +42,13 @@ function open() {
         img-class="transition duration-300 group-hover:brightness-110"
       />
 
-      <!-- 备注角标 -->
-      <span
-        v-if="item.vod_remarks"
-        class="absolute left-2 top-2 rounded bg-black/70 px-1.5 py-0.5 text-[11px] font-medium text-accent backdrop-blur"
-      >
-        {{ item.vod_remarks }}
+      <!--
+        备注角标：评分（右上）+ 集数/备注（左下），样式在 tokens.css 的 .poster-badge。
+        两者都有时同时显示，例如「8.1」+「30集全」。
+      -->
+      <span v-if="badges.remark" class="poster-badge font-medium">{{ badges.remark }}</span>
+      <span v-if="badges.score" class="poster-badge poster-badge--score font-medium">
+        {{ badges.score }}
       </span>
 
       <!-- hover 播放按钮 -->

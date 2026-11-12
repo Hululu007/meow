@@ -5,6 +5,7 @@ import { useAppStore } from '@/stores/app'
 import { getPrefs } from '@/stores/prefs'
 import {
   installThemeWatcher,
+  setForceDark,
   wallpaperSrc,
   type Wallpaper,
 } from '@/stores/theme'
@@ -15,6 +16,7 @@ import { isLightWallpaper } from '@/stores/wallpapers'
 import TvActionSheet from '@/components/common/TvActionSheet.vue'
 import UpdateDialog from '@/components/common/UpdateDialog.vue'
 import TrayHintDialog from '@/components/common/TrayHintDialog.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { installTvMenuBridge } from '@/stores/tvMenu'
 import {
   canUpdate,
@@ -329,9 +331,16 @@ function scheduleAutoUpdateCheck() {
   }
   // 模块 / 插件 / fpk：24h 节流、只更新状态，不弹框、不自动下载。
   // 30 秒后再跑，避开首屏和壳检查。
-  bgUpdateTimer = window.setTimeout(() => {
-    void runBackgroundChecks()
-  }, 30_000)
+  //
+  // ★ TV 上**不跑**：这三项在 TV 上要去 GitHub 拉模块清单/插件索引，
+  //   而 TV 用户多半根本不用运行时模块（可选功能）。开机就为三个用不上的
+  //   功能打外网，纯浪费带宽和时间。改成用户打开设置页/更新中心时再跑
+  //   （见 SettingsView.onMounted 的 runBackgroundChecks）。
+  if (!isTvShell()) {
+    bgUpdateTimer = window.setTimeout(() => {
+      void runBackgroundChecks()
+    }, 30_000)
+  }
 }
 
 /**

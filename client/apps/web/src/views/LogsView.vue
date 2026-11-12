@@ -21,6 +21,7 @@ import {
   type LogLevel,
   type LogsFetchState,
 } from '@/api/logs'
+import { confirmDialog } from '@/composables/useConfirm'
 
 const items = ref<LogItem[]>([])
 const serverStats = ref({ total: 0, errors: 0, warns: 0, capacity: 2000 })
@@ -200,7 +201,8 @@ function toggleLive() {
 }
 
 async function doClear() {
-  if (!confirm('清空日志？（只清面板缓冲，不影响后端 stdout）')) return
+  if (!(await confirmDialog('清空日志？（只清面板缓冲，不影响后端 stdout）', { danger: true })))
+    return
   clearClientLogs()
   if (serverOk.value) await clearServerLogs().catch(() => false)
   items.value = []

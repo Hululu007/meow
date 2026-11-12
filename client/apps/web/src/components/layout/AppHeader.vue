@@ -287,7 +287,7 @@ function pickSite(key: string) {
           class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition max-sm:py-3 max-sm:text-[15px]"
           :class="
             s.key === store.current
-              ? 'bg-accent/15 text-accent'
+              ? 'bg-accent font-medium text-on-accent'
               : 'text-ink-2 hover:bg-card-hover hover:text-ink'
           "
           @click="pickSite(s.key)"
@@ -524,16 +524,18 @@ function pickSite(key: string) {
           >
             片库
           </RouterLink>
+          <!-- 直播/收藏/历史：<640 已由底部标签栏（直播 / 我的）承担，
+               640–767 没有标签栏，仍要靠这个菜单 -->
           <RouterLink
             to="/live"
-            class="block rounded-md px-3 py-2 text-sm text-ink-2 transition max-sm:py-3 max-sm:text-[15px] hover:bg-card-hover hover:text-ink"
+            class="block rounded-md px-3 py-2 text-sm text-ink-2 transition max-sm:hidden max-sm:py-3 max-sm:text-[15px] hover:bg-card-hover hover:text-ink"
             @click="showMore = false"
           >
             直播
           </RouterLink>
           <RouterLink
             to="/favorites"
-            class="block rounded-md px-3 py-2 text-sm text-ink-2 transition max-sm:py-3 max-sm:text-[15px] hover:bg-card-hover hover:text-ink"
+            class="block rounded-md px-3 py-2 text-sm text-ink-2 transition max-sm:hidden max-sm:py-3 max-sm:text-[15px] hover:bg-card-hover hover:text-ink"
             @click="showMore = false"
           >
             收藏<span v-if="favoriteCount" class="ml-1 text-[11px] text-ink-3">{{ favoriteCount }}</span>
@@ -544,7 +546,7 @@ function pickSite(key: string) {
           </RouterLink>
           <RouterLink
             to="/history"
-            class="block rounded-md px-3 py-2 text-sm text-ink-2 transition max-sm:py-3 max-sm:text-[15px] hover:bg-card-hover hover:text-ink"
+            class="block rounded-md px-3 py-2 text-sm text-ink-2 transition max-sm:hidden max-sm:py-3 max-sm:text-[15px] hover:bg-card-hover hover:text-ink"
             @click="showMore = false"
           >
             历史<span v-if="historyCount" class="ml-1 text-[11px] text-ink-3">{{ historyCount }}</span>

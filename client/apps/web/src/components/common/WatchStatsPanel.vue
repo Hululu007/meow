@@ -626,7 +626,7 @@ function goHome() {
             去找片
           </button>
           <button
-            class="rounded-md bg-accent/15 px-3 py-1.5 text-[12px] text-accent hover:bg-accent/25"
+            class="rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent hover:bg-accent-dim"
             @click="close()"
           >
             关闭

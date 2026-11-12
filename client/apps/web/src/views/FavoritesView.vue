@@ -10,6 +10,8 @@ import {
 } from '@/stores/favorites'
 import PosterImage from '@/components/common/PosterImage.vue'
 import { colsStyle, useCardCols } from '@/composables/useCardCols'
+import { confirmDialog } from '@/composables/useConfirm'
+import { isScoreRemarks } from '@/utils/remarks'
 import { fetchDetail } from '@/api'
 import { registerTvMenuHandler } from '@/stores/tvMenu'
 import {
@@ -190,10 +192,11 @@ function updateTitle(it: FavoriteItem): string {
  * <p>点进详情已经会自动清一条，但收藏几十部时逐个点开不现实。
  * 这里把基线全部推到最新值 → 下轮检查不会重复报。
  */
-function markAllRead() {
+async function markAllRead() {
   if (!updated.value.size) return
   const n = updated.value.size
-  if (!confirm(`把 ${n} 部标记为已读？下次检查不会再提醒这些（直到它们又有新集数）。`)) return
+  if (!(await confirmDialog(`把 ${n} 部标记为已读？下次检查不会再提醒这些（直到它们又有新集数）。`)))
+    return
   markAllSeen()
   updated.value = new Map()
   items.value = listFavorites()
@@ -205,10 +208,15 @@ function markAllRead() {
  * <p>与"全部已读"的区别：这个只是"别再显示红点"，但下次有新集数
  * 还会提醒。适合"这几部我追完了/不想看了但还想留着收藏"的场合。
  */
-function resetUpdateState() {
+async function resetUpdateState() {
   if (!updated.value.size) return
   const n = updated.value.size
-  if (!confirm(`清掉 ${n} 部的更新标记？\n（基线不变 —— 这几部下次有新集数仍会提醒）`)) return
+  if (
+    !(await confirmDialog(
+      `清掉 ${n} 部的更新标记？\n（基线不变 —— 这几部下次有新集数仍会提醒）`,
+    ))
+  )
+    return
   resetUpdates()
   updated.value = new Map()
 }
@@ -229,11 +237,12 @@ function open(it: FavoriteItem) {
   })
 }
 
-function drop(it: FavoriteItem, ev: Event) {
+async function drop(it: FavoriteItem, ev: Event) {
   ev.stopPropagation()
-  // 触屏上「取消收藏」是常显的（没有 hover），误触概率比桌面高，确认一次
-  const touch = typeof window !== 'undefined' && window.matchMedia('(hover: none)').matches
-  if (touch && !confirm(`取消收藏《${it.vod_name || '这部片'}》？`)) return
+  // 取消收藏一律确认：和历史的"移除"同因（见 HistoryView.drop 的注释，
+  // `(hover: none)` 不能当输入方式判据）。收藏重新加回来的成本比误删高。
+  if (!(await confirmDialog(`取消收藏《${it.vod_name || '这部片'}》？`, { danger: true })))
+    return
   removeFavorite(it.site, it.vod_id)
   items.value = listFavorites()
   forgetUpdate(it.site, it.vod_id)
@@ -254,8 +263,8 @@ function onRemoteSynced() {
   items.value = listFavorites()
 }
 
-function clearAll() {
-  if (!confirm('清空全部收藏？')) return
+async function clearAll() {
+  if (!(await confirmDialog('清空全部收藏？', { danger: true }))) return
   clearFavorites()
   items.value = []
   updated.value = new Map()
@@ -313,7 +322,7 @@ onBeforeUnmount(() => {
       </div>
       <button
         v-if="!isEmpty"
-        class="shrink-0 whitespace-nowrap rounded-md bg-card px-3 py-1.5 text-xs text-ink-2 transition hover:bg-hot/15 hover:text-hot max-sm:px-3.5 max-sm:py-2"
+        class="ml-auto shrink-0 whitespace-nowrap rounded-md bg-card px-3 py-1.5 text-xs text-ink-2 transition hover:bg-hot/15 hover:text-hot max-sm:px-3.5 max-sm:py-2"
         @click="clearAll"
       >
         清空
@@ -410,8 +419,9 @@ onBeforeUnmount(() => {
           >
             有更新
           </span>
+          <!-- 封面上压的是海报画面，文字固定白色系（浅色主题的 text-ink 是深灰） -->
           <button
-            class="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-full bg-black/60 text-ink-2 opacity-0 transition hover:bg-hot/80 hover:text-on-hot group-hover:opacity-100 max-sm:h-8 max-sm:w-8 max-sm:bg-black/55 max-sm:opacity-100"
+            class="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-full bg-black/60 text-white/80 opacity-0 transition hover:bg-hot/80 hover:text-on-hot group-hover:opacity-100 max-sm:h-10 max-sm:w-10 max-sm:bg-black/55 max-sm:opacity-100"
             title="取消收藏"
             @click="drop(it, $event)"
           >
@@ -427,7 +437,8 @@ onBeforeUnmount(() => {
           </button>
           <span
             v-if="it.vod_remarks"
-            class="absolute bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)] truncate rounded bg-black/65 px-1.5 py-0.5 text-[11px] text-ink-2"
+            class="poster-badge"
+            :class="isScoreRemarks(it.vod_remarks) ? 'poster-badge--score poster-badge--after-action' : ''"
           >
             {{ it.vod_remarks }}
           </span>

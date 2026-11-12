@@ -1297,7 +1297,7 @@ onBeforeUnmount(() => {
           data-tv-first
           data-tv-native-input
           placeholder="说一句话，或打 / 用命令"
-          class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-[13px] text-ink outline-none transition focus:border-accent/60"
+          class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-[13px] text-ink outline-none transition focus:border-accent"
           :disabled="busy"
           @input="onInput"
           @keydown="onInputKeydown"

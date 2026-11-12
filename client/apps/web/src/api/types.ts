@@ -59,6 +59,11 @@ export interface VodItem {
   vod_name: string
   vod_pic?: string
   vod_remarks?: string
+  /**
+   * 评分（"8.8"）。豆瓣原生源会单独下发；CMS 源配置里有 vod_score 时也会带。
+   * 单独一个字段是为了让「评分右上 + 集数左下」能**同时**显示。
+   */
+  vod_score?: string
   vod_year?: string
   vod_area?: string
   vod_actor?: string

@@ -154,7 +154,7 @@ watch(site, async () => {
         class="rounded-full border px-3 py-1 text-xs transition"
         :class="
           c.type_id === activeTid
-            ? 'border-accent/60 bg-accent/15 text-accent'
+            ? 'border-accent bg-accent font-medium text-on-accent'
             : 'border-line text-ink-2 hover:border-accent/40 hover:text-ink'
         "
         @click="pickClass(c.type_id || '')"

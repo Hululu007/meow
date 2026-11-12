@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { isScoreRemarks } from '../src/utils/remarks'
 
 /**
  * 2026-11-12 移动端（竖屏）/通用样式的五条改动，逐条锁死。
@@ -77,6 +78,36 @@ describe('① 触屏设备默认不画焦点环', () => {
   })
 })
 
+describe('② 返回键显隐按设备形态（大屏横屏且无鼠标才隐藏）', () => {
+  it('手机/PC 显示；TV/投影仪（大屏横屏、无鼠标）隐藏', async () => {
+    const { isBigScreenLandscape } = await import('../src/compat/deviceForm')
+    const iw = Object.getOwnPropertyDescriptor(window, 'innerWidth')
+    const ih = Object.getOwnPropertyDescriptor(window, 'innerHeight')
+    const mm = window.matchMedia
+    const set = (w: number, h: number, fine: boolean) => {
+      Object.defineProperty(window, 'innerWidth', { value: w, configurable: true })
+      Object.defineProperty(window, 'innerHeight', { value: h, configurable: true })
+      window.matchMedia = ((q: string) => ({ matches: q.includes('fine') ? fine : false })) as any
+    }
+    try {
+      set(1366, 720, true) // PC
+      expect(isBigScreenLandscape()).toBe(false)
+      set(390, 844, false) // 手机竖屏
+      expect(isBigScreenLandscape()).toBe(false)
+      set(844, 390, false) // 手机横屏（短边 < 480）
+      expect(isBigScreenLandscape()).toBe(false)
+      set(960, 540, false) // TV / 投影仪
+      expect(isBigScreenLandscape()).toBe(true)
+      set(960, 540, true) // 接了鼠标的电视/模拟器按 PC 处理
+      expect(isBigScreenLandscape()).toBe(false)
+    } finally {
+      if (iw) Object.defineProperty(window, 'innerWidth', iw)
+      if (ih) Object.defineProperty(window, 'innerHeight', ih)
+      window.matchMedia = mm
+    }
+  })
+})
+
 describe('② 播放器返回键跟随底部控制栏', () => {
   const player = read('src/components/player/VideoPlayer.vue')
 
@@ -120,9 +151,61 @@ describe('④ 播放器底栏遮罩', () => {
     expect(i).toBeGreaterThan(0)
     const block = css.slice(i, css.indexOf('}', i))
     expect(block).toContain('linear-gradient')
-    expect(block).toContain('rgba(0, 0, 0, 0.92)')
+    expect(block).toContain('rgba(0, 0, 0, 0.96)')
+    // 按钮行落在整条栏 25%~50% 高度处，这一段不透明度低于 0.86 时亮场景下按钮背后会透出画面
+    expect(block).toContain('rgba(0, 0, 0, 0.86) 50%')
     // 顶部要完全透明，否则底栏上沿会有一条硬边
     expect(block).toContain('rgba(0, 0, 0, 0) 100%')
+    // 高度来源是控制栏 padding（渐变靠 padding 撑开）
+    expect(player).toContain('pb-2.5 pt-16 sm:px-5 sm:pb-4 sm:pt-20')
+  })
+
+  it('封面上的浮层不用主题墨色（浅色主题下深字压黑底 = 看不见）', () => {
+    // 2026-11-12 实测：浅色主题 --color-ink-2 = #4a5262，压在 bg-black/65 上不可读
+    for (const f of ['src/views/HistoryView.vue', 'src/views/FavoritesView.vue']) {
+      for (const line of read(f).split('\n')) {
+        if (!line.includes('bg-black/')) continue
+        expect(line).not.toMatch(/text-ink\b|text-ink-2|text-ink-3/)
+      }
+    }
+  })
+
+  it('海报角标样式唯一：四处都用 .poster-badge（白字 + 同一个角）', () => {
+    // 2026-11-12 用户报「首页集数看不清、和历史的还不一样」：
+    // 首页原来是 text-accent + 左上，历史/收藏/搜索是白字 + 左下。
+    expect(read('src/styles/tokens.css')).toContain('.poster-badge')
+    for (const f of [
+      'src/components/common/PosterCard.vue',
+      'src/views/HistoryView.vue',
+      'src/views/FavoritesView.vue',
+      'src/views/SearchView.vue',
+    ]) {
+      expect(read(f), f).toContain('poster-badge')
+    }
+    // 角标不许再用主题色（海报是任意图片，accent 没有可见性保证）
+    expect(read('src/components/common/PosterCard.vue')).not.toMatch(
+      /poster-badge[^"]*text-(accent|ink)/,
+    )
+  })
+
+  it('评分在右上、集数在左下（用户 2026-11-12 口径）', () => {
+    const css = read('src/styles/tokens.css')
+    expect(css).toContain('.poster-badge--score')
+    // 四个渲染点都要能区分评分：评分挂 --score，其余留在左下
+    for (const f of [
+      'src/components/common/PosterCard.vue',
+      'src/views/HistoryView.vue',
+      'src/views/FavoritesView.vue',
+      'src/views/SearchView.vue',
+    ]) {
+      expect(read(f), f).toMatch(/isScoreRemarks|posterBadges/)
+      expect(read(f), f).toContain('poster-badge--score')
+    }
+    // 判据只认一位小数的纯数字：整数（第 12 集）不能被当成评分挪到右上
+    expect(isScoreRemarks('8.8')).toBe(true)
+    expect(isScoreRemarks('30集全')).toBe(false)
+    expect(isScoreRemarks('12')).toBe(false)
+    expect(isScoreRemarks('更新至15集')).toBe(false)
   })
 
   it('控制栏文字固定白色系（浅色主题下 text-ink 是深色，会糊在遮罩里）', () => {
@@ -247,18 +330,28 @@ describe('⑤ 直播「分类-台」面板：自适应 + 可拖拽', () => {
     expect(live).toContain("window.addEventListener('pointermove', move)")
   })
 
-  it('拖分界时面板一起变宽，右列台列表宽度不被挤压', () => {
+  it('右侧面板下拖分界改的是右列宽度（左列固定），分界线才会跟着指针走', () => {
     const i = live.indexOf('function startGuideSplitResize')
     expect(i).toBeGreaterThan(0)
-      const body = live.slice(i, i + 1200)
-    // 起始时记住右列宽度
+    const body = live.slice(i, i + 1400)
+    // 起始时记住左列/右列/面板宽度
     expect(body).toContain('startPanelW')
-    expect(body).toContain('rightW')
-    // 每次移动：左列 = left，面板 = left + 右列
-    expect(body).toContain('guideSplitW.value = left')
-    expect(body).toContain('guidePanelW.value = left + rightW')
-    // 面板宽度也要落盘，否则重开又按默认 w-1/3 挤压右列
+    expect(body).toContain('startRight')
+    // 面板贴右缘：分界 x = 右边缘 − 右列宽 → 必须改右列，左列守住
+    expect(body).toContain('guideSplitW.value = leftW')
+    expect(body).toContain('guidePanelW.value = leftW + right')
+    expect(body).toContain('startRight - (ev.clientX - startX)')
+    // 面板宽度也要落盘，否则重开又按默认 w-1/3
     expect(body).toContain('saveGuideSize(GUIDE_W_KEY')
+  })
+
+  it('面板贴右缘：拖左边缘调整宽度，位移取反（向右拖 = 变窄）', () => {
+    const i = live.indexOf('function startGuidePanelResize')
+    expect(i).toBeGreaterThan(0)
+    const body = live.slice(i, i + 800)
+    expect(body).toContain('startW + startX - ev.clientX')
+    expect(live).toContain('.guide-resize--edge {')
+    expect(live).toContain('left: 0;')
   })
 
   it('拖拽条样式带 touch-action:none（否则手机按下会被当成滚动）', () => {

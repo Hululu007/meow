@@ -1514,20 +1514,24 @@ html[data-input='touch'] [data-tv-scroll].meow-tv-focus {
  * 原来是 Tailwind 的 `from-black/85 via-black/50`：亮场景（雪地、白墙、
  * 片头字幕）底下按钮和时间码直接糊掉。这里换成自定义多段渐变：
  *   · 底部 96% 不透明 —— 按钮所在的区域绝对够黑；
- *   · 中段留 72% / 42% 过渡，上半截渐隐，不出现"一条硬边"；
- *   · 顶部完全透明，画面裁切感最小。
+ *   · **图标行所在的 25%~50% 这一段必须 ≥86%**：控制栏有两行（进度条 +
+ *     按钮行），按钮行的上沿大约在整条栏 42% 高度处，原来那里只有 ≈0.63，
+ *     亮场景下按钮背后照样透出画面（2026-11-12 用户报「太通透」）；
+ *   · 顶部 12% 渐隐到 0，不出现"一条硬边"。
  *
  * ★ 不用 backdrop-filter：播放中每帧都要重算一次全宽模糊，Chromium 66
  *   （投影仪/Android 9）上会掉帧，得不偿失。
- * ★ 高度不写死在这里：`.pt-16 / sm:pt-20` 是渐变的高度来源（padding 撑开），
- *   换皮肤/换断点时只调 padding 就够。
+ * ★ 高度不写死在这里：控制栏上的 `pt-16 / sm:pt-20` 是渐变的高度来源
+ *   （padding 撑开），换皮肤/换断点时只调 padding 就够。
  */
 .meow-ctrl-mask {
   background-image: linear-gradient(
     to top,
-    rgba(0, 0, 0, 0.92) 0%,
-    rgba(0, 0, 0, 0.78) 30%,
-    rgba(0, 0, 0, 0.4) 60%,
+    rgba(0, 0, 0, 0.96) 0%,
+    rgba(0, 0, 0, 0.93) 25%,
+    rgba(0, 0, 0, 0.86) 50%,
+    rgba(0, 0, 0, 0.62) 72%,
+    rgba(0, 0, 0, 0.28) 88%,
     rgba(0, 0, 0, 0) 100%
   );
 }
@@ -1563,3 +1567,265 @@ html[data-input='touch'] [data-tv-scroll].meow-tv-focus {
 .meow-ctrl-bar .hover\:text-ink:hover {
   color: #fff;
 }
+/*
+ * 海报角标（集数 / 备注）。
+ *
+ * ★ 为什么文字固定白色、不用主题色（2026-11-12 用户报「首页集数看不清」）：
+ *   角标压在**海报画面**上，而画面是任意图片 —— 主题 accent 是和页面底色
+ *   一起调的，没有义务在照片上可见。实测暖色主题的 accent（#a14427）落在
+ *   `bg-black/70` 上，和深色海报糊成一片。
+ * ★ 为什么统一在**左下角**：首页（PosterCard）、历史、收藏、搜索四处原来
+ *   一个左上三个左下，用户一眼就看出不齐。左上角在收藏页被「有更新」红标
+ *   占着，右上角是移除 ×，所以唯一四面都不冲突的角是左下；海报卡底部还有
+ *   `from-black/80` 的渐变压底，白字读起来最稳。
+ * ★ 不用 backdrop-blur：40 张卡每张一层全宽模糊，投影仪（Chromium 66）掉帧；
+ *   改成把黑底压到 78% + 纯白字 + 加粗，清晰度靠对比度而不是模糊。
+ *   字号用 rem（0.8125rem = 13px）：TV 的根字号阶梯会一起放大，不再写死 px。
+ *   用户 2026-11-12 二次反馈"再放大一点"，从 12px 提到 13px。
+ */
+.poster-badge {
+  position: absolute;
+  left: 0.375rem;
+  bottom: 0.375rem;
+  max-width: calc(100% - 0.75rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 0.3125rem;
+  background: rgba(0, 0, 0, 0.78);
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #fff;
+}
+
+/*
+ * ── 表单控件跟随主题（2026-11-12 用户报「复选框还是系统蓝」）──────────────
+ *
+ * 原生勾选框/单选/滑块的颜色由 `accent-color` 决定，不给就落到浏览器默认蓝，
+ * 和八套主题完全无关。`--color-accent` 每套都有对比度足够的 on-accent，
+ * 所以勾选态用实心 accent + on-accent 勾是安全的。
+ */
+input[type='checkbox'],
+input[type='radio'],
+input[type='range'],
+progress {
+  accent-color: var(--color-accent);
+}
+
+/*
+ * ── 设置页控件：只有三档（2026-11-12 用户报「好几套按钮/胶囊，过于凌乱」）──
+ *
+ * 现状盘点（改前）：次要按钮有的 `bg-card`、有的 `bg-field`、有的纯文字；
+ * 「内置」标签用 accent 淡底、地区快捷按钮用灰胶囊、主按钮时而是实心 accent
+ * 时而只是淡 accent——同一页能数出五套外观，而且浅色主题下 `bg-card`
+ * （5.5% 墨色）几乎看不见，按钮像禁用态。
+ *
+ * 收敛成三档，全部共用同一套圆角/字号/过渡：
+ *   .set-btn            次要：描边 + 卡底，hover 提亮    ← 「测试」「编辑」
+ *   .set-btn--primary   主操作：实心 accent + on-accent  ← 「添加」「保存」
+ *   .set-btn--ghost     辅助：纯文字，hover 才出底        ← 「取消」「更多」
+ * 外加两种非交互标记：
+ *   .set-chip           可点的胶囊（地区快捷添加）
+ *   .set-tag            纯标记（内置 / 扩展），中性描边，不抢眼也不像按钮
+ */
+.set-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  background: var(--color-card);
+  padding: 0.375rem 0.625rem;
+  font-size: var(--fs-mini);
+  line-height: 1.4;
+  color: var(--color-ink);
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+.set-btn:hover {
+  background: var(--color-card-hover);
+  border-color: var(--color-line-hover);
+}
+.set-btn:disabled {
+  opacity: 0.45;
+}
+.set-btn--primary {
+  border-color: transparent;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-weight: 600;
+}
+.set-btn--primary:hover {
+  background: var(--color-accent-dim);
+  border-color: transparent;
+}
+.set-btn--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-ink-3);
+}
+.set-btn--ghost:hover {
+  background: var(--color-card-hover);
+  color: var(--color-ink);
+}
+.set-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-line);
+  border-radius: 9999px;
+  background: var(--color-card);
+  padding: 0.1875rem 0.5625rem;
+  font-size: var(--fs-mini);
+  line-height: 1.4;
+  color: var(--color-ink-2);
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+.set-chip:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+.set-chip:disabled {
+  opacity: 0.45;
+}
+.set-tag {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-line);
+  border-radius: 4px;
+  padding: 0 0.3125rem;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--color-ink-3);
+}
+/* 危险操作（删除/清空）：只有 hover 变 hot 色，平时仍是最低存在感的一档 */
+.set-btn--danger:hover {
+  border-color: var(--color-hot);
+  color: var(--color-hot);
+}
+.set-btn--ghost.set-btn--danger:hover {
+  border-color: transparent;
+  color: var(--color-hot);
+}
+
+/*
+ * 评分角标：海报右上角（2026-11-12 用户口径「评分右上、集数左下」）。
+ * 位置换到右上，其余观感与 .poster-badge 完全一致，保证两种角标是一套东西。
+ */
+.poster-badge--score {
+  left: auto;
+  bottom: auto;
+  right: 0.375rem;
+  top: 0.375rem;
+}
+/*
+ * 历史 / 收藏这类"右上角有移除 ×"的卡片：评分要往左让开 ×，
+ * 否则两个角标叠在一起。× 是 28px + 6px 边距，这里留到 2.5rem 起始。
+ */
+.poster-badge--score.poster-badge--after-action {
+  right: 2.5rem;
+}
+
+/*
+ * Web / PC：点过的磁贴不要留浏览器默认焦点框（2026-11-12 用户报
+ * 「选下拉值时边框是青色」——那是 Chromium 的 -webkit-focus-ring-color，
+ * 不是我们的 ring-accent，和主题完全无关）。
+ * 具体规则统一放在文件末尾（带 !important，且覆盖下拉选项按钮）；
+ * 电视保留焦点框：遥控器只能靠它看"选到哪"。
+ */
+/* 图标型小按钮（↑ / ↓ 这类只占一格的） */
+.set-btn--icon {
+  padding: 0.25rem 0.4375rem;
+}
+
+/*
+ * 电视上表单控件的焦点框改成**主题色**（2026-11-12 用户报「AI 输入框聚焦是青色」）。
+ *
+ * 不能像按钮那样直接 `outline: none`：电视上打字必须有焦点反馈
+ * （门禁 tests/tv-focus-ring.test.ts 锁着这一条）。Android WebView 的 UA 焦点框
+ * 是青蓝色、和主题无关，所以这里把它**替换**成 accent 色描边，
+ * 与 `focus:border-accent` 一起构成主题化的焦点反馈。
+ */
+html[data-tv='1'] input:focus,
+html[data-tv='1'] textarea:focus,
+html[data-tv='1'] select:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/*
+ * 打开中的下拉磁贴：边框用**实心** accent（2026-11-12 用户报「展开时出现青色边框」）。
+ *
+ * 原来用 `ring-1 ring-accent/40`：半透明 accent 叠在浅底上会先跟底色混，
+ * 在暖色/壁纸主题里肉眼看起来发青灰，和顶栏下拉的实心选中态不一致。
+ * 现在再补一条同色外扩：把 Android WebView / Chromium 自带的青色焦点环
+ * （-webkit-focus-ring-color）整圈盖掉，展开态只剩我们的主题色框。
+ */
+.tile--open {
+  border-color: var(--color-accent) !important;
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+
+/*
+ * 非电视环境：磁贴与下拉选项一律不要 UA 焦点轮廓。
+ * 电视保留 `html[data-tv='1'] .tile:focus-visible` 的 accent 描边
+ * （遥控器靠它看焦点），所以这里只对非电视生效。
+ */
+html:not([data-tv='1']) .tile:focus,
+html:not([data-tv='1']) .tile:focus-visible,
+html:not([data-tv='1']) .tile-menu button:focus,
+html:not([data-tv='1']) .tile-menu button:focus-visible {
+  outline: none !important;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   触屏热区
+   ──────────────────────────────────────────────────────────────
+   播放器底栏是密排布局（按钮 36px、倍速/弹幕只有 26px），把视觉尺寸
+   直接放大到 44px 会把底栏撑爆、把视频画面压掉一条。所以**视觉不变、
+   命中区外扩**：伪元素向外多出 4~9px，拇指能点中，布局不抖。
+
+   ★ 只加在触屏相关的地方（播放器、列表角上的删除钮），不要全局套给
+     所有按钮 —— 相邻 32px 的图标按钮外扩后会互相抢点击。
+   ══════════════════════════════════════════════════════════════ */
+.hit-44 {
+  position: relative;
+}
+.hit-44::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+}
+
+/*
+ * ── accent 的 RGB 三元组（构建期兜底用，2026-11-12）──────────────────
+ *
+ * Tailwind v4 给每个 `*-accent/NN` 生成的静态兜底是 `#03dac5NN`
+ * （写死 meow 青），只有支持 `color-mix` 的内核才走 `@supports` 里的主题变量。
+ * Chromium 66 的 WebView（投影仪/TV 壳）不支持 color-mix → 所有半透明 accent
+ * 都变成青色，与当前主题无关。
+ *
+ * 构建插件 vite-plugins/themeAccentFallback.ts 把产物里的 `#03dac5NN`
+ * 重写成 `rgb(var(--color-accent-rgb) / 0.NN)`，所以每个主题必须给出三元组。
+ */
+html[data-style='meow'][data-mode='dark'] { --color-accent-rgb: 3 218 197; }
+html[data-style='meow'][data-mode='light'] { --color-accent-rgb: 0 168 150; }
+html[data-style='claude'][data-mode='dark'] { --color-accent-rgb: 232 138 104; }
+html[data-style='claude'][data-mode='light'] { --color-accent-rgb: 161 68 39; }
+html[data-style='material'][data-mode='dark'] { --color-accent-rgb: 208 188 255; }
+html[data-style='material'][data-mode='light'] { --color-accent-rgb: 103 80 164; }
+html[data-style='nord'][data-mode='dark'] { --color-accent-rgb: 136 192 208; }
+html[data-style='nord'][data-mode='light'] { --color-accent-rgb: 76 111 150; }
+html[data-style='tokyo'][data-mode='dark'] { --color-accent-rgb: 122 162 247; }
+html[data-style='tokyo'][data-mode='light'] { --color-accent-rgb: 46 95 191; }
+html[data-style='catppuccin'][data-mode='dark'] { --color-accent-rgb: 203 166 247; }
+html[data-style='catppuccin'][data-mode='light'] { --color-accent-rgb: 136 57 239; }
+html[data-style='oled'][data-mode='dark'] { --color-accent-rgb: 255 179 0; }
+html[data-style='oled'][data-mode='light'] { --color-accent-rgb: 163 74 0; }
+html[data-style='everforest'][data-mode='dark'] { --color-accent-rgb: 167 192 128; }
+html[data-style='everforest'][data-mode='light'] { --color-accent-rgb: 102 122 0; }

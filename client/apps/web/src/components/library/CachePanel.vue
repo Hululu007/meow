@@ -27,6 +27,7 @@ import {
   type UnfinishedTask,
 } from '@/api/library'
 import { colsStyle, useCardCols } from '@/composables/useCardCols'
+import { confirmDialog } from '@/composables/useConfirm'
 
 /** true 时作为片库页的内嵌分区渲染（标题降级） */
 withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
@@ -387,7 +388,15 @@ async function control(action: 'pause' | 'cancel' | 'delete', ids: string[], key
   if (!ids.length) return
   if (action === 'delete') {
     const n = ids.length
-    if (!confirm(n > 1 ? `删除这 ${n} 集缓存？文件会从磁盘移除，不可恢复。` : '删除这一集缓存？文件会从磁盘移除，不可恢复。')) return
+    if (
+      !(await confirmDialog(
+        n > 1
+          ? `删除这 ${n} 集缓存？文件会从磁盘移除，不可恢复。`
+          : '删除这一集缓存？文件会从磁盘移除，不可恢复。',
+        { danger: true },
+      ))
+    )
+      return
   }
   ctrlBusy.value = { ...ctrlBusy.value, [key]: true }
   try {

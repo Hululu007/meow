@@ -57,8 +57,11 @@ describe('移动端布局：历史页', () => {
 
   it('「详情 / 移除」在触屏上常显 —— 没有 hover 也必须点得到', () => {
     expect(history).toContain('max-sm:opacity-100')
-    // 移除按钮带确认：触屏上它是常显的，误触概率比 hover 高
-    expect(history).toContain("matchMedia('(hover: none)')")
+    // 移除按钮带确认：触屏上它是常显的，误触概率比 hover 高。
+    // ★ 2026-11-12 改成"一律确认"：`(hover: none)` 是主指针设备的属性，
+    //   模拟器/带鼠标的盒子会让它翻转，曾出现"同一点法有时弹框有时直接删"。
+    expect(history).toContain('await confirmDialog(')
+    expect(history).not.toContain("matchMedia('(hover: none)')")
   })
 
   it('统计数字在手机排一行，不占掉半屏', () => {
@@ -89,7 +92,9 @@ describe('移动端布局：收藏页', () => {
     expect(fav).toContain('max-sm:opacity-100')
     expect(fav).not.toContain('悬停右上角')
     expect(fav).toContain('右上角可取消收藏')
-    expect(fav).toContain("matchMedia('(hover: none)')")
+    // 与历史页同口径：一律确认，不再用 `(hover: none)` 当判据
+    expect(fav).toContain('await confirmDialog(')
+    expect(fav).not.toContain("matchMedia('(hover: none)')")
   })
 
   it('远端收藏晚到会刷新列表（冷启动竞态）', () => {

@@ -142,10 +142,34 @@ export function resolveMode(mode: ThemeMode): 'light' | 'dark' {
  * 变量表因此挪到了 tokens.css（`html[data-style][data-mode]`），
  * 那份是唯一的运行时来源；本文件的 THEMES 只保留 base/accent。
  */
+/**
+ * 全屏播放 / 直播页强制暗色。
+ *
+ * <p>那两页的底是视频画面，所有面板（倍速菜单、弹幕搜索、选集、提示条）
+ * 都压在画面上；浅色主题下 `--color-elevated` 接近白，浮层就会变成
+ * 一块白斑（2026-11-12 用户报「浅色显示有的区域太白」）。
+ *
+ * <p>做法是在解析明暗时短路成 dark：不动 prefs，退出这两页立刻恢复用户
+ * 选择；壁纸、顶栏这些只在普通页面出现的元素本来也不在那两页里。
+ */
+let forceDark = false
+
+/** 进/出全屏播放、直播页时由 App.vue 调用 */
+export function setForceDark(on: boolean) {
+  if (forceDark === on) return
+  forceDark = on
+  syncThemeFromPrefs()
+}
+
+/** 给测试用：当前是否处于强制暗色 */
+export function isForceDark(): boolean {
+  return forceDark
+}
+
 export function applyTheme(style: ThemeStyle, mode: ThemeMode) {
   if (typeof document === 'undefined') return
   const s = isThemeStyle(style) ? style : 'meow'
-  const resolved = resolveMode(mode)
+  const resolved = forceDark ? 'dark' : resolveMode(mode)
   const root = document.documentElement
 
   root.setAttribute('data-style', s)

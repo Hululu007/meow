@@ -50,6 +50,7 @@ import {
   type TitleGroup,
 } from '@/api/library'
 import { useReturnRestore } from '@/composables/useReturnRestore'
+import { confirmDialog } from '@/composables/useConfirm'
 
 // 返回上一页时恢复滚动位置与焦点（TV 上从详情返回不该跳回顶部）
 useReturnRestore('library')
@@ -670,7 +671,11 @@ async function rescrapeActive() {
 /** 解除某一部的刮削绑定（详情页与卡片浮层共用） */
 async function unbindGroup(g: TitleGroup) {
   if (scrapeBusy.value) return
-  if (!confirm(`解除「${g.title}」的刮削绑定？\n海报会被移除，下次进目录会重新匹配。文件本身不受影响。`))
+  if (
+    !(await confirmDialog(
+      `解除「${g.title}」的刮削绑定？\n海报会被移除，下次进目录会重新匹配。文件本身不受影响。`,
+    ))
+  )
     return
   scrapeBusy.value = true
   scrapeMsg.value = ''
@@ -747,8 +752,13 @@ async function cardAct(kind: 'rescrape' | 'unbind') {
 }
 
 /** TV 壳：清空本机的海报副本（后端不可达时就没得回退了，所以要先确认）。 */
-function clearMirror() {
-  if (!confirm('清空本机存的海报副本？\n清掉之后，后端连不上时就看不到海报了。NAS 上的原图不受影响。'))
+async function clearMirror() {
+  if (
+    !(await confirmDialog(
+      '清空本机存的海报副本？\n清掉之后，后端连不上时就看不到海报了。NAS 上的原图不受影响。',
+      { danger: true },
+    ))
+  )
     return
   if (clearMetaMirror()) {
     scrapeMsgOk.value = true
@@ -790,7 +800,12 @@ function goEdit(id: string) {
  * （见 core/Library.saveConfig）。
  */
 async function removeLib(id: string, name: string) {
-  if (!confirm(`删除片库「${name}」？\n只会移除这个配置，NAS 上的文件不受影响。`)) return
+  if (
+    !(await confirmDialog(`删除片库「${name}」？\n只会移除这个配置，NAS 上的文件不受影响。`, {
+      danger: true,
+    }))
+  )
+    return
   try {
     const rest = (overview.value?.libs || []).filter((x) => x.id !== id)
     await saveLibrary(

@@ -113,6 +113,9 @@ import {
   runInstall as runUpdDoInstall,
   stage as updStage,
 } from '@/stores/appUpdate'
+// TV 上开机不跑模块/插件/fpk 的后台检查（App.vue 的说明），改到这里：
+// 用户真的进设置页/更新中心了再查一次（内部仍有 24h 节流）。
+import { isTvShell, runBackgroundChecks } from '@/stores/updateCenter'
 // 片库的配置与增删改已挪到「片库」页本身（设置页只管应用行为，
 // 不管内容来源）；这里只剩离线缓存的列表与删除。
 import { controlCache, listCache } from '@/api/library'
@@ -159,6 +162,7 @@ import { qrSvg } from '@/utils/qr'
 import FpkUpgradePanel from '@/components/common/FpkUpgradePanel.vue'
 import UpdateCenter from '@/components/common/UpdateCenter.vue'
 import GitAccelPanel from '@/components/common/GitAccelPanel.vue'
+import { alertDialog, confirmDialog } from '@/composables/useConfirm'
 
 const store = useAppStore()
 const router = useRouter()
@@ -944,8 +948,8 @@ async function pullSearchWordsNow() {
   }
 }
 
-function clearWords() {
-  if (!confirm('清空本机的搜索关键词？（不影响云端）')) return
+async function clearWords() {
+  if (!(await confirmDialog('清空本机的搜索关键词？（不影响云端）', { danger: true }))) return
   clearSearchHistory()
   searchWordCount.value = 0
   davMsg.value = { ok: true, text: '已清空本机关键词' }
@@ -991,7 +995,8 @@ async function backupNow() {
 
 /** 只保留最近 3 份设置备份 */
 async function cleanOldSnapshots() {
-  if (!confirm('只保留最近 3 份设置备份，其余全部删除？删除后不可恢复。')) return
+  if (!(await confirmDialog('只保留最近 3 份设置备份，其余全部删除？删除后不可恢复。', { danger: true })))
+    return
   snapBusy.value = true
   snapMsg.value = null
   try {
@@ -1012,7 +1017,11 @@ async function cleanOldSnapshots() {
 async function restoreSnapshotAt(s: Snapshot) {
   // 优先服务器时间：文件名用的是客户端时钟，多端不齐时会显示成过去
   const when = new Date(s.mtime ?? s.at).toLocaleString()
-  if (!confirm(`会把这个时间点的设置覆盖到本地（历史不受影响）：\n\n${when}\n${s.name}\n\n确定？`))
+  if (
+    !(await confirmDialog(
+      `会把这个时间点的设置覆盖到本地（历史不受影响）：\n\n${when}\n${s.name}\n\n确定？`,
+    ))
+  )
     return
   snapBusy.value = true
   snapMsg.value = null
@@ -1028,7 +1037,7 @@ async function restoreSnapshotAt(s: Snapshot) {
 }
 
 async function removeSnapshotAt(s: Snapshot) {
-  if (!confirm(`删除备份 ${s.name}？`)) return
+  if (!(await confirmDialog(`删除备份 ${s.name}？`, { danger: true }))) return
   snapBusy.value = true
   try {
     await deleteSnapshot(apiBase(), s.name)
@@ -1075,8 +1084,8 @@ async function onImportFile(e: Event) {
   }
 }
 
-function resetPrefs() {
-  if (!confirm('恢复默认设置？观看历史不会删除。')) return
+async function resetPrefs() {
+  if (!(await confirmDialog('恢复默认设置？观看历史不会删除。', { danger: true }))) return
   prefs.value = savePrefs(DEFAULTS)
   backupMsg.value = '已恢复默认'
 }
@@ -1303,7 +1312,12 @@ async function copyText(text: string): Promise<boolean> {
  */
 const sourceHealthMsg = ref('')
 async function resetSourceHealth() {
-  if (!confirm('重置所有源的健康记录？\n\n会清掉"跳过/降档/降级"标记，下次搜索全部源重新参与（更慢但更全）。')) return
+  if (
+    !(await confirmDialog(
+      '重置所有源的健康记录？\n\n会清掉"跳过/降档/降级"标记，下次搜索全部源重新参与（更慢但更全）。',
+    ))
+  )
+    return
   try {
     await resetHealth()
     sourceHealthMsg.value = '已重置源健康，下次搜索全部源重新参与'
@@ -1550,7 +1564,11 @@ async function batchSetDisabled(disabled: boolean) {
 async function disableAllVisible() {
   if (!visibleSites.value.length) return
   const label = siteFilterTabs.value.find((t) => t.id === siteFilter.value)?.label || '当前'
-  if (!confirm(`停用「${label}」里的全部 ${visibleSites.value.length} 个源？\n\n停用后搜索/直播/探活都会跳过它们，可在「已停用」里随时恢复。`))
+  if (
+    !(await confirmDialog(
+      `停用「${label}」里的全部 ${visibleSites.value.length} 个源？\n\n停用后搜索/直播/探活都会跳过它们，可在「已停用」里随时恢复。`,
+    ))
+  )
     return
   visibleSites.value.forEach((s) => siteSel.add(s.key))
   await batchSetDisabled(true)
@@ -1866,7 +1884,8 @@ const dmCacheMsg = ref('')
  * 清全部会把昨天刚缓存、今晚火车上要看的弹幕一起删掉。
  */
 async function clearDanmakuCache(all: boolean) {
-  if (all && !confirm('清空全部弹幕缓存？离线播放时会重新联网抓取，断网则没有弹幕。')) return
+  if (all && !(await confirmDialog('清空全部弹幕缓存？离线播放时会重新联网抓取，断网则没有弹幕。', { danger: true })))
+    return
   dmCacheMsg.value = ''
   try {
     const r = await controlCache('clearDanmaku', [], all ? 'all' : 'expired')
@@ -2067,9 +2086,13 @@ void loadCfgBackup()
 /** 撤销上一次导入：用备份覆盖回来。 */
 async function restoreLastConfig() {
   if (!cfgBackup.value.exists) return
-  if (!confirm(
-    `恢复导入前的配置（${cfgBackup.value.sites ?? '?'} 站）？\n当前的站点配置会被替换掉。`,
-  )) return
+  if (
+    !(await confirmDialog(
+      `恢复导入前的配置（${cfgBackup.value.sites ?? '?'} 站）？\n当前的站点配置会被替换掉。`,
+      { danger: true },
+    ))
+  )
+    return
   restoreBusy.value = true
   try {
     const r = await restoreConfigBackup()
@@ -3503,26 +3526,26 @@ async function selectSource(id: string) {
     // 用户刚切换源：必须真去拉（force 跳过"没配源"的守卫）
     await loadIndex(true)
   } catch (e: any) {
-    alert(e?.message || String(e))
+    await alertDialog(e?.message || String(e))
   }
 }
 
 async function deleteSource(id: string) {
-  if (!confirm('确定删除这个插件源？')) return
+  if (!(await confirmDialog('确定删除这个插件源？', { danger: true }))) return
   try {
     sources.value = await removePluginSource(id)
     // 删到没有当前源时不要 force：否则会弹「还没有配置插件源」当错误显示。
     // 非 force 路径会在 current 为空时静默清空列表。
     await loadIndex()
   } catch (e: any) {
-    alert(e?.message || String(e))
+    await alertDialog(e?.message || String(e))
   }
 }
 
 async function saveSourceForm() {
   const url = sourceForm.value.url.trim()
   if (!url) {
-    alert('请填写地址')
+    await alertDialog('请填写地址')
     return
   }
   try {
@@ -3534,7 +3557,7 @@ async function saveSourceForm() {
     sourceEditing.value = false
     await loadIndex(true)
   } catch (e: any) {
-    alert(e?.message || String(e))
+    await alertDialog(e?.message || String(e))
   }
 }
 
@@ -3550,7 +3573,7 @@ async function quickAddSource() {
     sourceForm.value = { name: '本机测试源', url: TEST_SOURCE_URL }
     editingId.value = ''
     sourceEditing.value = true
-    alert(e?.message || String(e))
+    await alertDialog(e?.message || String(e))
   }
 }
 
@@ -3614,7 +3637,7 @@ async function install(id: string) {
   } catch (e: any) {
     const msg = e?.message || String(e)
     // 取消不算错误
-    if (!/取消/.test(msg)) alert(`安装失败：${msg}`)
+    if (!/取消/.test(msg)) await alertDialog(`安装失败：${msg}`)
   } finally {
     if (progressTimer) window.clearInterval(progressTimer)
     progressTimer = undefined
@@ -3643,7 +3666,7 @@ async function pickAndImport() {
     await store.boot()
     console.info('[plugin] imported', id)
   } catch (e: any) {
-    alert(`导入失败：${e?.message || String(e)}`)
+    await alertDialog(`导入失败：${e?.message || String(e)}`)
   } finally {
     busy.value = ''
   }
@@ -3673,14 +3696,15 @@ async function tauriPickFile(): Promise<string | null> {
 }
 
 async function removePlugin(id: string) {
-  if (!confirm(`确定卸载「${id}」？只删除本机文件，不影响远端。`)) return
+  if (!(await confirmDialog(`确定卸载「${id}」？只删除本机文件，不影响远端。`, { danger: true })))
+    return
   busy.value = id
   try {
     await uninstallPlugin(id)
     await refreshPlugins()
     await loadIndex(true)
   } catch (e: any) {
-    alert(e?.message || String(e))
+    await alertDialog(e?.message || String(e))
   } finally {
     busy.value = ''
   }
@@ -3696,7 +3720,7 @@ async function startPlugin(id: string) {
     // 后端刚起来时站点表可能还是空的，重连一次
     await store.boot()
   } catch (e: any) {
-    alert(e?.message || String(e))
+    await alertDialog(e?.message || String(e))
   } finally {
     busy.value = ''
   }
@@ -3711,7 +3735,7 @@ async function stopPlugin(id: string) {
     await refreshDesktopBase()
     await store.boot()
   } catch (e: any) {
-    alert(e?.message || String(e))
+    await alertDialog(e?.message || String(e))
   } finally {
     busy.value = ''
   }
@@ -3736,7 +3760,7 @@ async function toggleEnabled(p: PluginInfo) {
     await refreshPlugins()
     await store.boot()
   } catch (e: any) {
-    alert(e?.message || String(e))
+    await alertDialog(e?.message || String(e))
   } finally {
     busy.value = ''
   }
@@ -3873,6 +3897,32 @@ const navItems = computed(() =>
   }),
 )
 const activeSec = ref<string>('conn')
+
+/**
+ * 分区懒挂载：**到过才挂内容**。
+ *
+ * 判据：14 个分区一次性全挂载，「搜索与源」那种几百行的源列表在 TV 的
+ * WebView 上首屏就要建几千个节点；tv-nav 的焦点是几何最近邻，候选节点越多，
+ * 方向键越不跟手。
+ *
+ * 没访问过的分区只保留一个**占位高度**（`min-h-[20rem]`）：页面总长度不变，
+ * 滚动条、scroll spy、导航跳转的落点都还准；访问过就换成真内容。
+ * 挂载后高度变大会让上方内容下移 —— 浏览器自带的 scroll anchoring 会把
+ * 视口位置修正回来（WebView 110+ 支持）。
+ */
+const visitedSecs = ref<Record<string, boolean>>({ conn: true })
+
+function visitedSec(id: string): boolean {
+  return !!visitedSecs.value[id]
+}
+
+function markSec(id: string): void {
+  if (!id || visitedSecs.value[id]) return
+  visitedSecs.value = { ...visitedSecs.value, [id]: true }
+}
+
+// 纯滚动进入某个分区时也要挂上（导航点击由 scrollToSec 自己处理）
+watch(activeSec, (id) => markSec(id))
 /**
  * 遥控器最近一次停留的左侧导航项（分区 id）。
  *
@@ -4349,14 +4399,15 @@ onBeforeUnmount(() => {
       ★ 必须放在**页面容器**的直接子级：sticky 的可粘范围被最近的块级祖先
         （这里是页面容器，高度=整页）限制。原来它嵌在 <aside> 里，而 aside
         在窄屏只有胶囊这一行高 —— sticky 的可粘范围等于自身高度，滚一下就没了。
-      ★ 底色用 --color-header-veil + 背景模糊，和顶栏同一套“玻璃”：吸顶后
-        紧贴顶栏下沿，视觉上是一条连续的面板；不吸顶时它就在顶栏下面，
-        看起来也是顶栏的一部分。
+      ★ 底色用 --color-strip-veil + 背景模糊（并补 180% 饱和），和手机底部标签栏
+        同一套玻璃：吸顶后紧贴顶栏下沿，视觉上是一条连续的面板；不吸顶时它就在
+        顶栏下面，看起来也是顶栏的一部分。蒙层比标签栏再实一点点（用户口径
+        「对齐 tabbar 透明度，略低一点点」）。
       ★ z-20 < 顶栏 z-30，滚动时不会盖住顶栏。
     -->
     <nav
       ref="chipsEl"
-      class="no-scrollbar sticky top-[var(--header-h)] z-20 -mx-4 flex gap-1.5 overflow-x-auto scroll-smooth border-b border-line/60 bg-[var(--color-header-veil)] px-4 pb-2 pt-1 backdrop-blur-xl max-sm:-mx-3 max-sm:gap-2 max-sm:px-3 lg:hidden"
+      class="no-scrollbar sticky top-[var(--header-h)] z-20 -mx-4 flex gap-1.5 overflow-x-auto scroll-smooth border-b border-line/60 bg-[var(--color-strip-veil)] px-4 pb-2 pt-1 backdrop-blur-xl backdrop-saturate-[180%] max-sm:-mx-3 max-sm:gap-2 max-sm:px-3 lg:hidden"
       aria-label="设置分区"
     >
       <button
@@ -4367,8 +4418,8 @@ onBeforeUnmount(() => {
         class="shrink-0 rounded-full border px-3 py-1.5 text-xs transition max-sm:px-3.5 max-sm:py-2"
         :class="
           activeSec === i.id
-            ? 'border-accent/40 bg-accent/15 text-accent'
-            : 'border-line bg-card text-ink-2'
+            ? 'border-accent bg-accent font-medium text-on-accent'
+            : 'border-line bg-card text-ink'
         "
         @click="scrollToSec(i.id)"
       >
@@ -4468,7 +4519,8 @@ onBeforeUnmount(() => {
         class="flex min-w-0 flex-col gap-3 lg:-ml-1 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:px-1"
       >
     <!-- ══════════ 连接 ══════════ -->
-    <section data-sec="conn" class="set-card shrink-0">
+    <section data-sec="conn" class="set-card shrink-0" :class="visitedSec('conn') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('conn')">
       <div class="set-head">
         <h2 class="set-title">连接</h2>
         <span class="set-hint">后端地址 · 站点概览</span>
@@ -4502,7 +4554,7 @@ onBeforeUnmount(() => {
           v-model="apiUrl"
           :placeholder="apiPlaceholder"
           :readonly="apiManagedByPlugin"
-          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50 read-only:text-ink-2"
+          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent read-only:text-ink-2"
           :title="
             apiManagedByPlugin
               ? '由「影视后端」插件启动时协商的端口自动填充，不用手改'
@@ -4533,7 +4585,7 @@ onBeforeUnmount(() => {
           type="password"
           autocomplete="off"
           placeholder="后端 policy.json 未设 authToken 时留空"
-          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
           title="对应后端数据目录 policy.json 的 authToken；只存本机，不参与跨端同步与备份"
           @keyup.enter="saveAuthToken"
         />
@@ -4589,14 +4641,17 @@ onBeforeUnmount(() => {
         </button>
         <span class="text-[11px] text-ink-3">重新探测地址并拉站点表</span>
       </div>
-    </section>
+    
+      </template>
+      </section>
 
     <!-- ══════════ 本机插件（仅桌面端）══════════ -->
     <section
       v-if="desktop"
       data-sec="plugin"
-      class="set-card shrink-0"
+      class="set-card shrink-0" :class="visitedSec('plugin') ? '' : 'min-h-[20rem]'"
     >
+      <template v-if="visitedSec('plugin')">
       <div class="set-head">
         <h2 class="set-title">本机插件</h2>
         <span class="text-[11px] text-ink-3">
@@ -4688,13 +4743,13 @@ onBeforeUnmount(() => {
           <span class="w-16 shrink-0 text-[11px] text-ink-3">名称</span>
           <input
             v-model="sourceForm.name"
-            class="w-28 rounded-md border border-line bg-field px-2 py-1 text-[11px] outline-none focus:border-accent/50"
+            class="w-28 rounded-md border border-line bg-field px-2 py-1 text-[11px] outline-none focus:border-accent"
             placeholder="可选"
           />
           <span class="shrink-0 text-[11px] text-ink-3">地址</span>
           <input
             v-model="sourceForm.url"
-            class="min-w-[14rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2 py-1 font-mono text-[11px] outline-none focus:border-accent/50"
+            class="min-w-[14rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2 py-1 font-mono text-[11px] outline-none focus:border-accent"
             placeholder="http://127.0.0.1:8099/packages.json"
           />
           <button
@@ -4733,13 +4788,13 @@ onBeforeUnmount(() => {
           <textarea
             v-model="manifestPaste"
             rows="5"
-            class="w-full rounded-md border border-line bg-field px-2 py-1 font-mono text-[11px] outline-none focus:border-accent/50"
+            class="w-full rounded-md border border-line bg-field px-2 py-1 font-mono text-[11px] outline-none focus:border-accent"
             placeholder='{"schema_version":1,"packages":{...}}'
           />
           <div class="mt-1 flex flex-wrap items-center gap-2">
             <input
               v-model="manifestName"
-              class="w-32 rounded-md border border-line bg-field px-2 py-1 text-[11px] outline-none focus:border-accent/50"
+              class="w-32 rounded-md border border-line bg-field px-2 py-1 text-[11px] outline-none focus:border-accent"
               placeholder="源名称（可选）"
             />
             <button
@@ -4883,7 +4938,7 @@ onBeforeUnmount(() => {
         <template v-if="!p.tool">
           <button
             v-if="p.phase === 'ready'"
-            class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
+            class="set-btn"
             :disabled="busy === p.id || !!progress"
             @click="stopPlugin(p.id)"
           >
@@ -4891,7 +4946,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             v-else
-            class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
+            class="set-btn"
             :disabled="!p.installed || busy === p.id || !!progress"
             @click="startPlugin(p.id)"
           >
@@ -4934,10 +4989,13 @@ onBeforeUnmount(() => {
         弹幕插件关掉时会自动降级为官方源（爱奇艺直连），播放不受影响。
         插件源可改成自建镜像地址。
       </p>
-    </section>
+    
+      </template>
+      </section>
 
     <!-- ══════════ 本机执行（仅 TV）══════════ -->
-    <section v-if="tvMode" data-sec="localexec" class="set-card shrink-0">
+    <section v-if="tvMode" data-sec="localexec" class="set-card shrink-0" :class="visitedSec('localexec') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('localexec')">
       <div class="set-head">
         <h2 class="set-title">本机执行</h2>
         <span class="set-hint">TV 本机网关 · 不依赖后端</span>
@@ -4963,7 +5021,7 @@ onBeforeUnmount(() => {
         <span class="w-20 shrink-0 text-xs text-ink-3">配置地址</span>
         <input
           v-model="cfgUrl"
-          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent/50"
+          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent"
           placeholder="https://example.com/config.json"
           @input="cfgUrlDirty = true"
         />
@@ -4990,10 +5048,13 @@ onBeforeUnmount(() => {
         可填自建后端 <code class="rounded bg-field px-1">http://&lt;后端&gt;/config.json</code>，
         或肥猫 <code class="rounded bg-field px-1">http://xn--z7x900a.net/tv</code>；jar 地址跟随配置。
       </p>
-    </section>
+    
+      </template>
+      </section>
 
     <!-- ══════════ 运行时模块（仅 TV）══════════ -->
-    <section v-if="tvMode" data-sec="runtime" data-runtime-module class="set-card shrink-0">
+    <section v-if="tvMode" data-sec="runtime" data-runtime-module class="set-card shrink-0" :class="visitedSec('runtime') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('runtime')">
       <div class="set-head">
         <h2 class="set-title">运行时模块</h2>
         <span class="set-hint">内置 node 运行时 · 供本机网关弹幕聚合</span>
@@ -5063,10 +5124,13 @@ onBeforeUnmount(() => {
         关闭后弹幕改用内置聚合站（境外源可能不可用），播放不受影响。
       </p>
 
-    </section>
+    
+      </template>
+      </section>
 
     <!-- ══════════ 桌面端行为（仅 PC）══════════ -->
-    <section v-if="desktop" data-sec="desktop" class="set-card shrink-0">
+    <section v-if="desktop" data-sec="desktop" class="set-card shrink-0" :class="visitedSec('desktop') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('desktop')">
       <div class="set-head">
         <h2 class="set-title">桌面端行为</h2>
         <span class="set-hint">Windows 桌面版 · 托盘与退出</span>
@@ -5093,7 +5157,9 @@ onBeforeUnmount(() => {
         默认开：点窗口 X 只是收进系统托盘，后端与播放不会中断；想彻底退出请用托盘右键菜单。
         关掉后点 X 会直接退出应用。
       </p>
-    </section>
+    
+      </template>
+      </section>
 
     <!-- ══════════ 搜索与源 ══════════
       ★ 这一区在 2026-10-30 重构时合并了三处：
@@ -5102,7 +5168,8 @@ onBeforeUnmount(() => {
         · 「数据与维护」区的重置源健康 + 清空搜索缓存
       合并依据是用户问题：「某部剧搜不到」原来要找三个区，现在都在这里。
     -->
-    <section data-sec="source" class="set-card shrink-0">
+    <section data-sec="source" class="set-card shrink-0" :class="visitedSec('source') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('source')">
       <div class="set-head">
         <h2 class="set-title">搜索与源</h2>
         <span class="set-hint">站点源 · 站点管理 · 搜索怎么跑</span>
@@ -5118,7 +5185,7 @@ onBeforeUnmount(() => {
         <input
           v-model="cfgUrl"
           placeholder="https://example.com/config.json"
-          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
           title="CatVod 形状的 JSON 配置地址；也接受多仓（含 urls 数组）"
           @input="cfgUrlDirty = true"
           @keyup.enter="doPreviewImport"
@@ -5421,7 +5488,7 @@ onBeforeUnmount(() => {
         <input
           v-model="jsRuntime"
           placeholder="http://127.0.0.1:9330（留空 = 未装 drpy 插件）"
-          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
           title="drpy 插件启动时会自动写入；手动部署 Node 服务时填它的地址"
         />
         <button
@@ -5508,7 +5575,7 @@ onBeforeUnmount(() => {
           v-model="noiseInput"
           rows="3"
           placeholder="留空 = 不过滤。例：解说, 混剪, 预告, 花絮, 影评, 片段, reaction"
-          class="w-full resize-y rounded-md border border-line bg-card-sunken px-2.5 py-1.5 font-mono text-xs leading-relaxed text-ink outline-none transition placeholder:text-ink-3 focus:border-accent/50"
+          class="w-full resize-y rounded-md border border-line bg-card-sunken px-2.5 py-1.5 font-mono text-xs leading-relaxed text-ink outline-none transition placeholder:text-ink-3 focus:border-accent"
           title="逗号 / 分号 / 换行分隔，大小写不敏感；单字会被忽略（太容易误伤）"
           @keyup.ctrl.enter="saveNoise"
         />
@@ -5583,10 +5650,13 @@ onBeforeUnmount(() => {
         {{ searchCacheMsg }}
       </p>
 
-    </section>
+    
+      </template>
+      </section>
 
     <!-- ══════════ 直播源 ══════════ -->
-    <section data-sec="live" class="set-card shrink-0">
+    <section data-sec="live" class="set-card shrink-0" :class="visitedSec('live') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('live')">
       <div class="set-head">
         <h2 class="set-title">直播源</h2>
         <span class="set-hint">IPTV 播放列表 · 与站点配置互不影响</span>
@@ -5618,22 +5688,22 @@ onBeforeUnmount(() => {
             <input
               v-model="liveEditName"
               placeholder="名称（可留空）"
-              class="min-w-[8rem] flex-1 rounded border border-line bg-card px-2 py-1 text-xs text-ink outline-none focus:border-accent/50"
+              class="min-w-[8rem] flex-1 rounded border border-line bg-card px-2 py-1 text-xs text-ink outline-none focus:border-accent"
             />
             <input
               v-model="liveEditUrl"
               placeholder="https://example.com/live.m3u"
-              class="min-w-[16rem] flex-[2] rounded border border-line bg-card px-2 py-1 font-mono text-xs text-ink outline-none focus:border-accent/50"
+              class="min-w-[16rem] flex-[2] rounded border border-line bg-card px-2 py-1 font-mono text-xs text-ink outline-none focus:border-accent"
             />
             <button
-              class="shrink-0 rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-40"
+              class="set-btn set-btn--primary shrink-0"
               :disabled="!!liveBusy"
               @click="saveEditLive(l.url)"
             >
               {{ liveBusy === l.url ? '保存中…' : '保存' }}
             </button>
             <button
-              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover"
+              class="set-btn set-btn--ghost shrink-0"
               @click="cancelEditLive"
             >
               取消
@@ -5647,28 +5717,28 @@ onBeforeUnmount(() => {
             <span class="min-w-0 flex-1 truncate text-xs text-ink">{{ l.name }}</span>
             <span
               v-if="liveBuiltin.includes(l.url)"
-              class="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent"
+              class="set-tag shrink-0"
             >
               内置
             </span>
             <span class="max-w-[36%] truncate font-mono text-[11px] text-ink-3">{{ l.url }}</span>
             <!-- 测试：真拉一遍，报台数 + 更新于几天前（不在打开页面时自动拉，208KB 要 6 秒） -->
             <button
-              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink disabled:opacity-40"
+              class="set-btn set-btn--ghost shrink-0"
               :disabled="!!liveBusy || !!liveTestBusy"
               @click="testLive(l.url)"
             >
               {{ liveTestBusy === l.url ? '测试中…' : '测试' }}
             </button>
             <button
-              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink disabled:opacity-40"
+              class="set-btn set-btn--ghost shrink-0"
               :disabled="!!liveBusy"
               @click="startEditLive(l)"
             >
               编辑
             </button>
             <button
-              class="shrink-0 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-hot disabled:opacity-40"
+              class="set-btn set-btn--ghost set-btn--danger shrink-0"
               :disabled="!!liveBusy"
               @click="doRemoveLive(l.url)"
             >
@@ -5692,7 +5762,7 @@ onBeforeUnmount(() => {
         <!-- 删错内置源时的撤回入口：不用再去手输那些 CDN 地址 -->
         <button
           v-if="canResetBuiltin && liveSources.length"
-          class="mt-1 rounded-md bg-card px-3 py-1.5 text-[11px] text-ink-2 transition hover:bg-card-hover disabled:opacity-40"
+          class="set-btn mt-1"
           :disabled="!!liveBusy"
           @click="doResetBuiltin"
         >
@@ -5703,17 +5773,17 @@ onBeforeUnmount(() => {
         <input
           v-model="liveName"
           placeholder="名字（可留空）"
-          class="w-36 shrink-0 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent/50"
+          class="w-36 shrink-0 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent"
         />
         <input
           v-model="liveUrlInput"
           placeholder="https://example.com/live.m3u"
-          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
           title="支持 m3u 与「频道名,地址」形状的 txt；分组用 #genre# 或 group-title"
           @keyup.enter="doAddLive"
         />
         <button
-          class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-40"
+          class="set-btn set-btn--primary"
           :disabled="liveBusy === 'add'"
           @click="doAddLive"
         >
@@ -5734,7 +5804,7 @@ onBeforeUnmount(() => {
         <button
           v-for="c in LIVE_COUNTRY_PRESETS"
           :key="c.code"
-          class="rounded-md bg-card px-2 py-1 text-[11px] text-ink-2 transition hover:bg-accent/20 hover:text-accent disabled:opacity-40"
+          class="set-chip"
           :disabled="!!liveBusy || hasCountryPreset(c.code)"
           :title="`${countryPresetUrl(c.code)}（实测 ${c.ch} 个台）`"
           @click="addCountryLive(c)"
@@ -5742,7 +5812,7 @@ onBeforeUnmount(() => {
           {{ liveBusy === countryPresetUrl(c.code) ? '校验中…' : c.label }}
         </button>
         <button
-          class="rounded-md px-2 py-1 text-[11px] text-ink-3 underline-offset-2 transition hover:bg-card-hover hover:text-accent"
+          class="set-btn set-btn--ghost"
           @click="toggleAllCountries"
         >
           {{ showAllCountries ? '收起' : '更多国家/地区 ▾' }}
@@ -5778,10 +5848,13 @@ onBeforeUnmount(() => {
       </div>
       <p v-if="liveMsg" class="mt-1.5 text-[11px] text-ink-3">{{ liveMsg }}</p>
 
-    </section>
+    
+      </template>
+      </section>
 
     <!-- ══════════ 播放 ══════════ -->
-    <section data-sec="play" class="set-card shrink-0">
+    <section data-sec="play" class="set-card shrink-0" :class="visitedSec('play') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('play')">
       <div class="set-head">
         <h2 class="set-title">播放</h2>
         <span class="set-hint">画面适配 · 连播 · 片头片尾</span>
@@ -5861,10 +5934,13 @@ onBeforeUnmount(() => {
         迷你进度条只在控制栏隐藏时出现，避免与底栏自带的进度条重复。
       </p>
 
-    </section>
+    
+      </template>
+      </section>
 
     <!-- ══════════ 弹幕 ══════════ -->
-    <section data-sec="danmaku" class="set-card shrink-0">
+    <section data-sec="danmaku" class="set-card shrink-0" :class="visitedSec('danmaku') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('danmaku')">
       <div class="set-head">
         <h2 class="set-title">弹幕</h2>
         <span class="set-hint">显示效果本地生效 · 源地址由后端使用</span>
@@ -5953,7 +6029,7 @@ onBeforeUnmount(() => {
             v-model="danmakuApi"
             type="text"
             placeholder="留空则用内置源；装「弹幕聚合」插件后会自动填入"
-            class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs text-ink outline-none transition placeholder:text-ink-3 focus:border-accent/50"
+            class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs text-ink outline-none transition placeholder:text-ink-3 focus:border-accent"
           />
           <label class="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-ink-2">
             <input v-model="danmakuTencent" type="checkbox" class="accent-accent" />
@@ -6037,7 +6113,7 @@ onBeforeUnmount(() => {
               max="3600"
               step="10"
               :disabled="!prefetchOn"
-              class="w-16 rounded-md border border-line bg-field px-2 py-1 text-center font-mono text-xs text-ink outline-none transition focus:border-accent/50 disabled:opacity-40"
+              class="w-16 rounded-md border border-line bg-field px-2 py-1 text-center font-mono text-xs text-ink outline-none transition focus:border-accent disabled:opacity-40"
             />
             秒
           </label>
@@ -6068,10 +6144,13 @@ onBeforeUnmount(() => {
         <p v-if="dmLocalMsg" class="mt-1 text-[11px] text-ok">{{ dmLocalMsg }}</p>
       </div>
 
-    </section>
+    
+      </template>
+      </section>
 
     <!-- ══════════ 外观 ══════════ -->
-    <section data-sec="appearance" class="set-card shrink-0">
+    <section data-sec="appearance" class="set-card shrink-0" :class="visitedSec('appearance') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('appearance')">
       <div class="set-head">
         <h2 class="set-title">外观</h2>
         <span class="set-hint">主题配色 · 列表密度 · 背景图</span>
@@ -6129,7 +6208,9 @@ onBeforeUnmount(() => {
         :mode="resolveMode(prefs.themeMode)"
         @update:model-value="(v) => update('wallpaper', v)"
       />
-    </section>
+    
+      </template>
+      </section>
 
     <!-- 旧版「播放与显示」已拆成 播放 / 弹幕 / 搜索与源 三块，此注释保留以免误合回 -->
 
@@ -6138,7 +6219,8 @@ onBeforeUnmount(() => {
       （用户要求拆开：存储、WebDAV、维护各管一件事）。
       历史记录条数从原「浏览与搜索」搬来 —— 它是"留多久"，属于存储不属搜索。
     -->
-    <section data-sec="storage" class="set-card shrink-0">
+    <section data-sec="storage" class="set-card shrink-0" :class="visitedSec('storage') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('storage')">
       <div class="set-head">
         <h2 class="set-title">存储</h2>
         <span class="set-hint">离线缓存 · 观看记录</span>
@@ -6221,7 +6303,7 @@ onBeforeUnmount(() => {
           <input
             v-model="cacheDirPolicy"
             placeholder="留空 = 数据目录下 cache/video"
-            class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-card-sunken px-2.5 py-1.5 font-mono text-xs text-ink outline-none transition placeholder:text-ink-3 focus:border-accent/50"
+            class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-card-sunken px-2.5 py-1.5 font-mono text-xs text-ink outline-none transition placeholder:text-ink-3 focus:border-accent"
             title="相对路径按后端数据目录解析（如 mnt/cache）；也可以填绝对路径（如 D:\meow-cache）"
             @keyup.enter="saveCacheDir"
           />
@@ -6378,10 +6460,13 @@ onBeforeUnmount(() => {
         超出后最旧的记录会被丢弃；「片头片尾标记」单独存放，不受这个上限影响。
       </p>
 
-    </section>
+    
+      </template>
+      </section>
 
     <!-- ══════════ WebDAV ══════════ -->
-    <section data-sec="sync" class="set-card shrink-0">
+    <section data-sec="sync" class="set-card shrink-0" :class="visitedSec('sync') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('sync')">
       <div class="set-head">
         <h2 class="set-title">WebDAV</h2>
         <span class="set-hint">多端同步观看记录与设置快照</span>
@@ -6399,7 +6484,7 @@ onBeforeUnmount(() => {
         <span class="w-20 shrink-0 text-xs text-ink-3">服务地址</span>
         <input
           v-model="dav.url"
-          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
           placeholder="http://192.168.1.10:5005/meow"
           @input="patchDav({ url: dav.url })"
         />
@@ -6409,7 +6494,7 @@ onBeforeUnmount(() => {
           <span class="w-12 shrink-0 text-xs text-ink-3">目录</span>
           <input
             v-model="dav.dir"
-            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
             placeholder="meow"
             @input="patchDav({ dir: dav.dir })"
           />
@@ -6418,7 +6503,7 @@ onBeforeUnmount(() => {
           <span class="w-14 shrink-0 text-xs text-ink-3">用户名</span>
           <input
             v-model="dav.user"
-            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent/50"
+            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent"
             placeholder="可选"
             @input="patchDav({ user: dav.user })"
           />
@@ -6428,7 +6513,7 @@ onBeforeUnmount(() => {
           <input
             v-model="dav.pass"
             type="password"
-            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent/50"
+            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent"
             placeholder="可选"
             @input="patchDav({ pass: dav.pass })"
           />
@@ -6473,14 +6558,14 @@ onBeforeUnmount(() => {
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <button
-            class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
+            class="set-btn"
             :disabled="davBusy || !dav.url"
             @click="pushHistoryNow"
           >
             上传历史
           </button>
           <button
-            class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
+            class="set-btn"
             :disabled="davBusy || !dav.url"
             @click="pullHistoryNow"
           >
@@ -6505,21 +6590,21 @@ onBeforeUnmount(() => {
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <button
-            class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
+            class="set-btn"
             :disabled="davBusy || !dav.url"
             @click="pushSearchWordsNow"
           >
             上传关键词
           </button>
           <button
-            class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
+            class="set-btn"
             :disabled="davBusy || !dav.url"
             @click="pullSearchWordsNow"
           >
             拉取合并
           </button>
           <button
-            class="ml-auto text-[11px] text-ink-3 underline-offset-2 hover:text-hot hover:underline"
+            class="set-btn set-btn--ghost set-btn--danger ml-auto"
             :disabled="!searchWordCount"
             @click="clearWords"
           >
@@ -6544,21 +6629,21 @@ onBeforeUnmount(() => {
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <button
-            class="rounded-md bg-accent/15 px-2.5 py-1 text-[11px] font-medium text-accent hover:bg-accent/25 disabled:opacity-40"
+            class="set-btn set-btn--primary"
             :disabled="snapBusy || !dav.url"
             @click="backupNow"
           >
             立即备份
           </button>
           <button
-            class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
+            class="set-btn"
             :disabled="snapBusy || !dav.url"
             @click="refreshSnapshots"
           >
             刷新列表
           </button>
           <button
-            class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
+            class="set-btn"
             :disabled="snapBusy || !snapshots.length"
             title="只保留最近 3 份，其余删除"
             @click="cleanOldSnapshots"
@@ -6610,10 +6695,13 @@ onBeforeUnmount(() => {
         启用后自动上传历史，设置变更时建快照（保留最近 10 份）。启动只合并历史，不改设置；
         地址密码只存本机。
       </p>
-    </section>
+    
+      </template>
+      </section>
 
     <!-- ══════════ AI ══════════ -->
-    <section data-sec="ai" class="set-card flex shrink-0 flex-col">
+    <section data-sec="ai" class="set-card flex shrink-0 flex-col" :class="visitedSec('ai') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('ai')">
       <div class="set-head">
         <h2 class="set-title">AI</h2>
         <span class="set-hint">用一句话解释播放失败的原因</span>
@@ -6642,7 +6730,7 @@ onBeforeUnmount(() => {
         <button
           v-for="p in LLM_PRESETS"
           :key="p.id"
-          class="rounded-md bg-card px-2.5 py-1 text-[11px] text-ink-2 transition hover:bg-card-hover hover:text-ink"
+          class="set-chip"
           :title="p.note"
           @click="pickPreset(p.id)"
         >
@@ -6656,7 +6744,7 @@ onBeforeUnmount(() => {
           <input
             v-model="llm.baseUrl"
             placeholder="http://host:8788/v1 （OpenAI 兼容端点）"
-            class="min-w-[18rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+            class="min-w-[18rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
             @change="persistLlm"
           />
         </div>
@@ -6665,7 +6753,7 @@ onBeforeUnmount(() => {
           <input
             v-model="llm.model"
             placeholder="deepseek-v4.1-flash"
-            class="min-w-[12rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+            class="min-w-[12rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
             @change="persistLlm"
           />
           <span class="text-[11px] text-ink-3">可自填，不限定厂商</span>
@@ -6676,7 +6764,7 @@ onBeforeUnmount(() => {
             v-model="llm.apiKey"
             type="password"
             placeholder="sk-... 或自建网关的 key"
-            class="min-w-[18rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+            class="min-w-[18rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
             @change="persistLlm"
           />
         </div>
@@ -6689,7 +6777,7 @@ onBeforeUnmount(() => {
           type="number"
           min="0"
           max="10"
-          class="w-20 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent/50"
+          class="w-20 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent"
           @change="persistLlm"
         />
         <span class="text-[11px] text-ink-3">
@@ -6717,10 +6805,13 @@ onBeforeUnmount(() => {
       <p v-if="!desktop" class="mt-1 text-[11px] leading-relaxed text-ink-3">
         Web / TV 通过后端转发；上面的「启用」是唯一开关。
       </p>
-    </section>
+    
+      </template>
+      </section>
 
     <!-- ══════════ 网络与加速 ══════════ -->
-    <section data-sec="net" class="set-card shrink-0">
+    <section data-sec="net" class="set-card shrink-0" :class="visitedSec('net') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('net')">
       <div class="set-head">
         <h2 class="set-title">网络与加速</h2>
         <span class="set-hint">DNS 解析 · GitHub 加速</span>
@@ -6763,10 +6854,13 @@ onBeforeUnmount(() => {
       <!-- 全局 GitHub 加速：只改传输层；业务源仍在各自区块 -->
       <GitAccelPanel />
 
-    </section>
+    
+      </template>
+      </section>
 
     <!-- ══════════ 更新 ══════════ -->
-    <section data-sec="update" class="set-card shrink-0">
+    <section data-sec="update" class="set-card shrink-0" :class="visitedSec('update') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('update')">
       <div class="set-head">
         <h2 class="set-title">更新</h2>
         <span class="set-hint">
@@ -6860,7 +6954,7 @@ onBeforeUnmount(() => {
           <span class="shrink-0 text-xs text-ink-3">更新源</span>
           <input
             v-model="updSourceInput"
-            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
             :placeholder="updSourcePlaceholder"
             spellcheck="false"
             @change="saveUpdateSource()"
@@ -6877,7 +6971,7 @@ onBeforeUnmount(() => {
           <span class="shrink-0 text-xs text-ink-3">备用源</span>
           <input
             v-model="updBackupInput"
-            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+            class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
             placeholder="可选：主源失败时才试，留空=不启用"
             spellcheck="false"
             @change="saveUpdateSource()"
@@ -6916,10 +7010,13 @@ onBeforeUnmount(() => {
       -->
       <FpkUpgradePanel v-if="!desktop && !tvMode" />
 
-    </section>
+    
+      </template>
+      </section>
 
     <!-- ══════════ 维护 ══════════ -->
-    <section data-sec="maint" class="set-card flex shrink-0 flex-col">
+    <section data-sec="maint" class="set-card flex shrink-0 flex-col" :class="visitedSec('maint') ? '' : 'min-h-[20rem]'">
+      <template v-if="visitedSec('maint')">
       <div class="set-head">
         <h2 class="set-title">维护</h2>
         <span class="set-hint">备份 · 日志 · 重置 · 调试</span>
@@ -7026,7 +7123,9 @@ onBeforeUnmount(() => {
 
       <p v-if="backupMsg" class="mt-2 text-[11px] text-ink-3">{{ backupMsg }}</p>
 
-    </section>
+    
+      </template>
+      </section>
 
       </div><!-- /右侧内容 -->
     </div><!-- /两栏网格 -->
@@ -7338,7 +7437,7 @@ onBeforeUnmount(() => {
             <span class="mb-1 block text-[11px] text-ink-3">后端地址</span>
             <input
               v-model="connDialog.api"
-              class="w-full rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+              class="w-full rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
               placeholder="http://192.168.1.10:30010"
             />
           </div>
@@ -7346,7 +7445,7 @@ onBeforeUnmount(() => {
             <span class="mb-1 block text-[11px] text-ink-3">CatVod 配置地址（可选）</span>
             <input
               v-model="connDialog.config"
-              class="w-full rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent/50"
+              class="w-full rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
               placeholder="http://192.168.1.10:30010/config.json"
             />
           </div>

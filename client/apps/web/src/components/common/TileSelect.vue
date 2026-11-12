@@ -100,14 +100,9 @@ onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocClick)
   document.removeEventListener('keydown', onKey)
   document.removeEventListener('scroll', onAnyScroll, true)
-  // 卸载时菜单若还开着，清掉残留的 overflow 锁
-  document.body.style.overflow = ''
 })
 
 watch(open, (v) => {
-  // 锁 body 滚动只对"整页滚"的场景有效；设置页滚的是内层容器，
-  // 真正兜住"滚动时菜单乱飘"的是上面的 onAnyScroll。
-  document.body.style.overflow = v ? 'hidden' : ''
   /*
    * 关闭 → 把焦点还给打开它的那个磁贴。
    *
@@ -127,7 +122,7 @@ watch(open, (v) => {
     <button
       type="button"
       class="tile group w-full"
-      :class="{ 'ring-1 ring-accent/40': open }"
+      :class="{ 'tile--open': open }"
       @click="toggle"
     >
       <span class="truncate text-[15px] text-ink">{{ label }}</span>
@@ -176,7 +171,7 @@ watch(open, (v) => {
           class="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[13px] transition"
           :class="
             o.value === modelValue
-              ? 'bg-accent/15 text-accent'
+              ? 'bg-accent font-medium text-on-accent'
               : 'text-ink-2 hover:bg-card-hover hover:text-ink'
           "
           @click="pick(o.value)"

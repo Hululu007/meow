@@ -218,20 +218,20 @@ onMounted(() => {
     <div
       v-for="(p, i) in accel.proxies"
       :key="p.id"
-      class="mt-1.5 flex flex-wrap items-center gap-2 border-t border-line pt-1.5"
+      class="mt-1.5 flex flex-wrap items-center gap-2 rounded-md bg-field px-2.5 py-1.5"
     >
       <input v-model="p.enabled" type="checkbox" :disabled="!accel.enabled" @change="persist()" />
       <template v-if="editingId === p.id">
-        <input v-model="editName" class="w-24 rounded-md bg-card px-2 py-0.5 text-[11px]" placeholder="名称" />
+        <input v-model="editName" class="w-24 rounded-md border border-line bg-card-sunken px-2 py-0.5 text-[11px]" placeholder="名称" />
         <input
           v-model="editPrefix"
-          class="min-w-0 flex-1 rounded-md bg-card px-2 py-0.5 font-mono text-[11px]"
+          class="min-w-0 flex-1 rounded-md border border-line bg-card-sunken px-2 py-0.5 font-mono text-[11px]"
           placeholder="https://example.com/ 或 https://example.com/{url}"
         />
-        <button class="rounded-md bg-accent px-2 py-0.5 text-[11px] text-on-accent" @click="saveEdit(p)">
+        <button class="set-btn set-btn--primary" @click="saveEdit(p)">
           保存
         </button>
-        <button class="rounded-md bg-card px-2 py-0.5 text-[11px]" @click="cancelEdit()">取消</button>
+        <button class="set-btn set-btn--ghost" @click="cancelEdit()">取消</button>
       </template>
       <template v-else>
         <span class="w-24 shrink-0 truncate text-[11px] text-ink-2" :title="p.name">{{ p.name }}</span>
@@ -240,32 +240,32 @@ onMounted(() => {
         </span>
         <span v-if="p.note" class="text-[10px] text-ink-3">{{ p.note }}</span>
         <button
-          class="rounded-md bg-card px-2 py-0.5 text-[11px] hover:bg-card-hover"
+          class="set-btn"
           :disabled="!!testingId"
           @click="testProxy(p)"
         >
           {{ testingId === p.id ? '测试中…' : '测试' }}
         </button>
         <span v-if="testMsg[p.id]" class="text-[10px] text-ink-3">{{ testMsg[p.id] }}</span>
-        <button v-if="!p.builtin" class="rounded-md bg-card px-2 py-0.5 text-[11px]" @click="startEdit(p)">
+        <button v-if="!p.builtin" class="set-btn set-btn--ghost" @click="startEdit(p)">
           编辑
         </button>
         <button
           v-if="!p.builtin"
-          class="rounded-md bg-card px-2 py-0.5 text-[11px] hover:bg-hot/20 hover:text-hot"
+          class="set-btn set-btn--ghost set-btn--danger"
           @click="removeProxy(p)"
         >
           删除
         </button>
         <button
-          class="rounded-md bg-card px-1.5 py-0.5 text-[11px] disabled:opacity-30"
+          class="set-btn set-btn--ghost set-btn--icon"
           :disabled="i === 0"
           @click="move(i, -1)"
         >
           ↑
         </button>
         <button
-          class="rounded-md bg-card px-1.5 py-0.5 text-[11px] disabled:opacity-30"
+          class="set-btn set-btn--ghost set-btn--icon"
           :disabled="i === accel.proxies.length - 1"
           @click="move(i, 1)"
         >
@@ -274,21 +274,21 @@ onMounted(() => {
       </template>
     </div>
 
-    <div class="mt-2 flex flex-wrap items-center gap-2">
+    <div class="mt-1.5 flex flex-wrap items-center gap-2 rounded-md bg-field px-2.5 py-1.5">
       <input
         v-model="newName"
-        class="w-28 rounded-md bg-card px-2 py-1 text-[11px]"
+        class="w-28 rounded-md border border-line bg-card-sunken px-2 py-1 text-[11px]"
         placeholder="名称（可选）"
       />
       <input
         v-model="newPrefix"
-        class="min-w-0 flex-1 rounded-md bg-card px-2 py-1 font-mono text-[11px]"
+        class="min-w-0 flex-1 rounded-md border border-line bg-card-sunken px-2 py-1 font-mono text-[11px]"
         placeholder="https://example.com/ 或 https://example.com/{url}"
       />
-      <button class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover" @click="addCustom()">
+      <button class="set-btn set-btn--primary" @click="addCustom()">
         添加自定义
       </button>
-      <button class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover" @click="resetDefaults()">
+      <button class="set-btn" @click="resetDefaults()">
         恢复默认
       </button>
       <span v-if="msg" class="text-[11px] text-accent">{{ msg }}</span>
