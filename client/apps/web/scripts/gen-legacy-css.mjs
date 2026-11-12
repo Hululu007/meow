@@ -221,6 +221,10 @@ for (const it of gaps) {
   const v = toRem(it.value) ?? it.value
   emit(`${P} .flex:not(.flex-wrap).${it.cls} > * + * { margin-left: ${v}; }`, it.media)
   emit(`${P} .flex-col.${it.cls} > * + * { margin-top: ${v}; }`, it.media)
+  // ★ flex-wrap 容器（2026-11-12 补）：相邻兄弟在换行后会把每行首元素顶偏，
+  //   改用"每个子项都带 margin"。代价是每行末尾/容器末尾多一份外边距
+  //   （无背景容器看不出来），换来换行后行间也有间距——比完全没有间距好。
+  emit(`${P} .flex-wrap.${it.cls} > * { margin-right: ${v}; margin-bottom: ${v}; }`, it.media)
 }
 
 lines.push('')
@@ -235,8 +239,10 @@ for (const it of axisGaps) {
   const v = toRem(it.value) ?? it.value
   if (it.axis === 'x') {
     emit(`${P} .flex:not(.flex-wrap).${it.cls} > * + * { margin-left: ${v}; }`, it.media)
+    emit(`${P} .flex-wrap.${it.cls} > * { margin-right: ${v}; }`, it.media)
   } else {
     emit(`${P} .flex-col.${it.cls} > * + * { margin-top: ${v}; }`, it.media)
+    emit(`${P} .flex-wrap.${it.cls} > * { margin-bottom: ${v}; }`, it.media)
   }
 }
 

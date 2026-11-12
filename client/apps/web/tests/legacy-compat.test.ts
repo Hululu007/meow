@@ -294,3 +294,37 @@ describe('构建产物：老内核（Chrome 66）兼容性', () => {
     ).toEqual([])
   })
 })
+
+/**
+ * flex-wrap 容器与手写 CSS 的 gap 兜底（2026-11-12 投影仪实测补）。
+ *
+ * 起因：用户对比极米投影仪（Chromium 66）与 MuMu（Chromium 110）截图，
+ * 发现设置页标题行、按钮组、详情页海报与文字列之间的间距在投影仪上塌成 0。
+ *
+ * 两个漏洞：
+ *   1. 生成器当时**故意排除 flex-wrap**（换行后相邻兄弟选择器会把每行首元素顶偏），
+ *      而设置页的头部行（.set-head）恰好全是 flex-wrap → 完全没有间距；
+ *   2. 生成器只扫构建产物里的 utility 类，扫不到 tokens.css / SFC 里手写的
+ *      `gap:`（.set-head / .tile / .set-sub / .menu-item）→ 这些容器也没有兜底。
+ *
+ * 修法：wrap 容器改成"每个子项都带 margin"（配合换行），手写类单独补规则。
+ */
+describe('flex-wrap 与手写 gap 的兜底', () => {
+  const GEN = readFileSync(join(__dirname, '..', 'src', 'styles', 'legacy-generated.css'), 'utf8')
+  const HAND = readFileSync(join(__dirname, '..', 'src', 'styles', 'legacy-css.css'), 'utf8')
+
+  it('生成物给 flex-wrap 的 gap 工具类兜底（每子项 margin）', () => {
+    const wrap = [...GEN.matchAll(/\.flex-wrap\.gap-[^{]*\{[^}]*margin-right/g)]
+    expect(wrap.length, 'flex-wrap 的 gap 兜底缺失').toBeGreaterThan(0)
+    // 反向：不许退回"相邻兄弟"写法（换行会顶偏整行）
+    expect(GEN).not.toMatch(/\.flex-wrap\.gap-[^{]*>\s*\*\s*\+\s*\*/)
+  })
+
+  it('手写类 .set-head/.tile/.set-sub/.menu-item 有 gap 兜底', () => {
+    for (const cls of ['set-head', 'tile', 'set-sub', 'menu-item']) {
+      expect(HAND, `${cls} 缺 gap 兜底`).toContain(`.${cls} > *`)
+    }
+    // .set-head 是 flex-wrap，必须是"每子项 margin"而不是相邻兄弟
+    expect(HAND).toMatch(/\.set-head > \*\s*\{[^}]*margin-right/)
+  })
+})

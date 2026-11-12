@@ -235,3 +235,45 @@ html[data-legacy-css='1'] button[class~='grid'][class~='place-items-center'] {
   align-items: center;
   justify-content: center;
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   手写 CSS 里的 flex gap（2026-11-12 补）
+   ══════════════════════════════════════════════════════════════════
+   `gen-legacy-css.mjs` 只扫**构建产物里的 utility 类**（.gap-2 之类），
+   扫不到 tokens.css / SFC `<style>` 里直接写的 `gap:`。这些容器在
+   Chromium < 84 上 gap 恒为 0 —— 设置页标题行、磁贴内部、播放器菜单
+   全部贴在一起（投影仪 WebView 66 实测）。
+
+   · 单行容器用 `> * + *`（与 utility 降级同一套思路）
+   · flex-wrap 容器（.set-head）换行后不能用相邻兄弟（每行首元素会被顶偏），
+     改给每个子项都加 margin；代价是行末多一份外边距，无背景容器看不出来
+   · 手机上 .tile/.set-sub 方向会变（tokens.css 的 max-width:639px 覆盖），
+     margin 方向要跟着换，否则纵向容器会被左右缩窄
+   ══════════════════════════════════════════════════════════════════ */
+html[data-legacy-css='1'] .tile > * + * {
+  margin-left: 0.75rem;
+}
+html[data-legacy-css='1'] .set-head > * {
+  margin-right: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+html[data-legacy-css='1'] .set-sub > * + * {
+  margin-left: 0.5rem;
+}
+html[data-legacy-css='1'] .menu-item > * + * {
+  margin-left: 0.5rem;
+}
+/* 手机底部 Tab：纵向 flex（flex-direction: column），主轴是竖的 */
+html[data-legacy-css='1'] .mtb-item > * + * {
+  margin-top: 3px;
+}
+
+@media (max-width: 639px) {
+  html[data-legacy-css='1'] .tile > * + * {
+    margin-left: 0.5rem;
+  }
+  html[data-legacy-css='1'] .set-sub > * + * {
+    margin-left: 0;
+    margin-top: 0.125rem;
+  }
+}
