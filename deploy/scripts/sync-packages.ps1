@@ -688,6 +688,60 @@ if ((-not $NoCopyAssets) -and $archival) {
     if ($copied.Count -gt 0) {
         Write-Host "  已并入本次 release：$($copied -join ', ')" -ForegroundColor Green
     }
+
+    # ---------------------------------------------------------------- fpk 资产并入
+    #
+    # fpk 有自己的构建链与 tag（fpk-v*，工具链是 java-21 + fnpack + meowd 交叉编译），
+    # 资产落在独立 prerelease + FnDepot。但用户下载时希望一个页面拿全 ——
+    # 全量发布（release-v*）时把同版本的 .fpk 复制进主 release。
+    # 时序安全：fpk 链约 10 分钟，主链发布后 ~45 分钟才跑 sync-packages，
+    # fpk-v<ver> 一定已存在；找不到就跳过，不影响发布（FnDepot 仍是正式通道）。
+    $fpkTag = "fpk-v$appVersion"
+    $fpkRel = $null
+    try {
+        $fpkRel = Get-GhApi "/repos/$Repo/releases/tags/$fpkTag"
+    } catch {
+        Write-Host "  · 没有 $fpkTag，跳过 fpk 资产并入" -ForegroundColor DarkGray
+    }
+    if ($fpkRel) {
+        $tokF = $env:GITHUB_TOKEN
+        if (-not $tokF) { try { $tokF = (& gh auth token 2>$null).Trim() } catch { } }
+        $haveNames = @()
+        try { $haveNames = @((Get-GhApi "/repos/$Repo/releases/tags/$tag").assets.name) } catch { }
+        foreach ($fa in @($fpkRel.assets | Where-Object { $_.name -like '*.fpk' })) {
+            if ($haveNames -contains $fa.name) {
+                Write-Host "    · $($fa.name) 已存在" -ForegroundColor DarkGray
+                continue
+            }
+            if (-not $tokF) { Write-Host "    ! 没有令牌，跳过 fpk 并入" -ForegroundColor Red; break }
+            Write-Host "  并入 fpk：$($fa.name)" -ForegroundColor DarkGray
+            $tmpF = [IO.Path]::GetTempFileName()
+            try {
+                & $CurlBin -s -L --fail --max-time 300 `
+                    -H "Authorization: Bearer $tokF" `
+                    -H 'Accept: application/octet-stream' `
+                    -o $tmpF "https://api.github.com/repos/$Repo/releases/assets/$($fa.id)" 2>$null
+                if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmpF)) { throw "下载源资产失败" }
+                $okF = $false
+                for ($i = 1; $i -le 4; $i++) {
+                    $respF = & $CurlBin -s -X POST --max-time 300 `
+                        -H "Authorization: Bearer $tokF" `
+                        -H 'Accept: application/vnd.github+json' `
+                        -H 'Content-Type: application/octet-stream' `
+                        --data-binary "@$tmpF" `
+                        "${curUploadBase}?name=$($fa.name)" 2>&1 | Out-String
+                    if ($respF -match '"state"\s*:\s*"uploaded"') { $okF = $true; break }
+                    if ($respF -match 'already_exists') { $okF = $true; break }
+                    Start-Sleep -Seconds 2
+                }
+                if (-not $okF) { throw "上传到 $tag 失败" }
+            } catch {
+                Write-Host "    ! fpk 并入失败（$($_.Exception.Message)）" -ForegroundColor Red
+            } finally {
+                Remove-Item $tmpF -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
 }
 
 # ---------------------------------------------------------------- 本次 tag 的资产二次校验

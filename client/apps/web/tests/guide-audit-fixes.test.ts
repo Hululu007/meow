@@ -82,3 +82,22 @@ describe('⑤ 窄屏入口补齐', () => {
     expect(m![1]).toMatch(/\bflex\b/)
   })
 })
+
+describe('fpk 资产并入主 Release', () => {
+  it('全量发布时自动把 fpk-v<ver> 的 .fpk 复制进主 release', () => {
+    /*
+     * 2026-11-12 用户问「fpk 为什么要独立出去，放一起不可行吗」。
+     * fpk 有独立构建链（fpk-v* tag，java-21+fnpack+交叉编译）是合理的，
+     * 但资产应让用户在一个页面拿全 —— 历史上 1.1.5/1.1.6/1.1.7 都是手工合并。
+     * 现在由 sync-packages 在全量发布时自动复制（同 tv-node 的机制）。
+     */
+    const ps = read('deploy', 'scripts', 'sync-packages.ps1')
+    expect(ps).toContain('fpk-v$appVersion')
+    expect(ps).toContain('并入 fpk：')
+    // 只在归档型全量发布里做（单链不该长 fpk 资产）
+    const archivalAt = ps.indexOf('$archival = $tag -match')
+    const mergeAt = ps.indexOf('fpk-v$appVersion')
+    expect(archivalAt).toBeGreaterThan(-1)
+    expect(mergeAt).toBeGreaterThan(archivalAt)
+  })
+})
