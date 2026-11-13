@@ -159,16 +159,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          OUT='${{ runner.temp }}/plugins-out'
+          # 不能用 ${{ runner.temp }}：它在 Windows 上是 D:/a/_temp 这种带反斜杠的路径，
+          # 在 bash 里反斜杠会被吃掉，glob 全落空 → 误报"产物不全"并整步失败（踩过）。
+          OUT="$RUNNER_TEMP/plugins-out"
           ONLY='${{ inputs.plugins_only }}'
           ok=1
           if [ -z "$ONLY" ]; then
             for pat in 'apiserver-*.zip' 'drpy-*.zip' 'ffmpeg-*.zip' 'node-*.zip'; do
-              if ! compgen -G "$OUT/$pat" >/dev/null; then
+              if ! compgen -G "$OUT/$pat" >/dev/null 2>&1; then
                 echo "::warning::产物不全：缺 $pat"; ok=0
               fi
             done
-            n=$(compgen -G "$OUT/tv-node-*.apk" | wc -l | tr -d ' ')
+            n=$(compgen -G "$OUT/tv-node-*.apk" 2>/dev/null | wc -l | tr -d ' ' || true)
             if [ "$n" -lt 3 ]; then
               echo "::warning::产物不全：tv-node APK 只有 $n/3（gradle 或 Maven 镜像大概率有问题，下轮会重建）"
               ok=0
