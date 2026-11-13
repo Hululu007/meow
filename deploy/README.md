@@ -547,6 +547,18 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 | 3 | **`sync-packages` / `index-after-publish` 只在 `release: published` 时跑** | 忘了点 Publish = 额度白烧，且没有任何报错 |
 | 4 | **Publish 后还会把 `packages.json` force push 到 `updates` 分支** | 开源后客户端在 API 失败/限流时用 raw 静态清单兜底；不推只是少一条退路 |
 
+#### 清单里的三条独立版本线（2026-11-13）
+
+| 组件 | 清单 id | 版本来源 | 谁升 |
+|---|---|---|---|
+| 壳（PC/TV） | `meow-pc` / `meow-tv` | `client/package.json` | `bump-version.ps1` 自动 |
+| 运行时模块（TV） | `tv-node-<abi>` | `18.20.4.<N>`，N 来自 `tv-plugins-v*` tag | 打 tag 时人定 |
+| 弹幕载荷（TV） | `danmu-payload` | 与 PC 的 `danmu-api` **同一个 zip**，版本跟它 | 改 `danmu-api.manifest.json` |
+
+- 载荷条目 `platform: ["android"]`、`hidden: false`；PC 插件列表按 `windows-x64` 过滤，
+  不会把这条显示成本机插件
+- 改源码没升版本 → 发布 job 的「插件版本守卫」直接红（`check-plugin-versions.ps1`）
+
 #### 更新说明从哪来：`CHANGELOG.md`
 
 客户端弹框里显示的正文来自清单条目的 `desc`，三档来源按优先级：

@@ -507,6 +507,23 @@ if ($scope -contains 'plugins') {
         $packages[$pid2] = $entry
         Write-Host "  $pid2  <- $($a.name)" -ForegroundColor Green
     }
+
+    # ── TV 弹幕载荷（2026-11-13）────────────────────────────────────────
+    # 与 danmu-api 插件**同一个 zip**：TV 端只用里面的 danmu_api/ 与 package.json
+    # （多一个 manifest.json 无副作用），所以不新增构建、Release 里不重复 10.9MB。
+    # 单独一条 id + platform=android 的原因：
+    #   · PC 插件列表按 windows-x64 过滤 → 不会把这条显示成本机插件
+    #   · TV 壳按 id=danmu-payload 取用，版本与 PC 侧天然一致（同一次构建）
+    $dmAsset = Find-Asset 'danmu-api-*.zip'
+    if ($dmAsset) {
+        $pver = if ($dmAsset.name -match 'danmu-api-(\d+\.\d+\.\d+)\.zip') { $Matches[1] } else { '' }
+        if (-not $pver) { throw "无法从 $($dmAsset.name) 解析版本号" }
+        $pe = New-Entry $dmAsset $pver @('android') '弹幕组件' -Notes "猫窝弹幕组件 $pver"
+        $pe.hidden = $false            # TV 更新中心/运行时分区要能看到
+        $pe.display_name = '弹幕组件'
+        $packages['danmu-payload'] = $pe
+        Write-Host "  danmu-payload <- $($dmAsset.name)（TV 弹幕载荷）" -ForegroundColor Green
+    }
 }
 
 # 模块属于 TV 链（跟 _tv_plugins 同进同退），所以判据用 meow-tv 而不是 plugins ——

@@ -58,6 +58,9 @@ foreach ($id in $changed) {
     # tv-node 的三个 ABI 在清单里是 tv-node-<abi>，按前缀聚合成一个单元判
     $ids = if ($id -eq 'tv-node') {
         @($baseline.packages.PSObject.Properties.Name | Where-Object { $_ -like 'tv-node-*' })
+    } elseif ($id -eq 'danmu-api') {
+        # 载荷与 PC 插件同源同版本：载荷条目（电视用）也必须跟着升
+        @('danmu-api', 'danmu-payload')
     } else { @($id) }
 
     foreach ($k in $ids) {

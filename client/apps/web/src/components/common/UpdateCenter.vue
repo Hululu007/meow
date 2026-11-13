@@ -36,6 +36,12 @@ import {
   lastCheckedAt,
   markChecked,
   moduleChecked,
+  payloadChecked,
+  payloadCurrent,
+  payloadInstalled,
+  payloadLatest,
+  payloadUpdateChecked,
+  checkPayload,
   moduleCurrent,
   moduleInstalled,
   moduleLatest,
@@ -45,6 +51,9 @@ import {
   pluginInstalledCount,
   pluginUpdates,
 } from '@/stores/updateCenter'
+
+/** 跨区跳转交给宿主页面（见 scrollTo 的注释） */
+const emit = defineEmits<{ (e: 'goto', selector: string): void }>()
 
 const appVersion = currentVersion()
 const busyAll = ref(false)
@@ -60,6 +69,14 @@ const tv = isTvShell()
 const appFound = computed(() => !!updFound.value)
 const moduleFound = computed(() => !!moduleLatest.value)
 const pluginCount = computed(() => pluginUpdates.value.length)
+const payloadLabel = computed(() => {
+  if (checking.payload) return '检查中…'
+  if (!payloadInstalled.value) return '未安装'
+  if (payloadLatest.value) return `发现 v${payloadLatest.value.version}`
+  if (!payloadUpdateChecked.value) return '未检查'
+  return '已是最新'
+})
+
 const fpkFound = computed(() => !!fpkLatest.value)
 
 const appLabel = computed(() => {
@@ -99,7 +116,7 @@ const fpkLabel = computed(() => {
  * 插件和 fpk 也该有状态，实际那两行根本不显示。
  */
 const scopeLabel = computed(() =>
-  tv ? '壳 / 运行时模块' : desktop ? '壳 / 本机插件' : '壳 / fnOS 应用',
+  tv ? '壳 / 运行时模块 / 弹幕组件' : desktop ? '壳 / 本机插件' : '壳 / fnOS 应用',
 )
 
 /**
@@ -142,13 +159,16 @@ function lastText(kind: 'app' | 'module' | 'plugins' | 'fpk'): string {
   return `${Math.round(mins / 60)} 小时前检查`
 }
 
+/**
+ * 跨区跳转只上报目标，滚动由设置页导航统一做。
+ *
+ * ★ 这里不要自己 scrollIntoView：Android WebView 会把带 smooth 的
+ *   scrollIntoView 整次丢掉（2026-11-13 竖屏设备实测 scrollY 位移 0px），
+ *   而且它绕过了「容器还是 window 在滚」「顶栏要让出多少」「滚完闪烁确认」
+ *   这些只有设置页知道的细节。见 SettingsView 的 gotoSelector。
+ */
 function scrollTo(sel: string): void {
-  try {
-    const el = document.querySelector(sel)
-    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  } catch {
-    /* 老内核不支持 smooth 也不该让按钮失效 */
-  }
+  emit('goto', sel)
 }
 
 async function checkAppNow(): Promise<void> {
@@ -259,6 +279,37 @@ onMounted(() => {
         检查
       </button>
       <span v-if="errors.module" class="text-[10px] text-hot">{{ errors.module }}</span>
+    </div>
+
+    <!-- TV 弹幕组件（载荷）：与运行时模块分开装、分开升版本 -->
+    <div v-if="tv" class="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2" data-update-row="payload">
+      <span class="w-24 shrink-0 text-[11px] text-ink-2">弹幕组件</span>
+      <span class="font-mono text-[11px] text-ink-3">{{ payloadInstalled ? payloadCurrent : '—' }}</span>
+      <span class="text-[11px] text-ink-3">{{ payloadLabel }}</span>
+      <span class="flex-1" />
+      <button
+        v-if="payloadLatest"
+        class="rounded-md bg-accent px-2.5 py-1 text-[11px] text-on-accent"
+        @click="scrollTo('[data-danmu-payload]')"
+      >
+        去更新
+      </button>
+      <button
+        v-else-if="payloadChecked && !payloadInstalled"
+        class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover"
+        @click="scrollTo('[data-danmu-payload]')"
+      >
+        去安装
+      </button>
+      <button
+        v-else-if="(!payloadUpdateChecked && payloadInstalled) || errors.payload"
+        class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
+        :disabled="checking.payload"
+        @click="checkPayload(false)"
+      >
+        检查
+      </button>
+      <span v-if="errors.payload" class="text-[10px] text-hot">{{ errors.payload }}</span>
     </div>
 
     <!-- PC 插件 -->

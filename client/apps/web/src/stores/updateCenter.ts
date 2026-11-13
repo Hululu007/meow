@@ -37,7 +37,7 @@ import {
 } from '@/api/fpkUpgrade'
 import { getPrefs } from '@/stores/prefs'
 
-export type UpdateKind = 'app' | 'module' | 'plugins' | 'fpk'
+export type UpdateKind = 'app' | 'module' | 'payload' | 'plugins' | 'fpk'
 
 export interface ModuleLatest {
   version: string
@@ -62,6 +62,7 @@ const DAY = 24 * 60 * 60 * 1000
 export const checking = reactive<Record<UpdateKind, boolean>>({
   app: false,
   module: false,
+  payload: false,
   plugins: false,
   fpk: false,
 })
@@ -70,6 +71,7 @@ export const checking = reactive<Record<UpdateKind, boolean>>({
 export const errors = reactive<Record<UpdateKind, string>>({
   app: '',
   module: '',
+  payload: '',
   plugins: '',
   fpk: '',
 })
@@ -78,6 +80,7 @@ export const errors = reactive<Record<UpdateKind, string>>({
 export const lastCheckedAt = reactive<Record<UpdateKind, number>>({
   app: 0,
   module: 0,
+  payload: 0,
   plugins: 0,
   fpk: 0,
 })
@@ -95,6 +98,19 @@ export const moduleChecked = ref(false)
  * 或「未安装 · 未检查」两条状态叠在一起。
  */
 export const moduleUpdateChecked = ref(false)
+export const payloadLatest = ref<{
+  version: string
+  size: number
+  sha256: string
+  url: string
+} | null>(null)
+export const payloadCurrent = ref('')
+export const payloadInstalled = ref(false)
+/** 是否读过载荷安装状态（本地桥，无网络） */
+export const payloadChecked = ref(false)
+/** 本次会话是否真的比对过载荷版本（与 payloadChecked 分开，理由同模块） */
+export const payloadUpdateChecked = ref(false)
+
 export const pluginUpdates = ref<PluginLatest[]>([])
 /** 是否已配置插件源（用于 UI 区分“没源”和“没更新”） */
 export const pluginConfigured = ref(false)
@@ -323,6 +339,75 @@ async function ensurePluginAppSource(): Promise<void> {
 }
 
 /** PC 插件更新（仅已安装的插件逐条比较） */
+/**
+ * 检查弹幕载荷（danmu_api）是否有新版本。
+ *
+ * <p>载荷与运行时模块分开装：模块是通用 node 运行时（按 ABI，~50MB），
+ * 载荷是可替换的业务代码（~10MB，与 PC 的 danmu-api 插件同一个 zip）。
+ * 只有模块已安装时才有意义 —— 没模块时载荷根本跑不起来。
+ */
+export function refreshPayloadState(): void {
+  const b = tvBridge()
+  if (!b || typeof b.payloadState !== 'function') return
+  try {
+    const st = JSON.parse(String(b.payloadState() || '{}')) as Record<string, unknown>
+    payloadChecked.value = true
+    payloadInstalled.value = !!st.installed
+    payloadCurrent.value = String(st.version || '')
+  } catch {
+    /* 桥坏了就当没有 */
+  }
+}
+
+export async function checkPayload(silent = false): Promise<boolean> {
+  if (!isTvShell() || checking.payload) return false
+  const b = tvBridge()
+  if (!b || typeof b.payloadCheckCandidates !== 'function') return false
+  checking.payload = true
+  errors.payload = ''
+  payloadUpdateChecked.value = false
+  try {
+    refreshPayloadState()
+    if (!payloadInstalled.value) {
+      payloadLatest.value = null
+      return false
+    }
+    const src = (await getUpdateSource()) || ''
+    const tok = getUpdateToken()
+    const checkOne = (u: string) =>
+      JSON.parse(String(b.payloadCheckCandidates(u, tok, '') || '{}')) as Record<string, unknown>
+    let chk: Record<string, unknown> = { ok: false }
+    for (const c of downloadCandidates(src)) {
+      chk = checkOne(c)
+      if (chk.ok !== false) break
+    }
+    // 显式备用源：主源失败才试（与应用更新同一份 Prefs）
+    const backup = getBackupUpdateSource()
+    if (chk.ok === false && backup && backup !== src) chk = checkOne(backup)
+    if (chk.ok === false) throw new Error(String(chk.error || '检查失败'))
+    const latest = String(chk.version || '')
+    if (!latest) throw new Error('清单里没有弹幕组件版本')
+    const has = isNewer(latest, payloadCurrent.value)
+    payloadLatest.value = has
+      ? {
+          version: latest,
+          size: Number(chk.size) || 0,
+          sha256: String(chk.sha256 || ''),
+          url: String(chk.url || ''),
+        }
+      : null
+    payloadUpdateChecked.value = true
+    mark('payload')
+    return has
+  } catch (e) {
+    setError('payload', e, silent)
+    payloadLatest.value = null
+    return false
+  } finally {
+    checking.payload = false
+  }
+}
+
 export async function checkPlugins(silent = false): Promise<boolean> {
   if (!isDesktop() || checking.plugins) return false
   checking.plugins = true
@@ -425,7 +510,7 @@ export async function runBackgroundChecks(): Promise<void> {
 
 /** 手动“检查全部”：手动不受 24h 节流，也不看自动开关 */
 export async function checkAll(): Promise<void> {
-  await Promise.allSettled([checkModule(false), checkPlugins(false), checkFpk(false)])
+  await Promise.allSettled([checkModule(false), checkPayload(false), checkPlugins(false), checkFpk(false)])
 }
 
 /** 设置页改了自动检查开关后立即生效（只落 prefs，无需重启） */

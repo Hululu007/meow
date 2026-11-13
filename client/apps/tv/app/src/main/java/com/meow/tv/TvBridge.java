@@ -1178,6 +1178,161 @@ public class TvBridge {
     }
 
 
+    // ------------------------------------------------------------ 弹幕载荷（danmu_api）
+    //
+    // 与运行时模块分开装：模块是通用 node 运行时（~50MB，按 ABI），载荷是可替换的
+    // 业务代码（~10MB，与 PC 的 danmu-api 插件同一个 zip）。换弹幕逻辑不用重装模块，
+    // 壳的 APK 也不必再内嵌这 10MB（下个版本从 assets 删掉，NodeService 仍保留兜底）。
+    //
+    // 清单条目：id=danmu-payload、platform=["android"]，版本与 danmu-api 一致。
+
+    /** 上一次 payloadCheck 选中的版本（下载/应用时复用，不让页面传版本号）。 */
+    private volatile String payloadVersion = "";
+
+    /** 载荷状态：{"installed":bool,"version":"1.0.0","dir":"..."}。 */
+    @JavascriptInterface
+    public String payloadState() {
+        try {
+            android.content.Context ctx = activity.getApplicationContext();
+            java.io.File dir = com.meow.tv.runtime.RuntimePayloadHost.currentDir(ctx);
+            org.json.JSONObject o = new org.json.JSONObject();
+            o.put("installed", dir != null);
+            o.put("version", dir == null ? "" : dir.getName());
+            o.put("dir", dir == null ? "" : dir.getAbsolutePath());
+            return o.toString();
+        } catch (Throwable t) {
+            return "{\"installed\":false,\"error\":\"" + AppUpdater.escape(t.getMessage()) + "\"}";
+        }
+    }
+
+    @JavascriptInterface
+    public String payloadCheck() { return payloadCheckCandidates("", "", ""); }
+
+    /**
+     * 拉清单并挑出载荷条目（不下载）。
+     *
+     * <p>复用 moduleCheckCandidates 的清单（同一个 packages.json），避免"检查模块"
+     * 和"检查载荷"各拉一次。
+     */
+    @JavascriptInterface
+    public String payloadCheckCandidates(String source, String token, String urlsPipe) {
+        try {
+            if (moduleCatalogJson.isEmpty()) {
+                String chk = moduleCheckCandidates(
+                        source == null ? "" : source,
+                        token == null ? "" : token,
+                        urlsPipe == null ? "" : urlsPipe);
+                if (chk.contains("\"ok\":false")) return chk;
+            }
+            org.json.JSONObject pick = com.meow.tv.runtime.RuntimePayloadHost.pick(moduleCatalogJson);
+            payloadVersion = pick.optString("version", "");
+            org.json.JSONObject out = new org.json.JSONObject(pick.toString());
+            out.put("ok", true);
+            return out.toString();
+        } catch (Throwable t) {
+            return "{\"ok\":false,\"error\":\"" + AppUpdater.escape(t.getMessage()) + "\"}";
+        }
+    }
+
+    /**
+     * 下载载荷 zip（sha256 由 AppUpdater 强制校验，落盘后由 payloadApply 解压）。
+     *
+     * <p>安全闸与模块一致：候选必须是清单原始地址的线路变体；私有仓不走代理。
+     */
+    @JavascriptInterface
+    public String payloadDownloadCandidates(String source, String token, String urlsPipe) {
+        try {
+            String chk = payloadCheckCandidates(source, token, urlsPipe);
+            if (chk.contains("\"ok\":false")) return chk;
+            org.json.JSONObject pick = com.meow.tv.runtime.RuntimePayloadHost.pick(moduleCatalogJson);
+            String url = pick.optString("url", "");
+            String sha = pick.optString("sha256", "");
+            String ver = pick.optString("version", "");
+            String tk = token == null ? "" : token;
+            if (url.isEmpty() || sha.isEmpty()) {
+                return "{\"ok\":false,\"error\":\"清单缺 url/sha256\"}";
+            }
+            String real = moduleAssetUrl(url, tk);
+            String pipe = urlsPipe == null ? "" : urlsPipe.trim();
+            StringBuilder use = new StringBuilder();
+            if (!pipe.isEmpty() && tk.trim().isEmpty()) {
+                for (String raw : pipe.split("\\|")) {
+                    String c = raw == null ? "" : raw.trim();
+                    if (c.isEmpty()) continue;
+                    if (!c.startsWith("http://") && !c.startsWith("https://")) continue;
+                    if (!c.contains(real)) continue;
+                    if (use.length() > 0) use.append('|');
+                    use.append(c);
+                }
+            }
+            String urls = use.length() > 0 ? use.toString() : real;
+            return AppUpdater.start(activity, urls, sha, tk, "danmu-payload-" + ver + ".zip");
+        } catch (Throwable t) {
+            return "{\"ok\":false,\"error\":\"" + AppUpdater.escape(t.getMessage()) + "\"}";
+        }
+    }
+
+    /**
+     * 把已下载的 zip 装成当前载荷版本，并重启 :node。
+     *
+     * <p>只认 AppUpdater 下载缓存里的文件（与"拉起安装器"同一条边界）——
+     * 否则这个桥方法会变成"解压任意路径的 zip"。
+     */
+    @JavascriptInterface
+    public String payloadApply() {
+        try {
+            String path = AppUpdater.lastPath;
+            if (path == null || path.isEmpty()) {
+                return "{\"ok\":false,\"error\":\"还没有下载好的载荷\"}";
+            }
+            java.io.File f = new java.io.File(path);
+            String cacheRoot = activity.getCacheDir().getCanonicalPath();
+            if (!f.getCanonicalPath().startsWith(cacheRoot)) {
+                return "{\"ok\":false,\"error\":\"只允许使用下载缓存里的载荷\"}";
+            }
+            String ver = payloadVersion == null ? "" : payloadVersion;
+            if (ver.isEmpty()) {
+                String n = f.getName();
+                if (n.startsWith("danmu-payload-") && n.endsWith(".zip")) {
+                    ver = n.substring("danmu-payload-".length(), n.length() - ".zip".length());
+                }
+            }
+            if (ver.isEmpty()) {
+                return "{\"ok\":false,\"error\":\"不知道载荷版本（请重新检查更新）\"}";
+            }
+            String applied = com.meow.tv.runtime.RuntimePayloadHost.apply(
+                    activity.getApplicationContext(), f, ver);
+            restartNodeService();
+            org.json.JSONObject o = new org.json.JSONObject();
+            o.put("ok", true);
+            o.put("version", applied);
+            return o.toString();
+        } catch (Throwable t) {
+            return "{\"ok\":false,\"error\":\"" + AppUpdater.escape(t.getMessage()) + "\"}";
+        }
+    }
+
+    /** 载荷切换后重启 :node：stop → 1.5s → start（与模块安装后的做法一致）。 */
+    private void restartNodeService() {
+        try {
+            final android.content.Context ctx = activity.getApplicationContext();
+            ctx.stopService(new android.content.Intent(ctx, com.meow.tv.runtime.NodeService.class));
+            new Thread(() -> {
+                try { Thread.sleep(1500); } catch (InterruptedException ignored) { }
+                try {
+                    if (com.meow.tv.runtime.RuntimeModuleState.enabled(ctx)) {
+                        ctx.startService(new android.content.Intent(
+                                ctx, com.meow.tv.runtime.NodeService.class));
+                    }
+                } catch (Throwable t) {
+                    android.util.Log.w("MeowTv", "restart node failed: " + t);
+                }
+            }, "meow-node-restart").start();
+        } catch (Throwable t) {
+            android.util.Log.w("MeowTv", "restartNodeService failed: " + t);
+        }
+    }
+
     /**
      * 从 release 元数据里找 `packages.json` 资产。
      *

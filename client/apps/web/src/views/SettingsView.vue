@@ -69,6 +69,7 @@ import {
   tauriInvoke,
   type ConfigBackupInfo,
   type ConfigImportDiff,
+  type ConfigImportResult,
   type ConfigSkippedSite,
   type DepotEntry,
   type ImportConflict,
@@ -116,7 +117,15 @@ import {
 } from '@/stores/appUpdate'
 // TV 上开机不跑模块/插件/fpk 的后台检查（App.vue 的说明），改到这里：
 // 用户真的进设置页/更新中心了再查一次（内部仍有 24h 节流）。
-import { isTvShell, runBackgroundChecks } from '@/stores/updateCenter'
+import {
+  checkPayload,
+  isTvShell,
+  payloadCurrent,
+  payloadInstalled,
+  payloadLatest,
+  refreshPayloadState,
+  runBackgroundChecks,
+} from '@/stores/updateCenter'
 // 片库的配置与增删改已挪到「片库」页本身（设置页只管应用行为，
 // 不管内容来源）；这里只剩离线缓存的列表与删除。
 import { controlCache, listCache } from '@/api/library'
@@ -1955,6 +1964,19 @@ void loadDmLocal()
 // 连接设置弹层只在用户**改过**输入框时才沿用它，避免 TV 首连时被默认值带着走。
 const cfgUrl = ref('http://肥猫.net')
 const cfgUrlDirty = ref(false)
+
+/**
+ * 地址一改，之前的预览就不再对应当前地址。
+ *
+ * 原来只置 cfgUrlDirty（那是给连接弹框预填用的），预览面板会留着；而
+ * 「确认导入」优先用 `cfgPreview.url`，于是用户改了地址、看着旧面板点确认，
+ * 实际导入的还是旧地址。这里直接作废——宁可多点一次「读取」，也不能导错源。
+ */
+function onCfgUrlInput() {
+  cfgUrlDirty.value = true
+  const p = cfgPreview.value
+  if (p && cfgUrl.value.trim() !== p.url) cfgPreview.value = null
+}
 const cfgBusy = ref(false)
 const cfgMsg = ref('')
 const cfgMsgOk = ref(false)
@@ -1988,12 +2010,72 @@ const conflictOptions = [
 const cfgPreview = ref<{
   url: string
   sites: number
-  total: number
+  /** 本地站点表原始条数（含未实现的），与 diff.total 同口径 */
+  existing: number
   /** 内置基线条数（替换删不掉的那批） */
   builtin: number
   skipped: ConfigSkippedSite[]
+  /** 读取时的策略那份（老后端可能只有它） */
   diff: ConfigImportDiff
+  /**
+   * 四套 diff（merge×3 冲突策略 + replace）。有它才能「切策略不重新联网」，
+   * 没有时（老后端）退化成 cfgPreview.diff。
+   */
+  plans?: ConfigImportResult['plans']
+  /** 读取时用的策略；老后端没有 plans 时用来判断"切过之后数字就不对了" */
+  readMode: ImportMode
+  readConflict: ImportConflict
 } | null>(null)
+
+const EMPTY_IMPORT_DIFF: ConfigImportDiff = {
+  toAdd: [],
+  toUpdate: [],
+  conflicts: [],
+  unchanged: 0,
+  removed: [],
+  total: 0,
+  healthLost: [],
+}
+
+/**
+ * 当前策略对应的那份 diff。
+ *
+ * 后端一次算齐四套，切换 追加/替换/冲突策略 只是换索引——不重新请求、不清空面板。
+ * 老后端没有 plans 时回退到读取时那一份。
+ */
+const cfgDiff = computed<ConfigImportDiff>(() => {
+  const p = cfgPreview.value
+  if (!p) return EMPTY_IMPORT_DIFF
+  const fromPlans =
+    importMode.value === 'merge'
+      ? p.plans?.merge?.[importConflict.value]
+      : p.plans?.replace
+  return fromPlans || p.diff
+})
+
+/**
+ * 后端没给 plans，且用户已经切过策略 → 面板上的数字不再对应所选策略。
+ *
+ * 只有这时才要求重新读取；新后端切多少次都是实时准确的，不该打扰用户。
+ */
+const cfgPlanStale = computed(() => {
+  const p = cfgPreview.value
+  if (!p || p.plans) return false
+  if (p.readMode !== importMode.value) return true
+  return importMode.value === 'merge' && p.readConflict !== importConflict.value
+})
+
+/**
+ * 确认按钮上写清楚"这一下会按哪个策略执行"。
+ *
+ * 原来只有「确认导入」四个字：用户在面板里切过策略后，按钮不跟着变，
+ * 得自己记住刚才选的是什么——写进按钮就不用了。
+ */
+const cfgApplyLabel = computed(() => {
+  if (importMode.value === 'replace') return '替换整表'
+  const c = conflictOptions.find((o) => o.value === importConflict.value)
+  return `追加 · ${c?.label ?? '保留现有的'}`
+})
 
 // ---------------------------------------------------------------- 直播源
 //
@@ -2278,7 +2360,7 @@ async function doPreviewImport() {
     cfgPreview.value = {
       url,
       sites: r.sites || 0,
-      total: r.totalSites || 0,
+      existing: r.existingSites ?? r.totalSites ?? 0,
       builtin: r.builtinSites || 0,
       skipped: r.skipped || [],
       diff: r.diff || {
@@ -2290,10 +2372,12 @@ async function doPreviewImport() {
         total: 0,
         healthLost: [],
       },
+      plans: r.plans,
+      readMode: importMode.value,
+      readConflict: importConflict.value,
     }
-    cfgMsg.value = `读到了 ${r.sites || 0} 个可用站点，确认后按「${
-      importMode.value === 'merge' ? '追加' : '替换'
-    }」写入`
+    // 消息只说"读到了什么"，不再提某种策略——策略改成读完再选（见 cfgDiff）
+    cfgMsg.value = `读到了 ${r.sites || 0} 个可用站点，选好并法再确认`
   } catch (e: any) {
     cfgMsgOk.value = false
     cfgMsg.value = e?.message || String(e)
@@ -2302,12 +2386,18 @@ async function doPreviewImport() {
   }
 }
 
-/** 第二步：确认写入。 */
+/** 第二步：确认写入。按面板当前所选策略执行（不是读取时那份）。 */
 async function doImportConfig() {
   const url = cfgPreview.value?.url || cfgUrl.value.trim()
   if (!/^https?:\/\//i.test(url)) {
     cfgMsgOk.value = false
     cfgMsg.value = '请填 http(s) 开头的配置地址'
+    return
+  }
+  // 按钮已经 disabled，这里再挡一次：回车/脚本路径不能绕过"数字已过期"
+  if (cfgPlanStale.value) {
+    cfgMsgOk.value = false
+    cfgMsg.value = '切换策略后数字没重算，请重新点「读取」'
     return
   }
   cfgBusy.value = true
@@ -2327,7 +2417,7 @@ async function doImportConfig() {
     cfgSummary.value = { sites: r.sites || 0, total: r.totalSites || 0, url }
     cfgSkipped.value = r.skipped || []
     cfgPreview.value = null
-    cfgMsg.value = `已导入 ${r.sites}/${r.totalSites} 站${
+    cfgMsg.value = `已按「${cfgApplyLabel.value}」导入 ${r.sites}/${r.totalSites} 站${
       r.depot?.length ? `，另有 ${r.depot.length} 个多仓地址` : ''
     }`
     // 导入后旧配置已进备份，「恢复上一次」按钮要立刻可用
@@ -2994,6 +3084,95 @@ async function modInstall() {
   } finally {
     modBusy.value = false
     refreshModule()
+  }
+}
+
+// ---------------------------------------------------------------- 弹幕载荷（TV）
+//
+// 载荷 = danmu_api 的 JS 代码（~10MB），与 PC 的 danmu-api 插件是同一份 zip
+// （清单里 id=danmu-payload、platform=["android"]）。和运行时模块分开装的理由：
+// 模块是通用 node 运行时（~50MB，按 ABI），换弹幕逻辑不该重装它；壳的 APK
+// 下一版也会把这 10MB 从 assets 里删掉（NodeService 保留 assets 兜底一版）。
+const payBusy = ref(false)
+const payMsg = ref('')
+
+function refreshPayload() {
+  const b = bridge()
+  if (!b || typeof b.payloadState !== 'function') return
+  try {
+    refreshPayloadState()
+    // 模块没装时载荷一定跑不起来，状态就别读了（避免显示一个装不上的版本）
+  } catch {
+    /* 桥坏了当没有 */
+  }
+}
+if (tvMode) refreshPayload()
+
+/**
+ * 下载并安装载荷：检查 → 下载 zip（原生 AppUpdater，sha256 强制）→ 解压落位 → 重启 :node。
+ *
+ * 与模块安装同一套状态机（idle|downloading|verifying|ready|failed|cancelled），
+ * 到 ready 后调 payloadApply 而不是系统安装器 —— 载荷不需要装 APK。
+ */
+async function payloadInstall() {
+  const b = bridge()
+  if (!b || payBusy.value) return
+  payBusy.value = true
+  payMsg.value = '检查清单…'
+  try {
+    const src = (await getUpdateSource()) || ''
+    const tok = getUpdateToken()
+    const checkOne = (u: string) =>
+      JSON.parse(String(b.payloadCheckCandidates(u, tok, '') || '{}')) as Record<string, unknown>
+    let chk: Record<string, unknown> = { ok: false }
+    for (const c of downloadCandidates(src)) {
+      chk = checkOne(c)
+      if (chk.ok !== false) break
+    }
+    const backup = getBackupUpdateSource()
+    if (chk.ok === false && backup && backup !== src) chk = checkOne(backup)
+    if (chk.ok === false) {
+      payMsg.value = '检查失败：' + String(chk.error || '未知错误')
+      return
+    }
+    payMsg.value = `下载中（${fmtSize(Number(chk.size) || 0)}）…`
+    const assetCands = chk.url ? downloadCandidates(String(chk.url)).join('|') : ''
+    const started = JSON.parse(
+      String(b.payloadDownloadCandidates(src, tok, assetCands) || '{}'),
+    ) as Record<string, unknown>
+    if (started.ok === false) {
+      payMsg.value = '下载失败：' + String(started.error || '未知错误')
+      return
+    }
+    let settled = false
+    for (let i = 0; i < 200; i++) {
+      await new Promise((r) => setTimeout(r, 700))
+      const st = JSON.parse(b.appUpdateState())
+      if (st.state === 'ready') {
+        payMsg.value = '校验通过，安装中…'
+        const applied = JSON.parse(String(b.payloadApply() || '{}')) as Record<string, unknown>
+        if (applied.ok === false) throw new Error(String(applied.error || '安装失败'))
+        payMsg.value = '已装好 v' + String(applied.version || '')
+        settled = true
+        break
+      }
+      if (st.state === 'failed') {
+        payMsg.value = '下载失败：' + st.message
+        settled = true
+        break
+      }
+      payMsg.value =
+        st.state === 'verifying'
+          ? '校验中…'
+          : `下载中 ${st.percent}%（${fmtSize(st.received || 0)} / ${fmtSize(st.total || 0)}）`
+    }
+    if (!settled) payMsg.value = '下载超时（网络太慢或被拦截），可再点一次重试'
+  } catch (e) {
+    payMsg.value = '安装失败：' + String(e)
+  } finally {
+    payBusy.value = false
+    refreshPayload()
+    void checkPayload(true)
   }
 }
 
@@ -4059,6 +4238,32 @@ function scrollContainerTo(c: HTMLElement, top: number) {
 }
 
 /**
+ * window 版的同一层兜底。
+ *
+ * ★ 别把 `scrollTo(smooth)` 和 `scrollIntoView(smooth)` 混为一谈：Android
+ *   WebView 上前者正常（2026-11-13 设备实测 400ms 走了 285/300px），
+ *   **后者带 smooth 会被整次丢弃**（调用命中目标元素、scrollY 位移 0；
+ *   同元素去掉 smooth 立刻跳到 -6388px）。如果哪天 smooth 也被吞，这里补跳。
+ */
+function scrollWindowTo(top: number) {
+  const target = Math.max(0, top)
+  const before = window.scrollY
+  try {
+    window.scrollTo({ top: target, behavior: 'smooth' })
+  } catch {
+    window.scrollTo(0, target)
+    return
+  }
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      if (Math.abs(window.scrollY - before) < 1 && Math.abs(target - before) > 2) {
+        window.scrollTo(0, target)
+      }
+    }),
+  )
+}
+
+/**
  * 点了导航之后，让目标分区「闪几下」。
  *
  * 为什么需要：滚动是平滑的，落到目标后 8 个分区的视觉重量几乎一样，
@@ -4204,24 +4409,57 @@ async function scrollToSec(id: string) {
   navLock = Date.now() + 700
   // 立刻闪：目标是"确认落点"，早一点开始用户才不会觉得"点了没反应"
   flashSection(el)
+  jumpToEl(el)
+}
+
+/**
+ * 跳到任意元素（分区内的子块也算）。
+ *
+ * ★ 容器分支必须用 getBoundingClientRect 求相对距离，不能用 offsetTop。
+ *
+ * 踩过的坑：容器的 offsetParent 是 body，容器内的 section 也把 body 当
+ * offsetParent，所以 `el.offsetTop - c.offsetTop` 恒等于 0，公式退化成
+ * `scrollTop - 8` —— 表现为「滚到底后点"连接"只回退几个像素」。
+ *
+ * 正确关系：目标在容器内容坐标里的位置
+ *   = 当前容器滚动量 + (目标视口位置 - 容器视口位置)
+ */
+function jumpToEl(el: HTMLElement) {
   const c = contentRef.value
   const useContainer = !!c && c.scrollHeight > c.clientHeight + 1
   if (useContainer) {
-    // ★ 必须用 getBoundingClientRect 求相对距离，不能用 offsetTop。
-    //
-    // 踩过的坑：容器的 offsetParent 是 body，容器内的 section 也把 body 当
-    // offsetParent，所以 `el.offsetTop - c.offsetTop` 恒等于 0，公式退化成
-    // `scrollTop - 8` —— 表现为「滚到底后点"连接"只回退几个像素」。
-    //
-    // 正确关系：目标在容器内容坐标里的位置
-    //   = 当前容器滚动量 + (目标视口位置 - 容器视口位置)
     const target =
-      c.scrollTop + (el.getBoundingClientRect().top - c.getBoundingClientRect().top) - 8
-    scrollContainerTo(c, target)
+      c!.scrollTop + (el.getBoundingClientRect().top - c!.getBoundingClientRect().top) - 8
+    scrollContainerTo(c!, target)
   } else {
-    const top = el.getBoundingClientRect().top + window.scrollY - 72
-    window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
+    scrollWindowTo(el.getBoundingClientRect().top + window.scrollY - 72)
   }
+}
+
+/**
+ * 更新中心的「去安装 / 去更新 / 去配置」—— 跨区跳到某个子块。
+ *
+ * ★ 原来 UpdateCenter 自己调 `el.scrollIntoView({behavior:'smooth'})`，
+ *   在 Android WebView 上**整次调用被丢弃**（2026-11-13 竖屏设备实测：
+ *   调用命中了 section[runtime]，scrollY 位移 0px；同元素去掉 smooth
+ *   立刻跳到 -6388px）。竖屏走 window 滚动 → 表现为「点去安装，页面
+ *   纹丝不动」；横屏走右侧容器分支，看起来正常。
+ *   所以跨区跳转一律回到这套导航逻辑（容器/窗口判定 + 让出顶栏 +
+ *   smooth 兜底 + 闪框），不要再自己写滚动。
+ */
+async function gotoSelector(sel: string) {
+  const el = document.querySelector<HTMLElement>(sel)
+  if (!el) return
+  const sec = el.closest<HTMLElement>('section[data-sec]')
+  const id = sec?.dataset.sec
+  if (id) {
+    activeSec.value = id
+    lastNavSec.value = id
+  }
+  await nextTick()
+  navLock = Date.now() + 700
+  flashSection(el)
+  jumpToEl(el)
 }
 
 // 滚到「直播源」时补拉：点导航由 scrollToSec 触发，纯滚动由这里补
@@ -5089,7 +5327,7 @@ onBeforeUnmount(() => {
           v-model="cfgUrl"
           class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent"
           placeholder="https://example.com/config.json"
-          @input="cfgUrlDirty = true"
+          @input="onCfgUrlInput"
         />
         <button
           class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover disabled:opacity-40"
@@ -5190,6 +5428,37 @@ onBeforeUnmount(() => {
         关闭后弹幕改用内置聚合站（境外源可能不可用），播放不受影响。
       </p>
 
+      <!-- 弹幕载荷（danmu_api）：与运行时模块分开装、分开升版本 -->
+      <div class="mt-3 border-t border-line pt-3" data-danmu-payload>
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span class="text-xs font-medium text-ink-2">弹幕组件</span>
+          <span class="text-[11px] text-ink-3">
+            <template v-if="!modState.installed">需先安装运行时模块</template>
+            <template v-else-if="payloadInstalled">v{{ payloadCurrent }}</template>
+            <template v-else>未安装</template>
+          </span>
+          <span v-if="payloadInstalled && payloadLatest" class="text-[11px] text-accent">
+            发现 v{{ payloadLatest.version }}
+          </span>
+        </div>
+        <p class="mt-1 text-[11px] leading-relaxed text-ink-3">
+          danmu_api 的业务载荷，约 10MB；与运行时模块分开更新，换载荷不用重装模块。
+        </p>
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-dim disabled:opacity-40"
+            :disabled="!modState.installed || payBusy"
+            @click="payloadInstall()"
+          >
+            {{ payloadLatest ? '更新' : payloadInstalled ? '检查更新' : '下载并安装' }}
+          </button>
+          <span v-if="payMsg" class="text-[11px] text-accent">{{ payMsg }}</span>
+          <span v-else-if="!modState.installed" class="text-[11px] text-ink-3">
+            模块装好后即可安装
+          </span>
+        </div>
+      </div>
+
     
       </template>
       </section>
@@ -5253,7 +5522,7 @@ onBeforeUnmount(() => {
           placeholder="https://example.com/config.json"
           class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
           title="CatVod 形状的 JSON 配置地址；也接受多仓（含 urls 数组）"
-          @input="cfgUrlDirty = true"
+          @input="onCfgUrlInput"
           @keyup.enter="doPreviewImport"
         />
         <button
@@ -5261,148 +5530,184 @@ onBeforeUnmount(() => {
           :disabled="cfgBusy"
           @click="doPreviewImport"
         >
-          {{ cfgBusy ? '读取中…' : '读取并预览' }}
+          {{ cfgBusy ? '读取中…' : '读取' }}
         </button>
+      </div>
+
+      <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-3">
+        <span>GitHub 地址会自动尝试「网络与加速 → GitHub 加速」里的代理；其它站点直连。</span>
         <!--
           多仓索引（含 urls 数组的地址）直接点「读取」只会取第一个仓。
-          先探测一遍，用户能看到每个仓"导入后真正能用几站"，再挑一个。
+          探测要把每个仓都拉一遍才知道"导入后真正能用几站"，是个慢动作，
+          所以降到次级入口当链接用，不和主按钮抢位（用户多数时候不需要它）。
         -->
         <button
-          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover disabled:opacity-40"
+          class="rounded px-1 py-0.5 underline decoration-dotted underline-offset-2 transition hover:bg-card-hover hover:text-ink disabled:opacity-40"
           :disabled="depotBusy"
-          :title="'这个地址如果是多仓索引，先列出各仓能不能用再选'"
+          title="地址里有多个仓时，先逐个探活，看每个仓能用几站"
           @click="probeDepot"
         >
           {{ depotBusy ? '探测中…' : '多仓探测' }}
         </button>
       </div>
 
-      <p class="mt-1 text-[11px] text-ink-3">
-        GitHub 地址会自动尝试「网络与加速 → GitHub 加速」里的代理；其它站点直连。
-      </p>
-
-      <!-- 导入方式：默认追加。替换是破坏性动作，必须用户自己选 -->
-      <div class="mt-2 flex flex-wrap items-center gap-2.5 text-xs">
-        <span class="w-16 shrink-0 text-ink-3">导入方式</span>
-        <div class="seg-group flex overflow-hidden rounded-md border border-line">
-          <button
-            class="px-3 py-1 transition"
-            :class="importMode === 'merge' ? 'bg-accent text-on-accent' : 'bg-field text-ink-2 hover:bg-card-hover'"
-            @click="importMode = 'merge'; cfgPreview = null"
-          >
-            追加（推荐）
-          </button>
-          <button
-            class="px-3 py-1 transition"
-            :class="importMode === 'replace' ? 'bg-warn text-on-warn' : 'bg-field text-ink-2 hover:bg-card-hover'"
-            @click="importMode = 'replace'; cfgPreview = null"
-          >
-            替换
-          </button>
-        </div>
-        <span class="text-[11px] text-ink-3">
-          {{
-            importMode === 'merge'
-              ? '保留现有站点，只把新的并进来'
-              : '整表换掉，现有站点会全部消失（可从备份撤销一次）'
-          }}
-        </span>
-      </div>
-      <div v-if="importMode === 'merge'" class="mt-2 flex flex-wrap items-center gap-2.5 text-xs">
-        <span class="w-16 shrink-0 text-ink-3">同名站点</span>
-        <div class="seg-group flex overflow-hidden rounded-md border border-line">
-          <button
-            v-for="o in conflictOptions"
-            :key="o.value"
-            class="px-3 py-1 transition"
-            :class="
-              importConflict === o.value
-                ? 'bg-accent text-on-accent'
-                : 'bg-field text-ink-2 hover:bg-card-hover'
-            "
-            :title="o.hint"
-            @click="importConflict = o.value as ImportConflict; cfgPreview = null"
-          >
-            {{ o.label }}
-          </button>
-        </div>
-        <span class="text-[11px] text-ink-3">同一个 key 但 api 不同时怎么处理</span>
-      </div>
-      <!-- 源包迁移：老配置的顶层 spider 常指向已失效的上游 dex 包 -->
-      <div class="mt-2 flex flex-wrap items-center gap-2.5 text-xs">
-        <span class="w-16 shrink-0 text-ink-3">jar 地址</span>
-        <label class="flex items-center gap-2 text-ink-2">
-          <input
-            v-model="cfgReplaceSpider"
-            type="checkbox"
-            class="h-3.5 w-3.5 accent-[var(--color-accent)]"
-            @change="cfgPreview = null"
-          />
-          <span>用这份配置的顶层 spider 覆盖本地</span>
-        </label>
-        <span class="text-[11px] text-ink-3">
-          从全量版迁移/装源包时勾选；平时不要勾，会冲掉你手改的 jar 地址
-        </span>
-      </div>
       <p v-if="depotMsg" class="mt-1.5 text-[11px] text-ink-3">{{ depotMsg }}</p>
 
-      <!-- 预览卡片：看清楚再确认 -->
+      <!--
+        预览卡片：按用户此刻的问题排成三段，而不是把所有信息平铺。
+
+          ⓵ 读到什么   ← 事实，不依赖任何策略
+          ⓶ 这次怎么并 ← 决定（追加/替换、同名、jar）
+          ⓷ 这样并会   ← 上面决定的后果，随选择实时变
+
+        顺序不能倒：原来的「导入方式」摆在读取按钮上方，等于让用户在看结果之前
+        先承诺怎么并。现在策略只在读完之后出现（见 cfgDiff：四套 diff 后端一次算齐，
+        切换不重新联网）。
+      -->
       <div
         v-if="cfgPreview"
+        data-cfg-preview
         class="mt-2 overflow-hidden rounded-lg border border-accent/30 bg-accent/5 p-3"
       >
-        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-          <span class="font-medium text-ink">预览</span>
-          <span class="text-ok">新增 {{ cfgPreview.diff.toAdd.length }}</span>
-          <span class="text-ink-2">更新 {{ cfgPreview.diff.toUpdate.length }}</span>
-          <span v-if="cfgPreview.diff.conflicts.length" class="text-warn">
-            同名冲突 {{ cfgPreview.diff.conflicts.length }}
-          </span>
-          <span class="text-ink-3">不变 {{ cfgPreview.diff.unchanged }}</span>
-          <span v-if="cfgPreview.diff.removed.length" class="text-hot">
-            会消失 {{ cfgPreview.diff.removed.length }}
+        <!-- ⓵ 读到什么 -->
+        <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
+          <span class="font-medium text-ink">读到</span>
+          <span class="text-ok">{{ cfgPreview.sites }} 个可用站</span>
+          <span class="text-ink-3">本地已有 {{ cfgPreview.existing }} 个</span>
+          <span v-if="cfgPreview.builtin" class="text-ink-3">
+            内置 {{ cfgPreview.builtin }} 个（不在配置里，导入删不掉）
           </span>
         </div>
-        <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-          写入后站点表共 {{ cfgPreview.diff.total }} 条；本次读到 {{ cfgPreview.sites }} 个可用站。
-          <template v-if="cfgPreview.builtin">
-            内置 {{ cfgPreview.builtin }} 站不在配置文件里，这次操作删不掉。
-          </template>
-        </p>
-        <!-- 长 key / 长 url 必须 break-all：站点 key 动辄 drpy_js_xxx，会把卡片撑出容器 -->
-        <p
-          v-if="cfgPreview.diff.removed.length"
-          class="mt-1 break-all text-[11px] leading-relaxed text-hot"
-        >
-          会消失 {{ cfgPreview.diff.removed.length }} 个：
-          {{ cfgPreview.diff.removed.slice(0, 6).join('、') }}
-          <template v-if="cfgPreview.diff.removed.length > 6">…</template>
-        </p>
-        <p
-          v-if="cfgPreview.diff.healthLost.length"
-          class="mt-1 break-all text-[11px] leading-relaxed text-warn"
-        >
-          停用/健康状态会失效 {{ cfgPreview.diff.healthLost.length }} 个：
-          {{ cfgPreview.diff.healthLost.slice(0, 6).join('、') }}
-          <template v-if="cfgPreview.diff.healthLost.length > 6">…</template>
-        </p>
-        <p
-          v-if="cfgPreview.diff.conflicts.length"
-          class="mt-1 break-all text-[11px] leading-relaxed text-ink-3"
-        >
-          同名冲突 {{ cfgPreview.diff.conflicts.length }} 个，例：{{
-            cfgPreview.diff.conflicts[0].key
-          }}
-          （现有 {{ cfgPreview.diff.conflicts[0].existing.api }} / 导入
-          {{ cfgPreview.diff.conflicts[0].incoming.api }}）
-        </p>
-        <div class="mt-2 flex items-center gap-2">
+        <p class="mt-0.5 break-all text-[11px] text-ink-3">{{ cfgPreview.url }}</p>
+
+        <!-- ⓶ 这次怎么并 -->
+        <div class="mt-2 border-t border-line pt-2">
+          <!-- 默认追加。替换是破坏性动作，必须用户自己选 -->
+          <div class="flex flex-wrap items-center gap-2.5 text-xs">
+            <span class="w-16 shrink-0 text-ink-3">导入方式</span>
+            <div class="seg-group flex overflow-hidden rounded-md border border-line">
+              <button
+                class="px-3 py-1 transition"
+                :class="importMode === 'merge' ? 'bg-accent text-on-accent' : 'bg-field text-ink-2 hover:bg-card-hover'"
+                @click="importMode = 'merge'"
+              >
+                追加（推荐）
+              </button>
+              <button
+                class="px-3 py-1 transition"
+                :class="importMode === 'replace' ? 'bg-warn text-on-warn' : 'bg-field text-ink-2 hover:bg-card-hover'"
+                @click="importMode = 'replace'"
+              >
+                替换
+              </button>
+            </div>
+            <span class="text-[11px] text-ink-3">
+              {{
+                importMode === 'merge'
+                  ? '保留现有站点，只把新的并进来'
+                  : '整表换掉，现有站点会全部消失（可从备份撤销一次）'
+              }}
+            </span>
+          </div>
+          <div
+            v-if="importMode === 'merge'"
+            class="mt-2 flex flex-wrap items-center gap-2.5 text-xs"
+          >
+            <span class="w-16 shrink-0 text-ink-3">同名站点</span>
+            <div class="seg-group flex overflow-hidden rounded-md border border-line">
+              <button
+                v-for="o in conflictOptions"
+                :key="o.value"
+                class="px-3 py-1 transition"
+                :class="
+                  importConflict === o.value
+                    ? 'bg-accent text-on-accent'
+                    : 'bg-field text-ink-2 hover:bg-card-hover'
+                "
+                :title="o.hint"
+                @click="importConflict = o.value as ImportConflict"
+              >
+                {{ o.label }}
+              </button>
+            </div>
+            <span class="text-[11px] text-ink-3">同一个 key 但 api 不同时怎么处理</span>
+          </div>
+          <!-- 源包迁移：老配置的顶层 spider 常指向已失效的上游 dex 包 -->
+          <div class="mt-2 flex flex-wrap items-center gap-2.5 text-xs">
+            <span class="w-16 shrink-0 text-ink-3">jar 地址</span>
+            <label class="flex items-center gap-2 text-ink-2">
+              <input
+                v-model="cfgReplaceSpider"
+                type="checkbox"
+                class="h-3.5 w-3.5 accent-[var(--color-accent)]"
+              />
+              <span>用这份配置的顶层 spider 覆盖本地</span>
+            </label>
+            <span class="text-[11px] text-ink-3">
+              从全量版迁移/装源包时勾选；平时不要勾，会冲掉你手改的 jar 地址
+            </span>
+          </div>
+        </div>
+
+        <!-- ⓷ 这样并会 -->
+        <div class="mt-2 border-t border-line pt-2">
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <span class="font-medium text-ink">这样并会</span>
+            <span class="text-ok">新增 {{ cfgDiff.toAdd.length }}</span>
+            <span class="text-ink-2">更新 {{ cfgDiff.toUpdate.length }}</span>
+            <span v-if="cfgDiff.conflicts.length" class="text-warn">
+              同名冲突 {{ cfgDiff.conflicts.length }}
+            </span>
+            <span class="text-ink-3">不变 {{ cfgDiff.unchanged }}</span>
+            <span v-if="cfgDiff.removed.length" class="text-hot">
+              会消失 {{ cfgDiff.removed.length }}
+            </span>
+          </div>
+          <p class="mt-1 text-[11px] leading-relaxed text-ink-3">
+            写入后站点表共 {{ cfgDiff.total }} 条。
+          </p>
+          <!-- 长 key / 长 url 必须 break-all：站点 key 动辄 drpy_js_xxx，会把卡片撑出容器 -->
+          <p
+            v-if="cfgDiff.removed.length"
+            class="mt-1 break-all text-[11px] leading-relaxed text-hot"
+          >
+            会消失 {{ cfgDiff.removed.length }} 个：
+            {{ cfgDiff.removed.slice(0, 6).join('、') }}
+            <template v-if="cfgDiff.removed.length > 6">…</template>
+          </p>
+          <p
+            v-if="cfgDiff.healthLost.length"
+            class="mt-1 break-all text-[11px] leading-relaxed text-warn"
+          >
+            停用/健康状态会失效 {{ cfgDiff.healthLost.length }} 个：
+            {{ cfgDiff.healthLost.slice(0, 6).join('、') }}
+            <template v-if="cfgDiff.healthLost.length > 6">…</template>
+          </p>
+          <p
+            v-if="cfgDiff.conflicts.length"
+            class="mt-1 break-all text-[11px] leading-relaxed text-ink-3"
+          >
+            同名冲突 {{ cfgDiff.conflicts.length }} 个，例：{{ cfgDiff.conflicts[0].key }}
+            （现有 {{ cfgDiff.conflicts[0].existing.api }} / 导入
+            {{ cfgDiff.conflicts[0].incoming.api }}）
+          </p>
+          <!--
+            只有旧后端才可能出现：它只回读取时那一份 diff，用户切了策略后数字
+            就对不上了。这时宁可要求重新读取，也不能让「看着 A 的数字执行 B」。
+          -->
+          <p v-if="cfgPlanStale" class="mt-1.5 text-[11px] leading-relaxed text-hot">
+            后端版本较旧，切换策略后数字没有重算。请再点一次「读取」。
+          </p>
+        </div>
+
+        <div class="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2">
           <button
             class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-40"
-            :disabled="cfgBusy"
+            :disabled="cfgBusy || cfgPlanStale"
             @click="doImportConfig"
           >
             {{ cfgBusy ? '写入中…' : '确认导入' }}
+            <span v-if="!cfgBusy" class="opacity-75">（{{ cfgApplyLabel }}）</span>
           </button>
           <button
             class="rounded-md bg-card px-3 py-1.5 text-xs text-ink-2 transition hover:bg-card-hover"
@@ -6934,8 +7239,9 @@ onBeforeUnmount(() => {
         </span>
       </div>
 
-      <!-- 更新中心：壳 / 模块 / 插件 / fpk 的统一检查入口 -->
-      <UpdateCenter />
+      <!-- 更新中心：壳 / 模块 / 插件 / fpk 的统一检查入口
+           「去安装 / 去更新」的跨区跳转交给本页导航逻辑（见 gotoSelector） -->
+      <UpdateCenter @goto="gotoSelector" />
 
       <!-- ── 应用更新 ──
         只在能装包的平台显示（PC / TV）。Web 端没有"安装包"这个概念，

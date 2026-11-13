@@ -71,7 +71,20 @@ public class NodeService extends Service {
                 return;
             }
 
-            File payload = unpackZip("node-payload-danmu.zip", "node-danmu");
+            // 载荷来源优先级（2026-11-13）：
+            //   ① 下载目录 files/danmu-payload/<ver>（更新中心/运行时分区装的，可独立升级）
+            //   ② 壳内 assets（兼容期兜底：老壳没有下载能力，新壳首次也可能还没网）
+            //   ③ assets/node-payload 的 smoke stub
+            File payload = RuntimePayloadHost.currentDir(getApplicationContext());
+            if (payload != null) {
+                android.util.Log.i("MeowNode", "payload: downloaded "
+                        + payload.getName() + " @ " + payload.getAbsolutePath());
+            } else {
+                payload = unpackZip("node-payload-danmu.zip", "node-danmu");
+                if (payload != null) {
+                    android.util.Log.i("MeowNode", "payload: bundled assets（未下载或下载版不可用）");
+                }
+            }
             File script;
             if (payload != null) {
                 // 真载荷：danmu_api（Node 服务，自带 /api/v2/fongmi/danmaku）
