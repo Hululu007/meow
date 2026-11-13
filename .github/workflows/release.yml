@@ -180,6 +180,27 @@ jobs:
     with:
       plugins_only: ${{ needs.plan.outputs.plugins_only }}
 
+  # ── fnOS fpk（2026-11-13 补）────────────────────────────────────────────
+  # 用户报：release-v* 全量发版**没有 fpk**，Release 缺资产、FnDepot 也没更新。
+  # 现在全量链直接调 fpk.yml（workflow_call）：
+  #   · 产物挂到 fpk-v<版本> 的 prerelease（不污染主 Release 的 latest 判定）
+  #   · 同时回写 upchr/FnDepot 的 fnpack.json（飞牛第三方源正式通道）
+  #   · 仍保留 fpk-v* 单链 —— 只补 fpk 时不用重跑 Docker/TV/PC
+  # 只在全量 tag 上跑：tv-v/pc-v/plugins-v 这些单链不带 fpk。
+  fpk:
+    name: fnOS fpk
+    needs: plan
+    if: ${{ github.event_name == 'push' && needs.plan.outputs.release == 'true'
+            && startsWith(github.ref, 'refs/tags/release-v') }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/fpk.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      mirror_tag: fpk-v${{ needs.plan.outputs.version }}
+    secrets:
+      FNDEPOT_TOKEN: ${{ secrets.FNDEPOT_TOKEN }}
+
   publish:
     name: 建 draft Release
     needs: [plan, web, tv, pc, plugins, docker, tv_plugins]

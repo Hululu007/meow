@@ -44,15 +44,16 @@ package.json”，`plugins-v*` / `tv-plugins-v*` 不校验；不要拿壳版本�
 
 | tag | 构建什么 | 建 Release |
 |---|---|---|
-| `release-v*` | Web + TV + PC + apiserver 插件 + Docker 三镜像 | ✅ draft |
+| `release-v*` | Web + TV + PC + apiserver 插件 + Docker 三镜像 + **fnOS fpk ×2（含 FnDepot 回写）** | ✅ draft |
 | `tv-v*` | TV APK（不带运行时模块） | ✅ draft |
 | `pc-v*` | PC 壳 + apiserver 插件 | ✅ draft |
 | `plugins-v*` | 全部插件（units.json 五个，含 tv-node） | ✅ draft |
 | `tv-plugins-v*` | TV 运行时模块 ×3 ABI | ✅ draft |
-| `fpk-v*` | 另一 workflow：x86/arm 套件 + FnDepot 回写 + 主仓 prerelease + `fpk-updates` | ✅ prerelease |
+| `fpk-v*` | 另一 workflow：x86/arm 套件 + FnDepot 回写 + 主仓 prerelease + `fpk-updates`（全量 `release-v*` 也以 workflow_call 调它） | ✅ prerelease |
 
-**没有 `docker-v*` 链路**：push 只认上表前五个；重发镜像走 `workflow_dispatch`（勾
-docker）或 `build-push-docker.ps1`，且 dispatch 不建 Release（`publish` 要求 push）。
+**`docker-v*` 单链只推镜像、不建 Release**（2026-11-12 补回）：重发镜像也可以走
+`workflow_dispatch`（勾 docker）或 `build-push-docker.ps1`；dispatch 不建 Release
+（`publish` 要求 push）。
 
 两条规则：**前缀后必须紧跟数字**（`tv-v[0-9]*`），`tv-verify-1.1.6` 不触发；**壳类 tag
 后缀必须等于 `client/package.json` 版本**，否则 `plan` 失败（`plugins-v*` / `tv-plugins-v*`

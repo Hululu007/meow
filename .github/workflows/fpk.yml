@@ -19,8 +19,9 @@
 # ═══════════════════════════════════════════════════════════════════════
 #
 # 1. fpk 依赖系统 java-21-openjdk / 网络下载 fnpack，构建口径与三端安装包不同；
-# 2. 全量发版**不包含 fpk**（见 release.yml「整理目录」里的断言）——
-#    fpk 走这条独立链路，补包时不用重跑 Docker/TV/PC。
+# 2. 但**全量发版也必须带 fpk**（2026-11-13 用户报「release tag 触发的全量发布
+#    没有 fpk、FnDepot 也没更新」）—— release.yml 以 workflow_call 调本文件，
+#    只是仍保留 fpk-v* 单链补包的能力（补包时不用重跑 Docker/TV/PC）。
 #
 # ═══════════════════════════════════════════════════════════════════════
 # 产物
@@ -56,6 +57,24 @@ on:
         description: '版本号（留空取 client/package.json）'
         required: false
         type: string
+  # ★ 被 release.yml 调用（2026-11-13 用户报「全量 tag 发版没有 fpk、FnDepot 也没更新」）：
+  #   全量发版必须把 fnOS 包一起出，否则每次都要手动补推一个 fpk-v* tag。
+  #   mirror_tag 是主仓镜像 Release 的 tag 名 —— 调用方传 `fpk-v<版本>`，
+  #   不能落回 github.ref_name（那会是 release-v<版本>，把主 Release 改成
+  #   prerelease 并覆盖正文，2026-11-13 复核过这个坑）。
+  workflow_call:
+    inputs:
+      version:
+        description: '版本号（留空取 client/package.json）'
+        required: false
+        type: string
+      mirror_tag:
+        description: '主仓镜像 Release 的 tag（默认用触发 ref 的 tag 名）'
+        required: false
+        type: string
+    secrets:
+      FNDEPOT_TOKEN:
+        required: false
 
 # 主仓镜像需要创建 Release 并推 fpk-updates 分支
 permissions:
@@ -72,6 +91,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       version: ${{ steps.v.outputs.version }}
+      mirror_tag: ${{ steps.v.outputs.mirror_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -84,6 +104,12 @@ jobs:
           if [ -z "$V" ]; then V=$(node -p "require('./client/package.json').version"); fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "版本：$V"
+          # 主仓镜像 tag：调用方显式给（release.yml 传 fpk-v<版本>），
+          # 否则用触发 ref（fpk-v* tag 或 workflow_dispatch 的分支名，后者不发布）
+          M="${{ inputs.mirror_tag }}"
+          if [ -z "$M" ]; then M="${GITHUB_REF#refs/tags/}"; fi
+          echo "mirror_tag=$M" >> "$GITHUB_OUTPUT"
+          echo "镜像 tag：$M"
 
       # 13 处版本号的一致性校验（含 TV versionCode 与 compose 兜底）
       - name: 版本一致性
@@ -111,8 +137,10 @@ jobs:
       # tag 名只是入口，版本号以 package.json 为准；但 fpk-v<数字> 与版本号
       # 不一致时产物名会与 tag 对不上，先拦住（release.yml 对前缀 tag 不比对，
       # 这里对 fpk 单独加严）。
+      # ★ 只在**真的推了 fpk-v* tag** 时校验：被 release.yml 调用时
+      #   github.ref_name 是 release-v<版本>，比了必错（2026-11-13 踩点）。
       - name: tag 与版本号一致
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && startsWith(github.ref_name, 'fpk-v')
         shell: bash
         run: |
           set -euo pipefail
@@ -674,8 +702,10 @@ jobs:
       - name: 挂主仓 Release（prerelease）
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
+          # mirror_tag 而不是 github.ref_name：被 release.yml 调用时 ref 是
+          # release-v<版本>，落回去会把主 Release 改成 prerelease 并覆盖正文
+          tag_name: ${{ needs.plan.outputs.mirror_tag }}
+          name: ${{ needs.plan.outputs.mirror_tag }}
           draft: false
           prerelease: true
           generate_release_notes: false
@@ -692,7 +722,7 @@ jobs:
         shell: bash
         env:
           VER: ${{ needs.plan.outputs.version }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.plan.outputs.mirror_tag }}
           X_SHA: ${{ steps.pkg.outputs.x86_sha }}
           X_SIZE: ${{ steps.pkg.outputs.x86_size }}
           A_SHA: ${{ steps.pkg.outputs.arm_sha }}

@@ -375,13 +375,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/build-plugins
 | 触发 | 实际跑的 job | 建 Release | 发 Publish 后的 sync scope | 实测 |
 |---|---|---|---|---|
 | **`v1.0.10`**（无前缀） | **什么都不跑**——纯版本标记 | ❌ | — | 0 |
-| `release-v1.0.10` | docker + tv + pc_shell + plugins（**仅 apiserver**；不带模块） | ✅ draft | `meow-pc` `meow-tv` `plugins` | ~14 min |
+| `release-v1.0.10` | docker + tv + pc_shell + plugins（**仅 apiserver**；不带模块）+ **fpk ×2（x86/arm，含 FnDepot 回写）** | ✅ draft | `meow-pc` `meow-tv` `plugins` | ~16 min |
 | `tv-v1.0.10` | tv（**不含模块**） | ✅ draft | `meow-tv` | 2.7 min |
 | `tv-plugins-v18.20.4.1`（示例） | tv_plugins（模块 ×3 ABI）；tag 用模块版本，不是壳版本 | ✅ draft | `tv-module`（只模块三条） | 163 s |
 | `pc-v1.0.10` | pc_shell + plugins（**仅 apiserver**） | ✅ draft | `meow-pc` `plugins` | 13 min（Windows ×2） |
 | `plugins-v1.0.10`（示例） | plugins（**全部 4 个**，Windows runner，无壳）；tag 可用插件批次版本 | ✅ draft | `plugins` | 5 min+ |
 | `docker-v1.0.10` | docker（三镜像推 Hub） | ❌ | — | 6 min |
-| `fpk-v1.0.10` | 另一 workflow：fpk plan + build(x86/arm) + 回写 FnDepot + 主仓 prerelease + fpk-updates | ✅ prerelease | 不走 sync-packages | 6 min |
+| `fpk-v1.0.10` | 另一 workflow：fpk plan + build(x86/arm) + 回写 FnDepot + 主仓 prerelease + fpk-updates（**全量 `release-v*` 也会以 workflow_call 调它**） | ✅ prerelease | 不走 sync-packages | 6 min |
 | `workflow_dispatch`（release.yml） | 勾选 docker/tv/pc/plugins | ❌ | — | 按勾选 |
 | `tv-verify-1.0.10` | 什么都不跑——前缀后不是数字 | ❌ | — | 0 |
 
@@ -413,7 +413,9 @@ git tag docker-v0.9.17  && git push origin docker-v0.9.17    # 只镜像
    > 例外：`tv-plugins-v*` / `plugins-v*` 是独立版本线，清单按资产名逐条取版本。
 4. **带前缀的构建 tag 都会建 draft Release**（`release-v*` / `tv-v*` / `pc-v*` /
    `plugins-v*` / `tv-plugins-v*`），**需人工 Publish**；`docker-v*` 只推镜像不建 Release；
-   `fpk-v*` 是独立 workflow，建 **prerelease**（主仓镜像）+ 回写 FnDepot，不参与 `packages.json`。
+   `fpk-v*` 是独立 workflow，建 **prerelease**（主仓镜像）+ 回写 FnDepot，不参与 `packages.json`；
+   **全量 `release-v*` 会以 workflow_call 调同一个 fpk.yml**（2026-11-13 起：全量必须带
+   fnOS 包，不再需要手动补推 `fpk-v*`），主仓镜像仍挂 `fpk-v<版本>` 的 prerelease。
    **手动 dispatch 一律不建 Release**——它的 ref 是分支名，拿来当 `tag_name`
    会建出叫 `main` 的 Release（2026-10-26 就因此手工清理过）。要出正式版必须打 tag。
 
@@ -452,7 +454,7 @@ release.yml             主入口：plan 判定范围 → 按需 call → publis
 ├── _plugins.yml        插件包（Windows runner，可复用）
 └── _pc_shell.yml       PC 安装包（Windows runner，可复用）
 
-fpk.yml                 fnOS fpk（独立 workflow，tag fpk-v* / dispatch）
+fpk.yml                 fnOS fpk（tag fpk-v* / dispatch / release-v* 全量链以 workflow_call 调用）
 
 ci.yml                  质量检查（PR / 手动 dispatch，约 1 分钟：构建+类型+单测+javac+drpy）
                         ★不监听 push 到 main——那几项本地必然已跑过，云端重放没有新信息
