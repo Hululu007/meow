@@ -291,6 +291,9 @@ jobs:
         run: |
           set -euo pipefail
           CUR="${GITHUB_REF_NAME}"
+          # 确保 tag 都在本地：checkout 的 fetch-depth:0 只保证历史，tag 不一定带过来；
+          # 拿不到 PREV 时守卫会跳过（不误拦，但等于没守）。
+          git fetch --tags --force --quiet origin 2>/dev/null || true
           PREV=""
           while read -r t; do
             [ -z "$t" ] && continue
