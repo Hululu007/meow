@@ -64,9 +64,14 @@ jobs:
       # ★ key 里必须带 plugins_only（2026-11-13 修）：这条路以前被 pc-v*/tv-v*
       #   用 `apiserver` 跑过，产物只有 apiserver 一个，却和全量共用同一个 key ——
       #   下一次全量命中就会"跳过构建"，Release 里少 drpy/danmu/ffmpeg/tv-node。
-      - name: 缓存插件产物
+      # ★ 用 restore/save 拆分而不是 actions/cache：
+      #   actions/cache 在 job 结束就存，2026-11-13 踩过 —— tv-node 的 gradle 因
+      #   Maven 镜像抖动失败（units.json 里它是可选单元，job 仍绿），半套产物
+      #   被存进 `plugins-Windows-all-…`，下一次全量直接命中并「跳过构建」，
+      #   Release 里永远少 3 个 tv-node APK。现在只有校验通过才 save。
+      - name: 恢复插件产物缓存
         id: pcache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/plugins-out
           key: plugins-${{ runner.os }}-${{ inputs.plugins_only || 'all' }}-${{ hashFiles('deploy/units.json', 'server/build-plugin.ps1', 'server/build-plugin-danmu.ps1', 'server/build-plugin-drpy.ps1', 'server/build-plugin-ffmpeg.ps1', 'server/host/src/**', 'server/drpy/**') }}
@@ -144,6 +149,44 @@ jobs:
         run: |
           echo "插件输入未变，复用缓存产物"
           ls -la "${{ runner.temp }}/plugins-out" || true
+
+      # 产物齐全才允许写缓存（原因见上面「恢复插件产物缓存」的注释）。
+      # 不全时只警告、不红：tv-node 在 units.json 里是可选的，缺它 Release 仍可用
+      # （清单会沿用上一版的模块条目），但**绝不能把半套产物缓存成"已构建"**。
+      - name: 校验产物齐全
+        id: verify
+        if: ${{ steps.pcache.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT='${{ runner.temp }}/plugins-out'
+          ONLY='${{ inputs.plugins_only }}'
+          ok=1
+          if [ -z "$ONLY" ]; then
+            for pat in 'apiserver-*.zip' 'drpy-*.zip' 'ffmpeg-*.zip' 'node-*.zip'; do
+              if ! compgen -G "$OUT/$pat" >/dev/null; then
+                echo "::warning::产物不全：缺 $pat"; ok=0
+              fi
+            done
+            n=$(compgen -G "$OUT/tv-node-*.apk" | wc -l | tr -d ' ')
+            if [ "$n" -lt 3 ]; then
+              echo "::warning::产物不全：tv-node APK 只有 $n/3（gradle 或 Maven 镜像大概率有问题，下轮会重建）"
+              ok=0
+            fi
+          else
+            if [ -z "$(ls -A "$OUT" 2>/dev/null)" ]; then
+              echo "::warning::产物为空（plugins_only=$ONLY）"; ok=0
+            fi
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          ls -la "$OUT" | head -20
+
+      - name: 保存插件产物缓存（产物齐全才存）
+        if: ${{ steps.pcache.outputs.cache-hit != 'true' && steps.verify.outputs.ok == '1' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/plugins-out
+          key: ${{ steps.pcache.outputs.cache-primary-key }}
 
       - uses: actions/upload-artifact@v4
         with:
