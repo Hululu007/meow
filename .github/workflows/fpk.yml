@@ -73,6 +73,11 @@ on:
         description: '只重跑索引：已发布 Release 的 tag（如 release-v1.2.5）；填了就跳过构建'
         required: false
         type: string
+      replace:
+        description: '允许同版本覆盖（默认禁止：同版本重打包 = 旧索引指向新文件，会让人撞 size/sha 校验失败）'
+        required: false
+        type: boolean
+        default: false
   # ★ 索引只在「Release 被 Publish」之后写（2026-11-13 与 sync-packages 对齐）。
   #   全量 release-v<ver> 与单链 fpk-v<ver> 都走这一条；draft 阶段不产生任何
   #   用户可见的索引，Publish 之前随时可以删掉草稿。
@@ -612,6 +617,33 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           done
 
+      # ★ 同版本不可重打包（2026-11-13 用户撞到 size 校验失败后的门禁）：
+      #   1.2.5 被打过两次（05:05 旧构建、06:41 正式构建），同名文件被就地覆盖，
+      #   持有旧索引的客户端/应用中心就会拿到「expected=旧 size / actual=新 size」。
+      #   已发布版本要改就升版本号；确实要覆盖时 dispatch 传 replace=true。
+      - name: 同版本不可重打包
+        if: ${{ !inputs.replace }}
+        shell: bash
+        env:
+          VER: ${{ steps.v.outputs.version }}
+          X_SHA: ${{ steps.pkg.outputs.x86_sha }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::拒绝覆盖已发布版本：$*"; exit 1; }
+          D="$RUNNER_TEMP/dupcheck"
+          rm -rf "$D"; mkdir -p "$D"; cd "$D"
+          git init -q
+          AUTH="https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git remote add origin "$AUTH"
+          if git fetch -q --depth 1 origin fpk-updates 2>/dev/null              && git checkout -q FETCH_HEAD -- fpk.json 2>/dev/null; then
+            OLD="$(jq -r --arg v "$VER" '.apps.meow.releases[$v].packages.x86.sha256 // ""' fpk.json)"
+            if [ -n "$OLD" ] && [ "$OLD" != "$X_SHA" ]; then
+              fail "主仓索引里已有 $VER（旧 sha ${OLD:0:12}…，本次 ${X_SHA:0:12}…）；升版本号，或 dispatch 传 replace=true"
+            fi
+          fi
+          echo "同版本检查通过（$VER）"
+
       # ★ 更新说明的单一真源是 CHANGELOG.md 的 `## <版本>` 小节，
       #   规则与 release.yml / sync-packages.ps1 一致（空行丢弃、没编号的行补 `n. `）。
       #   抽不到就让整个发布失败，且这一步排在检出 FnDepot 之前——
@@ -791,6 +823,13 @@ jobs:
           fail() { echo "::error::索引未更新：$*"; exit 1; }
 
           [ -f "$IDX" ] || fail "FnDepot 仓库根目录没有 fnpack.json"
+          # 同版本不可重打包（与主仓那条守卫同源，见「同版本不可重打包」步骤）
+          if [ "${{ inputs.replace }}" != "true" ]; then
+            OLD="$(jq -r --arg v "$VER" '.apps.meow.releases[$v].packages.x86.sha256 // ""' "$IDX")"
+            if [ -n "$OLD" ] && [ "$OLD" != "${{ steps.pkg.outputs.x86_sha }}" ]; then
+              fail "FnDepot 已有 $VER 且 sha 不同（旧 ${OLD:0:12}…）；升版本号，或 dispatch 传 replace=true"
+            fi
+          fi
           jq -e '(keys | sort) == ["apps", "schema_version", "source_info"]' "$IDX" >/dev/null \
             || fail "fnpack.json 顶层不再是 schema_version / source_info / apps 三键"
           jq -e '.schema_version == "2"' "$IDX" >/dev/null \
