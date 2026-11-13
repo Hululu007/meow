@@ -463,10 +463,10 @@ describe('应用更新：一步到位（不再二次确认安装）', () => {
   const webSrc = join(process.cwd(), 'src')
   const read = (p: string) => readFileSync(join(webSrc, p), 'utf8')
 
-  it('启动弹框：主按钮只有「下载并安装 / 处理中」，没有「安装」分支', () => {
+  it('启动弹框：主按钮只有「更新 / 处理中」，没有「安装」分支', () => {
     const dialog = read('components/common/UpdateDialog.vue')
     expect(dialog).not.toMatch(/ready\s*\?\s*'安装'/)
-    expect(dialog).toContain("'下载并安装'")
+    expect(dialog).toContain("'更新'")
     // 死循环的根因就是 onPrimary 不看状态永走下载 —— 现在它只允许一条路径
     const i = dialog.indexOf('function onPrimary')
     const body = dialog.slice(i, i + 400)
@@ -482,7 +482,7 @@ describe('应用更新：一步到位（不再二次确认安装）', () => {
     expect(body).toContain("phase.value = 'done'")
   })
 
-  it('设置页：按钮恒为「下载并安装」，取消只在下载阶段出现', () => {
+  it('设置页：按钮恒为「更新」，取消只在下载阶段出现', () => {
     const settings = read('views/SettingsView.vue')
     expect(settings).not.toContain("updReady ? '安装'")
     expect(settings).toContain("updPhase === 'downloading'")
@@ -499,5 +499,22 @@ describe('应用更新：一步到位（不再二次确认安装）', () => {
     expect(dialog).toMatch(/ref="notesEl"[\s\S]{0,120}tabindex="0"/)
     // 内容被截断时要有「↑↓ 滚动」提示，否则用户不知道还有条目
     expect(dialog).toContain('滚动查看全部')
+  })
+})
+
+/*
+ * TV 壳里设置页的文本输入框：不接管就**点不进去**（WebView 不聚焦、不弹输入法），
+ * 用户看到的是"填了更新源还是取不到新版本"（2026-11-13 MuMu 实测）。
+ */
+describe('应用更新：TV 上自定义更新源可输入', () => {
+  const webSrc = join(process.cwd(), 'src')
+  it('更新源/备用源接原生输入桥（data-tv-input-owner + tvEditText）', () => {
+    const settings = readFileSync(join(webSrc, 'views/SettingsView.vue'), 'utf8')
+    expect(settings).toContain('data-tv-input-owner')
+    expect(settings).toContain('@click="editUpdateSource"')
+    expect(settings).toContain('@click="editBackupSource"')
+    expect(settings).toContain('tvEditText(ev')
+    const bridge = readFileSync(join(webSrc, 'api/nativeBridge.ts'), 'utf8')
+    expect(bridge).toContain('export function tvEditText')
   })
 })

@@ -291,7 +291,7 @@ watch(phase, (v) => {
           :disabled="busy"
           @click="onPrimary()"
         >
-          {{ busy ? '处理中…' : '下载并安装' }}
+          {{ busy ? '处理中…' : '更新' }}
         </button>
         <button
           ref="secondary"

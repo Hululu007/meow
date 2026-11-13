@@ -158,7 +158,7 @@ import {
   type SyncStatus,
 } from '@/stores/sync'
 import { clearSearchHistory, listSearchHistory } from '@/stores/searchHistory'
-import { platformName } from '@/api/nativeBridge'
+import { platformName, tvEditText } from '@/api/nativeBridge'
 import { qrSvg } from '@/utils/qr'
 import FpkUpgradePanel from '@/components/common/FpkUpgradePanel.vue'
 import UpdateCenter from '@/components/common/UpdateCenter.vue'
@@ -3309,7 +3309,27 @@ function cancelUpdCheck() {
 }
 
 /**
- * 「下载并安装」= 一步到位（2026-11-13）。
+ * TV 壳里点「更新源 / 备用源」→ 弹原生输入框（2026-11-13）。
+ *
+ * <p>不接管的话这个输入框在 TV 上**根本点不进去**（WebView 不聚焦、不弹输入法，
+ * 用户以为能填、填完还是空），表现成"更新源填了没用/取不到新版本"。
+ */
+function editUpdateSource(ev: MouseEvent) {
+  tvEditText(ev, '更新源', updSourceInput.value, (v) => {
+    updSourceInput.value = v
+    saveUpdateSource()
+  })
+}
+
+function editBackupSource(ev: MouseEvent) {
+  tvEditText(ev, '备用源', updBackupInput.value, (v) => {
+    updBackupInput.value = v
+    saveUpdateSource()
+  })
+}
+
+/**
+ * 「更新」按钮 = 一步到位（2026-11-13）。
  *
  * 下载 + 校验完成后由 store 直接调起系统安装器，界面不再出现第二次
  * 「安装」按钮 —— 原来那一步正是"点了又回到进度条"的死循环源头。
@@ -6993,7 +7013,7 @@ onBeforeUnmount(() => {
               :disabled="updBusy"
               @click="downloadAndInstall()"
             >
-              下载并安装
+              更新
             </button>
             <button
               v-if="!updBusy"
@@ -7033,6 +7053,8 @@ onBeforeUnmount(() => {
             class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
             :placeholder="updSourcePlaceholder"
             spellcheck="false"
+            data-tv-input-owner
+            @click="editUpdateSource"
             @change="saveUpdateSource()"
           />
           <button
@@ -7050,6 +7072,8 @@ onBeforeUnmount(() => {
             class="min-w-0 flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
             placeholder="可选：主源失败时才试，留空=不启用"
             spellcheck="false"
+            data-tv-input-owner
+            @click="editBackupSource"
             @change="saveUpdateSource()"
           />
         </div>

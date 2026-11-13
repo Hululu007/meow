@@ -131,9 +131,48 @@ export function shouldUseNativeInput(el: Element | null): boolean {
 }
 
 /**
- * 就地输入：聚焦页面上的输入框 + 让原生补一次系统输入法。
+ * TV 壳里点普通文本输入框 → 交给原生输入（2026-11-13）。
  *
- * 为什么必须由原生补：WebView 只对**真实触摸**弹输入法，遥控器 OK 不会。
+ * <p><b>为什么必须有</b>：TV 壳的 WebView 里，页面上的普通 `<input>` 点上去
+ * 拿不到焦点、也不弹输入法（实测：设置页「更新源」adb 点 + `input text`
+ * 全都不进，栏位一直是 placeholder）。搜索页能用，是因为它标了
+ * `data-tv-input-owner` 并自己调原生输入框——那种输入框由页面全权接管。
+ *
+ * <p>没有原生桥（纯 Web/PC）时返回 true 但什么都不做？不——返回 true 表示
+ * "TV 分支已接管"，调用方据此跳过后续逻辑；非 TV 环境返回 false，
+ * 页面按普通输入框继续。
+ *
+ * @param ev      输入框的 click 事件（取 currentTarget 判位置）
+ * @param title   原生输入框标题
+ * @param current 当前值（预填）
+ * @param commit  用户确认后的回调（取消则不会调用）
+ * @returns 是否已经由 TV 分支处理
+ */
+export function tvEditText(
+  ev: MouseEvent,
+  title: string,
+  current: string,
+  commit: (v: string) => void,
+): boolean {
+  const tv =
+    typeof document !== 'undefined' &&
+    (document.documentElement.dataset.tv === '1' || /MeowTV/i.test(navigator.userAgent))
+  if (!tv) return false
+  if (!hasNativeInput()) return false
+  const el = ev.currentTarget as HTMLElement | null
+  if (!shouldUseNativeInput(el)) {
+    beginInlineInput(el)
+    return true
+  }
+  const v = nativeInputText(title, current, false)
+  // null = 用户取消：也算"已接管"，否则会再走一遍浏览器默认聚焦
+  if (v != null) commit(v)
+  return true
+}
+
+/**
+ * 就地输入：聚焦页面上的输入框 + 让原生补一次系统输入法。
+ * * 为什么必须由原生补：WebView 只对**真实触摸**弹输入法，遥控器 OK 不会。
  * 少了这一步，用户看到的是"有焦点框但打不了字"（这正是把输入框
  * 做成原生对话框的起因，但上方输入框不该付那个代价）。
  */
