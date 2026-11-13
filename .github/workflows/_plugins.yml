@@ -150,6 +150,23 @@ jobs:
           echo "插件输入未变，复用缓存产物"
           ls -la "${{ runner.temp }}/plugins-out" || true
 
+      # ★ tv-node unit 把 APK 写到 release/runtime-node-<ver>/（脚本默认 OutDir），
+      #   不会被 index 脚本收进 plugins-out —— 于是 release-v* 一直靠 sync-packages
+      #   从上一版 Release「继承」那三个 APK，本次白编 155MB（2026-11-13 实测）。
+      #   这里把它们收拢进 plugins-out，让全量 Release 自包含、sha 与本次构建一致。
+      - name: 收拢 tv-node APK 到产物目录
+        if: ${{ steps.pcache.outputs.cache-hit != 'true' && inputs.plugins_only == '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/plugins-out"
+          shopt -s nullglob
+          n=0
+          for f in release/runtime-node-*/tv-node-*.apk; do
+            cp -f "$f" "$OUT/"; n=$((n+1))
+          done
+          echo "收拢 $n 个 tv-node APK 到 $OUT"
+
       # 产物齐全才允许写缓存（原因见上面「恢复插件产物缓存」的注释）。
       # 不全时只警告、不红：tv-node 在 units.json 里是可选的，缺它 Release 仍可用
       # （清单会沿用上一版的模块条目），但**绝不能把半套产物缓存成"已构建"**。
