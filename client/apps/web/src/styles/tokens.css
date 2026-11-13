@@ -1142,18 +1142,26 @@ html[data-tv='1'] .cat-chips .meow-tv-focus {
 }
 
 /*
- * 分段控件（设置页「追加/替换」「保留/覆盖」这类）：TV 焦点环也走**内嵌**。
+ * 分段控件（设置页「追加/替换」「保留/覆盖」这类）。
  *
- * 这类控件是 `flex overflow-hidden rounded-md` 的合体按钮，紧贴容器边缘
- * （实测到容器边只有 1px）——外扩的 2px 环 + 12px 辉光会被裁掉，
- * 聚焦时只剩一条边，看起来像"焦点框缺了一半"。
- * 与 .cat-chips 同一套处理：内嵌白线 + accent，跟随容器圆角。
+ * ★ 2026-11-13 用户口径：这里的焦点环要和「确认导入」那种普通按钮**一致**
+ *   （外扩 accent 环 + 辉光），不要内嵌的细环。
+ *
+ *   原来这里是内嵌环，起因是容器 `flex overflow-hidden rounded-md` 会把
+ *   外扩环裁掉。但那套内嵌环在视觉上只是一圈贴着文字框的细线，和实心
+ *   accent 的选中段紧挨着时完全不像"这个控件被选中了"。
+ *
+ *   解法不是把环画小，而是**别裁它**：容器去掉 overflow-hidden，圆角改由
+ *   首尾按钮自己承担（下面两条）。掉 overflow-hidden 之后子元素的方角会
+ *   顶出容器圆角，所以这两条是配套的，不能只删一半。
  */
-html[data-tv='1'] .seg-group .meow-tv-focus {
-  outline: none !important;
-  box-shadow:
-    inset 0 0 0 1px var(--tv-focus-inner, rgba(255, 255, 255, 0.75)),
-    inset 0 0 0 2px var(--color-accent) !important;
+.seg-group > button:first-child {
+  border-top-left-radius: calc(var(--radius-md) - 1px);
+  border-bottom-left-radius: calc(var(--radius-md) - 1px);
+}
+.seg-group > button:last-child {
+  border-top-right-radius: calc(var(--radius-md) - 1px);
+  border-bottom-right-radius: calc(var(--radius-md) - 1px);
 }
 
 /* 海报卡片 hover 上浮（对应影仓 clipChildren + 焦点放大） */

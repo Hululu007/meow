@@ -62,6 +62,27 @@ describe('TV 后端形态持久化', () => {
     const body = methodBody(BRIDGE, 'public String saveConn(', 1400)
     expect(body).toContain('MainActivity.isLocalGateway(u) ? "local" : "remote"')
   })
+
+  /**
+   * 2026-11-13 实测（用户追问"改完重启怎么又变回去了"）：
+   *
+   * 设置页「连接 → 后端地址 → 保存」走的是 saveApi()，原来只写了
+   * localStorage；而壳每次启动都会 restoreBackendMode() → injectApiBase(prefs[K_API])
+   * 把它盖掉。于是改完当场生效、重启又回旧地址。
+   * 壳内保存必须同时写回 prefs（TvBridge.saveConn）。
+   */
+  it('设置页保存后端地址时，TV 壳内同时写回 prefs', () => {
+    const settings = readFileSync(
+      join(__dirname, '..', 'src', 'views', 'SettingsView.vue'),
+      'utf8',
+    )
+    const at = settings.indexOf('function saveApi()')
+    expect(at).toBeGreaterThan(-1)
+    const body = settings.slice(at, at + 1800)
+    expect(body, 'TV 壳内保存没有写回 prefs，重启会被旧值覆盖').toContain('b.saveConn(url')
+    // 第二个参数是配置地址，不能传空串把手填的配置源清掉
+    expect(body).toContain('prev.config')
+  })
 })
 
 describe('本机网关的设备级闸门（防"一进就闪退"）', () => {

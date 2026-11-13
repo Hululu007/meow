@@ -261,9 +261,47 @@ const apiShown = computed(() => {
 
 function saveApi() {
   const v = apiUrl.value.trim()
+  const url = v && v !== '同源 /api' ? v : ''
+
+  /*
+   * ★ TV 壳的后端地址**真源是 prefs[K_API]**，不是 localStorage。
+   *
+   * 壳每次启动都会走 restoreBackendMode() → injectApiBase(prefs[K_API])，
+   * 把我们写在 localStorage 的值盖掉。实测（2026-11-13）：设置页改完地址
+   * 当场连接正常，重启后又变回壳里存的旧地址 —— 用户看到的就是"改完白改"。
+   *
+   * 所以壳内必须同时写回 prefs（走 TvBridge.saveConn）。第二个参数是
+   * CatVod 配置地址，这里不能传空串（会把手填的配置源清掉），要用现值。
+   */
+  if (url && tvMode) {
+    const b = bridge()
+    /*
+     * 必须**两个方法都在**才走桥：
+     *   saveConn 写 prefs；connState 读回当前的配置地址。
+     * 老壳只有 saveConn 没有 connState 时，读不到现值就只能传空串——
+     * 那会把用户手填的 CatVod 配置地址一起清掉。宁可退回旧行为
+     * （只写 localStorage），也不能为了持久化地址去破坏配置。
+     */
+    if (b && typeof b.saveConn === 'function' && typeof b.connState === 'function') {
+      try {
+        const prev = JSON.parse(b.connState()) as { config?: string }
+        const r = JSON.parse(b.saveConn(url, prev.config || '')) as { ok?: boolean; error?: string }
+        if (!r.ok) {
+          cfgMsgOk.value = false
+          cfgMsg.value = r.error || '保存后端地址失败'
+          return
+        }
+      } catch (e) {
+        cfgMsgOk.value = false
+        cfgMsg.value = '保存后端地址失败：' + String(e)
+        return
+      }
+    }
+  }
+
   // 统一走 setRuntimeBase：它会顺带写 scope 标记，避免手填地址在
   // 桌面端/Web 端之间互相污染（实测被 30011 的残留劫持过）
-  if (v && v !== '同源 /api') setRuntimeBase(v)
+  if (url) setRuntimeBase(url)
   else setRuntimeBase(null)
   location.reload()
 }
@@ -5567,7 +5605,7 @@ onBeforeUnmount(() => {
       <div
         v-if="cfgPreview"
         data-cfg-preview
-        class="mt-2 overflow-hidden rounded-lg border border-accent/30 bg-accent/5 p-3"
+        class="mt-2 rounded-lg border border-accent/30 bg-accent/5 p-3"
       >
         <!-- ⓵ 读到什么 -->
         <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
@@ -5585,7 +5623,7 @@ onBeforeUnmount(() => {
           <!-- 默认追加。替换是破坏性动作，必须用户自己选 -->
           <div class="flex flex-wrap items-center gap-2.5 text-xs">
             <span class="w-16 shrink-0 text-ink-3">导入方式</span>
-            <div class="seg-group flex overflow-hidden rounded-md border border-line">
+            <div class="seg-group flex rounded-md border border-line">
               <button
                 class="px-3 py-1 transition"
                 :class="importMode === 'merge' ? 'bg-accent text-on-accent' : 'bg-field text-ink-2 hover:bg-card-hover'"
@@ -5614,7 +5652,7 @@ onBeforeUnmount(() => {
             class="mt-2 flex flex-wrap items-center gap-2.5 text-xs"
           >
             <span class="w-16 shrink-0 text-ink-3">同名站点</span>
-            <div class="seg-group flex overflow-hidden rounded-md border border-line">
+            <div class="seg-group flex rounded-md border border-line">
               <button
                 v-for="o in conflictOptions"
                 :key="o.value"

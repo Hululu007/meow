@@ -149,15 +149,25 @@ describe('焦点遗漏审计（2026-11-06 全页扫描后补的）', () => {
   const tokens = readFileSync(join(__dirname, '..', 'src', 'styles', 'tokens.css'), 'utf8')
   const settings = readFileSync(join(__dirname, '..', 'src', 'views', 'SettingsView.vue'), 'utf8')
 
-  it('分段控件用内嵌环（贴容器边 1px，外扩环会被 overflow-hidden 裁掉）', () => {
+  /**
+   * 2026-11-13 用户口径：「分段控件的焦点环要和确认导入按钮一致」。
+   *
+   * 原来这里是内嵌细环（因为容器 overflow-hidden 会裁外扩环）。但内嵌环只
+   * 是一圈贴着文字的细线，和实心 accent 的选中段挤在一起时根本看不出焦点。
+   * 现在改成：容器**不裁**（去掉 overflow-hidden），环用默认外扩环；配套
+   * 首尾按钮自己承担圆角，否则方角会顶出容器圆角。
+   */
+  it('分段控件不再裁切外扩焦点环，且首尾按钮自带圆角', () => {
     expect(settings).toContain('seg-group')
-    const at = tokens.indexOf('.seg-group .meow-tv-focus')
-    expect(at).toBeGreaterThan(-1)
-    const block = tokens.slice(at, at + 500)
-    expect(block).toContain('inset 0 0 0 1px var(--tv-focus-inner')
-    expect(block).toContain('inset 0 0 0 2px var(--color-accent)')
-    // 不能有外扩（0 0 0 Npx accent / 辉光）——那正是被裁的那层
-    expect(block).not.toMatch(/^\s*0 0 0 \d+px var\(--color-accent\)/m)
+    // 去掉 overflow-hidden（三条：两个分段控件 + 预览卡片，都不能裁环）
+    expect(settings).not.toMatch(/seg-group[^"]*overflow-hidden/)
+    // 不再有 TV 内嵌特例（否则和确认导入的环不一致）。
+    // 触屏那条 `html[data-input='touch'] .seg-group .meow-tv-focus` 要留着：
+    // 它负责在触屏上把环整个关掉。
+    expect(tokens).not.toContain("html[data-tv='1'] .seg-group .meow-tv-focus")
+    // 首尾圆角在，掉 overflow-hidden 后子元素方角才不会顶出容器
+    expect(tokens).toContain('.seg-group > button:first-child')
+    expect(tokens).toContain('.seg-group > button:last-child')
   })
 
   it('旧的 tv-nav 副本已删除（docs/49 明确"勿用旧副本"）', () => {
