@@ -899,6 +899,23 @@ async function fetchManifestPrimary(url: string, token: string): Promise<string>
     target = assetUrl
   }
 
+  // 最终取清单：TV 上把候选**一次并发**交给原生（manifest-any）。
+  // ★ 为什么不能沿用下面的串行循环：单个候选超时 45s，直连被墙时
+  //   4 条候选 = 180 秒，用户看到的就是「检查更新卡住」。
+  //   原生是竞速，总耗时 ≈ 最快成功的那条（另加 25s 上限兜底）。
+  const tv = tvBridge()
+  if (tv?.netJobStart && tv?.netJobPoll) {
+    const cands = gitAccelCandidates(target, currentAccel(), { for: 'appUpdate', index: true })
+    if (cands.length > 1) {
+      return await fetchTextViaNativeJob(
+        'manifest-any',
+        cands.map((c) => c.url).join('|'),
+        token,
+        25_000,
+      )
+    }
+  }
+
   return fetchRawTextCandidates(target, token, {})
 }
 

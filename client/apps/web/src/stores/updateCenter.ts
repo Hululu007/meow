@@ -245,11 +245,17 @@ async function callBridgeManifest(
     // ① 非阻塞：并发竞速拿原文（不冻页面）
     if (b.netJobStart && b.netJobPoll && typeof b[methods.fromText] === 'function') {
       try {
-        const text = await fetchTextViaNativeJob('manifest-any', cands.join('|'), token)
+        // ★ 检查只给 25 秒：候选是**并发**的，正常网络 1-5 秒就出结果；
+        //   给 150 秒（下载用的默认值）等于网络全挂时干等两分半，
+        //   用户看到的就是「检查更新卡住」。
+        const text = await fetchTextViaNativeJob('manifest-any', cands.join('|'), token, 25_000)
         const one = parse(b[methods.fromText](text))
         if (one.ok !== false) return one
-      } catch {
-        /* 落到下面的同步路径 */
+        return one
+      } catch (e) {
+        // ★ 走了 netJob 就**不再退同步**：原生已经把所有候选并发试过一遍，
+        //   再串行试一轮只会把等待时间翻倍（旧行为就是"卡住"的来源）。
+        return { ok: false, error: e instanceof Error ? e.message : String(e) }
       }
     }
     // ② 老壳：同步 pipe（原生内部并发），再退回逐条
