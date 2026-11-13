@@ -235,6 +235,13 @@ describe('更新检查与设置页的性能护栏', () => {
     const s = readFileSync(SETTINGS, 'utf8')
     expect(s, '缺分区懒挂载').toContain('visitedSec')
     expect(s, '缺分区懒挂载').toContain('min-h-[20rem]')
+    /*
+     * 2026-11-13 用户报「滚动后才出现下一配置区，远没有改之前有体验」：
+     * 懒挂载只该对**真电视**（遥控器几何选焦）生效，PC/Web/触屏一律立即渲染。
+     * 这两条断言防止后人把守卫删掉——删了 PC 上又是一屏空卡片。
+     */
+    expect(s, '懒挂载缺「仅电视」守卫').toContain('const lazySections = tvMode && !isTouchDevice')
+    expect(s, 'visitedSec 缺非电视直通').toContain('if (!lazySections) return true')
     expect(s, '直播源仍在 onMounted 里拉').not.toContain('void refreshLives()')
     expect(s, '缺 ensureLives').toContain('ensureLives')
   })

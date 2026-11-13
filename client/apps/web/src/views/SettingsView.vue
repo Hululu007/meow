@@ -3945,20 +3945,29 @@ const navItems = computed(() =>
 const activeSec = ref<string>('conn')
 
 /**
- * 分区懒挂载：**到过才挂内容**。
+ * 分区懒挂载：**电视上到过才挂内容**，PC / Web 一次性全渲染。
  *
- * 判据：14 个分区一次性全挂载，「搜索与源」那种几百行的源列表在 TV 的
- * WebView 上首屏就要建几千个节点；tv-nav 的焦点是几何最近邻，候选节点越多，
- * 方向键越不跟手。
+ * 为什么当初要懒挂载：14 个分区一次全挂，「搜索与源」那种几百行的源列表在
+ * TV 的 WebView 上首屏要建几千个节点；tv-nav 的焦点是几何最近邻，候选节点
+ * 越多，方向键越不跟手。没访问过的分区只保留一个占位高度（`min-h-[20rem]`），
+ * 页面总长度不变，滚动条、scroll spy、导航跳转的落点都还准。
  *
- * 没访问过的分区只保留一个**占位高度**（`min-h-[20rem]`）：页面总长度不变，
- * 滚动条、scroll spy、导航跳转的落点都还准；访问过就换成真内容。
- * 挂载后高度变大会让上方内容下移 —— 浏览器自带的 scroll anchoring 会把
- * 视口位置修正回来（WebView 110+ 支持）。
+ * ★ 2026-11-13 用户报「滚动后才能出现下一配置区，远没有改之前有体验」：
+ *   这条优化只对**真电视**成立（遥控器几何选焦 × 几千节点），PC/Web 没有这个
+ *   负担，空占位反而像"页面坏了"——一屏 14 个分区只露出当前一块，下面全是空卡片。
+ *   所以按形态分流：电视（无触屏）懒挂载照旧，其它形态一律立即渲染
+ *   （= 改之前的行为）。TV 壳跑在手机上算触屏，也走立即渲染。
  */
+const isTouchDevice =
+  typeof window !== 'undefined' &&
+  (!!window.matchMedia?.('(pointer: coarse)').matches || (navigator.maxTouchPoints || 0) > 0)
+
+const lazySections = tvMode && !isTouchDevice
+
 const visitedSecs = ref<Record<string, boolean>>({ conn: true })
 
 function visitedSec(id: string): boolean {
+  if (!lazySections) return true
   return !!visitedSecs.value[id]
 }
 
