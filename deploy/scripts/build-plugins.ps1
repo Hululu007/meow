@@ -10,6 +10,7 @@
 #   ./deploy/scripts/build-plugins.ps1                    # 全量插件 + packages 清单
 #   ./deploy/scripts/build-plugins.ps1 -OutDir tmp/plug   # 指定输出目录
 #   ./deploy/scripts/build-plugins.ps1 -Only drpy,ffmpeg  # 只构建指定插件
+#   ./deploy/scripts/build-plugins.ps1 -Chain plugins      # 只构建 PC 插件链的单元（不含 tv-node）
 #   ./deploy/scripts/build-plugins.ps1 -NoIndex           # 不生成 packages 清单
 #
 # 退出码：必需插件失败 => 非 0；可选插件失败只警告（CI 里 ffmpeg 下载常失败，
@@ -20,6 +21,10 @@ param(
     [string]$OutDir = '',
     # 只构建这些插件 id（逗号分隔）；空 = 全部
     [string[]]$Only,
+    # 只构建属于这条链的单元（plugins / tv-plugins）；空 = 全部。
+    # ★ tv-node 的版本线是 18.20.4.<N>，跟壳版本无关，归 tv-plugins-v* 链；
+    #   混进 PC 插件链会变成「每版重建 155MB、产物还不发出去」（2026-11-13 实测）。
+    [string]$Chain = '',
     [switch]$NoIndex
 )
 
@@ -38,6 +43,8 @@ $warned = @()
 Write-Host "构建单元清单：deploy/units.json（$($units.plugins.Count) 个插件）" -ForegroundColor Cyan
 
 foreach ($u in $units.plugins) {
+    # -Chain 过滤（units.json 里每个单元声明归属链）
+    if ($Chain -and $u.chain -and $u.chain -ne $Chain) { continue }
     # -Only 过滤
     if ($Only -and $Only.Count -gt 0 -and $Only -notcontains $u.id) { continue }
 

@@ -375,11 +375,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/build-plugins
 | 触发 | 实际跑的 job | 建 Release | 发 Publish 后的 sync scope | 实测 |
 |---|---|---|---|---|
 | **`v1.0.10`**（无前缀） | **什么都不跑**——纯版本标记 | ❌ | — | 0 |
-| `release-v1.0.10` | docker + tv + pc_shell + plugins（**全部 5 个**）+ **fpk ×2（x86/arm，Publish 后写 FnDepot + fpk-updates）** | ✅ draft | `meow-pc` `meow-tv` `plugins` + fpk 两条索引 | **9m58s**（1.2.4 实测） |
+| `release-v1.0.10` | docker + tv + pc_shell + plugins（**4 个 PC 插件**；tv-node 归 `tv-plugins-v*`）+ **fpk ×2（x86/arm，Publish 后写 FnDepot + fpk-updates）** | ✅ draft | `meow-pc` `meow-tv` `plugins` + fpk 两条索引 | **9m58s**（1.2.4 实测） |
 | `tv-v1.0.10` | tv（**不含模块**） | ✅ draft | `meow-tv` | 2.7 min |
 | `tv-plugins-v18.20.4.1`（示例） | tv_plugins（模块 ×3 ABI）；tag 用模块版本，不是壳版本 | ✅ draft | `tv-module`（只模块三条） | 163 s |
 | `pc-v1.0.10` | pc_shell + plugins（**仅 apiserver**） | ✅ draft | `meow-pc` `plugins` | 13 min（Windows ×2） |
-| `plugins-v1.0.10`（示例） | plugins（**全部 5 个**，Windows runner，无壳）；tag 可用插件批次版本 | ✅ draft | `plugins` | 5 min+ |
+| `plugins-v1.0.10`（示例） | plugins（**4 个 PC 插件**，Windows runner，无壳；tv-node 不在此链）；tag 可用插件批次版本 | ✅ draft | `plugins` | 5 min+ |
 | `docker-v1.0.10` | docker（三镜像推 Hub） | ❌ | — | 6 min |
 | `fpk-v1.0.10` | 另一 workflow：fpk plan + build(x86/arm) + **本 tag 的 draft Release**（补包用；全量 `release-v*` 会调它构建但包进主 Release） | ✅ draft（仅单链） | 不走 sync-packages；**Publish 后**写 FnDepot + fpk-updates | ~3m |
 | `workflow_dispatch`（release.yml） | 勾选 docker/tv/pc/plugins | ❌ | — | 按勾选 |
@@ -508,8 +508,8 @@ ci.yml                  质量检查（PR / 手动 dispatch，约 1 分钟：构
     以前直接用 `Swatinem/rust-cache` 绑 `Cargo.lock`，而 `bump-version.ps1` 每版都改那行
     → **缓存从未命中**（恢复日志 `No cache found.`），226 个 crate 全量重编 5m01s
   · PC MinGW 16.2.0 整目录（choco 装一次，省 53s；约 1.2GB，占缓存额度要留意）
-  · 插件 tv-node：`.deps` + `release/runtime-node-*`（命中即走脚本自己的 reuse 分支）；
-    ffmpeg 包与 danmu 上游按 ISO 周刷新（下载地址是滚动的，不能钉死）
+  · 插件链：ffmpeg 包与 danmu 上游按 ISO 周刷新（下载地址是滚动的，不能钉死）
+  · tv-node 不在插件链构建（版本线 `18.20.4.<N>` 与壳无关，归 `tv-plugins-v*`）
   · 其余：gradle、buildx（`type=gha, mode=max`）、fpk 的 cargo
 - ★ 插件产物缓存的 key **必须带 `plugins_only`**：`pc-v*`/`tv-v*` 只建 apiserver，
   曾与全量共用 key → 全量命中后跳过构建、Release 少 4 个插件（2026-11-13 修）
@@ -582,7 +582,7 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 
 | tag | 更新的条目 |
 |---|---|
-| `release-v*` | `meow-pc` + `meow-tv` + `plugins`（含 `tv-node-*`） |
+| `release-v*` | `meow-pc` + `meow-tv` + `plugins`（tv-node 从上一版 Release 继承，不再重建） |
 | `pc-v*` | `meow-pc` + `plugins`（实际只有 apiserver 资产；其余插件保留旧条目） |
 | `tv-v*` | `meow-tv`（有模块资产时一并更新 `tv-node-*`，没有则保留） |
 | `tv-plugins-v*` | `tv-node-*` |

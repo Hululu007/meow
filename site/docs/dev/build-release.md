@@ -8,7 +8,8 @@
 所有构建单元、链路入口、产物清单都在 `deploy/units.json`；加一个产物 = 只改这一个文件。
 
 它分四段：`chains` 三条链路入口（pc/tv/docker，各带 `runner` 与理由）；`plugins` 五个插件
-（`apiserver`/`drpy` 为 required，其余失败不阻断）；`index` 指向
+（`apiserver`/`drpy` 为 required，其余失败不阻断；每个单元用 `chain` 声明归属：
+`plugins` 链建 4 个 PC 插件，`tv-node` 归 `tv-plugins` 链）；`index` 指向
 `server/build-release.ps1`（打 zip 并生成带 sha256 的 `packages.json`）；`version` 指向
 `bump-version.ps1`。
 
@@ -47,7 +48,7 @@ package.json”，`plugins-v*` / `tv-plugins-v*` 不校验；不要拿壳版本�
 | `release-v*` | Web + TV + PC + apiserver 插件 + Docker 三镜像 + **fnOS fpk ×2** | ✅ draft |
 | `tv-v*` | TV APK（不带运行时模块） | ✅ draft |
 | `pc-v*` | PC 壳 + apiserver 插件 | ✅ draft |
-| `plugins-v*` | 全部插件（units.json 五个，含 tv-node） | ✅ draft |
+| `plugins-v*` | PC 插件 ×4（`chain: plugins`；tv-node 归 `tv-plugins-v*`） | ✅ draft |
 | `tv-plugins-v*` | TV 运行时模块 ×3 ABI | ✅ draft |
 | `fpk-v*` | 另一 workflow：x86/arm 套件（补包用）；全量 `release-v*` 也调它构建，但包进主 Release | ✅ draft（仅单链） |
 
