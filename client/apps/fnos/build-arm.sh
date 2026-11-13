@@ -33,10 +33,16 @@ mkdir -p "$OUT"
 # 增量编译后只重编改动的 crate。
 # ★ 两个变量都不传时，行为与原来完全一致（编在 /out 里、一次性）。
 CARGO_MOUNTS=()
+CARGO_ENVS=()
 TARGET_DIR_IN_CONTAINER=/out/cargo-target
 if [ -n "${CARGO_HOME_CACHE:-}" ]; then
+    # ★ 不能挂到 /usr/local/cargo：官方 rust 镜像的 cargo/rustc 可执行文件就在
+    #   那里（/usr/local/cargo/bin），整目录挂上去 = 工具链消失，报
+    #   "sh: cargo: not found"（2026-11-13 CI 实测 exit 127）。
+    #   所以挂到独立路径并改 CARGO_HOME，只把 registry/git 缓存搬出容器。
     mkdir -p "$CARGO_HOME_CACHE"
-    CARGO_MOUNTS+=(-v "$CARGO_HOME_CACHE:/usr/local/cargo")
+    CARGO_MOUNTS+=(-v "$CARGO_HOME_CACHE:/cargo-home")
+    CARGO_ENVS+=(-e CARGO_HOME=/cargo-home)
 fi
 if [ -n "${CARGO_TARGET_CACHE:-}" ]; then
     mkdir -p "$CARGO_TARGET_CACHE"
@@ -48,6 +54,7 @@ docker run --rm \
     -v "$SRC":/src \
     -v "$OUT":/out \
     "${CARGO_MOUNTS[@]}" \
+    "${CARGO_ENVS[@]}" \
     -w /src/client/apps/fnos/meowd \
     -e CARGO_TARGET_DIR="$TARGET_DIR_IN_CONTAINER" \
     -e RUSTFLAGS="-C linker=rust-lld -C link-self-contained=yes" \

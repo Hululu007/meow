@@ -76,10 +76,13 @@ else
     # 可选：cargo 依赖缓存 / 增量产物挂到宿主机目录（同 build-arm.sh）。
     # 都不传时与原来一致：编在 /out 里、一次性。
     CARGO_MOUNTS=()
+    CARGO_ENVS=()
     TARGET_DIR_IN_CONTAINER=/out/cargo-target
     if [ -n "${CARGO_HOME_CACHE:-}" ]; then
+        # 不能挂 /usr/local/cargo（cargo 可执行文件在那儿，见 build-arm.sh 注释）
         mkdir -p "$CARGO_HOME_CACHE"
-        CARGO_MOUNTS+=(-v "$CARGO_HOME_CACHE:/usr/local/cargo")
+        CARGO_MOUNTS+=(-v "$CARGO_HOME_CACHE:/cargo-home")
+        CARGO_ENVS+=(-e CARGO_HOME=/cargo-home)
     fi
     if [ -n "${CARGO_TARGET_CACHE:-}" ]; then
         mkdir -p "$CARGO_TARGET_CACHE"
@@ -90,6 +93,7 @@ else
         -v "$SRC":/src \
         -v "$OUT":/out \
         "${CARGO_MOUNTS[@]}" \
+        "${CARGO_ENVS[@]}" \
         -w /src/client/apps/fnos/meowd \
         -e CARGO_TARGET_DIR="$TARGET_DIR_IN_CONTAINER" \
         "$RUST_IMAGE" sh -c \
