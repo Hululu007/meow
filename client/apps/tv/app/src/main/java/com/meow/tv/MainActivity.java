@@ -1392,6 +1392,21 @@ public class MainActivity extends Activity {
         if (NativeInput.active()) return super.dispatchKeyEvent(event);
         int code = event.getKeyCode();
         /*
+         * ESC ≡ 返回（横屏 / MuMu 模拟器 / 外接键盘）。
+         *
+         * 遥控器发的是 KEYCODE_BACK、走 onBackPressed；模拟器与外接键盘按 Esc
+         * 发的是 KEYCODE_ESCAPE —— 不映射就是「方向键能导航，Esc 退不出去」。
+         * 转给 onBackPressed 而不是自己 goBack()，是为了复用那套
+         * 「先问页面 __meowTvConsumeBack 再决定」的逻辑（播放页的弹幕/选集面板）。
+         * 只认 DOWN 且不连发，UP 一并吞掉，避免一次按键退两层。
+         */
+        if (code == KeyEvent.KEYCODE_ESCAPE) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                onBackPressed();
+            }
+            return true;
+        }
+        /*
          * 菜单键：卡片上的「移除 / 详情」是 hover 才出现的按钮，遥控器够不到。
          * 电视的惯例是选中卡片后按菜单键，列出"这张卡片还能做什么"。
          * 统一转给页面的 __meowTvMenu（页面自己知道当前卡片是什么）。

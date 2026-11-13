@@ -44,7 +44,66 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/*path", any(crate::proxy::forward))
         .fallback_service(static_svc)
         .layer(middleware::from_fn(cache_headers))
+        /*
+         * ★ CORS 必须覆盖 meowd **自己答**的路由（/api/health、/api/_shell/…）。
+         *
+         * 壳内页面永远从 `http://meow.local` 加载本地资源，再跨域请求后端；
+         * 这些路由原先不带 CORS 头，浏览器把 health 探测拦掉 → 前端直接报
+         * 「后端未连接」，而同一后端的 /api/sites 却正常（它代理到 apiserver，
+         * 那边有 CORS）。2026-11-13 TV 连 fpk 后端复现。
+         */
+        .layer(middleware::from_fn(cors))
         .with_state(state)
+}
+
+/// 跨端 CORS：与 apiserver 同口径（默认放行任意 Origin）。
+///
+/// 代理转发来的响应已经带 `access-control-allow-origin` 时不重复添加 ——
+/// 重复会让浏览器按逗号拼接，反而判成无效。
+async fn cors(req: Request<Body>, next: Next) -> Response {
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned());
+    if req.method().as_str() == "OPTIONS" {
+        if let Some(o) = origin.as_deref() {
+            let mut res = StatusCode::NO_CONTENT.into_response();
+            apply_cors(&mut res, o);
+            return res;
+        }
+    }
+    let mut res = next.run(req).await;
+    if let Some(o) = origin.as_deref() {
+        apply_cors(&mut res, o);
+    }
+    res
+}
+
+fn apply_cors(res: &mut Response, origin: &str) {
+    let h = res.headers_mut();
+    if h.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN) {
+        return;
+    }
+    let Ok(v) = HeaderValue::from_str(origin) else {
+        return;
+    };
+    h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
+    h.insert(header::VARY, HeaderValue::from_static("Origin"));
+    h.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET,POST,DELETE,OPTIONS"),
+    );
+    h.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("Content-Type,Range,X-Meow-Token"),
+    );
+    h.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static(
+            "Content-Length,Content-Range,Accept-Ranges,X-Danmaku-Source,X-Danmaku-Count,X-Danmaku-Empty",
+        ),
+    );
 }
 
 /// 飞牛微应用入口前缀。网关（trim_http_cgi）是**带前缀**转发到 unix socket 的

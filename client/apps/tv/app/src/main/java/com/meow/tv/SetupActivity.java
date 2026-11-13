@@ -621,7 +621,8 @@ public class SetupActivity extends Activity {
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         // 返回键直接退出到桌面（配置页就是栈底，不困住用户）
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
+        // ESC 同效：模拟器/外接键盘按 Esc 发的是 KEYCODE_ESCAPE
+        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
             finish();
             return true;
         }

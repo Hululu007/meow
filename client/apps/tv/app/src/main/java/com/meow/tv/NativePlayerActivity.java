@@ -275,6 +275,11 @@ public class NativePlayerActivity extends Activity {
             Toast.makeText(this, "10 秒 »", Toast.LENGTH_SHORT).show();
             return true;
         }
+        // ESC ≡ 返回：模拟器/外接键盘按 Esc 发的是 KEYCODE_ESCAPE（不是 BACK）
+        if (keyCode == KeyEvent.KEYCODE_ESCAPE) {
+            finish();
+            return true;
+        }
         return super.onKeyDown(keyCode, event);
     }
 
