@@ -322,13 +322,13 @@ jobs:
 
             | 文件 | 说明 |
             |---|---|
-            | `meow-TV-*.apk` | TV 空壳（release 签名） |
+            | `meow-TV-*.apk` | TV 空壳 |
+            | `tv-node-*.apk` | TV 运行时模块 |
             | `meow-setup-*.exe` / `meow-bare-*.exe` | PC 空壳 |
-            | `apiserver-*.zip` | 后端插件（空壳） |
-            | `drpy-*.zip` / `danmu-api-*.zip` / `node-*.zip` / `ffmpeg-*.zip` | 本机插件（发布后由清单引用） |
-            | `tv-node-*.apk` | TV 运行时模块（发布后由清单复制） |
-            | `meow_*.fpk` | fnOS 套件（x86 / arm，同时回写 FnDepot） |
-            | `packages.json` | 客户端更新清单（发布后生成） |
+            | `apiserver-*.zip` | PC 后端插件 |
+            | `drpy-*.zip` / `danmu-api-*.zip` / `node-*.zip` / `ffmpeg-*.zip` | PC 插件 |
+            | `meow_*.fpk` | fnOS 套件（x86 / arm） |
+            | `packages.json` | 客户端更新清单 |
             | `SHA256SUMS.txt` | 校验 |
 
   sync-packages:
