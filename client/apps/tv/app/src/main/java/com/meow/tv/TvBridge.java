@@ -995,6 +995,10 @@ public class TvBridge {
             String src = (source == null || source.trim().isEmpty())
                     ? com.meow.tv.runtime.RuntimeModuleCatalog.SOURCE : source.trim();
             String tk = token == null ? "" : token;
+            // 诊断：清单地址一律落一条日志。踩过"改了更新源但页面缓存了旧 bundle"
+            // 与"候选列表算错"，没有这行只能靠猜（2026-11-13 .77 实测）。
+            android.util.Log.i("MeowTv", "moduleCheck src=" + src
+                    + " pipe=" + (urlsPipe == null || urlsPipe.trim().isEmpty() ? "-" : "yes"));
             String pipe = urlsPipe == null ? "" : urlsPipe.trim();
             String text = pipe.isEmpty()
                     ? AppUpdater.fetchManifest(src, tk)
@@ -1217,13 +1221,15 @@ public class TvBridge {
     @JavascriptInterface
     public String payloadCheckCandidates(String source, String token, String urlsPipe) {
         try {
-            if (moduleCatalogJson.isEmpty()) {
-                String chk = moduleCheckCandidates(
-                        source == null ? "" : source,
-                        token == null ? "" : token,
-                        urlsPipe == null ? "" : urlsPipe);
-                if (chk.contains("\"ok\":false")) return chk;
-            }
+            // ★ 每次都重新拉清单，不复用 moduleCatalogJson。
+            //   实测（2026-11-13 .77）：先点过「检查更新」把旧清单缓存下来，
+            //   之后清单新增了 danmu-payload，载荷检查仍读到旧副本 → 永远报
+            //   「清单里没有 danmu-payload」，只有杀进程才好。多一次请求换正确性。
+            String chk = moduleCheckCandidates(
+                    source == null ? "" : source,
+                    token == null ? "" : token,
+                    urlsPipe == null ? "" : urlsPipe);
+            if (chk.contains("\"ok\":false")) return chk;
             org.json.JSONObject pick = com.meow.tv.runtime.RuntimePayloadHost.pick(moduleCatalogJson);
             payloadVersion = pick.optString("version", "");
             org.json.JSONObject out = new org.json.JSONObject(pick.toString());
@@ -1242,7 +1248,11 @@ public class TvBridge {
     @JavascriptInterface
     public String payloadDownloadCandidates(String source, String token, String urlsPipe) {
         try {
-            String chk = payloadCheckCandidates(source, token, urlsPipe);
+            // ★ 清单检查**不能**吃 urlsPipe：那是给 zip 用的候选列表（下载地址），
+            //   拿它当清单候选会让 fetchManifestAny 去"下载一个 zip 当 manifest"，
+            //   内容里没有 "packages" → 检查必失败（2026-11-13 .77 端到端实测踩到：
+            //   页面永远报"拉清单失败"，zip 只被取到一次就再也没动静）。
+            String chk = payloadCheckCandidates(source, token, "");
             if (chk.contains("\"ok\":false")) return chk;
             org.json.JSONObject pick = com.meow.tv.runtime.RuntimePayloadHost.pick(moduleCatalogJson);
             String url = pick.optString("url", "");
@@ -1266,7 +1276,9 @@ public class TvBridge {
                 }
             }
             String urls = use.length() > 0 ? use.toString() : real;
-            return AppUpdater.start(activity, urls, sha, tk, "danmu-payload-" + ver + ".zip");
+            String r = AppUpdater.start(activity, urls, sha, tk, "danmu-payload-" + ver + ".zip");
+            android.util.Log.i("MeowTv", "payloadDownload ver=" + ver + " -> " + r);
+            return r;
         } catch (Throwable t) {
             return "{\"ok\":false,\"error\":\"" + AppUpdater.escape(t.getMessage()) + "\"}";
         }
@@ -1300,8 +1312,10 @@ public class TvBridge {
             if (ver.isEmpty()) {
                 return "{\"ok\":false,\"error\":\"不知道载荷版本（请重新检查更新）\"}";
             }
+            android.util.Log.i("MeowTv", "payloadApply path=" + path + " ver=" + ver);
             String applied = com.meow.tv.runtime.RuntimePayloadHost.apply(
                     activity.getApplicationContext(), f, ver);
+            android.util.Log.i("MeowTv", "payloadApply ok ver=" + applied);
             restartNodeService();
             org.json.JSONObject o = new org.json.JSONObject();
             o.put("ok", true);

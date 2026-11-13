@@ -357,6 +357,8 @@ public final class AppUpdater {
                 if (r == null) {
                     lastPath = apk.getAbsolutePath();
                     state = "ready";
+                    android.util.Log.i("MeowUpd", "ready " + apk.getName()
+                            + " " + apk.length() + "B");
                     percent.set(100);
                     message = "下载完成，校验通过";
                     busy = false;

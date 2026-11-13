@@ -3175,9 +3175,18 @@ async function payloadInstall() {
     }
     payMsg.value = `下载中（${fmtSize(Number(chk.size) || 0)}）…`
     const assetCands = chk.url ? downloadCandidates(String(chk.url)).join('|') : ''
-    const started = JSON.parse(
-      String(b.payloadDownloadCandidates(src, tok, assetCands) || '{}'),
-    ) as Record<string, unknown>
+    // ★ AppUpdater.start 成功时返回的是**人话**（"已开始下载"），不是 JSON；
+    //   失败时返回的也是人话（"已有下载在进行…"）。直接 JSON.parse 会抛，
+    //   整个下载流程就此中断（2026-11-13 .77 端到端实测踩到：日志里 ready 了
+    //   但 payloadApply 从没被调用，页面停在"安装失败：Unexpected token"）。
+    const rawStart = String(b.payloadDownloadCandidates(src, tok, assetCands) || '')
+    let started: Record<string, unknown> = { ok: true }
+    try {
+      const o = JSON.parse(rawStart) as Record<string, unknown>
+      if (o && typeof o === 'object') started = o
+    } catch {
+      if (!/已开始下载/.test(rawStart)) started = { ok: false, error: rawStart || '下载未启动' }
+    }
     if (started.ok === false) {
       payMsg.value = '下载失败：' + String(started.error || '未知错误')
       return
@@ -3195,6 +3204,7 @@ async function payloadInstall() {
         break
       }
       if (st.state === 'failed') {
+        console.error('[payload] download failed', JSON.stringify(st))
         payMsg.value = '下载失败：' + st.message
         settled = true
         break
@@ -3206,6 +3216,7 @@ async function payloadInstall() {
     }
     if (!settled) payMsg.value = '下载超时（网络太慢或被拦截），可再点一次重试'
   } catch (e) {
+    console.error('[payload] error', e instanceof Error ? e.stack || e.message : String(e))
     payMsg.value = '安装失败：' + String(e)
   } finally {
     payBusy.value = false

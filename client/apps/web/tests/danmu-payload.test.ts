@@ -59,4 +59,12 @@ describe('弹幕载荷独立资产', () => {
     expect(src).toContain('export async function checkPayload')
     expect(src).toMatch(/if \(!payloadInstalled\.value\)/)
   })
+
+  it('payloadDownload 的返回值不是 JSON（"已开始下载"）也要能继续', () => {
+    const src = read('client/apps/web/src/views/SettingsView.vue')
+    // AppUpdater.start 成功/失败都返回人话；页面必须容错，否则整个下载流程中断
+    // （2026-11-13 .77 实测：日志 ready 了但 payloadApply 从没被调用）
+    expect(src).toContain('已开始下载')
+    expect(src).toMatch(/try \{\s*const o = JSON\.parse\(rawStart\)/)
+  })
 })
