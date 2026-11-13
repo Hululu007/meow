@@ -49,7 +49,7 @@ package.json”，`plugins-v*` / `tv-plugins-v*` 不校验；不要拿壳版本�
 | `pc-v*` | PC 壳 + apiserver 插件 | ✅ draft |
 | `plugins-v*` | 全部插件（units.json 五个，含 tv-node） | ✅ draft |
 | `tv-plugins-v*` | TV 运行时模块 ×3 ABI | ✅ draft |
-| `fpk-v*` | 另一 workflow：x86/arm 套件 + FnDepot 回写 + 主仓 prerelease + `fpk-updates`（全量 `release-v*` 也以 workflow_call 调它） | ✅ prerelease |
+| `fpk-v*` | 另一 workflow：x86/arm 套件 + FnDepot 回写 + **本 tag 的 prerelease** + `fpk-updates`（补包用）；全量 `release-v*` 也调它构建，但包进主 Release、不出 prerelease | ✅ prerelease（仅单链） |
 
 **`docker-v*` 单链只推镜像、不建 Release**（2026-11-12 补回）：重发镜像也可以走
 `workflow_dispatch`（勾 docker）或 `build-push-docker.ps1`；dispatch 不建 Release

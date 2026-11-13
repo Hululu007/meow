@@ -4,14 +4,18 @@
 # 触发入口
 # ═══════════════════════════════════════════════════════════════════════
 #
-#   git tag fpk-v1.0.8        → 构建 x86 + arm，推 FnDepot + 主仓 Release + fpk-updates
+#   git tag fpk-v1.0.8        → 构建 x86 + arm，推 FnDepot + 本 tag 的 prerelease + fpk-updates
 #   Actions 页面 Run workflow   → 只出 artifacts（手动验证，不推索引）
+#   release.yml 全量调用        → 构建 x86 + arm，产物由主 Release 托管（**不再出 prerelease**），
+#                                索引照样写（FnDepot 立即生效；fpk-updates 指向 release-v<ver>）
 #
 # ★ 前缀后面必须紧跟数字（与 release.yml 同一套 glob 规则）：
 #   `fpk-verify-1.0.8` 这类名字**不会触发**。
 # ★ **不监听 push 到 main**：fpk 只在发版/补包时构建，日常提交不烧额度。
-# ★ **双通道**：FnDepot 是飞牛第三方源的正式通道；同时把同一版 fpk
-#   挂到主仓 Release，并生成 `fpk-updates` 分支的 fpk.json 作为镜像。
+# ★ **两条索引通道**（与 TV/PC 的 packages.json 同一形态）：
+#   · FnDepot `fnpack.json`：飞牛应用中心正式源，包体自托管在这条通道里
+#   · `fpk-updates` 分支的 `fpk.json`：主仓镜像索引，download_url 指向主 Release /
+#     单链 prerelease 的资产（按 asset_tag 决定），**合并写入**而不是覆盖
 #   release.yml 的 sync-packages 会跳过 fpk-v*，不会误生成 packages.json。
 #
 # ═══════════════════════════════════════════════════════════════════════
@@ -92,6 +96,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
       mirror_tag: ${{ steps.v.outputs.mirror_tag }}
+      asset_tag: ${{ steps.v.outputs.asset_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -110,6 +115,16 @@ jobs:
           if [ -z "$M" ]; then M="${GITHUB_REF#refs/tags/}"; fi
           echo "mirror_tag=$M" >> "$GITHUB_OUTPUT"
           echo "镜像 tag：$M"
+          # 资产托管 tag：fpk 包实际挂在哪个 Release 上。
+          #   全量 release-v<ver>：包进主 Release（与 TV/PC 同级），不再单出 prerelease
+          #   单链 fpk-v<ver>：包挂本 tag 的 prerelease（补包时的宿主）
+          # 索引里的 download_url 全部指向它。
+          case "${GITHUB_REF_NAME:-}" in
+            release-v*) A="release-v$V" ;;
+            *)          A="$M" ;;
+          esac
+          echo "asset_tag=$A" >> "$GITHUB_OUTPUT"
+          echo "资产托管 tag：$A"
 
       # 13 处版本号的一致性校验（含 TV versionCode 与 compose 兜底）
       - name: 版本一致性
@@ -708,16 +723,17 @@ jobs:
           done
           fail "推送 upchr/FnDepot 失败（检查 FNDEPOT_TOKEN 的仓库写权限）"
 
-  # ---------------------------------------------------------------- 主仓镜像
+  # ---------------------------------------------------------------- 主仓索引 / 单链镜像
   #
-  # FnDepot 是飞牛第三方源的正式通道；这里额外把同一版 fpk 挂到主仓
-  # Release，并生成一个只含 fpk.json 的 `fpk-updates` 分支。
-  # 客户端会先读 FnDepot，失败/更旧时再读主仓镜像。
-  #
-  # ★ 用 prerelease 发布：资产公开可下，但不会顶掉主仓的 latest；
-  #   release.yml 的 sync-packages 也会跳过 fpk-v*（见其 if 条件）。
+  # 两条链在这里汇合（2026-11-13 用户口径：**全量发版不再单出 fpk prerelease**）：
+  #   · 全量 release-v<ver>：fpk 包已经由 release.yml 的 publish 收进**主 Release**
+  #     （和 TV/PC 的包同级），这里只负责写 `fpk-updates` 分支的镜像索引，
+  #     download_url 指向主 Release 的资产。
+  #   · 单链 fpk-v<ver>：没有主 Release 可挂，这里建 prerelease 托管两个 fpk，
+  #     索引指向它自己。
+  # 客户端先读 FnDepot，失败/更旧时再读主仓镜像（见 api/fpkUpgrade.ts）。
   publish-main:
-    name: 主仓 fpk 镜像
+    name: 主仓索引
     needs: [plan, build]
     if: github.event_name == 'push' && needs.build.result == 'success'
     runs-on: ubuntu-latest
@@ -794,11 +810,12 @@ jobs:
             echo "MEOW_EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: 挂主仓 Release（prerelease）
+      # 只有单链 fpk-v* 才建这个 prerelease：全量发版的包已经在主 Release 里了
+      # （release.yml 的 publish 收 .fpk），再建一个就是重复资产 + 多一个入口。
+      - name: 挂主仓 Release（仅单链 fpk-v*）
+        if: startsWith(github.ref_name, 'fpk-v')
         uses: softprops/action-gh-release@v2
         with:
-          # mirror_tag 而不是 github.ref_name：被 release.yml 调用时 ref 是
-          # release-v<版本>，落回去会把主 Release 改成 prerelease 并覆盖正文
           tag_name: ${{ needs.plan.outputs.mirror_tag }}
           name: ${{ needs.plan.outputs.mirror_tag }}
           draft: false
@@ -810,14 +827,15 @@ jobs:
           body: |
             ## fnOS fpk ${{ needs.plan.outputs.version }}
 
-            这是主仓镜像，FnDepot 仍是飞牛第三方源的正式通道。
+            这是单链补包的主仓镜像，FnDepot 仍是飞牛第三方源的正式通道。
             客户端在 FnDepot 不可达或索引没有更高版本时会改用本页资产。
 
-      - name: 生成 fpk.json 并推 fpk-updates
+      - name: 生成 fpk.json 并推 fpk-updates（合并已有版本）
         shell: bash
         env:
           VER: ${{ needs.plan.outputs.version }}
-          TAG: ${{ needs.plan.outputs.mirror_tag }}
+          # 资产托管 tag：全量 release-v<ver>（包在主 Release）/ 单链 fpk-v<ver>
+          TAG: ${{ needs.plan.outputs.asset_tag }}
           X_SHA: ${{ steps.pkg.outputs.x86_sha }}
           X_SIZE: ${{ steps.pkg.outputs.x86_size }}
           A_SHA: ${{ steps.pkg.outputs.arm_sha }}
@@ -829,35 +847,59 @@ jobs:
           fail() { echo "::error::主仓索引未更新：$*"; exit 1; }
           BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
           NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          jq -n             --arg ver "$VER" --arg now "$NOW" --arg notes "$NOTES"             --arg xsha "$X_SHA" --argjson xsize "$X_SIZE" --arg xurl "$BASE/meow_${VER}_x86.fpk"             --arg asha "$A_SHA" --argjson asize "$A_SIZE" --arg aurl "$BASE/meow_${VER}_arm.fpk"             '{
-              schema_version: "2",
-              source_info: {name: "Meow main mirror", url: "https://github.com/upchr/meow"},
-              apps: {
-                meow: {
-                  releases: {
-                    ($ver): {
-                      changelog: $notes,
-                      updated_at: $now,
-                      os_min_version: "1.2.0",
-                      packages: {
-                        x86: {download_url: $xurl, sha256: $xsha, size: $xsize},
-                        arm: {download_url: $aurl, sha256: $asha, size: $asize}
-                      }
-                    }
-                  }
-                }
+
+          # 本版条目（不含外层骨架）
+          jq -n \
+            --arg now "$NOW" --arg notes "$NOTES" \
+            --arg xsha "$X_SHA" --argjson xsize "$X_SIZE" --arg xurl "$BASE/meow_${VER}_x86.fpk" \
+            --arg asha "$A_SHA" --argjson asize "$A_SIZE" --arg aurl "$BASE/meow_${VER}_arm.fpk" \
+            '{
+              changelog: $notes,
+              updated_at: $now,
+              os_min_version: "1.2.0",
+              packages: {
+                x86: {download_url: $xurl, sha256: $xsha, size: $xsize},
+                arm: {download_url: $aurl, sha256: $asha, size: $asize}
               }
-            }' > fpk.json
-          jq -e --arg ver "$VER" '.apps.meow.releases[$ver].packages.x86.sha256 and .apps.meow.releases[$ver].packages.arm.sha256' fpk.json >/dev/null             || fail "fpk.json 结构不合法"
+            }' > entry.json || fail "生成条目失败"
 
           D="$(mktemp -d)"
-          cp fpk.json "$D/"
           cd "$D"
           git init -q
           git config user.name "meow-ci"
           git config user.email "meow-ci@users.noreply.github.com"
+          AUTH="https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git remote add origin "$AUTH"
+
+          # ★ 合并而不是覆盖（2026-11-13 踩过）：这份索引以前每次 force 覆盖成
+          #   "只有当前版本"，补发旧版本（回填 1.2.2）会把新版本（1.2.3）顶掉。
+          #   现在先取**分支上真实的**文件做基线（走 git fetch，不读 raw/CDN，
+          #   避免拿到 12 小时前的缓存），再把本版并进去。
+          HAVE=0
+          if git fetch -q --depth 1 origin fpk-updates 2>/dev/null; then
+            if git checkout -q FETCH_HEAD -- fpk.json 2>/dev/null && jq -e . fpk.json >/dev/null 2>&1; then
+              HAVE=1
+            fi
+          fi
+          if [ "$HAVE" = "1" ]; then
+            jq --arg ver "$VER" --slurpfile e entry.json \
+              '.apps.meow.releases[$ver] = $e[0]' fpk.json > merged.json \
+              || fail "合并到已有索引失败"
+            mv merged.json fpk.json
+            echo "已合并进已有索引"
+          else
+            jq -n --arg ver "$VER" --slurpfile e entry.json '{
+              schema_version: "2",
+              source_info: {name: "Meow main mirror", url: "https://github.com/upchr/meow"},
+              apps: {meow: {releases: {($ver): $e[0]}}}
+            }' > fpk.json || fail "新建索引失败"
+            echo "分支没有可用索引，已新建"
+          fi
+          jq -e --arg ver "$VER" '.apps.meow.releases[$ver].packages.x86.sha256 and .apps.meow.releases[$ver].packages.arm.sha256' fpk.json >/dev/null \
+            || fail "fpk.json 结构不合法"
+
           git add fpk.json
           git commit -q -m "fpk: ${VER} 主仓镜像索引"
-          # 只推一个文件；force 保证旧分支不会混入其他内容
-          git push --force "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:fpk-updates
-          echo "已推送主仓 fpk-updates"
+          # force：分支上只有 fpk.json 一个文件，合并基线已取过
+          git push --force "$AUTH" HEAD:fpk-updates || fail "推送 fpk-updates 失败"
+          echo "已推送主仓 fpk-updates（${VER}，资产在 ${TAG}）"

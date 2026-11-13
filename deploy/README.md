@@ -381,7 +381,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/build-plugins
 | `pc-v1.0.10` | pc_shell + plugins（**仅 apiserver**） | ✅ draft | `meow-pc` `plugins` | 13 min（Windows ×2） |
 | `plugins-v1.0.10`（示例） | plugins（**全部 4 个**，Windows runner，无壳）；tag 可用插件批次版本 | ✅ draft | `plugins` | 5 min+ |
 | `docker-v1.0.10` | docker（三镜像推 Hub） | ❌ | — | 6 min |
-| `fpk-v1.0.10` | 另一 workflow：fpk plan + build(x86/arm) + 回写 FnDepot + 主仓 prerelease + fpk-updates（**全量 `release-v*` 也会以 workflow_call 调它**） | ✅ prerelease | 不走 sync-packages | 6 min |
+| `fpk-v1.0.10` | 另一 workflow：fpk plan + build(x86/arm) + 回写 FnDepot + **本 tag 的 prerelease** + fpk-updates（补包用；全量 `release-v*` 会调它构建但**不出 prerelease**，包进主 Release） | ✅ prerelease（仅单链） | 不走 sync-packages | 6 min |
 | `workflow_dispatch`（release.yml） | 勾选 docker/tv/pc/plugins | ❌ | — | 按勾选 |
 | `tv-verify-1.0.10` | 什么都不跑——前缀后不是数字 | ❌ | — | 0 |
 
@@ -618,7 +618,10 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 - **更新中心（2026-11-11）**：设置 → 维护 →「更新中心」聚合壳 / TV 运行时模块 / PC 插件 / fpk 的检查与状态；只合并入口，安装仍走各自通道。壳启动时自动检查；模块/插件/fpk 默认 24h 一次，可在面板逐项关闭。
 - **显式备用源**：应用更新支持填写「备用源」；主源失败才试，不会自动回落官方源。官方源失败另有 `updates` 分支静态清单兜底。
 - **插件源跟随应用源**：PC 插件源面板有「使用应用更新源」开关，默认把同一条 Release 的 `packages.json` 加为插件源；插件安装器仍独立（下载 zip / 解压 / 回滚）。
-- **fpk 双通道**：FnDepot 继续作为飞牛第三方源正式通道；`fpk-v*` 同时把包挂到主仓 **prerelease**，并把 `fpk.json` 推到 **`fpk-updates` 分支**。客户端先读 FnDepot；不可用或没有更高版本时读主仓镜像：
+- **fpk 双通道（2026-11-13 对齐 TV/PC）**：
+  · **全量 `release-v*`**：fpk 包由 `publish` 收进**主 Release**（和 apk/exe 同级，`publish` 的 `needs` 含 `fpk`），**不再单出 `fpk-v*` prerelease**；FnDepot 与 `fpk-updates` 索引照写。
+  · **单链 `fpk-v*`**：补包时才建本 tag 的 prerelease 托管两个 fpk，并同样写两条索引。
+  · FnDepot 是飞牛应用中心正式源（包体自托管）；`fpk-updates` 分支是主仓镜像索引，`download_url` 指向上面那个 Release 的资产，**合并写入**（补发旧版本不会顶掉新版本）。客户端先读 FnDepot，不可达/更旧时读镜像：
   `https://raw.githubusercontent.com/upchr/meow/fpk-updates/fpk.json`
 - **版本线**：壳（`release/tv/pc`）与 fpk tag 必须等于 `client/package.json`；`tv-plugins-v*`（模块）与 `plugins-v*`（插件批次）是独立版本线，tag 后缀只要是数字即可，清单按资产名逐条取版本。
 
@@ -689,7 +692,7 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 | PC 壳 Rust（`src-tauri/`） | `pc-v1.0.10` | PC exe + apiserver | TV、Docker、模块 |
 | 后端 Java（`server/host/`） | `release-v1.0.10` 或 `docker-v*` + `plugins-v*` | 镜像 + apiserver 插件 | — |
 | drpy / danmu-api / ffmpeg 插件 | `plugins-v1.0.10` | 插件 4 个（无壳） | 其余全部 |
-| fnOS 壳/资源 | `fpk-v1.0.10` | fpk ×2 + FnDepot 索引 | 其余全部 |
+| fnOS 壳/资源 | `release-v1.0.10`（或单链 `fpk-v1.0.10`） | fpk ×2（进主 Release）+ FnDepot / fpk-updates 索引 | 其余全部 |
 | 只有 `docs/`、`README` | 不用发版 | — | — |
 
 ### 6.1 资产策略（2026-11 定）

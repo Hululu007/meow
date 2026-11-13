@@ -227,14 +227,18 @@ jobs:
 
   publish:
     name: 建 draft Release
-    needs: [plan, web, tv, pc, plugins, docker, tv_plugins]
+    # ★ fpk 也进 needs（2026-11-13 用户口径）：全量 Release 必须自带 fnOS 包，
+    #   不再单出一个 fpk-v* prerelease —— 用户下载/归档只认一个 Release，
+    #   和 TV/PC 的包同级。副作用：fpk 失败 = 这轮不建 Release（和 web/tv/pc 同语义）。
+    needs: [plan, web, tv, pc, plugins, docker, tv_plugins, fpk]
     if: ${{ !cancelled() && github.event_name == 'push' && needs.plan.outputs.release == 'true'
             && needs.web.result != 'failure' && needs.web.result != 'cancelled'
             && needs.tv.result != 'failure' && needs.tv.result != 'cancelled'
             && needs.pc.result != 'failure' && needs.pc.result != 'cancelled'
             && needs.plugins.result != 'failure' && needs.plugins.result != 'cancelled'
             && needs.docker.result != 'failure' && needs.docker.result != 'cancelled'
-            && needs.tv_plugins.result != 'failure' && needs.tv_plugins.result != 'cancelled' }}
+            && needs.tv_plugins.result != 'failure' && needs.tv_plugins.result != 'cancelled'
+            && needs.fpk.result != 'failure' && needs.fpk.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -248,7 +252,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p upload
-          find dist -type f \( -name '*.apk' -o -name '*.exe' -o -name '*.zip' \) -exec cp {} upload/ \; || true
+          # ★ 含 .fpk：全量时 fpk job 的 artifact（fpk-x86 / fpk-arm）也在这个 run 里，
+          #   fnOS 包跟 TV/PC 的包同级放主 Release（2026-11-13 用户口径）。
+          #   单链 tv-v*/pc-v* 等没有 fpk artifact，find 不会命中，行为不变。
+          find dist -type f \( -name '*.apk' -o -name '*.exe' -o -name '*.zip' -o -name '*.fpk' \) -exec cp {} upload/ \; || true
           ls -la upload
           # 公开壳发布守卫：绝不允许源包混进 Release
           if find upload -type f \( -name 'spider*.jar' -o -name 'config.sites.json' -o -name 'node-payload-danmu.zip' \) | grep -q .; then
@@ -315,6 +322,7 @@ jobs:
             | `apiserver-*.zip` | 后端插件（空壳） |
             | `drpy-*.zip` / `danmu-api-*.zip` / `node-*.zip` / `ffmpeg-*.zip` | 本机插件（发布后由清单引用） |
             | `tv-node-*.apk` | TV 运行时模块（发布后由清单复制） |
+            | `meow_*.fpk` | fnOS 套件（x86 / arm，同时回写 FnDepot） |
             | `packages.json` | 客户端更新清单（发布后生成） |
             | `SHA256SUMS.txt` | 校验 |
 
