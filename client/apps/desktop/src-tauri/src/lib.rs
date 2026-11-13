@@ -562,10 +562,29 @@ fn app_update_cancel(upd: tauri::State<'_, Arc<appupdate::AppUpdater>>) -> bool 
 /// 这条命令的能力是"运行一个 exe"，不能让它变成运行任意路径。
 #[tauri::command]
 fn app_update_install(
+    app: tauri::AppHandle,
     upd: tauri::State<'_, Arc<appupdate::AppUpdater>>,
     path: String,
 ) -> Result<String, String> {
-    upd.install(&path)
+    let msg = upd.install(&path)?;
+    /*
+     * ★ 拉起安装器后**主进程自己退出**（2026-11-13 用户明确要求）。
+     *
+     * 为什么不退不行：NSIS 装到一半会检查本程序是否还在跑，在跑就停在
+     * "请关闭应用"这一步（或直接失败）—— 用户看到的是"安装程序开了，
+     * 但装不上"。手动更新时用户本来就预期"点完更新，应用关掉、安装向导接管"。
+     *
+     * 延后 800ms：先把 "安装程序已启动" 这个结果返回给前端（store 要把它
+     * 写进 stage 文案），否则进程一退，前端的 invoke 直接报错，界面还会
+     * 显示一条失败提示。
+     *
+     * 安装器本身是 `cmd /C start` 拉起的（独立于本进程），不会跟着被杀。
+     */
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        app.exit(0);
+    });
+    Ok(msg)
 }
 
 /// 清掉更新下载缓存，返回释放的字节数。
