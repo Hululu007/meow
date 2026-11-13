@@ -1,22 +1,27 @@
-# fpk 单推链路（fnOS 原生应用包）。
+# fpk 链路（fnOS 原生应用包）。
 #
 # ═══════════════════════════════════════════════════════════════════════
 # 触发入口
 # ═══════════════════════════════════════════════════════════════════════
 #
-#   git tag fpk-v1.0.8        → 构建 x86 + arm，推 FnDepot + 本 tag 的 prerelease + fpk-updates
-#   Actions 页面 Run workflow   → 只出 artifacts（手动验证，不推索引）
-#   release.yml 全量调用        → 构建 x86 + arm，产物由主 Release 托管（**不再出 prerelease**），
-#                                索引照样写（FnDepot 立即生效；fpk-updates 指向 release-v<ver>）
+#   git tag fpk-v1.0.8        → 构建 x86 + arm，建本 tag 的 **draft** Release
+#   Actions 页面 Run workflow   → 只出 artifacts（手动验证，不建 Release、不写索引）
+#   release.yml 全量调用        → 构建 x86 + arm，产物由主 Release 托管
+#   Release Publish（人工）      → index-after-publish 写两条索引
 #
 # ★ 前缀后面必须紧跟数字（与 release.yml 同一套 glob 规则）：
 #   `fpk-verify-1.0.8` 这类名字**不会触发**。
 # ★ **不监听 push 到 main**：fpk 只在发版/补包时构建，日常提交不烧额度。
-# ★ **两条索引通道**（与 TV/PC 的 packages.json 同一形态）：
+# ★ **两条索引通道**（与 TV/PC 的 packages.json 同一形态），**都只在 Publish 之后写**：
 #   · FnDepot `fnpack.json`：飞牛应用中心正式源，包体自托管在这条通道里
-#   · `fpk-updates` 分支的 `fpk.json`：主仓镜像索引，download_url 指向主 Release /
-#     单链 prerelease 的资产（按 asset_tag 决定），**合并写入**而不是覆盖
+#   · `fpk-updates` 分支的 `fpk.json`：主仓镜像索引，download_url 指向本次 Release 的资产，
+#     **合并写入**而不是覆盖（补发旧版本不顶掉新版本）
 #   release.yml 的 sync-packages 会跳过 fpk-v*，不会误生成 packages.json。
+#
+# ★ 2026-11-13 对齐 TV/PC（用户口径「对齐」）：索引从**构建时**挪到**发布后**。
+#   以前 fpk 是唯一「draft 还没 Publish 就把索引/包体推给用户」的链，和
+#   「draft 不产生任何用户可见清单」这条规则冲突；现在四条链完全同构：
+#     tag → 构建 → draft Release → 人工 Publish → 写索引/清单。
 #
 # ═══════════════════════════════════════════════════════════════════════
 # 为什么和 release.yml 分开
@@ -38,13 +43,16 @@
 # 我们的 bin/meowd 是 ELF，必须按架构分包（见 docs 的 manifest 原文）。
 #
 # ═══════════════════════════════════════════════════════════════════════
-# 回写 FnDepot 应用源（只有 tag 推送才做）
+# 回写 FnDepot 应用源（只有 Release 被 Publish 之后才做）
 # ═══════════════════════════════════════════════════════════════════════
 #
-# tag 推送且 x86/arm 都构建成功后，publish-index 把两个 fpk + fnpack.json
-# 一起提交到 upchr/FnDepot（V2 索引）。**workflow_dispatch 不写索引**，
-# 只出 artifact —— 手动验证包体时不要把半成品推给用户。
+# `release: published` 触发 index-after-publish：它从**已发布的 Release** 里下载
+# meow_*.fpk（两个架构都必须在），校验 sha256 后把两个包 + fnpack.json 一起提交到
+# upchr/FnDepot（V2 索引），同时合并写 `fpk-updates` 分支的镜像索引。
 #
+# ★ 为什么不再在构建时写：draft 是「还没发出去」的草稿。以前 fpk 在 draft 阶段就
+#   推 FnDepot，用户能装到一个官方还没 Publish 的版本；点 Publish 之前没法撤回。
+#   现在 publish-draft 只建草稿，索引一律等 Publish（与 sync-packages 同语义）。
 # ★ 跨仓推送用 secrets.FNDEPOT_TOKEN：GITHUB_TOKEN 只能写本仓库。
 # ★ 只改 apps.meow.releases[<version>] 这一棵子树，其余节点原样保留。
 # ★ 双架构是硬条件：只有 x86 的索引比不出索引更糟（arm 用户会以为源坏了）。
@@ -61,6 +69,11 @@ on:
         description: '版本号（留空取 client/package.json）'
         required: false
         type: string
+  # ★ 索引只在「Release 被 Publish」之后写（2026-11-13 与 sync-packages 对齐）。
+  #   全量 release-v<ver> 与单链 fpk-v<ver> 都走这一条；draft 阶段不产生任何
+  #   用户可见的索引，Publish 之前随时可以删掉草稿。
+  release:
+    types: [published]
   # ★ 被 release.yml 调用（2026-11-13 用户报「全量 tag 发版没有 fpk、FnDepot 也没更新」）：
   #   全量发版必须把 fnOS 包一起出，否则每次都要手动补推一个 fpk-v* tag。
   #   mirror_tag 是主仓镜像 Release 的 tag 名 —— 调用方传 `fpk-v<版本>`，
@@ -91,12 +104,13 @@ concurrency:
 jobs:
   plan:
     name: 版本与范围
+    # release 事件只跑索引（index-after-publish），不重建包
+    if: github.event_name != 'release'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       version: ${{ steps.v.outputs.version }}
       mirror_tag: ${{ steps.v.outputs.mirror_tag }}
-      asset_tag: ${{ steps.v.outputs.asset_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -115,16 +129,6 @@ jobs:
           if [ -z "$M" ]; then M="${GITHUB_REF#refs/tags/}"; fi
           echo "mirror_tag=$M" >> "$GITHUB_OUTPUT"
           echo "镜像 tag：$M"
-          # 资产托管 tag：fpk 包实际挂在哪个 Release 上。
-          #   全量 release-v<ver>：包进主 Release（与 TV/PC 同级），不再单出 prerelease
-          #   单链 fpk-v<ver>：包挂本 tag 的 prerelease（补包时的宿主）
-          # 索引里的 download_url 全部指向它。
-          case "${GITHUB_REF_NAME:-}" in
-            release-v*) A="release-v$V" ;;
-            *)          A="$M" ;;
-          esac
-          echo "asset_tag=$A" >> "$GITHUB_OUTPUT"
-          echo "资产托管 tag：$A"
 
       # 13 处版本号的一致性校验（含 TV versionCode 与 compose 兜底）
       - name: 版本一致性
@@ -386,11 +390,11 @@ jobs:
           sort "$U/list.txt" > "$U/list.sorted.txt"
           head -30 "$U/list.sorted.txt"
           # ★ .sha256 只记文件名，不记绝对路径：CI 里 $FPK 是
-          #   /home/runner/work/_temp/out-xxx/... ，publish-index 会把它下载到
-          #   另一个目录，那时按绝对路径记录的 .sha256 既做不了 `sha256sum -c`，
-          #   也过不了「$F 必须等于 basename」的断言（2026-11-06 踩过）。
+          #   /home/runner/work/_temp/out-xxx/... ，到发布后索引那一步已经是另一个
+          #   目录（data 从 Release 下载回来的），按绝对路径记录的 .sha256 既做不了
+          #   `sha256sum -c`，也过不了「$F 必须等于 basename」的断言（2026-11-06 踩过）。
           # ★ --text 是必需的，不是可选：Git bash/MSYS 的 sha256sum 默认 binary
-          #   模式，第二列写成 `*文件名`，publish-index 的 `$2 = basename` 会失败。
+          #   模式，第二列写成 `*文件名`，索引步骤的 `$2 = basename` 会失败。
           #   `--text` 让 MSYS 与 Linux 都产出 `hash<两空格>文件名`（实测 coreutils 8.32）。
           ( cd "$OUT" && sha256sum --text "$(basename "$FPK")" > "$(basename "$FPK").sha256" )
           cat "$FPK.sha256"
@@ -404,74 +408,182 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-  # ---------------------------------------------------------------- 索引回写
+  # ---------------------------------------------------------------- 单链草稿
   #
-  # 把这一版的两个 fpk 和 fnpack.json 一起提交进 FnDepot（V2 应用源）。
-  # 为什么放 CI：手工改索引要自己算 sha256/填 size，两个包 24MB 还容易
-  # 传错架构；这里直接读构建产出的 .fpk.sha256，口径和构建完全一致。
+  # 只有单链 fpk-v<ver> 走到这里：建本 tag 的 **draft** Release 托管两个 fpk。
+  # 全量 release-v<ver> 不走（包由 release.yml 的 publish 收进主 Release）。
   #
-  # ★ 写失败一律 `::error::索引未更新`：PAT 过期、远端冲突这类问题必须
-  #   在日志里一眼可见，不能静默过去（静默 = 用户以为发了新版）。
-  publish-index:
-    name: 回写 FnDepot 索引
+  # ★ 2026-11-13 对齐 TV/PC：`prerelease: true` → `draft: true`。以前打完 tag
+  #   立刻冒出一个「用户能看见、能下载」的 prerelease，索引同时被推走 —— 等于
+  #   跳过了 Publish 这一步；现在和 tv-v* / pc-v* 完全一样：Publish 之前谁都拿不到。
+  publish-draft:
+    name: 建 draft Release（单链）
     needs: [plan, build]
-    # 双架构都成功才发布：matrix 里任一腿失败 → build.result != success。
-    # dispatch 只出 artifact，索引留给真正的 tag 发版（dispatch 的 ref 是分支名）。
-    #
-    # ★ 全量 `release-v*` 与单链 `fpk-v*` **都要写**（2026-11-13 用户口径：
-    #   全量发版必须把 FnDepot 一起更新，否则飞牛应用中心停在旧版，1.2.2 就踩过）。
-    #   上一版曾用 `startsWith(github.ref_name,'fpk-v')` 把全量挡掉 —— 那是
-    #   治标：真正的原因是「解析版本」从 tag 名里抠版本，而 workflow_call 时
-    #   ref 是 `release-v<版本>`，抠不出来就 exit 1（release-v1.2.2 整条判红）。
-    #   现在改为直接取 plan 的输出（它就是读 client/package.json 算出来的），
-    #   两条链同一口径，不再依赖 ref 长什么样。
-    if: github.event_name == 'push' && needs.build.result == 'success'
+    if: >-
+      github.event_name == 'push' && startsWith(github.ref_name, 'fpk-v')
+      && needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载 x86 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: fpk-x86
+          path: artifacts/x86
+
+      - name: 下载 arm 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: fpk-arm
+          path: artifacts/arm
+
+      # 草稿里必须双架构齐全：Publish 之后索引才读这两个文件，
+      # 到那时才发现缺一个就晚了（用户已经能看到 Release）。
+      - name: 校验产物齐全
+        shell: bash
+        env:
+          VER: ${{ needs.plan.outputs.version }}
+          ART: ${{ github.workspace }}/artifacts
+        run: |
+          set -euo pipefail
+          for arch in x86 arm; do
+            FPK="$ART/$arch/meow_${VER}_${arch}.fpk"
+            SHAF="$FPK.sha256"
+            [ -s "$FPK" ] || { echo "::error::缺少 $FPK"; exit 1; }
+            [ -s "$SHAF" ] || { echo "::error::缺少 $SHAF"; exit 1; }
+            echo "$arch: $(stat -c%s "$FPK") bytes  $(awk '{print $1}' "$SHAF")"
+          done
+
+      - name: 挂 draft Release
+        # ★ 重跑已发布过的 tag 会把它改回 draft（action 按给定字段更新）——
+        #   这是刻意的：重新出包后必须再点一次 Publish，索引才会按新 sha256 重写。
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.plan.outputs.mirror_tag }}
+          name: ${{ needs.plan.outputs.mirror_tag }}
+          draft: true
+          generate_release_notes: false
+          files: |
+            artifacts/x86/*.fpk
+            artifacts/arm/*.fpk
+          body: |
+            ## fnOS fpk ${{ needs.plan.outputs.version }}
+
+            这是单链补包的主仓镜像。**点 Publish 之后**，本 workflow 会把 FnDepot 的
+            `fnpack.json` 与 `fpk-updates` 分支的 `fpk.json` 一起更新；草稿阶段两条
+            索引都不动（用户拿不到未发布的包）。
+
+            FnDepot 仍是飞牛第三方源的正式通道；客户端在 FnDepot 不可达或索引没有
+            更高版本时改用本页资产。
+
+  # ---------------------------------------------------------------- 发布后索引
+  #
+  # `release: published` 触发（draft 被人工 Publish 之后）。这是 fpk **唯一**的
+  # 索引写入点：FnDepot 与 fpk-updates 都在这里写，与 release.yml 的 sync-packages
+  # 完全同构 —— tag → 构建 → draft Release → 人工 Publish → 写索引/清单。
+  #
+  # ★ 数据来源是**已发布的 Release 资产**（gh release download），不是本 run 的
+  #   artifact：全量链的 fpk 由 release.yml 那个 run 构建，单链也一样；顺带再
+  #   校验一次「用户真正下载到的东西」的 sha256 与体积。
+  # ★ 写失败一律 `::error::索引未更新`：PAT 过期、远端冲突这类问题必须在日志里
+  #   一眼可见，不能静默过去（静默 = 用户以为发了新版，1.2.2 就踩过）。
+  index-after-publish:
+    name: 发布后写索引
+    if: >-
+      github.event_name == 'release' && github.event.action == 'published'
+      && (startsWith(github.event.release.tag_name, 'release-v')
+          || startsWith(github.event.release.tag_name, 'fpk-v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TAG: ${{ github.event.release.tag_name }}
     # ★ 跨 tag 串行：两次发版同时写同一份 fnpack.json 会互相覆盖
     #   （后推的覆盖先推的，先发的那个版本看起来就丢了）。
     concurrency:
       group: fndepot-index
       cancel-in-progress: false
     steps:
+      # 取 tag 上的源码：CHANGELOG 与 package.json 必须是发布时的版本
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
-      # 版本 = plan 的输出（= client/package.json），并保留两道校验：
-      #   1) 必须等于 package.json（防 plan 输出被别的路径污染）
-      #   2) **如果**触发 ref 是 fpk-v* tag，则 tag 必须等于 fpk-v<版本>
-      #      （单链补包时防止 tag 写错，产物名与 tag 对不上）
+      # 版本以 package.json 为准；tag 必须等于 <前缀>-v<版本>。
+      # release.yml / 本 workflow 的 plan 已各查过一次，这里是第三道
+      # （防手工在网页上 Publish 一个被改过 tag 的草稿）。
       - name: 解析版本
         id: v
         shell: bash
-        env:
-          VER_IN: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
-          VER="$VER_IN"
-          [ -n "$VER" ] || { echo "::error::索引未更新：plan 没给出构建版本"; exit 1; }
-          PV=$(node -p "require('./client/package.json').version")
-          if [ "$VER" != "$PV" ]; then
-            echo "::error::索引未更新：plan 版本 $VER 与 client/package.json 的 $PV 不一致"
-            exit 1
-          fi
-          TAG="${GITHUB_REF#refs/tags/}"
+          fail() { echo "::error::索引未更新：$*"; exit 1; }
           case "$TAG" in
-            fpk-v*)
-              if [ "$TAG" != "fpk-v$VER" ]; then
-                echo "::error::索引未更新：tag=$TAG 与版本号 fpk-v$VER 不一致"
-                exit 1
-              fi
-              ;;
-            release-v*)
-              # 全量链：tag 由 release.yml 的「tag 与版本号一致」门禁保证
-              ;;
-            *)
-              echo "::error::索引未更新：无法识别的触发 ref=$TAG"
-              exit 1
-              ;;
+            release-v[0-9]*|fpk-v[0-9]*) ;;
+            *) fail "不是 fpk 相关 tag：$TAG" ;;
           esac
+          VER="${TAG##*-v}"
+          PV=$(node -p "require('./client/package.json').version")
+          [ "$VER" = "$PV" ] || fail "tag=$TAG 的版本($VER) 与 package.json 的 $PV 不一致"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
-          echo "发布版本：$VER（ref=$TAG）"
+          echo "发布版本：$VER（tag=$TAG）"
+
+      - name: 从 Release 取 fpk 资产
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::索引未更新：$*"; exit 1; }
+          rm -rf dl artifacts
+          mkdir -p dl artifacts/x86 artifacts/arm
+          # 没有匹配资产时 gh 退出非 0（no assets match the file pattern），
+          # 这里换成一句人话：多半是全量链的 fpk job 没跑/失败。
+          gh release download "$TAG" --pattern 'meow_*.fpk' --dir dl \
+            || fail "Release $TAG 里没有 meow_*.fpk 资产（这版没打 fpk？）"
+          for arch in x86 arm; do
+            SRC="dl/meow_${VER}_${arch}.fpk"
+            [ -s "$SRC" ] || fail "Release 缺 meow_${VER}_${arch}.fpk（双架构是硬条件）"
+            cp "$SRC" "artifacts/$arch/"
+            # 口径与构建阶段一致：单行 `sha256sum --text`，第二列只记文件名。
+            # --text 必需：MSYS 的 sha256sum 默认 binary 模式会写成 `*文件名`。
+            ( cd "artifacts/$arch" \
+              && sha256sum --text "meow_${VER}_${arch}.fpk" > "meow_${VER}_${arch}.fpk.sha256" )
+          done
+          ls -l artifacts/x86 artifacts/arm
+
+      # sha256 只认上一步从发布资产算出来的 .fpk.sha256，不在这里造第二个口径。
+      - name: 校验产物
+        id: pkg
+        shell: bash
+        env:
+          VER: ${{ steps.v.outputs.version }}
+          ART: ${{ github.workspace }}/artifacts
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::索引未更新：$*"; exit 1; }
+          for arch in x86 arm; do
+            FPK="$ART/$arch/meow_${VER}_${arch}.fpk"
+            SHAF="$FPK.sha256"
+            [ -s "$FPK" ] || fail "缺少产物 $FPK"
+            [ -s "$SHAF" ] || fail "缺少校验文件 $SHAF"
+            [ "$(wc -l < "$SHAF" | tr -d '[:space:]')" -eq 1 ] || fail "$SHAF 不是单行 sha256sum 输出"
+            H="$(awk '{print $1}' "$SHAF")"
+            F="$(awk '{print $2}' "$SHAF")"
+            [ "$F" = "$(basename "$FPK")" ] || fail "$SHAF 记录的文件是 $F，不是 $(basename "$FPK")"
+            [[ "$H" =~ ^[0-9a-f]{64}$ ]] || fail "$SHAF 的 sha256 不是 64 位小写 hex：$H"
+            SZ="$(stat -c%s "$FPK")"
+            [[ "$SZ" =~ ^[0-9]+$ ]] || fail "$FPK 的 size 不是数字：$SZ"
+            # 包体下限：漏打载荷时通常只剩几 MB
+            [ "$SZ" -gt 10000000 ] || fail "$FPK 只有 $SZ bytes，疑似漏打载荷"
+            echo "$arch: $H  $SZ bytes"
+            {
+              echo "${arch}_sha=$H"
+              echo "${arch}_size=$SZ"
+            } >> "$GITHUB_OUTPUT"
+          done
 
       # ★ 更新说明的单一真源是 CHANGELOG.md 的 `## <版本>` 小节，
       #   规则与 release.yml / sync-packages.ps1 一致（空行丢弃、没编号的行补 `n. `）。
@@ -518,47 +630,6 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "更新说明取自 CHANGELOG.md 的 ${VER} 小节："
           printf '%s\n' "$NOTES"
-
-      - name: 下载 x86 产物
-        uses: actions/download-artifact@v4
-        with:
-          name: fpk-x86
-          path: artifacts/x86
-
-      - name: 下载 arm 产物
-        uses: actions/download-artifact@v4
-        with:
-          name: fpk-arm
-          path: artifacts/arm
-
-      # sha256 只认构建阶段写出的 .fpk.sha256，不在这里重算第二个口径。
-      - name: 校验产物
-        id: pkg
-        shell: bash
-        env:
-          VER: ${{ steps.v.outputs.version }}
-          ART: ${{ github.workspace }}/artifacts
-        run: |
-          set -euo pipefail
-          fail() { echo "::error::索引未更新：$*"; exit 1; }
-          for arch in x86 arm; do
-            FPK="$ART/$arch/meow_${VER}_${arch}.fpk"
-            SHAF="$FPK.sha256"
-            [ -s "$FPK" ] || fail "缺少构建产物 $FPK"
-            [ -s "$SHAF" ] || fail "缺少校验文件 $SHAF"
-            [ "$(wc -l < "$SHAF" | tr -d '[:space:]')" -eq 1 ] || fail "$SHAF 不是单行 sha256sum 输出"
-            H="$(awk '{print $1}' "$SHAF")"
-            F="$(awk '{print $2}' "$SHAF")"
-            [ "$F" = "$(basename "$FPK")" ] || fail "$SHAF 记录的文件是 $F，不是 $(basename "$FPK")"
-            [[ "$H" =~ ^[0-9a-f]{64}$ ]] || fail "$SHAF 的 sha256 不是 64 位小写 hex：$H"
-            SZ="$(stat -c%s "$FPK")"
-            [[ "$SZ" =~ ^[0-9]+$ ]] || fail "$FPK 的 size 不是数字：$SZ"
-            echo "$arch: $H  $SZ bytes"
-            {
-              echo "${arch}_sha=$H"
-              echo "${arch}_size=$SZ"
-            } >> "$GITHUB_OUTPUT"
-          done
 
       # 拿最新索引再动笔：并发组只覆盖本 workflow，别人手动推 FnDepot 时
       # 仍可能撞上，所以每次都在 clone 后强制对齐 origin/main。
@@ -723,119 +794,12 @@ jobs:
           done
           fail "推送 upchr/FnDepot 失败（检查 FNDEPOT_TOKEN 的仓库写权限）"
 
-  # ---------------------------------------------------------------- 主仓索引 / 单链镜像
-  #
-  # 两条链在这里汇合（2026-11-13 用户口径：**全量发版不再单出 fpk prerelease**）：
-  #   · 全量 release-v<ver>：fpk 包已经由 release.yml 的 publish 收进**主 Release**
-  #     （和 TV/PC 的包同级），这里只负责写 `fpk-updates` 分支的镜像索引，
-  #     download_url 指向主 Release 的资产。
-  #   · 单链 fpk-v<ver>：没有主 Release 可挂，这里建 prerelease 托管两个 fpk，
-  #     索引指向它自己。
-  # 客户端先读 FnDepot，失败/更旧时再读主仓镜像（见 api/fpkUpgrade.ts）。
-  publish-main:
-    name: 主仓索引
-    needs: [plan, build]
-    if: github.event_name == 'push' && needs.build.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    concurrency:
-      group: fpk-main-index
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 下载 x86 产物
-        uses: actions/download-artifact@v4
-        with:
-          name: fpk-x86
-          path: artifacts/x86
-
-      - name: 下载 arm 产物
-        uses: actions/download-artifact@v4
-        with:
-          name: fpk-arm
-          path: artifacts/arm
-
-      - name: 校验产物
-        id: pkg
-        shell: bash
-        env:
-          VER: ${{ needs.plan.outputs.version }}
-          ART: ${{ github.workspace }}/artifacts
-        run: |
-          set -euo pipefail
-          fail() { echo "::error::主仓镜像未生成：$*"; exit 1; }
-          for arch in x86 arm; do
-            FPK="$ART/$arch/meow_${VER}_${arch}.fpk"
-            SHAF="$FPK.sha256"
-            [ -s "$FPK" ] || fail "缺少 $FPK"
-            [ -s "$SHAF" ] || fail "缺少 $SHAF"
-            H="$(awk '{print $1}' "$SHAF")"
-            [[ "$H" =~ ^[0-9a-f]{64}$ ]] || fail "$SHAF 的 sha256 不合法"
-            echo "${arch}_sha=$H" >> "$GITHUB_OUTPUT"
-            echo "${arch}_size=$(stat -c%s "$FPK")" >> "$GITHUB_OUTPUT"
-          done
-
-      - name: 取更新说明
-        id: notes
-        shell: bash
-        env:
-          VER: ${{ needs.plan.outputs.version }}
-        run: |
-          set -euo pipefail
-          NOTES="$(awk -v v="$VER" '
-            /^##[[:blank:]]/ {
-              h = $0
-              sub(/^##[[:blank:]]+/, "", h)
-              sub(/[[:blank:]]+$/, "", h)
-              if (h == v || h == "[" v "]") { hit = 1; next }
-              if (hit) exit
-            }
-            hit {
-              t = $0
-              gsub(/^[[:blank:]]+|[[:blank:]]+$/, "", t)
-              if (t == "") next
-              n++
-              if (t ~ /^[0-9]+[[:blank:]]*[.、)]/) print t
-              else print n ". " t
-            }
-          ' CHANGELOG.md)"
-          if [ -z "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ]; then
-            echo "::error::CHANGELOG.md 缺少 ${VER} 小节"
-            exit 1
-          fi
-          {
-            echo "notes<<MEOW_EOF"
-            printf '%s\n' "$NOTES"
-            echo "MEOW_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      # 只有单链 fpk-v* 才建这个 prerelease：全量发版的包已经在主 Release 里了
-      # （release.yml 的 publish 收 .fpk），再建一个就是重复资产 + 多一个入口。
-      - name: 挂主仓 Release（仅单链 fpk-v*）
-        if: startsWith(github.ref_name, 'fpk-v')
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.plan.outputs.mirror_tag }}
-          name: ${{ needs.plan.outputs.mirror_tag }}
-          draft: false
-          prerelease: true
-          generate_release_notes: false
-          files: |
-            artifacts/x86/*.fpk
-            artifacts/arm/*.fpk
-          body: |
-            ## fnOS fpk ${{ needs.plan.outputs.version }}
-
-            这是单链补包的主仓镜像，FnDepot 仍是飞牛第三方源的正式通道。
-            客户端在 FnDepot 不可达或索引没有更高版本时会改用本页资产。
-
+      # 主仓镜像索引：download_url 指向**本次已发布的 Release**（tag 就是宿主）。
+      # 客户端先读 FnDepot，失败/更旧时再读主仓镜像（见 api/fpkUpgrade.ts）。
       - name: 生成 fpk.json 并推 fpk-updates（合并已有版本）
         shell: bash
         env:
-          VER: ${{ needs.plan.outputs.version }}
-          # 资产托管 tag：全量 release-v<ver>（包在主 Release）/ 单链 fpk-v<ver>
-          TAG: ${{ needs.plan.outputs.asset_tag }}
+          VER: ${{ steps.v.outputs.version }}
           X_SHA: ${{ steps.pkg.outputs.x86_sha }}
           X_SIZE: ${{ steps.pkg.outputs.x86_size }}
           A_SHA: ${{ steps.pkg.outputs.arm_sha }}
@@ -848,7 +812,10 @@ jobs:
           BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
           NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-          # 本版条目（不含外层骨架）
+          # 本版条目（不含外层骨架）。
+          # ★ 用绝对路径：下面要 cd 到临时仓库里，`entry.json` 写在工作区，
+          #   相对路径到那时会指错目录（jq --slurpfile 直接报 Could not open）。
+          ENTRY="$GITHUB_WORKSPACE/entry.json"
           jq -n \
             --arg now "$NOW" --arg notes "$NOTES" \
             --arg xsha "$X_SHA" --argjson xsize "$X_SIZE" --arg xurl "$BASE/meow_${VER}_x86.fpk" \
@@ -861,7 +828,7 @@ jobs:
                 x86: {download_url: $xurl, sha256: $xsha, size: $xsize},
                 arm: {download_url: $aurl, sha256: $asha, size: $asize}
               }
-            }' > entry.json || fail "生成条目失败"
+            }' > "$ENTRY" || fail "生成条目失败"
 
           D="$(mktemp -d)"
           cd "$D"
@@ -882,13 +849,13 @@ jobs:
             fi
           fi
           if [ "$HAVE" = "1" ]; then
-            jq --arg ver "$VER" --slurpfile e entry.json \
+            jq --arg ver "$VER" --slurpfile e "$ENTRY" \
               '.apps.meow.releases[$ver] = $e[0]' fpk.json > merged.json \
               || fail "合并到已有索引失败"
             mv merged.json fpk.json
             echo "已合并进已有索引"
           else
-            jq -n --arg ver "$VER" --slurpfile e entry.json '{
+            jq -n --arg ver "$VER" --slurpfile e "$ENTRY" '{
               schema_version: "2",
               source_info: {name: "Meow main mirror", url: "https://github.com/upchr/meow"},
               apps: {meow: {releases: {($ver): $e[0]}}}

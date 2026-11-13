@@ -691,11 +691,13 @@ if ((-not $NoCopyAssets) -and $archival) {
 
     # ---------------------------------------------------------------- fpk 资产并入
     #
-    # fpk 有自己的构建链与 tag（fpk-v*，工具链是 java-21 + fnpack + meowd 交叉编译），
-    # 资产落在独立 prerelease + FnDepot。但用户下载时希望一个页面拿全 ——
-    # 全量发布（release-v*）时把同版本的 .fpk 复制进主 release。
-    # 时序安全：fpk 链约 10 分钟，主链发布后 ~45 分钟才跑 sync-packages，
-    # fpk-v<ver> 一定已存在；找不到就跳过，不影响发布（FnDepot 仍是正式通道）。
+    # 2026-11-13 起全量链自己就构建 fpk 并直接进主 Release（fpk.yml 以
+    # workflow_call 调用），正常情况下这里**什么都不用做**（同名资产会被跳过）。
+    # 保留这段是为了兼容两种历史形态：
+    #   · 老版本的全量 Release（fpk 还没并进主链，包在 fpk-v* 的独立 Release 里）
+    #   · 先打过 fpk-v<ver> 单链、之后才发全量（两处都有同一份产物）
+    # 单链 fpk 现在是 draft：draft 不出现在 /releases/tags 里 → 取不到就跳过，
+    # 不影响发布（FnDepot 与 fpk-updates 都由 fpk.yml 的 index-after-publish 写）。
     $fpkTag = "fpk-v$appVersion"
     $fpkRel = $null
     try {

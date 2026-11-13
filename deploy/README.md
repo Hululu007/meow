@@ -375,20 +375,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/build-plugins
 | 触发 | 实际跑的 job | 建 Release | 发 Publish 后的 sync scope | 实测 |
 |---|---|---|---|---|
 | **`v1.0.10`**（无前缀） | **什么都不跑**——纯版本标记 | ❌ | — | 0 |
-| `release-v1.0.10` | docker + tv + pc_shell + plugins（**仅 apiserver**；不带模块）+ **fpk ×2（x86/arm，含 FnDepot 回写）** | ✅ draft | `meow-pc` `meow-tv` `plugins` | ~16 min |
+| `release-v1.0.10` | docker + tv + pc_shell + plugins（**全部 5 个**）+ **fpk ×2（x86/arm，Publish 后写 FnDepot + fpk-updates）** | ✅ draft | `meow-pc` `meow-tv` `plugins` + fpk 两条索引 | **9m58s**（1.2.4 实测） |
 | `tv-v1.0.10` | tv（**不含模块**） | ✅ draft | `meow-tv` | 2.7 min |
 | `tv-plugins-v18.20.4.1`（示例） | tv_plugins（模块 ×3 ABI）；tag 用模块版本，不是壳版本 | ✅ draft | `tv-module`（只模块三条） | 163 s |
 | `pc-v1.0.10` | pc_shell + plugins（**仅 apiserver**） | ✅ draft | `meow-pc` `plugins` | 13 min（Windows ×2） |
-| `plugins-v1.0.10`（示例） | plugins（**全部 4 个**，Windows runner，无壳）；tag 可用插件批次版本 | ✅ draft | `plugins` | 5 min+ |
+| `plugins-v1.0.10`（示例） | plugins（**全部 5 个**，Windows runner，无壳）；tag 可用插件批次版本 | ✅ draft | `plugins` | 5 min+ |
 | `docker-v1.0.10` | docker（三镜像推 Hub） | ❌ | — | 6 min |
-| `fpk-v1.0.10` | 另一 workflow：fpk plan + build(x86/arm) + 回写 FnDepot + **本 tag 的 prerelease** + fpk-updates（补包用；全量 `release-v*` 会调它构建但**不出 prerelease**，包进主 Release） | ✅ prerelease（仅单链） | 不走 sync-packages | 6 min |
+| `fpk-v1.0.10` | 另一 workflow：fpk plan + build(x86/arm) + **本 tag 的 draft Release**（补包用；全量 `release-v*` 会调它构建但包进主 Release） | ✅ draft（仅单链） | 不走 sync-packages；**Publish 后**写 FnDepot + fpk-updates | ~3m |
 | `workflow_dispatch`（release.yml） | 勾选 docker/tv/pc/plugins | ❌ | — | 按勾选 |
 | `tv-verify-1.0.10` | 什么都不跑——前缀后不是数字 | ❌ | — | 0 |
 
 **三条铁律**
 
 1. **单链也建 Release**（除 docker）——2026-11 起，`publish` 的门槛从"必须 `release-v*`"改成"任一条被选中且没有 failure/cancelled"；没选中的链是 `skipped`，视为通过。
-2. **Release 永远是 draft**，必须人点 Publish；`sync-packages`（生成 packages.json）只在 `release: published` 时跑。**不点 Publish = 客户端收不到更新。**
+2. **Release 永远是 draft**，必须人点 Publish；`sync-packages`（生成 packages.json）与 fpk 的 `index-after-publish`（FnDepot + fpk-updates）都只在 `release: published` 时跑。**不点 Publish = 客户端收不到更新、飞牛应用中心也拿不到新版。**
 3. **模块（tv_plugins）只在 `tv-plugins-v*` 跑**。`tv-v*` 不带（最常用的只发壳入口）；
    `release-v*` 也不带（模块是独立版本线，内容没变时只是把 150MB 再搬一遍；
    全量 Release 的自包含由「复制继承资产」保证，不重发也会从模块自己的 release 复制过来）。
@@ -412,10 +412,11 @@ git tag docker-v0.9.17  && git push origin docker-v0.9.17    # 只镜像
    > 踩过：用 tag 名推版本，导致找 `0.9.15-test3` 的安装包而产物叫 `0.9.15`。
    > 例外：`tv-plugins-v*` / `plugins-v*` 是独立版本线，清单按资产名逐条取版本。
 4. **带前缀的构建 tag 都会建 draft Release**（`release-v*` / `tv-v*` / `pc-v*` /
-   `plugins-v*` / `tv-plugins-v*`），**需人工 Publish**；`docker-v*` 只推镜像不建 Release；
-   `fpk-v*` 是独立 workflow，建 **prerelease**（主仓镜像）+ 回写 FnDepot，不参与 `packages.json`；
+   `plugins-v*` / `tv-plugins-v*` / `fpk-v*`），**需人工 Publish**；`docker-v*` 只推镜像不建 Release；
+   `fpk-v*` 是独立 workflow，同样只建 **draft**（主仓镜像），**Publish 之后**才写 FnDepot
+   与 `fpk-updates`，不参与 `packages.json`；
    **全量 `release-v*` 会以 workflow_call 调同一个 fpk.yml**（2026-11-13 起：全量必须带
-   fnOS 包，不再需要手动补推 `fpk-v*`），主仓镜像仍挂 `fpk-v<版本>` 的 prerelease。
+   fnOS 包，不再需要手动补推 `fpk-v*`），fpk 包进主 Release，两条索引同样等 Publish。
    **手动 dispatch 一律不建 Release**——它的 ref 是分支名，拿来当 `tag_name`
    会建出叫 `main` 的 Release（2026-10-26 就因此手工清理过）。要出正式版必须打 tag。
 
@@ -454,7 +455,8 @@ release.yml             主入口：plan 判定范围 → 按需 call → publis
 ├── _plugins.yml        插件包（Windows runner，可复用）
 └── _pc_shell.yml       PC 安装包（Windows runner，可复用）
 
-fpk.yml                 fnOS fpk（tag fpk-v* / dispatch / release-v* 全量链以 workflow_call 调用）
+fpk.yml                 fnOS fpk（tag fpk-v* / dispatch / release-v* 全量链以 workflow_call 调用；
+                        release:published → index-after-publish 写 FnDepot + fpk-updates）
 
 ci.yml                  质量检查（PR / 手动 dispatch，约 1 分钟：构建+类型+单测+javac+drpy）
                         ★不监听 push 到 main——那几项本地必然已跑过，云端重放没有新信息
@@ -499,9 +501,18 @@ ci.yml                  质量检查（PR / 手动 dispatch，约 1 分钟：构
 ### 4.6 额度
 
 - 私有仓 **2000 分钟/月**；**Windows runner ×2 计费**
-- 全量一次约 **45 分钟额度** → 月均 44 次
-- 已加 `timeout-minutes`（Docker 30 / TV 25 / PC 45），防卡死烧满 6 小时默认上限
-- 缓存：Rust（`Swatinem/rust-cache`，key 绑 Cargo.lock）、gradle、buildx（`type=gha, mode=max`）
+- 全量一次实测（2026-11-13，1.2.4）：墙钟 **9m58s**，折算额度 **≈38 分钟**（PC 17.3 + 插件 9.7 是 Windows 那两份）
+- 已加 `timeout-minutes`（Docker 30 / TV 25 / PC 45 / fpk 30），防卡死烧满 6 小时默认上限
+- 缓存（2026-11-13 重整，**key 全部不再吃 app 版本号**）：
+  · PC `target/` + cargo registry：key 用「剔除 meow-player `version` 行」的 lock 指纹。
+    以前直接用 `Swatinem/rust-cache` 绑 `Cargo.lock`，而 `bump-version.ps1` 每版都改那行
+    → **缓存从未命中**（恢复日志 `No cache found.`），226 个 crate 全量重编 5m01s
+  · PC MinGW 16.2.0 整目录（choco 装一次，省 53s；约 1.2GB，占缓存额度要留意）
+  · 插件 tv-node：`.deps` + `release/runtime-node-*`（命中即走脚本自己的 reuse 分支）；
+    ffmpeg 包与 danmu 上游按 ISO 周刷新（下载地址是滚动的，不能钉死）
+  · 其余：gradle、buildx（`type=gha, mode=max`）、fpk 的 cargo
+- ★ 插件产物缓存的 key **必须带 `plugins_only`**：`pc-v*`/`tv-v*` 只建 apiserver，
+  曾与全量共用 key → 全量命中后跳过构建、Release 少 4 个插件（2026-11-13 修）
 
 ### 4.7 ★ 清单与在线更新（`packages.json` + `CHANGELOG.md`）
 
@@ -531,9 +542,9 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 
 | # | 事项 | 不做会怎样 |
 |---|---|---|
-| 1 | **除 `docker-v*` 外，带前缀的构建 tag 都会建 Release**（`release-v*` / `tv-v*` / `pc-v*` / `plugins-v*` / `tv-plugins-v*` 建 draft；`fpk-v*` 建 prerelease）；无前缀 `v*` 不建 | 单链 tag 也能补包；`docker-v*` 只推镜像；`fpk-v*` 同时回写 FnDepot 与 `fpk-updates` |
-| 2 | **建出来是 draft，必须去网页点 Publish** | draft 的资产对 API 不可见，`pickManifestRelease` 会跳过它 |
-| 3 | **`sync-packages` 只在 `release: published` 时跑** | 忘了点 Publish = 45 分钟额度白烧，且没有任何报错 |
+| 1 | **除 `docker-v*` 外，带前缀的构建 tag 都会建 Release**（`release-v*` / `tv-v*` / `pc-v*` / `plugins-v*` / `tv-plugins-v*` / `fpk-v*` 全部建 draft）；无前缀 `v*` 不建 | 单链 tag 也能补包；`docker-v*` 只推镜像；`fpk-v*` 在 Publish 后写 FnDepot 与 `fpk-updates` |
+| 2 | **建出来是 draft，必须去网页点 Publish** | draft 的资产对 API 不可见，`pickManifestRelease` 会跳过它；fpk 的两条索引也不会写 |
+| 3 | **`sync-packages` / `index-after-publish` 只在 `release: published` 时跑** | 忘了点 Publish = 额度白烧，且没有任何报错 |
 | 4 | **Publish 后还会把 `packages.json` force push 到 `updates` 分支** | 开源后客户端在 API 失败/限流时用 raw 静态清单兜底；不推只是少一条退路 |
 
 #### 更新说明从哪来：`CHANGELOG.md`
@@ -619,8 +630,11 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 - **显式备用源**：应用更新支持填写「备用源」；主源失败才试，不会自动回落官方源。官方源失败另有 `updates` 分支静态清单兜底。
 - **插件源跟随应用源**：PC 插件源面板有「使用应用更新源」开关，默认把同一条 Release 的 `packages.json` 加为插件源；插件安装器仍独立（下载 zip / 解压 / 回滚）。
 - **fpk 双通道（2026-11-13 对齐 TV/PC）**：
-  · **全量 `release-v*`**：fpk 包由 `publish` 收进**主 Release**（和 apk/exe 同级，`publish` 的 `needs` 含 `fpk`），**不再单出 `fpk-v*` prerelease**；FnDepot 与 `fpk-updates` 索引照写。
-  · **单链 `fpk-v*`**：补包时才建本 tag 的 prerelease 托管两个 fpk，并同样写两条索引。
+  · **全量 `release-v*`**：fpk 包由 `publish` 收进**主 Release**（和 apk/exe 同级，`publish` 的 `needs` 含 `fpk`），**不出 `fpk-v*` prerelease**。
+  · **单链 `fpk-v*`**：补包时建本 tag 的 **draft** 托管两个 fpk（和 tv-v*/pc-v* 同形）。
+  · **两条索引都等 Publish**：`index-after-publish`（`release: published`）从已发布的 Release 里
+    `gh release download` 两个 fpk、重算 sha256 后写 FnDepot 与 `fpk-updates`。草稿阶段一条都不写，
+    删掉草稿也不会留下用户可见的索引。
   · FnDepot 是飞牛应用中心正式源（包体自托管）；`fpk-updates` 分支是主仓镜像索引，`download_url` 指向上面那个 Release 的资产，**合并写入**（补发旧版本不会顶掉新版本）。客户端先读 FnDepot，不可达/更旧时读镜像：
   `https://raw.githubusercontent.com/upchr/meow/fpk-updates/fpk.json`
 - **版本线**：壳（`release/tv/pc`）与 fpk tag 必须等于 `client/package.json`；`tv-plugins-v*`（模块）与 `plugins-v*`（插件批次）是独立版本线，tag 后缀只要是数字即可，清单按资产名逐条取版本。
@@ -677,6 +691,9 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
       （不点 = 客户端收不到更新；`sync-packages` 只在 `release: published` 时跑）
 - [ ] Publish 后确认 Release 上多了 `packages.json` 资产，且 `desc` 是
       你写进 CHANGELOG 的那段（不是模板串「猫窝 XX 版 x.y.z」）
+- [ ] 含 fnOS 包时，确认 fpk 的 `index-after-publish` 绿了：FnDepot 的 `fnpack.json`
+      出现该版本、`fpk-updates` 分支的 `fpk.json` 也合并进去（它和 `sync-packages`
+      同属"Publish 之后"的动作，忘了点 Publish 两条索引都不动）
 - [ ] 清理测试 tag / draft Release（见 §七）
 - [ ] 需要对外分发时把 `release/v<版本>/` 放到分发渠道
 
@@ -822,7 +839,7 @@ gh auth refresh -h github.com -s workflow
 
 | 项 | 状态 |
 |---|---|
-| 缓存命中后耗时 | 2026-11-09 分链实测：docker 366s / tv 123s / tv_plugins 20s / pc_shell 821s（构建单步 642s）/ plugins 29s；fpk 4m09s |
+| 缓存命中后耗时 | 2026-11-13 全量实测（1.2.4，墙钟 9m58s）：PC 519s / 插件 292s / Docker 214s / TV 100s / fpk 93+97s / Web 45s / 建 draft 18s。2026-11-09 旧值：docker 366s / tv 123s / tv_plugins 20s / pc_shell 821s / plugins 29s / fpk 4m09s |
 | 单链档位 | `pc-v*` / `plugins-v*` / `tv-plugins-v*` 均已单独跑过，耗时见 §4.1 表 |
 | CI 失败通知 | 无（单人使用价值不高） |
 | 产物大小校验 | 无（zips 变 0 字节也算成功） |

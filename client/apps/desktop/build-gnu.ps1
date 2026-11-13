@@ -56,8 +56,29 @@ Write-Host "toolchain: $env:RUSTUP_TOOLCHAIN"
 Write-Host "gcc      : $mingw\x86_64-w64-mingw32-gcc.exe"
 Write-Host "building : x86_64-pc-windows-gnu"
 
-if ($args.Count -gt 0) {
-    npx tauri build --target x86_64-pc-windows-gnu @args
-} else {
-    npx tauri build --target x86_64-pc-windows-gnu --no-bundle
+# ★ MEOW_SKIP_WEB_BUILD=1：跳过 tauri.conf.json 的 beforeBuildCommand。
+#   它是 `pnpm --filter @meow/web build`（含 vue-tsc），而 CI 的 web job 已经
+#   建过 dist 并用 artifact 传进来了 —— 再跑一遍纯浪费（2026-11-13 实测 30s），
+#   而且 PC 包里打包的就变成"PC 自己重建的那份"，四端前端字节不再一致。
+#   用 config 文件覆盖（而不是空串）：空串的行为各版本不稳，no-op 命令最安全。
+#   本地不带这个环境变量，行为与以前完全一致。
+$cfgArgs = @()
+$tmpCfg = $null
+if ($env:MEOW_SKIP_WEB_BUILD -eq '1') {
+    $tmpCfg = Join-Path $PSScriptRoot '.tauri.ci.json'
+    '{ "build": { "beforeBuildCommand": "echo skip-web-build: reuse dist from artifact" } }' |
+        Set-Content -Path $tmpCfg -Encoding utf8
+    $cfgArgs = @('--config', $tmpCfg)
+    Write-Host 'beforeBuildCommand 已覆盖为 no-op（复用 web job 的 dist）'
+}
+
+try {
+    $common = @('--target', 'x86_64-pc-windows-gnu') + $cfgArgs
+    if ($args.Count -gt 0) {
+        & npx tauri build @common @args
+    } else {
+        & npx tauri build @common --no-bundle
+    }
+} finally {
+    if ($tmpCfg) { Remove-Item $tmpCfg -Force -ErrorAction SilentlyContinue }
 }

@@ -207,13 +207,18 @@ jobs:
   # ── fnOS fpk（2026-11-13 补）────────────────────────────────────────────
   # 用户报：release-v* 全量发版**没有 fpk**，Release 缺资产、FnDepot 也没更新。
   # 现在全量链直接调 fpk.yml（workflow_call）：
-  #   · 产物挂到 fpk-v<版本> 的 prerelease（不污染主 Release 的 latest 判定）
-  #   · 同时回写 upchr/FnDepot 的 fnpack.json（飞牛第三方源正式通道）
+  #   · 只构建，产物由下面的 publish 收进主 Release（和 TV/PC 同页）
+  #   · 索引等 Publish 之后由 fpk.yml 的 index-after-publish 写
+  #     （FnDepot 正式源 + fpk-updates 镜像），与 sync-packages 同一时机
   #   · 仍保留 fpk-v* 单链 —— 只补 fpk 时不用重跑 Docker/TV/PC
   # 只在全量 tag 上跑：tv-v/pc-v/plugins-v 这些单链不带 fpk。
   fpk:
     name: fnOS fpk
-    needs: plan
+    # ★ 必须等 web（2026-11-13 实测）：fpk 两腿要复用 web 的 /app/meow 版 dist。
+    #   原来只 needs: plan → 腿在 +20s 起跑，而 web 到 +54s 才上传 artifact，
+    #   下载步骤必然扑空并静默回落自建（日志「没有可复用的 dist → 自行构建」），
+    #   等于两条腿各多跑一遍 pnpm install + typecheck + vite。
+    needs: [plan, web]
     if: ${{ github.event_name == 'push' && needs.plan.outputs.release == 'true'
             && startsWith(github.ref, 'refs/tags/release-v') }}
     permissions:
@@ -228,7 +233,7 @@ jobs:
   publish:
     name: 建 draft Release
     # ★ fpk 也进 needs（2026-11-13 用户口径）：全量 Release 必须自带 fnOS 包，
-    #   不再单出一个 fpk-v* prerelease —— 用户下载/归档只认一个 Release，
+    #   不另出 fpk-v* Release —— 用户下载/归档只认一个 Release，
     #   和 TV/PC 的包同级。副作用：fpk 失败 = 这轮不建 Release（和 web/tv/pc 同语义）。
     needs: [plan, web, tv, pc, plugins, docker, tv_plugins, fpk]
     if: ${{ !cancelled() && github.event_name == 'push' && needs.plan.outputs.release == 'true'

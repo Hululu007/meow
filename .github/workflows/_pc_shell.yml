@@ -10,8 +10,14 @@
 #
 # ## 缓存（关键，首版没有它跑了 15m40s）
 #
-# Rust 的 tauri 依赖树首次编译极慢。Swatinem/rust-cache 缓存 target/ 与
-# ~/.cargo/registry，二次构建实测可从 15 分钟降到 3–5 分钟。
+# Rust 的 tauri 依赖树首次编译极慢。缓存 `~/.cargo/registry` + `target/`，
+# 二次构建实测可从 15 分钟降到 1–2 分钟。
+#
+# ★ 缓存 key 必须对 Cargo.lock 做归一化（剔除本包 version 行）：
+#   以前用 Swatinem/rust-cache + `hashFiles(Cargo.lock)`，而 bump-version 每版
+#   都改 lock 里 meow-player 的 version → key 每版变 → **缓存从未命中**
+#   （2026-11-13 实测：`No cache found.`，226 个 crate 全量重编 5m01s）。
+#   详见下面「计算 Rust 依赖指纹」那一步的注释。
 
 name: _pc_shell
 
@@ -63,38 +69,117 @@ jobs:
           toolchain: stable-x86_64-pc-windows-gnu
           targets: x86_64-pc-windows-gnu
 
-      # ★ 关键缓存：tauri 的依赖树首次编译极慢，缓存后 15 分钟 → 3-5 分钟
-      - name: 缓存 Rust 依赖
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: client/apps/desktop/src-tauri -> target
-          # 只按 Cargo.lock 失效：改 .rs 不该清空依赖缓存
-          key: ${{ hashFiles('client/apps/desktop/src-tauri/Cargo.lock') }}
+      # ★ 依赖缓存的 key **不能**吃 Cargo.lock 原文（2026-11-13 实测）：
+      #   bump-version 每版都改写 lock 里 meow-player 的 version 行（bump-version.ps1:73），
+      #   原来 Swatinem/rust-cache 的 key 跟着 lock 走 → 每版必变，恢复日志是
+      #   "No cache found."，226 个 crate 全量重编 5m01s（占整条链一半）。
+      #   现在先做归一化（只剔除本包那行 version）再取指纹：
+      #   依赖没变 → 命中；只是本包升版本 → 只重编 meow-player + 重链接。
+      - name: 计算 Rust 依赖指纹
+        id: dep
+        shell: bash
+        run: |
+          set -euo pipefail
+          L=client/apps/desktop/src-tauri/Cargo.lock
+          [ -f "$L" ] || { echo "::error::缺少 $L"; exit 1; }
+          NEW=$(mktemp)
+          # 只丢 meow-player 这个 [[package]] 块里的 version 行；其它包一行不动
+          awk '
+            /^\[\[package\]\]/ { name = "" }
+            name == "" && /^name = / {
+              n = $0; sub(/^name = "/, "", n); sub(/"$/, "", n); name = n
+            }
+            name == "meow-player" && /^version = / { next }
+            { print }
+          ' "$L" > "$NEW"
+          # 自检：必须正好少一行（本包那行），少了多行说明状态机误伤
+          A=$(grep -c '^version = ' "$L" || true)
+          B=$(grep -c '^version = ' "$NEW" || true)
+          if [ $((A - B)) -ne 1 ]; then
+            echo "::error::Cargo.lock 归一化异常：version 行 $A → $B（期望正好少 1 行）"
+            exit 1
+          fi
+          echo "hash=$(sha256sum "$NEW" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
-      - name: 安装 MinGW
+      - name: 缓存 Rust 依赖与构建产物
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            client/apps/desktop/src-tauri/target
+          key: pc-cargo-${{ runner.os }}-${{ steps.dep.outputs.hash }}
+          # 依赖增删（lock 变了）时退化为部分命中：cargo 自己的指纹会挑要重编的 crate
+          restore-keys: |
+            pc-cargo-${{ runner.os }}-
+
+      # MinGW 是 choco 现装的（16.2.0 解压约 53s，实测 04:35:51→04:36:44）。
+      # 装完落在 C:\ProgramData\mingw64（下面探测的第一个候选），整目录缓存即可。
+      - name: 缓存 MinGW
+        uses: actions/cache@v4
+        with:
+          path: C:\ProgramData\mingw64
+          key: mingw-16.2.0-ucrt-posix-seh
+
+      - name: 安装 MinGW（缓存未命中才装）
         shell: pwsh
         run: |
-          choco install mingw -y --no-progress
+          $gcc = 'C:\ProgramData\mingw64\mingw64\bin\x86_64-w64-mingw32-gcc.exe'
+          if (Test-Path $gcc) {
+            Write-Host 'MinGW 命中缓存，跳过安装'
+          } else {
+            choco install mingw -y --no-progress
+          }
           $cands = @(
             'C:\ProgramData\mingw64\mingw64\bin',
             'C:\ProgramData\mingw64\bin'
           )
           $mingwBin = $cands | Where-Object { Test-Path (Join-Path $_ 'x86_64-w64-mingw32-gcc.exe') } | Select-Object -First 1
           if (-not $mingwBin) {
-            $gcc = Get-ChildItem 'C:\ProgramData' -Recurse -Filter 'x86_64-w64-mingw32-gcc.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($gcc) { $mingwBin = $gcc.DirectoryName }
+            $gccHit = Get-ChildItem 'C:\ProgramData' -Recurse -Filter 'x86_64-w64-mingw32-gcc.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($gccHit) { $mingwBin = $gccHit.DirectoryName }
           }
           if (-not $mingwBin) { throw 'MinGW install ok but gcc not found' }
           "MINGW_BIN=$mingwBin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "MINGW_BIN=$mingwBin"
 
+      # dev 前置：记下 dist 的时间戳，构建后再比一次。
+      # beforeBuildCommand 已被 MEOW_SKIP_WEB_BUILD 换成 no-op，dist 若被重建
+      # 说明开关没生效（那时 PC 包里就不是 web job 那份前端了）。
+      - name: 记录 dist 时间戳
+        id: distm
+        shell: bash
+        run: |
+          set -euo pipefail
+          F=client/apps/web/dist/index.html
+          [ -s "$F" ] || { echo "::error::缺少 $F —— web job 的 artifact 没到"; exit 1; }
+          echo "before=$(stat -c %Y "$F")" >> "$GITHUB_OUTPUT"
+          echo "dist mtime=$(stat -c %Y "$F")"
+
       - name: 构建 PC 包
         shell: pwsh
+        env:
+          # 复用 web job 的 dist：跳过 tauri 的 beforeBuildCommand（省约 30s 的
+          # vue-tsc + vite build，且保证四端前端字节一致）
+          MEOW_SKIP_WEB_BUILD: '1'
         run: |
           Push-Location client/apps/desktop
           ./build-gnu.ps1 --bundles nsis
           if ($LASTEXITCODE -ne 0) { throw 'PC 构建失败' }
           Pop-Location
+
+      - name: 断言前端未被重建
+        shell: bash
+        run: |
+          set -euo pipefail
+          F=client/apps/web/dist/index.html
+          BEFORE='${{ steps.distm.outputs.before }}'
+          AFTER=$(stat -c %Y "$F")
+          if [ "$BEFORE" != "$AFTER" ]; then
+            echo "::error::dist 被重建了（before=$BEFORE after=$AFTER）—— MEOW_SKIP_WEB_BUILD 没生效"
+            exit 1
+          fi
+          echo "OK：dist 未变，PC 打包用的是 web job 的产物"
 
       - name: 收集 PC 产物
         shell: pwsh

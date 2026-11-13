@@ -44,12 +44,12 @@ package.json”，`plugins-v*` / `tv-plugins-v*` 不校验；不要拿壳版本�
 
 | tag | 构建什么 | 建 Release |
 |---|---|---|
-| `release-v*` | Web + TV + PC + apiserver 插件 + Docker 三镜像 + **fnOS fpk ×2（含 FnDepot 回写）** | ✅ draft |
+| `release-v*` | Web + TV + PC + apiserver 插件 + Docker 三镜像 + **fnOS fpk ×2** | ✅ draft |
 | `tv-v*` | TV APK（不带运行时模块） | ✅ draft |
 | `pc-v*` | PC 壳 + apiserver 插件 | ✅ draft |
 | `plugins-v*` | 全部插件（units.json 五个，含 tv-node） | ✅ draft |
 | `tv-plugins-v*` | TV 运行时模块 ×3 ABI | ✅ draft |
-| `fpk-v*` | 另一 workflow：x86/arm 套件 + FnDepot 回写 + **本 tag 的 prerelease** + `fpk-updates`（补包用）；全量 `release-v*` 也调它构建，但包进主 Release、不出 prerelease | ✅ prerelease（仅单链） |
+| `fpk-v*` | 另一 workflow：x86/arm 套件（补包用）；全量 `release-v*` 也调它构建，但包进主 Release | ✅ draft（仅单链） |
 
 **`docker-v*` 单链只推镜像、不建 Release**（2026-11-12 补回）：重发镜像也可以走
 `workflow_dispatch`（勾 docker）或 `build-push-docker.ps1`；dispatch 不建 Release
@@ -67,10 +67,13 @@ package.json”，`plugins-v*` / `tv-plugins-v*` 不校验；不要拿壳版本�
 ```
 CI 建 draft Release → 人工 Publish → release:published
   → sync-packages 生成并上传 packages.json → 同时 force-push updates 分支 → 客户端读清单
+  → index-after-publish（fpk）写 FnDepot fnpack.json + 合并写 fpk-updates 分支
 ```
 
-- **draft 不触发清单生成**，必须点 Publish；`sync-packages` 只在 `release: published` 跑，
-  跳过 `fpk-v*`。**清单只有 `packages.json`**：`SHA256SUMS.txt` 由 `publish` 给 Release
+- **draft 不产生任何用户可见清单**，必须点 Publish：`sync-packages` 与 fpk 的
+  `index-after-publish` 都只在 `release: published` 跑（前者跳过 `fpk-v*`）。
+  四条链同构——tag → 构建 → draft → Publish → 写索引，**草稿阶段删掉不会留下索引**。
+- **清单只有 `packages.json`**：`SHA256SUMS.txt` 由 `publish` 给 Release
   资产算，`index.json` 只是本地产物的别名，不在 Release 流程里。
 - **资产名不能改**：客户端按常量 `packages.json` 找清单，改名等于让所有客户端看不到更新。
 - **全量 Release 会复制继承的插件资产**（`release-v*`）；单链发布不复制，url 仍指向旧

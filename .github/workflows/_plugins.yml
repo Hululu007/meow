@@ -61,12 +61,53 @@ jobs:
         with:
           node-version: '22'
 
+      # ★ key 里必须带 plugins_only（2026-11-13 修）：这条路以前被 pc-v*/tv-v*
+      #   用 `apiserver` 跑过，产物只有 apiserver 一个，却和全量共用同一个 key ——
+      #   下一次全量命中就会"跳过构建"，Release 里少 drpy/danmu/ffmpeg/tv-node。
       - name: 缓存插件产物
         id: pcache
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/plugins-out
-          key: plugins-${{ hashFiles('deploy/units.json', 'server/build-plugin.ps1', 'server/build-plugin-danmu.ps1', 'server/build-plugin-drpy.ps1', 'server/build-plugin-ffmpeg.ps1', 'server/host/src/**', 'server/drpy/**') }}
+          key: plugins-${{ runner.os }}-${{ inputs.plugins_only || 'all' }}-${{ hashFiles('deploy/units.json', 'server/build-plugin.ps1', 'server/build-plugin-danmu.ps1', 'server/build-plugin-drpy.ps1', 'server/build-plugin-ffmpeg.ps1', 'server/host/src/**', 'server/drpy/**') }}
+
+      # ── 静态载荷缓存（2026-11-13 新增）────────────────────────────────
+      # 有两类"与代码无关、却每版都重新下载/重建"的东西，实测占本 job 一半：
+      #   · tv-node：.deps 里的 nodejs-mobile zip（三个 ABI 解压）+ release/ 下的
+      #     3 个 APK。脚本本身有 reuse 分支（inputs 未变就不跑 gradle），但复用
+      #     目录在 CI 上是干净的 → 每版重建（1.2.4 实测 124s）。
+      #   · ffmpeg 包（110MB）与 danmu 上游（--depth 1 main）：下载 URL 是**滚动**
+      #     地址，所以这两个按 ISO 周刷新，避免悄悄钉死在上个月的二进制/源码。
+      # ★ key 不吃 app 版本：tv-node 只跟入库文件（含脚本里的 NodeVersion）走。
+      - name: 计算载荷缓存键
+        id: ck
+        if: ${{ steps.pcache.outputs.cache-hit != 'true' && inputs.plugins_only == '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # git ls-files 只列入库文件：.deps / release / .tmp 这些产物目录不会污染 key
+          TV=$(git ls-files -z deploy/units.json client/apps/tv/runtime-node \
+               | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+          echo "tv=$TV" >> "$GITHUB_OUTPUT"
+          echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: 缓存 tv-node 载荷与产物（命中即走脚本自己的 reuse）
+        if: ${{ steps.pcache.outputs.cache-hit != 'true' && inputs.plugins_only == '' }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            client/apps/tv/runtime-node/.deps
+            release/runtime-node-*
+          key: plugins-tvnode-${{ runner.os }}-${{ steps.ck.outputs.tv }}
+
+      - name: 缓存 ffmpeg 包与 danmu 上游（周更）
+        if: ${{ steps.pcache.outputs.cache-hit != 'true' && inputs.plugins_only == '' }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/.tmp/ffmpeg-dl
+            research/upstream/danmu_api
+          key: plugins-ext-${{ runner.os }}-${{ steps.ck.outputs.week }}
 
       # danmu 插件需要上游源码（不入库）：浅克隆一次，拿不到就跳过该插件
       - name: 准备 danmu 上游源码

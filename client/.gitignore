@@ -11,6 +11,8 @@ target/
 
 # Tauri 生成
 apps/desktop/src-tauri/gen/schemas/
+# CI 一次性 config 覆盖（build-gnu.ps1 在 MEOW_SKIP_WEB_BUILD=1 时生成）
+apps/desktop/src-tauri/.tauri.ci.json
 
 # 本地调试产物
 *.log
