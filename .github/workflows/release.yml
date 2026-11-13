@@ -247,7 +247,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # fetch-depth: 0：下面的「插件版本守卫」要 git diff 上一个 release tag，
+      # 默认的浅克隆拿不到历史，diff 会静默为空（= 守卫失效）。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: 下载产物
         uses: actions/download-artifact@v4
         with:
@@ -272,6 +276,63 @@ jobs:
         run: |
           set -euo pipefail
           [ "$(ls | wc -l)" -gt 0 ] && sha256sum * > SHA256SUMS.txt
+
+      # ── 插件版本守卫（2026-11-13）───────────────────────────────────────
+      # 背景：danmu-api / drpy / ffmpeg 的版本手写在 manifest，tv-node 的补丁号
+      # 依赖本地状态（CI 恒为 .1）。改了载荷忘了升版本 = 客户端按版本号判定
+      # 「已是最新」→ 新内容永远发不出去，而 CI 全绿（1.2.4/1.2.5 的 tv-node 就这样过）。
+      # 判据用**源码 diff**而不是 zip 的 sha：zip 带时间戳，重跑一次 sha 就变，
+      # 拿 sha 判会在每次重跑时误报。
+      - name: 计算本版有源码改动的插件单元
+        id: changed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          CUR="${GITHUB_REF_NAME}"
+          PREV=""
+          while read -r t; do
+            [ -z "$t" ] && continue
+            [ "$t" = "$CUR" ] && continue
+            if git merge-base --is-ancestor "$t" HEAD 2>/dev/null; then PREV="$t"; break; fi
+          done < <(git tag -l 'release-v*' --sort=-v:refname)
+
+          CHANGED=""
+          add() { CHANGED="${CHANGED:+$CHANGED,}$1"; }
+          if [ -n "$PREV" ]; then
+            # ★ 不要写 `git diff … | grep -q`：grep 提前退出会让 git 吃 SIGPIPE，
+            #   pipefail 下整步失败（本项目踩过多次）。用命令替换判空。
+            [ -n "$(git diff --name-only "$PREV"..HEAD -- server/drpy)" ] && add drpy
+            [ -n "$(git diff --name-only "$PREV"..HEAD -- client/apps/tv/app/src/main/assets/node-payload-danmu.zip)" ] && add danmu-api
+            [ -n "$(git diff --name-only "$PREV"..HEAD -- client/apps/tv/runtime-node client/apps/tv/app/src/main/assets/node-payload-danmu.zip)" ] && add tv-node
+            [ -n "$(git diff --name-only "$PREV"..HEAD -- server/build-plugin-ffmpeg.ps1)" ] && add ffmpeg
+          else
+            echo "::warning::找不到上一个 release tag，插件版本守卫跳过"
+          fi
+          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+          echo "prev=$PREV" >> "$GITHUB_OUTPUT"
+          echo "自 ${PREV:-（无）} 起有源码改动的插件单元：${CHANGED:-无}"
+
+          # 基线：最近一个已发布、且带 packages.json 的 Release
+          BASE_TAG=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=50" \
+            -q '[.[] | select(.draft == false and .prerelease == false
+                 and ([.assets[].name] | index("packages.json")))] | .[0].tag_name' 2>/dev/null || true)
+          if [ -n "${BASE_TAG:-}" ]; then
+            gh release download "$BASE_TAG" -p packages.json -O baseline-packages.json --clobber \
+              && echo "基线：$BASE_TAG" || echo "::warning::基线下载失败，守卫将跳过"
+          else
+            echo "::warning::找不到带 packages.json 的已发布 Release，守卫将跳过"
+          fi
+
+      - name: 插件版本守卫（改了源码必须升版本）
+        shell: pwsh
+        run: |
+          ./deploy/scripts/check-plugin-versions.ps1 `
+            -ChangedIds '${{ steps.changed.outputs.changed }}' `
+            -Version '${{ needs.plan.outputs.version }}' `
+            -BaselinePath 'baseline-packages.json'
+
       # ★ 更新说明进 Release 正文（2026-11-12 用户指出 1.2.0 页面上没有说明）。
       #   以前正文是纯静态资产表，用户只在应用内弹框里才看得到 CHANGELOG。
       #   解析口径与 fpk.yml 的「取更新说明」完全一致（`## <版本>` 小节）。

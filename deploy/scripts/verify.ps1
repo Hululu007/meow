@@ -117,6 +117,8 @@ Check '全库脚本已被清单覆盖' {
         'deploy\scripts\build-plugins.ps1', # 插件单链路入口
         'deploy\scripts\release.ps1',       # 总编排入口（自身不被 units 引用）
         'deploy\scripts\sync-packages.ps1'  # CI 专用：把各插件 fnpack.json 汇总成 packages.json
+        'deploy\scripts\check-plugin-versions.ps1'  # CI 专用：插件改了源码但没升版本的守卫
+
     )
 
     # 只扫「可能放脚本的目录」，不递归全库：-Recurse + Include 实测 10 秒，

@@ -691,6 +691,8 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
       （不点 = 客户端收不到更新；`sync-packages` 只在 `release: published` 时跑）
 - [ ] Publish 后确认 Release 上多了 `packages.json` 资产，且 `desc` 是
       你写进 CHANGELOG 的那段（不是模板串「猫窝 XX 版 x.y.z」）
+- [ ] 改了插件载荷（`server/drpy`、`node-payload-danmu.zip`、ffmpeg 脚本、`runtime-node`）
+      就要升对应版本号 —— 发布 job 的「插件版本守卫」会按源码 diff 拦（同版本不同内容 = 用户收不到）
 - [ ] 含 fnOS 包时，确认 fpk 的 `index-after-publish` 绿了：FnDepot 的 `fnpack.json`
       出现该版本、`fpk-updates` 分支的 `fpk.json` 也合并进去（它和 `sync-packages`
       同属"Publish 之后"的动作，忘了点 Publish 两条索引都不动）
