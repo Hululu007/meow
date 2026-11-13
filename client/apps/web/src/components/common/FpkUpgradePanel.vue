@@ -11,7 +11,6 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
-  DEFAULT_INDEX_URL,
   detectFpkShell,
   fetchIndexes,
   fpkIndexUrl,
@@ -261,7 +260,7 @@ async function start(): Promise<void> {
         </button>
       </div>
       <p class="mt-1 text-ink-3/70">
-        默认 {{ DEFAULT_INDEX_URL }}；不可达或没有更高版本时自动回退主仓 `fpk-updates/fpk.json`。填完整 URL，留空保存即恢复默认；升级包地址按该索引解析。
+        留空即用主仓镜像 → FnDepot 兜底；手填只用自己的，不回退。可填 owner/repo、GitHub 仓库地址或完整 URL。
       </p>
     </details>
   </div>

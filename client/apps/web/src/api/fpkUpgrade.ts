@@ -63,9 +63,17 @@ export function fpkIndexUrl(): string {
 }
 
 /**
- * 默认索引源列表：FnDepot 优先，主仓镜像兜底。
+ * 默认索引源列表：**主仓镜像优先，FnDepot 兜底**（2026-11-13 调整）。
  *
- * 用户手填索引时只用自己的那头（不再偷偷加主仓），避免“我明明填了
+ * 顺序跟着 CI 的写入顺序走：`index-after-publish` 先写主仓 `fpk-updates`、
+ * 后写 FnDepot，所以正常情况下主仓只会「等于或更新于」FnDepot，读它就够；
+ * FnDepot 只在主仓不可达、或主仓里没有更高版本时才查（镜像兜底）。
+ *
+ * 为什么不并行拉两份合并：主仓是 CI 的产物、版本集合可控；FnDepot 允许带外
+ * 写入（手动 push / 旧 worklfow），合并会把没经过 CI 的版本采信进来，
+ * 反而多一种"能发现、装不上"的故障。串行 + 先到先用更稳。
+ *
+ * 用户手填索引时只用自己的那头（不再偷偷加默认源），避免“我明明填了
  * 内网源，客户端却去公网拉”的意外。
  */
 export function fpkIndexUrls(): string[] {
@@ -76,8 +84,10 @@ export function fpkIndexUrls(): string[] {
       return ''
     }
   })()
-  // 手填了默认地址也按“默认”处理，仍享受主仓镜像兜底
-  if (!custom || custom === DEFAULT_INDEX_URL) return [DEFAULT_INDEX_URL, MAIN_INDEX_URL]
+  // 手填了默认地址也按“默认”处理，仍享受兜底
+  if (!custom || custom === DEFAULT_INDEX_URL || custom === MAIN_INDEX_URL) {
+    return [MAIN_INDEX_URL, DEFAULT_INDEX_URL]
+  }
   return [custom]
 }
 
@@ -264,12 +274,12 @@ export async function fetchIndex(input = fpkIndexUrl()): Promise<FpkIndex> {
 }
 
 /**
- * 依次尝试多个索引源（FnDepot → 主仓镜像）。
+ * 依次尝试索引源（主仓镜像 → FnDepot）。
  *
- * 已知 current 时：第一份索引若已有更高版本就直接返回；没有更高版本
- * 才继续查镜像，避免 jsDelivr 缓存较旧时永远看不到主仓的新版本。
- * 主仓是镜像不是第二条版本线；需要跨索引挑版本时用
- * {@link pickLatestFromIndexes}。
+ * ★ 顺序跟着 CI：主仓先写、FnDepot 后写，所以主仓一般已经有最高版本；
+ * 第一份索引里出现了比 current 更高的版本就直接返回，不再去拉 FnDepot
+ * （也顺带避开"FnDepot 被带外写入一个没进 CI 的版本"这种情况）。
+ * 主仓拉不到、或主仓里没有更高版本，才继续查 FnDepot 兜底。
  */
 export async function fetchIndexes(inputs?: string[], current = ''): Promise<FpkIndex[]> {
   const list = (inputs && inputs.length ? inputs : fpkIndexUrls()).filter(Boolean)
@@ -284,8 +294,7 @@ export async function fetchIndexes(inputs?: string[], current = ''): Promise<Fpk
         continue
       }
       out.push(idx)
-      // 第一份索引已经找到比当前新的版本：不用再等镜像（避免 jsDelivr
-      // 正常时还为 404 的 fpk-updates 多等一轮超时）。
+      // 已经拿到比当前更新的版本：主仓优先成立，不必再等兜底源
       if (current && hasNewerVersion(idx, current)) return out
     } catch (e) {
       lastErr = e
@@ -349,6 +358,20 @@ export function pickLatest(
  * 这里把多个索引的结果放在一起，只有真的没有任何可用包时才返回
  * `noPackage`（用最高版本提示）。
  */
+/**
+ * 包地址的权威性排序（越小越优先）。
+ *
+ * Release 资产带 tag，URL 永久指向同一份字节，还能进加速列表；
+ * FnDepot 的相对地址是按分支解析的，内容可被覆盖；jsDelivr 既不可变也
+ * 服务不了 >20MB。同版本两份索引都给时，选最不容易"昨天还能下、今天 404"的那条。
+ */
+function pkgUrlRank(url: string): number {
+  if (/^https:\/\/github\.com\/[^/]+\/[^/]+\/releases\/download\//i.test(url)) return 0
+  if (/^https:\/\/raw\.githubusercontent\.com\//i.test(url)) return 1
+  if (/^https:\/\/cdn\.jsdelivr\.net\//i.test(url)) return 3
+  return 2
+}
+
 export function pickLatestFromIndexes(
   indexes: FpkIndex[],
   info: FpkShellInfo | null,
@@ -364,6 +387,13 @@ export function pickLatestFromIndexes(
       continue
     }
     if (!best || isNewer(picked.latest.version, best.version)) best = picked.latest
+    // 同版本：按包地址权威性取更稳的那条（Release 资产 > raw > 其它 > jsDelivr）
+    else if (
+      picked.latest.version === best.version &&
+      pkgUrlRank(picked.latest.url) < pkgUrlRank(best.url)
+    ) {
+      best = picked.latest
+    }
   }
   if (best) return { latest: best }
   if (noPkgVersion) return { noPackage: true, version: noPkgVersion }
@@ -774,10 +804,20 @@ export async function runFpkUpgrade(
   const packageType = String(dlDone.data.packageType || 'file')
   const realVersion = String(dlDone.data.version || dlDone.data.app_version || latest.version)
 
-  // 云端安装的应用不允许本地 fpk 升级（RROrg app.js:1028-1048 同判据）。
+  // canUpgrade=false 有**两种**含义，不能一律当成"安装形态不允许"：
+  //   ① 包版本不高于已装版本 → 中心说"没什么可升的"；
+  //   ② 应用中心真的禁止升级这个应用。
+  // 实测（2026-11-13，192.168.1.34 本地手动安装的实例）：包与已装同为 1.2.5 时
+  // 中心也回 canUpgrade=false，而 manualInstall=true —— 说明它是"有没有更高版本"
+  // 的旗标。之前按 ① 误报成"云端安装不支持本地升级"，把 ② 也一起挡住了。
   const installedInfo = dlDone.data.installedInfo as Record<string, unknown> | undefined
   if (installedInfo && installedInfo.canUpgrade === false) {
-    throw new AppCenterError('该应用是云端安装，不支持用本地安装包升级')
+    if (!isNewer(realVersion, installed?.version || '')) {
+      throw new AppCenterError(
+        `安装包版本（${realVersion}）不高于已安装版本（${installed?.version || '未知'}），应用中心没有可升级项`,
+      )
+    }
+    throw new AppCenterError('应用中心不允许升级这个应用（canUpgrade=false），请到应用中心里手动检查')
   }
 
   // 卷号必须真实：`app/installed` 不给，靠 fillVolume 回查补；两条都失败就中止。

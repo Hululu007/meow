@@ -7,6 +7,7 @@ import {
   markAccelResult,
   normalizeGitAccel,
   normalizeProxyPrefix,
+  rawUrlForJsdelivr,
   resetGitAccelHealth,
   type GitAccelPrefs,
 } from '../src/api/gitAccel'
@@ -134,6 +135,54 @@ describe('GitHub 加速：候选生成', () => {
   })
 })
 
+describe('GitHub 加速：jsDelivr 地址反向归一（否则整条链路短路）', () => {
+  const jsdIndex = 'https://cdn.jsdelivr.net/gh/upchr/FnDepot@main/fnpack.json'
+  const jsdPkg = 'https://cdn.jsdelivr.net/gh/upchr/FnDepot@main/meow/meow_1.2.5_x86.fpk'
+  const rawIndex = 'https://raw.githubusercontent.com/upchr/FnDepot/main/fnpack.json'
+  const rawPkg = 'https://raw.githubusercontent.com/upchr/FnDepot/main/meow/meow_1.2.5_x86.fpk'
+
+  it('rawUrlForJsdelivr 是 jsdelivrUrlForRaw 的逆；非 jsDelivr 返回空', () => {
+    expect(rawUrlForJsdelivr(jsdIndex)).toBe(rawIndex)
+    expect(rawUrlForJsdelivr(jsdPkg)).toBe(rawPkg)
+    expect(rawUrlForJsdelivr('https://raw.githubusercontent.com/o/r/main/a')).toBe('')
+    expect(rawUrlForJsdelivr('https://github.com/o/r')).toBe('')
+  })
+
+  it('jsDelivr 索引：直连仍用 jsDelivr（快），但 baseUrl 归一到 raw，且代理候选生效', () => {
+    const c = gitAccelCandidates(jsdIndex, DEFAULT_GIT_ACCEL, { for: 'fpk', index: true })
+    expect(c[0].url).toBe(jsdIndex)
+    expect(c.some((x) => x.proxyId === 'gh-proxy')).toBe(true)
+    expect(c.some((x) => x.proxyId === 'ghfast')).toBe(true)
+    for (const x of c) expect(x.baseUrl).toBe(rawIndex)
+  })
+
+  it('jsDelivr 大包（39.5MB）：不下发 jsDelivr 直连，直连换成 raw', () => {
+    const c = gitAccelCandidates(jsdPkg, DEFAULT_GIT_ACCEL, { for: 'fpk', size: 39_549_063 })
+    expect(c.some((x) => x.url === jsdPkg)).toBe(false)
+    expect(c[0].url).toBe(rawPkg)
+    expect(c.some((x) => x.proxyId === 'gh-proxy')).toBe(true)
+    for (const x of c) expect(x.baseUrl).toBe(rawPkg)
+  })
+
+  it('jsDelivr 小包（19MB）保留 jsDelivr 直连', () => {
+    const c = gitAccelCandidates(jsdPkg, DEFAULT_GIT_ACCEL, { for: 'fpk', size: 19_000_000 })
+    expect(c[0].url).toBe(jsdPkg)
+  })
+
+  it('体积未知（清单/索引）时保留 jsDelivr 直连，baseUrl 仍归一到 raw', () => {
+    const c = gitAccelCandidates(jsdPkg, DEFAULT_GIT_ACCEL, { for: 'appUpdate' })
+    expect(c[0].url).toBe(jsdPkg)
+    for (const x of c) expect(x.baseUrl).toBe(rawPkg)
+  })
+
+  it('加速关闭时，jsDelivr 大包也换成 raw 直连（否则必然 403）', () => {
+    const a = clone()
+    a.enabled = false
+    const c = gitAccelCandidates(jsdPkg, a, { for: 'fpk', size: 39_549_063 })
+    expect(c).toEqual([{ url: rawPkg, baseUrl: rawPkg }])
+  })
+})
+
 describe('GitHub 加速：对外前缀', () => {
   it('只返回启用项，且不含 jsDelivr', () => {
     const p = enabledProxyPrefixes(DEFAULT_GIT_ACCEL, 'pluginSource')
@@ -207,6 +256,28 @@ describe('fpk 索引：候选回退（集成）', () => {
       expect(idx.apps.meow).toBeTruthy()
       expect(calls).toContain(raw)
       expect(calls.length).toBeGreaterThan(1)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('默认 jsDelivr 索引：返回的 base 是 raw 等价地址（相对包地址才不会落回 jsDelivr）', async () => {
+    const jsd = 'https://cdn.jsdelivr.net/gh/upchr/FnDepot@main/fnpack.json'
+    const raw = 'https://raw.githubusercontent.com/upchr/FnDepot/main/fnpack.json'
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input) === jsd) {
+        return new Response(JSON.stringify({ apps: { meow: { releases: {} } } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      throw new Error('unexpected ' + String(input))
+    }) as typeof fetch
+    try {
+      savePrefs({ gitAccel: clone() })
+      const idx = await fetchIndex(jsd)
+      expect(idx.url).toBe(raw)
     } finally {
       globalThis.fetch = origFetch
     }

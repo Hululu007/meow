@@ -69,6 +69,10 @@ on:
         description: '版本号（留空取 client/package.json）'
         required: false
         type: string
+      tag:
+        description: '只重跑索引：已发布 Release 的 tag（如 release-v1.2.5）；填了就跳过构建'
+        required: false
+        type: string
   # ★ 索引只在「Release 被 Publish」之后写（2026-11-13 与 sync-packages 对齐）。
   #   全量 release-v<ver> 与单链 fpk-v<ver> 都走这一条；draft 阶段不产生任何
   #   用户可见的索引，Publish 之前随时可以删掉草稿。
@@ -104,8 +108,9 @@ concurrency:
 jobs:
   plan:
     name: 版本与范围
-    # release 事件只跑索引（index-after-publish），不重建包
-    if: github.event_name != 'release'
+    # release 事件只跑索引（index-after-publish），不重建包；
+    # dispatch 带 tag 时同理：只补索引，不重新构建。
+    if: github.event_name != 'release' && inputs.tag == ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -491,14 +496,19 @@ jobs:
   #   一眼可见，不能静默过去（静默 = 用户以为发了新版，1.2.2 就踩过）。
   index-after-publish:
     name: 发布后写索引
+    # ★ prerelease 也算 published 事件：不加这条，把一个草稿标成 prerelease 就会
+    #   立刻写走两份索引（等于绕过 Publish 闸门）。
+    # ★ dispatch 带 tag 时只补索引（1.2.5 就是这么漏掉主仓镜像的）。
     if: >-
-      github.event_name == 'release' && github.event.action == 'published'
-      && (startsWith(github.event.release.tag_name, 'release-v')
-          || startsWith(github.event.release.tag_name, 'fpk-v'))
+      (github.event_name == 'release' && github.event.action == 'published'
+       && github.event.release.prerelease == false
+       && (startsWith(github.event.release.tag_name, 'release-v')
+           || startsWith(github.event.release.tag_name, 'fpk-v')))
+      || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      TAG: ${{ github.event.release.tag_name }}
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
     # ★ 跨 tag 串行：两次发版同时写同一份 fnpack.json 会互相覆盖
     #   （后推的覆盖先推的，先发的那个版本看起来就丢了）。
     concurrency:
@@ -508,7 +518,24 @@ jobs:
       # 取 tag 上的源码：CHANGELOG 与 package.json 必须是发布时的版本
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
+
+      # dispatch 只有 tag 字符串，没有事件体：自己去问 Release 的真实状态。
+      # release 事件那条已由 job 的 if 判过 prerelease，这里再判一次 draft（幂等）。
+      - name: 确认 Release 已发布
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::索引未更新：$*"; exit 1; }
+          S="$(gh release view "$TAG" --json isDraft,isPrerelease 2>/dev/null)" \
+            || fail "找不到 Release $TAG（draft 不会出现在列表里，也说明它还没发布）"
+          DRAFT="$(jq -r '.isDraft' <<<"$S")"
+          PRE="$(jq -r '.isPrerelease' <<<"$S")"
+          [ "$DRAFT" = "false" ] || fail "Release $TAG 还是 draft，先点 Publish 再来"
+          [ "$PRE" = "false" ] || fail "Release $TAG 是 prerelease，不算正式发布"
+          echo "Release $TAG 已发布（draft=$DRAFT prerelease=$PRE）"
 
       # 版本以 package.json 为准；tag 必须等于 <前缀>-v<版本>。
       # release.yml / 本 workflow 的 plan 已各查过一次，这里是第三道
@@ -631,10 +658,106 @@ jobs:
           echo "更新说明取自 CHANGELOG.md 的 ${VER} 小节："
           printf '%s\n' "$NOTES"
 
+      # ★ 主仓索引先写（2026-11-13 定稿）：这条只用内置 GITHUB_TOKEN，最不容易失败。
+      #   顺序反过来（先 FnDepot）时，后半段一失败就是「FnDepot 有新版本、壳内客户端
+      #   全员卡旧版」；现在反过来，最坏也只是 fnOS 中心慢一步。
+      # ★ download_url 指向**本次已发布的 Release**（tag 就是宿主），不可变、可加速。
+      - name: 生成 fpk.json 并推 fpk-updates（合并已有版本）
+        id: mainidx
+        # 失败不中断：让 FnDepot 那半边照常尝试，最后由「结果汇总」统一判红。
+        continue-on-error: true
+        shell: bash
+        env:
+          VER: ${{ steps.v.outputs.version }}
+          X_SHA: ${{ steps.pkg.outputs.x86_sha }}
+          X_SIZE: ${{ steps.pkg.outputs.x86_size }}
+          A_SHA: ${{ steps.pkg.outputs.arm_sha }}
+          A_SIZE: ${{ steps.pkg.outputs.arm_size }}
+          NOTES: ${{ steps.notes.outputs.notes }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::主仓索引未更新：$*"; exit 1; }
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # 固定目录（不用 mktemp）：后面的一致性断言要读这份克隆。
+          D="$RUNNER_TEMP/meow-main"
+          rm -rf "$D"
+          mkdir -p "$D"
+          cd "$D"
+          git init -q
+          git config user.name "meow-ci"
+          git config user.email "meow-ci@users.noreply.github.com"
+          AUTH="https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git remote add origin "$AUTH"
+
+          # ★ 合并而不是覆盖（2026-11-13 踩过）：这份索引以前每次 force 覆盖成
+          #   "只有当前版本"，补发旧版本（回填 1.2.2）会把新版本（1.2.3）顶掉。
+          #   现在先取**分支上真实的**文件做基线（走 git fetch，不读 raw/CDN，
+          #   避免拿到 12 小时前的缓存），再把本版并进去。
+          HAVE=0
+          if git fetch -q --depth 1 origin fpk-updates 2>/dev/null; then
+            if git checkout -q FETCH_HEAD -- fpk.json 2>/dev/null && jq -e . fpk.json >/dev/null 2>&1; then
+              HAVE=1
+            fi
+          fi
+
+          # os_min_version 的单一真源：沿用已有索引里最近一条，没有则 1.2.0。
+          # 两份索引必须写同一个值，否则同一版本在客户端与 fnOS 中心显示的最低
+          # 系统版本会漂移（之前 FnDepot 继承、这里硬编码 1.2.0，就是这么裂开的）。
+          OSMIN="1.2.0"
+          if [ "$HAVE" = "1" ]; then
+            OSMIN="$(jq -r '[.apps.meow.releases[] | .os_min_version] | map(select(. != null)) | last // "1.2.0"' fpk.json)"
+          fi
+          echo "osmin=$OSMIN" >> "$GITHUB_OUTPUT"
+
+          # 本版条目（不含外层骨架）。
+          # ★ 用绝对路径：下面已经 cd 到临时仓库里，相对路径会指错目录。
+          ENTRY="$GITHUB_WORKSPACE/entry.json"
+          jq -n \
+            --arg now "$NOW" --arg notes "$NOTES" --arg osmin "$OSMIN" \
+            --arg xsha "$X_SHA" --argjson xsize "$X_SIZE" --arg xurl "$BASE/meow_${VER}_x86.fpk" \
+            --arg asha "$A_SHA" --argjson asize "$A_SIZE" --arg aurl "$BASE/meow_${VER}_arm.fpk" \
+            '{
+              changelog: $notes,
+              updated_at: $now,
+              os_min_version: $osmin,
+              packages: {
+                x86: {download_url: $xurl, sha256: $xsha, size: $xsize},
+                arm: {download_url: $aurl, sha256: $asha, size: $asize}
+              }
+            }' > "$ENTRY" || fail "生成条目失败"
+
+          if [ "$HAVE" = "1" ]; then
+            jq --arg ver "$VER" --slurpfile e "$ENTRY" \
+              '.apps.meow.releases[$ver] = $e[0]' fpk.json > merged.json \
+              || fail "合并到已有索引失败"
+            mv merged.json fpk.json
+            echo "已合并进已有索引（os_min_version=$OSMIN）"
+          else
+            jq -n --arg ver "$VER" --slurpfile e "$ENTRY" '{
+              schema_version: "2",
+              source_info: {name: "Meow main mirror", url: "https://github.com/upchr/meow"},
+              apps: {meow: {releases: {($ver): $e[0]}}}
+            }' > fpk.json || fail "新建索引失败"
+            echo "分支没有可用索引，已新建（os_min_version=$OSMIN）"
+          fi
+          jq -e --arg ver "$VER" '.apps.meow.releases[$ver].packages.x86.sha256 and .apps.meow.releases[$ver].packages.arm.sha256' fpk.json >/dev/null \
+            || fail "fpk.json 结构不合法"
+
+          git add fpk.json
+          git commit -q -m "fpk: ${VER} 主仓镜像索引"
+          # force：分支上只有 fpk.json 一个文件，合并基线已取过
+          git push --force "$AUTH" HEAD:fpk-updates || fail "推送 fpk-updates 失败"
+          echo "已推送主仓 fpk-updates（${VER}，资产在 ${TAG}）"
+
       # 拿最新索引再动笔：并发组只覆盖本 workflow，别人手动推 FnDepot 时
       # 仍可能撞上，所以每次都在 clone 后强制对齐 origin/main。
       - name: 检出并同步 FnDepot
         id: depot
+        # 失败不中断：主仓索引上面已经写完，这里失败只影响 fnOS 中心。
+        continue-on-error: true
         shell: bash
         env:
           TOKEN: ${{ secrets.FNDEPOT_TOKEN }}
@@ -656,6 +779,8 @@ jobs:
           echo "repo=$D" >> "$GITHUB_OUTPUT"
 
       - name: 写前校验
+        id: depotcheck
+        if: steps.depot.outcome == 'success'
         shell: bash
         env:
           REPO: ${{ steps.depot.outputs.repo }}
@@ -685,6 +810,8 @@ jobs:
           }' "$IDX" > "$RUNNER_TEMP/before.json"
 
       - name: 写入 releases[版本] 并校验结果
+        id: depotwrite
+        if: steps.depotcheck.outcome == 'success'
         shell: bash
         env:
           REPO: ${{ steps.depot.outputs.repo }}
@@ -695,32 +822,32 @@ jobs:
           A_SHA: ${{ steps.pkg.outputs.arm_sha }}
           A_SIZE: ${{ steps.pkg.outputs.arm_size }}
           NOTES: ${{ steps.notes.outputs.notes }}
+          # 与主仓索引同一个值（主仓那步算好、这里复用），两份索引不再各算一遍
+          OSMIN: ${{ steps.mainidx.outputs.osmin || '1.2.0' }}
         run: |
           set -euo pipefail
           IDX="$REPO/fnpack.json"
           NEW="$RUNNER_TEMP/fnpack.new.json"
           fail() { echo "::error::索引未更新：$*"; exit 1; }
 
-          # download_url 写相对路径：应用按「源地址 + url」拼完整地址
-          # （docs/33 §插件源相对路径那一节）。
+          # download_url 写相对路径：源协议规定「相对本仓库根目录」，镜像（gitee）才跟着走；
+          # 消费方按自己的基准解析 —— 客户端侧已把 jsDelivr 索引归一到 raw 再解析，
+          # 不再落回 jsDelivr（>20MB 会被 jsDelivr 403）。
           XURL="./meow/meow_${VER}_x86.fpk"
           AURL="./meow/meow_${VER}_arm.fpk"
           NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
           # 只赋值 apps.meow.releases[$ver]；同版本重跑会覆盖自己那条，
           # 不重复追加。changelog 每版都从 CHANGELOG.md 重写（不留旧值），
-          # os_min_version 沿用同版本已有值，没有则沿用最近一条 meow 版本的。
+          # os_min_version 由主仓那步统一给出（单一真源，避免两份索引漂移）。
           jq --arg ver "$VER" --arg now "$NOW" --arg notes "$NOTES" \
+             --arg osmin "$OSMIN" \
              --arg xsha "$X_SHA" --argjson xsize "$X_SIZE" --arg xurl "$XURL" \
              --arg asha "$A_SHA" --argjson asize "$A_SIZE" --arg aurl "$AURL" '
-            . as $root
-            | ($root.apps.meow.releases[$ver] // {}) as $old
-            | ([$root.apps.meow.releases[] | .os_min_version]
-               | map(select(. != null)) | last) as $osmin
-            | .apps.meow.releases[$ver] = {
+            .apps.meow.releases[$ver] = {
                 changelog: $notes,
                 updated_at: $now,
-                os_min_version: ($old.os_min_version // ($osmin // "1.2.0")),
+                os_min_version: $osmin,
                 packages: {
                   x86: {download_url: $xurl, sha256: $xsha, size: $xsize},
                   arm: {download_url: $aurl, sha256: $asha, size: $asize}
@@ -760,6 +887,8 @@ jobs:
           ls -l "$REPO/meow"
 
       - name: 提交并推送
+        id: depotpush
+        if: steps.depotwrite.outcome == 'success'
         shell: bash
         env:
           REPO: ${{ steps.depot.outputs.repo }}
@@ -794,79 +923,83 @@ jobs:
           done
           fail "推送 upchr/FnDepot 失败（检查 FNDEPOT_TOKEN 的仓库写权限）"
 
-      # 主仓镜像索引：download_url 指向**本次已发布的 Release**（tag 就是宿主）。
-      # 客户端先读 FnDepot，失败/更旧时再读主仓镜像（见 api/fpkUpgrade.ts）。
-      - name: 生成 fpk.json 并推 fpk-updates（合并已有版本）
+      # ── 一致性断言：两份索引对同一版本必须给出同一份事实 ──────────────
+      # 读远端真实状态（git fetch），不用 raw/CDN —— 那些有 5~12 分钟缓存。
+      - name: 校验两份索引一致
+        if: always()
         shell: bash
         env:
           VER: ${{ steps.v.outputs.version }}
-          X_SHA: ${{ steps.pkg.outputs.x86_sha }}
-          X_SIZE: ${{ steps.pkg.outputs.x86_size }}
-          A_SHA: ${{ steps.pkg.outputs.arm_sha }}
-          A_SIZE: ${{ steps.pkg.outputs.arm_size }}
-          NOTES: ${{ steps.notes.outputs.notes }}
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPOT_TOKEN: ${{ secrets.FNDEPOT_TOKEN }}
         run: |
           set -euo pipefail
-          fail() { echo "::error::主仓索引未更新：$*"; exit 1; }
-          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
-          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          warn() { echo "::warning::$*"; }
+          fail() { echo "::error::$*"; exit 1; }
 
-          # 本版条目（不含外层骨架）。
-          # ★ 用绝对路径：下面要 cd 到临时仓库里，`entry.json` 写在工作区，
-          #   相对路径到那时会指错目录（jq --slurpfile 直接报 Could not open）。
-          ENTRY="$GITHUB_WORKSPACE/entry.json"
-          jq -n \
-            --arg now "$NOW" --arg notes "$NOTES" \
-            --arg xsha "$X_SHA" --argjson xsize "$X_SIZE" --arg xurl "$BASE/meow_${VER}_x86.fpk" \
-            --arg asha "$A_SHA" --argjson asize "$A_SIZE" --arg aurl "$BASE/meow_${VER}_arm.fpk" \
-            '{
-              changelog: $notes,
-              updated_at: $now,
-              os_min_version: "1.2.0",
-              packages: {
-                x86: {download_url: $xurl, sha256: $xsha, size: $xsize},
-                arm: {download_url: $aurl, sha256: $asha, size: $asize}
-              }
-            }' > "$ENTRY" || fail "生成条目失败"
+          MAIN="$RUNNER_TEMP/assert-main.json"
+          DEP="$RUNNER_TEMP/assert-depot.json"
+          rm -f "$MAIN" "$DEP"
 
-          D="$(mktemp -d)"
-          cd "$D"
-          git init -q
-          git config user.name "meow-ci"
-          git config user.email "meow-ci@users.noreply.github.com"
-          AUTH="https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git remote add origin "$AUTH"
-
-          # ★ 合并而不是覆盖（2026-11-13 踩过）：这份索引以前每次 force 覆盖成
-          #   "只有当前版本"，补发旧版本（回填 1.2.2）会把新版本（1.2.3）顶掉。
-          #   现在先取**分支上真实的**文件做基线（走 git fetch，不读 raw/CDN，
-          #   避免拿到 12 小时前的缓存），再把本版并进去。
-          HAVE=0
-          if git fetch -q --depth 1 origin fpk-updates 2>/dev/null; then
-            if git checkout -q FETCH_HEAD -- fpk.json 2>/dev/null && jq -e . fpk.json >/dev/null 2>&1; then
-              HAVE=1
-            fi
+          D="$RUNNER_TEMP/meow-main"
+          if [ -d "$D" ]; then
+            git -C "$D" fetch -q origin fpk-updates 2>/dev/null && git -C "$D" show FETCH_HEAD:fpk.json > "$MAIN" 2>/dev/null || true
           fi
-          if [ "$HAVE" = "1" ]; then
-            jq --arg ver "$VER" --slurpfile e "$ENTRY" \
-              '.apps.meow.releases[$ver] = $e[0]' fpk.json > merged.json \
-              || fail "合并到已有索引失败"
-            mv merged.json fpk.json
-            echo "已合并进已有索引"
-          else
-            jq -n --arg ver "$VER" --slurpfile e "$ENTRY" '{
-              schema_version: "2",
-              source_info: {name: "Meow main mirror", url: "https://github.com/upchr/meow"},
-              apps: {meow: {releases: {($ver): $e[0]}}}
-            }' > fpk.json || fail "新建索引失败"
-            echo "分支没有可用索引，已新建"
-          fi
-          jq -e --arg ver "$VER" '.apps.meow.releases[$ver].packages.x86.sha256 and .apps.meow.releases[$ver].packages.arm.sha256' fpk.json >/dev/null \
-            || fail "fpk.json 结构不合法"
 
-          git add fpk.json
-          git commit -q -m "fpk: ${VER} 主仓镜像索引"
-          # force：分支上只有 fpk.json 一个文件，合并基线已取过
-          git push --force "$AUTH" HEAD:fpk-updates || fail "推送 fpk-updates 失败"
-          echo "已推送主仓 fpk-updates（${VER}，资产在 ${TAG}）"
+          E="$RUNNER_TEMP/FnDepot"
+          if [ -n "${DEPOT_TOKEN:-}" ] && [ -d "$E" ]; then
+            A="https://x-access-token:${DEPOT_TOKEN}@github.com/upchr/FnDepot.git"
+            git -C "$E" fetch -q "$A" main 2>/dev/null && git -C "$E" show FETCH_HEAD:fnpack.json > "$DEP" 2>/dev/null || true
+          fi
+
+          [ -s "$MAIN" ] || { warn "读不到主仓索引，跳过一致性比对（上面应已报错）"; exit 0; }
+          [ -s "$DEP" ]  || { warn "读不到 FnDepot 索引，跳过一致性比对（上面应已报错）"; exit 0; }
+
+          for f in "$MAIN" "$DEP"; do
+            jq -e --arg v "$VER" '.apps.meow.releases[$v]' "$f" >/dev/null || fail "$VER 没有写进 $(basename "$f")"
+          done
+
+          for arch in x86 arm; do
+            MS="$(jq -r --arg v "$VER" --arg a "$arch" '.apps.meow.releases[$v].packages[$a].sha256' "$MAIN")"
+            DS="$(jq -r --arg v "$VER" --arg a "$arch" '.apps.meow.releases[$v].packages[$a].sha256' "$DEP")"
+            [ "$MS" = "$DS" ] || fail "$VER $arch 的 sha256 不一致：主仓 $MS / FnDepot $DS"
+            MZ="$(jq -r --arg v "$VER" --arg a "$arch" '.apps.meow.releases[$v].packages[$a].size' "$MAIN")"
+            DZ="$(jq -r --arg v "$VER" --arg a "$arch" '.apps.meow.releases[$v].packages[$a].size' "$DEP")"
+            [ "$MZ" = "$DZ" ] || fail "$VER $arch 的 size 不一致：主仓 $MZ / FnDepot $DZ"
+          done
+
+          MO="$(jq -r --arg v "$VER" '.apps.meow.releases[$v].os_min_version' "$MAIN")"
+          DO="$(jq -r --arg v "$VER" '.apps.meow.releases[$v].os_min_version' "$DEP")"
+          [ "$MO" = "$DO" ] || fail "$VER 的 os_min_version 不一致：主仓 $MO / FnDepot $DO"
+
+          # 版本集合只告警不判红：1.2.1/1.2.2/1.2.5 只进过 FnDepot（当时还没有
+          # 主仓镜像那一步），回填是单独的事，不能让每次发版都红。
+          jq -r '.apps.meow.releases | keys[]' "$MAIN" | sort > "$RUNNER_TEMP/v-main.txt"
+          jq -r '.apps.meow.releases | keys[]' "$DEP"  | sort > "$RUNNER_TEMP/v-depot.txt"
+          ONLY_DEP="$(comm -13 "$RUNNER_TEMP/v-main.txt" "$RUNNER_TEMP/v-depot.txt" | paste -sd' ' -)"
+          ONLY_MAIN="$(comm -23 "$RUNNER_TEMP/v-main.txt" "$RUNNER_TEMP/v-depot.txt" | paste -sd' ' -)"
+          [ -z "$ONLY_DEP" ]  || warn "只在 FnDepot 里有的版本：$ONLY_DEP"
+          [ -z "$ONLY_MAIN" ] || warn "只在主仓镜像里有的版本：$ONLY_MAIN"
+
+          echo "两份索引一致：$VER（x86/arm 的 sha256、size、os_min_version 全部相同）"
+
+      # ── 结果汇总：任一侧没写成就是发版异常，不能让日志绿着过去 ──────────
+      - name: 结果汇总
+        if: always()
+        shell: bash
+        env:
+          MAIN: ${{ steps.mainidx.outcome }}
+          DEPOT: ${{ steps.depotpush.outcome }}
+        run: |
+          set -euo pipefail
+          BAD=0
+          if [ "$MAIN" != "success" ]; then
+            echo "::error::主仓索引未更新（fpk-updates）：壳内「立即更新」拿不到这一版"
+            BAD=1
+          fi
+          if [ "$DEPOT" != "success" ]; then
+            echo "::error::FnDepot 索引未更新：fnOS 应用中心拿不到这一版"
+            BAD=1
+          fi
+          [ "$BAD" = "0" ] || exit 1
+          echo "两份索引都已更新"

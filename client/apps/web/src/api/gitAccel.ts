@@ -205,6 +205,20 @@ export function jsdelivrUrlForRaw(url: string): string {
   return `https://cdn.jsdelivr.net/gh/${m[1]}/${m[2]}@${m[3]}/${m[4]}`
 }
 
+/**
+ * cdn.jsdelivr.net/gh/... → raw.githubusercontent.com/...（{@link jsdelivrUrlForRaw} 的逆）
+ *
+ * <p>★ 为什么必须有这个方向：加速候选只认 GitHub 宿主，而 FnDepot 的索引默认就走
+ * jsDelivr。缺了这一层，jsDelivr 地址会被 {@link isGithubAccelUrl} 判否 → 整条链路
+ * 短路成"只有直连"，而 jsDelivr 对 >20MB 的包直接 403（实测 1.2.5 的 39.5MB fpk），
+ * 于是"加速开着却永远下不动包"。
+ */
+export function rawUrlForJsdelivr(url: string): string {
+  const m = /^https:\/\/cdn\.jsdelivr\.net\/gh\/([^/]+)\/([^/@]+)@([^/]+)\/(.+)$/i.exec(url)
+  if (!m) return ''
+  return `https://raw.githubusercontent.com/${m[1]}/${m[2]}/${m[3]}/${m[4]}`
+}
+
 export interface AccelCandidate {
   /** 实际请求的地址 */
   url: string
@@ -253,12 +267,23 @@ export function gitAccelCandidates(
   prefs: GitAccelPrefs,
   opts: AccelOpts,
 ): AccelCandidate[] {
-  const direct: AccelCandidate = { url, baseUrl: url }
-  if (!accelEnabledFor(prefs, opts.for) || !isGithubAccelUrl(url)) return [direct]
+  // jsDelivr 地址先翻成 raw 等价地址：候选只认 GitHub 宿主，不归一就整条短路。
+  // 逻辑地址统一用 raw，相对地址（如 fpk 索引里的 ./meow/x.fpk）才解析得到可加速的宿主。
+  const rawAlt = rawUrlForJsdelivr(url)
+  const logical = rawAlt || url
+  // jsDelivr 直连只在"它明确服务不了"时才剔除：知道体积且 ≥20MB。
+  // 体积未知（如 packages.json 这类清单）保持原状——jsDelivr 在国内比 raw 稳。
+  const bigKnown = typeof opts.size === 'number' && opts.size >= 20_000_000
+  const jsdDirectOk = !!rawAlt && !bigKnown
+  const direct: AccelCandidate = jsdDirectOk
+    ? { url, baseUrl: logical }
+    : { url: logical, baseUrl: logical }
 
-  let allowApi = opts.allowApi
+  if (!accelEnabledFor(prefs, opts.for) || !isGithubAccelUrl(logical)) return [direct]
+
+  const allowApi = opts.allowApi
   try {
-    const host = new URL(url).hostname.toLowerCase()
+    const host = new URL(logical).hostname.toLowerCase()
     if (host === 'api.github.com' && !allowApi) return [direct]
   } catch {
     return [direct]
@@ -277,20 +302,20 @@ export function gitAccelCandidates(
   for (const p of prefs.proxies) {
     if (!p.enabled || isCooling(p.id)) continue
     if (p.id === 'jsdelivr') {
-      const j = jsdelivrUrlForRaw(url)
+      const j = jsdelivrUrlForRaw(logical)
       if (!j) continue
       // 索引/清单允许；普通文件必须知道 <20MB 才敢用
-      const small = opts.index || (typeof opts.size === 'number' && opts.size > 0 && opts.size < 20_000_000)
-      if (!small) continue
-      push({ url: j, baseUrl: url, proxyId: p.id, proxyName: p.name })
+      const ok = opts.index || (typeof opts.size === 'number' && opts.size > 0 && opts.size < 20_000_000)
+      if (!ok) continue
+      push({ url: j, baseUrl: logical, proxyId: p.id, proxyName: p.name })
       continue
     }
     const prefix = normalizeProxyPrefix(p.prefix)
     if (!prefix) continue
     const proxied = prefix.includes('{url}')
-      ? prefix.replace('{url}', url)
-      : prefix + url
-    push({ url: proxied, baseUrl: url, proxyId: p.id, proxyName: p.name })
+      ? prefix.replace('{url}', logical)
+      : prefix + logical
+    push({ url: proxied, baseUrl: logical, proxyId: p.id, proxyName: p.name })
   }
 
   if (!prefs.directFirst) push(direct)
