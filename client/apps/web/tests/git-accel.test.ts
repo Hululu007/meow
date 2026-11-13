@@ -133,6 +133,30 @@ describe('GitHub 加速：候选生成', () => {
     )
     expect(jsdelivrUrlForRaw('https://github.com/o/r')).toBe('')
   })
+
+  it('全部代理都在冷却时仍要给出代理候选（否则只剩直连 = 「加速没生效」）', () => {
+    // 2026-11-13 .77 实测：一次失败把三条代理全打进 10 分钟冷却，
+    // 之后每次检查候选只剩直连，必然 15s 超时 —— 用户的原话就是
+    // 「他们都没有走 git 加速」。
+    const asset = 'https://github.com/upchr/meow/releases/latest/download/packages.json'
+    for (const id of ['gh-proxy', 'ghfast', 'ghproxy-net']) {
+      markAccelResult({ url: 'x', baseUrl: asset, proxyId: id }, false)
+    }
+    const c = gitAccelCandidates(asset, DEFAULT_GIT_ACCEL, { for: 'appUpdate' })
+    const proxied = c.filter((x) => x.proxyId && x.proxyId !== 'direct')
+    expect(proxied.length, '冷却期把所有代理都剔掉了').toBeGreaterThan(0)
+  })
+
+  it('直连失败也进冷却，且只把直连挪到最后（不丢弃）', () => {
+    const asset = 'https://github.com/upchr/meow/releases/latest/download/packages.json'
+    const before = gitAccelCandidates(asset, DEFAULT_GIT_ACCEL, { for: 'appUpdate' })
+    const direct = before.find((x) => x.proxyId === 'direct')
+    expect(direct, '直连候选没有 id，失败就无法冷却').toBeTruthy()
+    markAccelResult(direct!, false)
+    const after = gitAccelCandidates(asset, DEFAULT_GIT_ACCEL, { for: 'appUpdate' })
+    expect(after).toHaveLength(before.length)
+    expect(after[after.length - 1].proxyId).toBe('direct')
+  })
 })
 
 describe('GitHub 加速：jsDelivr 地址反向归一（否则整条链路短路）', () => {

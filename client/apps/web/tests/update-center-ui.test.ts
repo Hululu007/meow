@@ -156,11 +156,13 @@ describe('模块链参与 git 加速', () => {
 
   it('更新中心 checkModule / checkPayload 同样按候选试清单', () => {
     const src = readFileSync(STORE, 'utf8')
-    // 2026-11-13：候选**一次并成 pipe 交给原生**（fetchManifestAny 并发竞速），
-    // 不再在 JS 里串行 for 循环 —— 串行时直连被墙要等满 15s 才轮到下一个，
-    // 实测一次检查 30–40 秒，而且是同步桥，整页冻住。
-    expect(src).toContain("callBridgeManifest(b, 'moduleCheckCandidates'")
-    expect(src).toContain("callBridgeManifest(b, 'payloadCheckCandidates'")
+    // 2026-11-13：候选**一次并成 pipe 交给原生**（fetchManifestAny 并发竞速 /
+    // netJob 非阻塞），不再是 JS 串行 for 循环 —— 串行时直连被墙要等满 15s，
+    // 一次检查 30–40 秒，而且同步桥会把整页冻住。
+    expect(src).toContain("pipe: 'moduleCheckCandidates'")
+    expect(src).toContain("pipe: 'payloadCheckCandidates'")
+    expect(src).toContain("fromText: 'moduleCheckFromText'")
+    expect(src).toContain("fromText: 'payloadCheckFromText'")
     expect(src, '候选没有并成 pipe').toContain("cands.join('|')")
     expect(src, 'release 端点形态必须保留逐条解析资产的那条路').toContain('!isReleaseEndpoint(src)')
   })

@@ -297,28 +297,50 @@ export function gitAccelCandidates(
     out.push(c)
   }
 
-  if (prefs.directFirst) push(direct)
+  // ★ 直连也要能被冷却（2026-11-13 .77 实测）：直连失败时没有任何记录，
+  //   于是每次检查都先花 15s 在它身上，用户看到的就是「点了很久没反应」。
+  //   冷却期内把它排到最后（不是丢弃：所有代理都挂了时它仍是最后希望）。
+  const directCooling = isCooling('direct')
+  const directCand: AccelCandidate = { ...direct, proxyId: 'direct', proxyName: '直连' }
 
-  for (const p of prefs.proxies) {
-    if (!p.enabled || isCooling(p.id)) continue
-    if (p.id === 'jsdelivr') {
-      const j = jsdelivrUrlForRaw(logical)
-      if (!j) continue
-      // 索引/清单允许；普通文件必须知道 <20MB 才敢用
-      const ok = opts.index || (typeof opts.size === 'number' && opts.size > 0 && opts.size < 20_000_000)
-      if (!ok) continue
-      push({ url: j, baseUrl: logical, proxyId: p.id, proxyName: p.name })
-      continue
+  if (prefs.directFirst && !directCooling) push(directCand)
+
+  // ★ 全部代理都在冷却时**不能一个都不用**：那样候选只剩直连，
+  //   等于「加速开着却完全不生效」，而冷却恰恰是因为网差才产生的
+  //   （一次失败 → 10 分钟全灭 → 之后每次都必然超时）。
+  //   判据是「实际产生了几条代理候选」：只冷却了 gh-proxy/ghfast，
+  //   而 jsdelivr 对 release 资产不产生候选，那也等于全灭。
+  const enabledProxies = prefs.proxies.filter((p) => p.enabled)
+  let usable = enabledProxies.filter((p) => !isCooling(p.id))
+
+  const pushProxies = (list: GitProxy[]) => {
+    const before = out.length
+    for (const p of list) {
+      if (p.id === 'jsdelivr') {
+        const j = jsdelivrUrlForRaw(logical)
+        if (!j) continue
+        // 索引/清单允许；普通文件必须知道 <20MB 才敢用
+        const ok = opts.index || (typeof opts.size === 'number' && opts.size > 0 && opts.size < 20_000_000)
+        if (!ok) continue
+        push({ url: j, baseUrl: logical, proxyId: p.id, proxyName: p.name })
+        continue
+      }
+      const prefix = normalizeProxyPrefix(p.prefix)
+      if (!prefix) continue
+      const proxied = prefix.includes('{url}')
+        ? prefix.replace('{url}', logical)
+        : prefix + logical
+      push({ url: proxied, baseUrl: logical, proxyId: p.id, proxyName: p.name })
     }
-    const prefix = normalizeProxyPrefix(p.prefix)
-    if (!prefix) continue
-    const proxied = prefix.includes('{url}')
-      ? prefix.replace('{url}', logical)
-      : prefix + logical
-    push({ url: proxied, baseUrl: logical, proxyId: p.id, proxyName: p.name })
+    return out.length - before
   }
 
-  if (!prefs.directFirst) push(direct)
+  if (pushProxies(usable) === 0 && usable.length !== enabledProxies.length) {
+    // 冷却期把所有「能用的」代理都剔掉了 → 忽略冷却重来，宁可再试一次
+    pushProxies(enabledProxies)
+  }
+
+  if (directCooling || !prefs.directFirst) push(directCand)
   return out
 }
 

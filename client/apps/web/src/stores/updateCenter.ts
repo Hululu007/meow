@@ -15,6 +15,7 @@ import { isDesktop } from '@/api'
 import {
   checkAppUpdate,
   downloadCandidates,
+  fetchTextViaNativeJob,
   getBackupUpdateSource,
   getUpdateSource,
   getUpdateToken,
@@ -207,18 +208,23 @@ export function isTvShell(): boolean {
  * （总耗时 ≈ 最慢的那条）。JS 侧串行逐个试时，直连被墙要等满 15s 才轮到下一个，
  * 实测一次「检查」要 30–40 秒 —— 而且是同步桥，整页冻住。
  *
+ * <p><b>为什么优先走 netJob</b>：`moduleCheckCandidates` 是**同步**桥，网络差时
+ * 整页（包括「检查中 0s」的计时）都会停住，用户看到的就是「卡住」。
+ * 新壳有 `netJobStart`（非阻塞）时先用它拿清单原文，再交给
+ * `moduleCheckFromText` / `payloadCheckFromText` 转成 pick 结果。
+ *
  * <p><b>为什么 release 端点形态仍走逐条</b>：带 pipe 的通道只认正文含 `"packages"`
  * 的响应（代理的 HTML 错误页会 200），会把 release 元数据 JSON 当失败丢掉；
  * 单地址通道才会再解析一层资产。用户手填 `api.github.com/.../releases/latest`
  * 时必须保留那条路径。
  */
-function callBridgeManifest(
+async function callBridgeManifest(
   b: any,
-  method: string,
+  methods: { pipe: string; fromText: string },
   src: string,
   token: string,
   cands: string[],
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   const parse = (s: unknown): Record<string, unknown> => {
     try {
       return JSON.parse(String(s || '{}')) as Record<string, unknown>
@@ -226,16 +232,33 @@ function callBridgeManifest(
       return { ok: false, error: '清单解析失败' }
     }
   }
-  if (cands.length > 1 && !isReleaseEndpoint(src)) {
-    const one = parse(b[method](src, token, cands.join('|')))
-    if (one.ok !== false) return one
+  const single = (): Record<string, unknown> => {
+    let out: Record<string, unknown> = { ok: false }
+    for (const c of cands) {
+      out = parse(b[methods.pipe](c, token, ''))
+      if (out.ok !== false) break
+    }
+    return out
   }
-  let out: Record<string, unknown> = { ok: false }
-  for (const c of cands) {
-    out = parse(b[method](c, token, ''))
-    if (out.ok !== false) break
+
+  if (!isReleaseEndpoint(src)) {
+    // ① 非阻塞：并发竞速拿原文（不冻页面）
+    if (b.netJobStart && b.netJobPoll && typeof b[methods.fromText] === 'function') {
+      try {
+        const text = await fetchTextViaNativeJob('manifest-any', cands.join('|'), token)
+        const one = parse(b[methods.fromText](text))
+        if (one.ok !== false) return one
+      } catch {
+        /* 落到下面的同步路径 */
+      }
+    }
+    // ② 老壳：同步 pipe（原生内部并发），再退回逐条
+    if (typeof b[methods.pipe] === 'function' && cands.length > 1) {
+      const one = parse(b[methods.pipe](src, token, cands.join('|')))
+      if (one.ok !== false) return one
+    }
   }
-  return out
+  return single()
 }
 
 /**
@@ -302,9 +325,10 @@ export async function checkModule(silent = false): Promise<boolean> {
     //   必失败。候选由 downloadCandidates 按「GitHub 加速」算好。
     // ★ 桥方法名带 Candidates：WebView 桥不支持同名重载；老壳回退两参版。
     const cands = downloadCandidates(src)
+    const METHODS = { pipe: 'moduleCheckCandidates', fromText: 'moduleCheckFromText' }
     let chk: Record<string, unknown>
     if (typeof b.moduleCheckCandidates === 'function') {
-      chk = callBridgeManifest(b, 'moduleCheckCandidates', src, tok, cands)
+      chk = await callBridgeManifest(b, METHODS, src, tok, cands)
     } else {
       try {
         chk = JSON.parse(String(b.moduleCheck(src, tok) || '{}')) as Record<string, unknown>
@@ -316,7 +340,7 @@ export async function checkModule(silent = false): Promise<boolean> {
     const backup = getBackupUpdateSource()
     if (chk.ok === false && backup && backup !== src) {
       if (typeof b.moduleCheckCandidates === 'function') {
-        chk = callBridgeManifest(b, 'moduleCheckCandidates', backup, tok, downloadCandidates(backup))
+        chk = await callBridgeManifest(b, METHODS, backup, tok, downloadCandidates(backup))
       } else {
         try {
           chk = JSON.parse(String(b.moduleCheck(backup, tok) || '{}')) as Record<string, unknown>
@@ -421,17 +445,12 @@ export async function checkPayload(silent = false): Promise<boolean> {
     const tok = getUpdateToken()
     // 与 checkModule 同款：候选一次交给原生并发竞速（见 callBridgeManifest 的注释）
     const cands = downloadCandidates(src)
-    let chk: Record<string, unknown> = callBridgeManifest(
-      b,
-      'payloadCheckCandidates',
-      src,
-      tok,
-      cands,
-    )
+    const METHODS = { pipe: 'payloadCheckCandidates', fromText: 'payloadCheckFromText' }
+    let chk: Record<string, unknown> = await callBridgeManifest(b, METHODS, src, tok, cands)
     // 显式备用源：主源失败才试（与应用更新同一份 Prefs）
     const backup = getBackupUpdateSource()
     if (chk.ok === false && backup && backup !== src) {
-      chk = callBridgeManifest(b, 'payloadCheckCandidates', backup, tok, downloadCandidates(backup))
+      chk = await callBridgeManifest(b, METHODS, backup, tok, downloadCandidates(backup))
     }
     if (chk.ok === false) throw new Error(String(chk.error || '检查失败'))
     const latest = String(chk.version || '')

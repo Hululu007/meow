@@ -1080,6 +1080,28 @@ public class TvBridge {
     }
 
     /**
+     * 用清单原文产出**载荷**的 pick 结果（与 {@link #moduleCheckFromText} 同因同治）。
+     *
+     * <p>不写 moduleCatalogJson：那是模块下载复用的缓存，载荷自己会再 pick 一次。
+     */
+    @JavascriptInterface
+    public String payloadCheckFromText(String text) {
+        try {
+            if (text == null || !text.contains("\"packages\"")) {
+                return "{\"ok\":false,\"error\":\"清单内容不完整\"}";
+            }
+            org.json.JSONObject pick =
+                    com.meow.tv.runtime.RuntimePayloadHost.pick(text);
+            org.json.JSONObject out = new org.json.JSONObject(pick.toString());
+            out.put("ok", true);
+            out.put("source", "netjob");
+            return out.toString();
+        } catch (Throwable t) {
+            return "{\"ok\":false,\"error\":\"" + AppUpdater.escape(t.getMessage()) + "\"}";
+        }
+    }
+
+    /**
      * 下载本机 ABI 的模块包（sha256 校验由 AppUpdater 强制）。
      *
      * <p>下完页面调 {@code meowTv.appUpdateInstall()} 交给系统安装器 ——
