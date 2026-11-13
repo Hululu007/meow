@@ -462,15 +462,22 @@ function writeLs(key: string, v: string): void {
  * 于是 `checkAppUpdate()` 直接 `return null`，界面显示"已是最新版本"，
  * 而实际上一次网络请求都没发出去。用户以为功能坏了。
  *
- * <p>写成 `releases/latest` 只是**入口**：真正取的是「已发布 + 含
- * packages.json + 版本最大」那条（见 pickManifestRelease）。所以补发旧版
- * hotfix 把 latest 顶回去也不会让客户端降级。
+ * ★ 2026-11-13 改成**资产地址**（原来用 `api.github.com/.../releases/latest`）：
+ *   实测（192.168.1.77 模拟器）`api.github.com` 的 HTTPS 被干扰（TCP 通、请求被
+ *   reset），而同一台机 `github.com` 的资产地址直连可下 —— 用户把资产地址填进
+ *   「备用源」就能装 45MB 的运行时模块，默认源却一直「拉取失败」。
+ *   资产地址还有个好处：它本身是 github.com 域名，GitHub 加速代理（ghproxy.net
+ *   等）能代理它；而 `api.github.com` 只有 gh-proxy 支持、gh-proxy 一旦不可达
+ *   就全灭。
+ *
+ * <p>代价：`releases/latest` 取的是「最新发布」那条，补发旧版 hotfix 会让它退回
+ *   旧版本 —— 客户端只会「不提示更新」，不会降级（isNewer 严格大于才提示）。
  *
  * <p>优先级：手填 > 内置 > 插件源。手填放最前是为了让自建文件服务器
  * 和内部测试能整体覆盖，不需要动构建。
  */
 export const DEFAULT_UPDATE_SOURCE =
-  'https://api.github.com/repos/upchr/meow/releases/latest'
+  'https://github.com/upchr/meow/releases/latest/download/packages.json'
 
 /** 构建期可覆盖（`__UPDATE_SOURCE__`，见 vite.config.ts）；未注入时用上面的常量 */
 function builtinSource(): string {
