@@ -508,13 +508,13 @@ describe('应用更新：一步到位（不再二次确认安装）', () => {
  */
 describe('应用更新：TV 上自定义更新源可输入', () => {
   const webSrc = join(process.cwd(), 'src')
-  it('更新源/备用源接原生输入桥（data-tv-input-owner + tvEditText）', () => {
+  it('更新源/备用源就地编辑（data-tv-input-owner + tvInlineInput，不弹对话框）', () => {
     const settings = readFileSync(join(webSrc, 'views/SettingsView.vue'), 'utf8')
     expect(settings).toContain('data-tv-input-owner')
     expect(settings).toContain('@click="editUpdateSource"')
     expect(settings).toContain('@click="editBackupSource"')
-    expect(settings).toContain('tvEditText(ev')
+    expect(settings).toContain('tvInlineInput(ev')
     const bridge = readFileSync(join(webSrc, 'api/nativeBridge.ts'), 'utf8')
-    expect(bridge).toContain('export function tvEditText')
+    expect(bridge).toContain('export function tvInlineInput')
   })
 })

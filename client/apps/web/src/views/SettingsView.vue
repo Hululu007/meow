@@ -158,7 +158,7 @@ import {
   type SyncStatus,
 } from '@/stores/sync'
 import { clearSearchHistory, listSearchHistory } from '@/stores/searchHistory'
-import { platformName, tvEditText } from '@/api/nativeBridge'
+import { platformName, tvInlineInput } from '@/api/nativeBridge'
 import { qrSvg } from '@/utils/qr'
 import FpkUpgradePanel from '@/components/common/FpkUpgradePanel.vue'
 import UpdateCenter from '@/components/common/UpdateCenter.vue'
@@ -3309,23 +3309,18 @@ function cancelUpdCheck() {
 }
 
 /**
- * TV 壳里点「更新源 / 备用源」→ 弹原生输入框（2026-11-13）。
+ * TV 壳里点「更新源 / 备用源」→ **就地编辑**（聚焦 + 系统键盘），不弹对话框。
  *
  * <p>不接管的话这个输入框在 TV 上**根本点不进去**（WebView 不聚焦、不弹输入法，
  * 用户以为能填、填完还是空），表现成"更新源填了没用/取不到新版本"。
+ * 做法与搜索页输入框完全一致（用户口径：「对齐搜索页面输入框，不要加弹框」）。
  */
 function editUpdateSource(ev: MouseEvent) {
-  tvEditText(ev, '更新源', updSourceInput.value, (v) => {
-    updSourceInput.value = v
-    saveUpdateSource()
-  })
+  tvInlineInput(ev)
 }
 
 function editBackupSource(ev: MouseEvent) {
-  tvEditText(ev, '备用源', updBackupInput.value, (v) => {
-    updBackupInput.value = v
-    saveUpdateSource()
-  })
+  tvInlineInput(ev)
 }
 
 /**
