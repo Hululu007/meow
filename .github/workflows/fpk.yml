@@ -268,20 +268,19 @@ jobs:
       - name: 构建 apiserver.jar（源码编译）
         run: bash server/build-plugin-linux.sh
 
-      # arm 腿要用 docker 里的 rust 镜像交叉编译（x86 腿不需要，这也是两腿耗时
-      # 不对等的根源）。镜像 ~200MB，每次冷拉；存成 tar 进缓存，命中就 load。
-      # key 带上 build-arm.sh 的 hash：脚本换了（比如镜像 tag 变）就自然失效。
-      - name: 缓存 rust 交叉编译镜像（仅 arm）
-        id: rustimg
-        if: matrix.platform == 'arm'
+      # meowd 的 cargo 编译是单腿最大开销（实测 x86 78s、arm 83~102s，占整条
+      # fpk 链一半以上）。缓存 CARGO_HOME（crates 索引与包）与 target（增量产物）：
+      # 第二次起只重编改动的 crate。
+      # key 跟着 Cargo.lock 走；restore-keys 兜住"加了依赖"的场景（能复用大部分）。
+      - name: 缓存 cargo 依赖与增量产物
         uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}/rust-1-alpine.tar.gz
-          key: rust-1-alpine-${{ hashFiles('client/apps/fnos/build-arm.sh') }}
-      - name: 载入 rust 镜像（命中缓存，跳过 200MB 拉取）
-        if: matrix.platform == 'arm' && steps.rustimg.outputs.cache-hit == 'true'
-        shell: bash
-        run: docker load -i "${{ runner.temp }}/rust-1-alpine.tar.gz"
+          path: |
+            ~/.cache/meow/cargo-home
+            ~/.cache/meow/cargo-target-${{ matrix.platform }}
+          key: cargo-${{ matrix.platform }}-${{ hashFiles('client/apps/fnos/meowd/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ matrix.platform }}-
 
       # ★ SRC/OUT 必须和下面「组包」step 用同一组值：build-arm.sh 产出的
       #   <OUT>/meowd-aarch64 是 build-fpk.sh 在 arm 分支的唯一输入。
@@ -293,14 +292,11 @@ jobs:
           SRC: ${{ github.workspace }}
           OUT: ${{ runner.temp }}/out-${{ matrix.platform }}
           IMG: docker.io/library/rust:1-alpine
-        run: bash client/apps/fnos/build-arm.sh
-
-      # 未命中时 build-arm.sh 已经把镜像拉下来了，这里导出一份给下次用。
-      # gzip -1：tar 里是已压缩的层，压太狠只烧 CPU。
-      - name: 保存 rust 镜像到缓存（仅 arm，未命中时）
-        if: matrix.platform == 'arm' && steps.rustimg.outputs.cache-hit != 'true'
-        shell: bash
-        run: docker save docker.io/library/rust:1-alpine | gzip -1 > "${{ runner.temp }}/rust-1-alpine.tar.gz"
+        run: |
+          # 把 cargo 缓存目录传给脚本（不传则保持"编在 /out 里、一次性"的原行为）
+          export CARGO_HOME_CACHE="$HOME/.cache/meow/cargo-home"
+          export CARGO_TARGET_CACHE="$HOME/.cache/meow/cargo-target-${{ matrix.platform }}"
+          bash client/apps/fnos/build-arm.sh
 
       - name: 组包
         env:
@@ -310,7 +306,12 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
           # CI 直连 Docker Hub；daocloud 镜像站只在 NAS 上有意义
           RUST_IMAGE: docker.io/library/rust:1-alpine
-        run: bash client/apps/fnos/build-fpk.sh
+        run: |
+          # x86 腿的 meowd 是在 build-fpk.sh 里编的（arm 腿在上一 step 已编好）。
+          # 传缓存目录让它走增量；不传时脚本行为与原来一致。
+          export CARGO_HOME_CACHE="$HOME/.cache/meow/cargo-home"
+          export CARGO_TARGET_CACHE="$HOME/.cache/meow/cargo-target-${{ matrix.platform }}"
+          bash client/apps/fnos/build-fpk.sh
 
       # 二次门禁：脚本里的静态校验之外，这里再断一次 ELF 架构与 jar 新鲜度。
       # 这些失败都会导致「装上了、起不来」或「能跑但版本是旧的」。

@@ -73,13 +73,27 @@ if [ "$PLATFORM" = "arm" ]; then
     }
     cp "$OUT/meowd-aarch64" "$OUT/meowd"
 else
+    # 可选：cargo 依赖缓存 / 增量产物挂到宿主机目录（同 build-arm.sh）。
+    # 都不传时与原来一致：编在 /out 里、一次性。
+    CARGO_MOUNTS=()
+    TARGET_DIR_IN_CONTAINER=/out/cargo-target
+    if [ -n "${CARGO_HOME_CACHE:-}" ]; then
+        mkdir -p "$CARGO_HOME_CACHE"
+        CARGO_MOUNTS+=(-v "$CARGO_HOME_CACHE:/usr/local/cargo")
+    fi
+    if [ -n "${CARGO_TARGET_CACHE:-}" ]; then
+        mkdir -p "$CARGO_TARGET_CACHE"
+        CARGO_MOUNTS+=(-v "$CARGO_TARGET_CACHE:/cargo-target")
+        TARGET_DIR_IN_CONTAINER=/cargo-target
+    fi
     docker run --rm \
         -v "$SRC":/src \
         -v "$OUT":/out \
+        "${CARGO_MOUNTS[@]}" \
         -w /src/client/apps/fnos/meowd \
-        -e CARGO_TARGET_DIR=/out/cargo-target \
+        -e CARGO_TARGET_DIR="$TARGET_DIR_IN_CONTAINER" \
         "$RUST_IMAGE" sh -c \
-        'cargo build --release && cp /out/cargo-target/release/meowd /out/meowd'
+        "cargo build --release && cp $TARGET_DIR_IN_CONTAINER/release/meowd /out/meowd"
 fi
 
 echo "[3/5] assemble package"

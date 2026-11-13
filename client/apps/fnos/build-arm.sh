@@ -28,14 +28,31 @@ fi
 
 mkdir -p "$OUT"
 
+# 可选：把 cargo 的依赖缓存（CARGO_HOME）与增量产物（target）挂到宿主机目录，
+# 让 CI 的 actions/cache 复用。meowd 编译是单腿最大开销（实测 83~102s），
+# 增量编译后只重编改动的 crate。
+# ★ 两个变量都不传时，行为与原来完全一致（编在 /out 里、一次性）。
+CARGO_MOUNTS=()
+TARGET_DIR_IN_CONTAINER=/out/cargo-target
+if [ -n "${CARGO_HOME_CACHE:-}" ]; then
+    mkdir -p "$CARGO_HOME_CACHE"
+    CARGO_MOUNTS+=(-v "$CARGO_HOME_CACHE:/usr/local/cargo")
+fi
+if [ -n "${CARGO_TARGET_CACHE:-}" ]; then
+    mkdir -p "$CARGO_TARGET_CACHE"
+    CARGO_MOUNTS+=(-v "$CARGO_TARGET_CACHE:/cargo-target")
+    TARGET_DIR_IN_CONTAINER=/cargo-target
+fi
+
 docker run --rm \
     -v "$SRC":/src \
     -v "$OUT":/out \
+    "${CARGO_MOUNTS[@]}" \
     -w /src/client/apps/fnos/meowd \
-    -e CARGO_TARGET_DIR=/out/cargo-target \
+    -e CARGO_TARGET_DIR="$TARGET_DIR_IN_CONTAINER" \
     -e RUSTFLAGS="-C linker=rust-lld -C link-self-contained=yes" \
     "$IMG" sh -c \
-    'rustup target add aarch64-unknown-linux-musl && cargo build --release --target aarch64-unknown-linux-musl && cp /out/cargo-target/aarch64-unknown-linux-musl/release/meowd /out/meowd-aarch64'
+    "rustup target add aarch64-unknown-linux-musl && cargo build --release --target aarch64-unknown-linux-musl && cp $TARGET_DIR_IN_CONTAINER/aarch64-unknown-linux-musl/release/meowd /out/meowd-aarch64"
 
 file "$OUT/meowd-aarch64" || true
 ls -l "$OUT/meowd-aarch64"
