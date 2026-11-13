@@ -451,3 +451,53 @@ describe('更新说明按序号显示', () => {
     expect(formatNoteLines(['', '  ', ''].join(NL))).toEqual([])
   })
 })
+
+/*
+ * 一步到位（2026-11-13 用户报"下载完出现安装按钮 → 点了又读进度条 → 死循环"）。
+ *
+ * 这几条是**行为契约**，不是实现细节：下载完成后必须自动调起安装器，
+ * 界面上不允许再出现第二次「安装」按钮。同一条链路两处 UI（启动弹框 /
+ * 设置页）都要守。
+ */
+describe('应用更新：一步到位（不再二次确认安装）', () => {
+  const webSrc = join(process.cwd(), 'src')
+  const read = (p: string) => readFileSync(join(webSrc, p), 'utf8')
+
+  it('启动弹框：主按钮只有「下载并安装 / 处理中」，没有「安装」分支', () => {
+    const dialog = read('components/common/UpdateDialog.vue')
+    expect(dialog).not.toMatch(/ready\s*\?\s*'安装'/)
+    expect(dialog).toContain("'下载并安装'")
+    // 死循环的根因就是 onPrimary 不看状态永走下载 —— 现在它只允许一条路径
+    const i = dialog.indexOf('function onPrimary')
+    const body = dialog.slice(i, i + 400)
+    expect(body).toContain('runDownloadAndInstall()')
+    expect(body).not.toContain('runInstall')
+  })
+
+  it('store：下载校验通过后直接调起安装器（调起失败要报错而不是静默）', () => {
+    const store = read('stores/appUpdate.ts')
+    const i = store.indexOf('export async function runDownloadAndInstall')
+    const body = store.slice(i, i + 3000)
+    expect(body).toMatch(/phase\.value = 'installing'[\s\S]{0,400}installDownloaded\(\)/)
+    expect(body).toContain("phase.value = 'done'")
+  })
+
+  it('设置页：按钮恒为「下载并安装」，取消只在下载阶段出现', () => {
+    const settings = read('views/SettingsView.vue')
+    expect(settings).not.toContain("updReady ? '安装'")
+    expect(settings).toContain("updPhase === 'downloading'")
+    const i = settings.indexOf('async function downloadAndInstall')
+    const body = settings.slice(i, i + 400)
+    expect(body).toContain('runUpdInstall()')
+    expect(body).not.toContain('runUpdDoInstall')
+  })
+
+  it('TV：更新日志区是 tv-nav 的滚动停靠点（data-tv-scroll + tabindex）', () => {
+    const dialog = read('components/common/UpdateDialog.vue')
+    // 两个属性缺一个：要么焦点进不来，要么上下键不滚（tv-nav 的约定）
+    expect(dialog).toMatch(/data-tv-scroll/)
+    expect(dialog).toMatch(/ref="notesEl"[\s\S]{0,120}tabindex="0"/)
+    // 内容被截断时要有「↑↓ 滚动」提示，否则用户不知道还有条目
+    expect(dialog).toContain('滚动查看全部')
+  })
+})

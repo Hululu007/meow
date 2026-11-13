@@ -382,13 +382,36 @@ impl AppUpdater {
     ) -> Result<(), String> {
         let curl = find_curl()?;
         let mut cmd = Command::new(&curl);
-        cmd.args(["-L", "--fail", "-C", "-", "--progress-bar", "-o"])
+        // 下载可能持续几十秒，黑框会一直挂在屏幕上挡住应用界面
+        crate::proc::quiet(&mut cmd);
+        /*
+         * ★ 慢线路保护（2026-11-13 用户报「更新过慢」）。
+         *
+         * 候选列表是「直连 + 若干加速代理」，直连排第一。国内直连
+         * github.com 的 release 资产常常"能连上但只有几十 KB/s" ——
+         * 不报错，所以"失败才换线路"永远不触发，31MB 的 apiserver 或
+         * 5MB 的安装包就这样慢慢爬完。
+         *
+         * `--speed-limit 32768 --speed-time 8`：8 秒内平均低于 32KB/s 就让
+         * curl 以退出码 28（timeout）结束，外层 download_with_fallback 收到
+         * 「线路太慢」后换下一个候选。
+         */
+        cmd.args([
+            "-L",
+            "--fail",
+            "-C",
+            "-",
+            "--progress-bar",
+            "--speed-limit",
+            "32768",
+            "--speed-time",
+            "8",
+            "-o",
+        ])
             .arg(out)
             .arg(url)
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        // 下载可能持续几十秒，黑框会一直挂在屏幕上挡住应用界面
-        crate::proc::quiet(&mut cmd);
         apply_github_headers(&mut cmd, url, token);
         // 同 http_get_static：令牌只发给 api.github.com（自建源不该收到 PAT）
         if !token.is_empty() && token_allowed_for(url) {
@@ -447,7 +470,12 @@ impl AppUpdater {
                     return Err("已取消".into());
                 }
                 if !st.success() {
-                    return Err(format!("下载失败（curl 退出码 {}）", st.code().unwrap_or(-1)));
+                    // 退出码 28 = curl 的 timeout：这里只可能是 --speed-limit 触发，
+                    // 报得具体一点，用户/日志才看得出是"线路慢"而不是"下载坏了"
+                    return Err(match st.code() {
+                        Some(28) => "线路太慢（8 秒低于 32KB/s，已换下一条）".to_string(),
+                        c => format!("下载失败（curl 退出码 {}）", c.unwrap_or(-1)),
+                    });
                 }
                 break;
             }

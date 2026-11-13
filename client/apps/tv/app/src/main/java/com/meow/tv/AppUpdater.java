@@ -414,6 +414,20 @@ public final class AppUpdater {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             long got = 0;
             byte[] buf = new byte[64 * 1024];
+            /*
+             * ★ 慢启动保护（2026-11-13 用户报「MuMu 更新过慢」）。
+             *
+             * 候选列表是「直连 + 若干加速代理」，直连排第一。国内直连
+             * github.com 的 release 资产经常"能连上但只有几十 KB/s"——
+             * 不报错，所以原来的"失败才换线路"永远不会触发，20MB 的包
+             * 就这样慢慢爬完。
+             *
+             * 判据：前 5 秒内下载量 < 200KB（约 40KB/s）就放弃这条线路，
+             * 交给外层换下一个候选。已经下到的字节由外层删除后重下。
+             */
+            final long slowStartAt = System.currentTimeMillis();
+            final long SLOW_WINDOW_MS = 5000L;
+            final long SLOW_MIN_BYTES = 200L * 1024L;
             try (InputStream in = body.byteStream();
                  FileOutputStream out = new FileOutputStream(apk)) {
                 int n;
@@ -423,6 +437,10 @@ public final class AppUpdater {
                     md.update(buf, 0, n);
                     got += n;
                     received = got;
+                    if (got < SLOW_MIN_BYTES
+                            && System.currentTimeMillis() - slowStartAt > SLOW_WINDOW_MS) {
+                        return "线路太慢（5 秒仅 " + (got / 1024) + "KB，已换下一条）";
+                    }
                     if (total > 0) {
                         int pct = (int) Math.min(99, got * 100 / total);
                         percent.set(pct);

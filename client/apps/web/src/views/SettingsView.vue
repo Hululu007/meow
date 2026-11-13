@@ -106,12 +106,12 @@ import {
   found as updFound,
   openDialog as openUpdDialog,
   percent as updPercent,
+  phase as updPhase,
   platform as updPlatform,
   ready as updReady,
   runCancel as runUpdCancel,
   runCheck as runUpdCheck,
   runDownloadAndInstall as runUpdInstall,
-  runInstall as runUpdDoInstall,
   stage as updStage,
 } from '@/stores/appUpdate'
 // TV 上开机不跑模块/插件/fpk 的后台检查（App.vue 的说明），改到这里：
@@ -3308,11 +3308,14 @@ function cancelUpdCheck() {
   updSecs.value = 0
 }
 
-/** 下载并安装（进度由 store 统一轮询，这里不再自己 setInterval） */
+/**
+ * 「下载并安装」= 一步到位（2026-11-13）。
+ *
+ * 下载 + 校验完成后由 store 直接调起系统安装器，界面不再出现第二次
+ * 「安装」按钮 —— 原来那一步正是"点了又回到进度条"的死循环源头。
+ */
 async function downloadAndInstall(): Promise<void> {
-  // 已下载 → 这次点的是「安装」；否则走下载
-  if (updReady.value) await runUpdDoInstall()
-  else await runUpdInstall()
+  await runUpdInstall()
 }
 
 /** 取消下载（TV 上没有鼠标指针，误点要能退出来） */
@@ -6977,11 +6980,11 @@ onBeforeUnmount(() => {
           </ul>
           <div class="mt-2 flex items-center gap-2">
             <button
-              class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-dim"
+              class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-dim disabled:opacity-60"
               :disabled="updBusy"
               @click="downloadAndInstall()"
             >
-              {{ updBusy ? updStage : updReady ? '安装' : '下载并安装' }}
+              下载并安装
             </button>
             <button
               v-if="!updBusy"
@@ -6990,17 +6993,17 @@ onBeforeUnmount(() => {
             >
               查看详情
             </button>
-            <!-- 下载中才给取消：TV 上误按进下载没有鼠标能退出来 -->
+            <!-- 下载中才给取消：TV 上误按进下载没有鼠标能退出来；安装阶段不可取消 -->
             <button
-              v-if="updBusy && !updReady"
+              v-if="updPhase === 'downloading'"
               class="rounded-md bg-card px-2 py-1 text-[11px] text-ink-3 hover:bg-card-hover"
               @click="cancelAppUpdate()"
             >
               取消
             </button>
-            <span v-if="updBusy" class="text-[11px] text-ink-3">{{ updPercent }}%</span>
-            <!-- 已下载待安装：让"下一步该点安装"成为可见事实 -->
-            <span v-else-if="updReady" class="text-[11px] text-ok">已下载 · 点「安装」</span>
+            <span v-if="updBusy" class="text-[11px] text-ink-3">
+              {{ updStage }}<template v-if="updPhase === 'downloading'"> {{ updPercent }}%</template>
+            </span>
           </div>
           <!-- 进度条：电视上没有鼠标指针，纯数字不够直观 -->
           <div v-if="updBusy" class="mt-2 h-1 w-full overflow-hidden rounded bg-card">

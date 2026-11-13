@@ -35,8 +35,8 @@ import {
   error,
   found,
   percent,
+  phase,
   platform,
-  ready,
   runCancel,
   runDownloadAndInstall,
   stage,
@@ -50,6 +50,10 @@ const emit = defineEmits<{
 const primary = ref<HTMLButtonElement>()
 /** 次按钮 */
 const secondary = ref<HTMLButtonElement>()
+/** 更新日志滚动区（TV 上作为方向键的滚动停靠点） */
+const notesEl = ref<HTMLElement>()
+/** 日志是否被截断（决定初始焦点与「↑↓ 滚动」提示） */
+const notesOverflow = ref(false)
 
 /** 更新日志按行拆开：`desc` 里存的是多行文本，原样塞进一个 div 会丢掉换行 */
 const noteLines = computed(() => {
@@ -77,19 +81,35 @@ function fmtSize(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
-/** 下载中是"取消下载"，空闲时是"稍后" */
-const secondaryLabel = computed(() => (busy.value && !ready.value ? '取消下载' : '稍后'))
+/** 下载中 = 取消下载；安装阶段不可取消（安装器已经交出去了）；其余 = 稍后 */
+const secondaryLabel = computed(() => {
+  if (phase.value === 'downloading') return '取消下载'
+  if (phase.value === 'installing') return '安装中…'
+  return '稍后'
+})
+/** 安装阶段禁用次按钮：这时点「稍后」既关不掉弹框也会让人以为能中断 */
+const secondaryDisabled = computed(() => phase.value === 'installing')
 
+/**
+ * 主按钮：**只走一次**。
+ *
+ * <p>2026-11-13 修掉的死循环：原来这里不看状态，永远调
+ * `runDownloadAndInstall()`；下载完之后按钮文案变成「安装」，可点下去
+ * 还是重新下载 —— 用户看到进度条从头再来一遍，永远装不上。
+ * 现在下载完成会在 store 里直接调起系统安装器（一步到位），
+ * 所以这里不需要、也不允许再有第二个分支。
+ */
 function onPrimary(): void {
   if (busy.value) return
   void runDownloadAndInstall()
 }
 
 function onSecondary(): void {
-  if (busy.value && !ready.value) {
+  if (phase.value === 'downloading') {
     void runCancel()
     return
   }
+  if (phase.value === 'installing') return
   onLater()
 }
 
@@ -97,6 +117,18 @@ function onSecondary(): void {
 function onLater(): void {
   // 关成功了才发 close：下载中关不掉，发出去父组件会误以为已收
   if (closeDialog()) emit('close')
+}
+
+/**
+ * 量一下日志区是否被截断。
+ *
+ * <p>TV 上日志一长就看不到后面的条目（用户 2026-11-13 反馈「弹框要能用
+ * 方向键上下滚动看更新内容」）。判据用 scrollHeight/clientHeight，
+ * 与详情页简介折叠同一个手法（实测可靠）。
+ */
+function measureNotes(): void {
+  const el = notesEl.value
+  notesOverflow.value = !!el && el.scrollHeight > el.clientHeight + 2
 }
 
 function onKey(e: KeyboardEvent): void {
@@ -140,22 +172,41 @@ function releaseBackKey(): void {
 onMounted(async () => {
   window.addEventListener('keydown', onKey)
   takeOverBackKey()
-  // 初始焦点给主按钮：TV 上不设焦点的话第一次方向键会落到背景页面
   await nextTick()
-  primary.value?.focus()
+  measureNotes()
+  /*
+   * 初始焦点：
+   *   · 日志被截断 → 先给日志区。TV 上否则要先按 ↑ 才能滚，
+   *     用户只会觉得"方向键没用"（2026-11-13 实测反馈）；
+   *   · 否则给主按钮：TV 上不设焦点的话第一次方向键会落到背景页面。
+   */
+  if (notesOverflow.value) notesEl.value?.focus()
+  else primary.value?.focus()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
   releaseBackKey()
+  if (doneTimer !== undefined) window.clearTimeout(doneTimer)
 })
 
-// 安装成功后自动收起：再挂着只会挡路（用户下一步是看新版本）。
-// 判据是 ready 由 true 变 false 且没出错 —— 那条路径只有安装成功会走到
-watch(ready, (v, old) => {
-  if (old && !v && !error.value && percent.value >= 100) {
+/** 日志内容变化（例如清单晚到）后重量一次是否截断 */
+watch(noteLines, () => void nextTick(measureNotes))
+
+/**
+ * 安装阶段结束（`phase === 'done'`）→ 自动收起弹框。
+ *
+ * <p>下载完成会自动调起安装器，弹框没理由继续挂着挡路。
+ * 留 0.6s 让用户看一眼「安装程序已启动」，然后关。
+ */
+let doneTimer: number | undefined
+watch(phase, (v) => {
+  if (v !== 'done') return
+  if (doneTimer !== undefined) window.clearTimeout(doneTimer)
+  doneTimer = window.setTimeout(() => {
+    doneTimer = undefined
     if (closeDialog()) emit('close')
-  }
+  }, 600)
 })
 </script>
 
@@ -194,8 +245,19 @@ watch(ready, (v, old) => {
         </div>
       </div>
 
-      <!-- 更新日志：最多 8 行 + 可滚，避免长日志把按钮挤出屏幕 -->
-      <div v-if="noteLines.length" class="max-h-44 overflow-y-auto px-4 py-3" data-tv-scroll>
+      <!--
+        更新日志：最多 8 行 + 可滚，避免长日志把按钮挤出屏幕。
+        ★ tabindex="0" 是 TV 上"方向键能滚"的开关：tv-nav 的约定是
+          「data-tv-scroll + tabindex=0 才算滚动停靠点」，缺一个就变成
+          "焦点根本进不来、按上下没反应"（2026-11-13 用户实测反馈）。
+      -->
+      <div
+        v-if="noteLines.length"
+        ref="notesEl"
+        tabindex="0"
+        class="max-h-44 overflow-y-auto px-4 py-3 focus:outline-none"
+        data-tv-scroll
+      >
         <ul class="space-y-1">
           <li v-for="(line, i) in noteLines" :key="i" class="text-[12px] leading-relaxed text-ink-2">
             {{ line }}
@@ -205,6 +267,8 @@ watch(ready, (v, old) => {
       <div v-else class="px-4 py-3 text-[12px] text-ink-3">
         该版本没有附带更新说明。
       </div>
+      <!-- 内容被截断时给个可操作提示：否则用户不知道还有 2 条 -->
+      <p v-if="notesOverflow" class="px-4 pb-1 text-[11px] text-ink-3">↑ ↓ 滚动查看全部</p>
 
       <!-- 进度：只有下载/安装时才出现 -->
       <div v-if="busy || percent > 0" class="px-4 pb-1">
@@ -227,12 +291,13 @@ watch(ready, (v, old) => {
           :disabled="busy"
           @click="onPrimary()"
         >
-          {{ ready ? '安装' : busy ? '处理中…' : '下载并安装' }}
+          {{ busy ? '处理中…' : '下载并安装' }}
         </button>
         <button
           ref="secondary"
           type="button"
-          class="flex-1 rounded-lg bg-card px-4 py-2.5 text-[13px] text-ink transition hover:bg-card-hover focus:outline-none focus:ring-2 focus:ring-accent"
+          class="flex-1 rounded-lg bg-card px-4 py-2.5 text-[13px] text-ink transition hover:bg-card-hover focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-60"
+          :disabled="secondaryDisabled"
           @click="onSecondary()"
         >
           {{ secondaryLabel }}

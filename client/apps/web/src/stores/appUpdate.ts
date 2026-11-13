@@ -56,7 +56,16 @@ export const found = ref<AppUpdate | null>(null)
 export const percent = ref(0)
 /** 阶段文案（下载中 / 校验中 / 安装中） */
 export const stage = ref('')
-/** 已下载校验通过、可以点安装 */
+/**
+ * 阶段：idle | downloading | installing | done。
+ *
+ * <p><b>为什么要有它（2026-11-13）</b>：原来只有 `busy` 一个布尔，
+ * 分不清"在下"和"在装"，于是取消按钮在安装阶段仍显示「取消下载」，
+ * 弹框也分不清该不该自动收起。用户口径是**一步到位**：
+ * 下载完直接调起安装器，界面上不再出现第二次「安装」按钮。
+ */
+export const phase = ref<'idle' | 'downloading' | 'installing' | 'done'>('idle')
+/** 兼容旧调用点：已下载校验通过（只在"即将安装"的那一瞬为真） */
 export const ready = ref(false)
 /**
  * 弹框是否打开。
@@ -101,6 +110,7 @@ function resetCheckState(): void {
   ready.value = false
   percent.value = 0
   stage.value = ''
+  phase.value = 'idle'
 }
 
 /**
@@ -141,16 +151,23 @@ export async function runCheck(opts: { silent?: boolean } = {}): Promise<AppUpda
 }
 
 /**
- * 下载并安装。
+ * 下载 → 校验 → **直接调起安装器**（一步到位，2026-11-13 用户要求）。
  *
- * 进度靠轮询原生状态（Tauri invoke / TV 桥都是"一次性调用 + 状态轮询"，
- * 没有回调通道）。轮询集中在 store 里而不是页面：两处同时轮询会让
- * 百分比互相覆盖。
+ * <p><b>为什么不再停在「点安装」</b>：原来的流程是下载完把按钮改成「安装」，
+ * 等用户再点一次。实际用起来有两类问题：
+ *   · 用户以为「安装」是二次确认，点了之后又看到进度条（其实是重新下载），
+ *     来回循环、永远装不上（2026-11-13 用户实测反馈）；
+ *   · 明明已经下载好了，界面上还要再点一下，多一步没有信息量的确认。
+ *
+ * <p>现在的语义：按钮就是「下载并安装」，点一次 → 下载 → 校验 →
+ * 自动调起系统安装器（Windows 的 NSIS 向导 / Android 的系统安装器）。
+ * 系统层面的确认弹窗仍然存在，这不是"静默安装"。
  */
 export async function runDownloadAndInstall(): Promise<void> {
   const up = found.value
   if (!up || busy.value) return
   busy.value = true
+  phase.value = 'downloading'
   percent.value = 0
   stage.value = '下载中…'
   error.value = ''
@@ -182,26 +199,24 @@ export async function runDownloadAndInstall(): Promise<void> {
     stopPoll()
     if (!done) return
 
-    /*
-     * ★ 下载完成后**停在 ready**，由用户点「安装」（2026-10-31 实测改）。
-     *
-     * 原来这里立刻 `installDownloaded()` 然后 `ready.value = false`：
-     *   · ready 只在一瞬间为真，界面上的按钮文案永远是「下载并安装」
-     *   · 安装器是系统 UI，会盖住应用；用户回到应用时按钮又变回「下载并安装」，
-     *     完全看不出"其实已经下好了，只差点安装"
-     *   · 更糟的是 TV 上系统安装器弹窗需要用户确认，而我们的流程没有
-     *     给用户任何"现在该点安装"的提示
-     *
-     * 现在：下载 + 校验完成 → ready=true、stage='已下载，点「安装」'；
-     * 用户再点一次按钮 → installDownloaded()。
-     * 这符合"绝不静默安装"的既有约定，也让状态可见。
-     */
+    // ---- 一步到位：校验通过直接交给系统安装器 ----
     percent.value = 100
     ready.value = true
-    stage.value = '已下载，点「安装」'
+    phase.value = 'installing'
+    stage.value = '正在调起安装程序…'
+    let msg = ''
+    try {
+      msg = await installDownloaded()
+    } finally {
+      ready.value = false
+      stopPoll()
+    }
+    phase.value = 'done'
+    stage.value = msg || '安装程序已启动'
   } catch (e: any) {
     error.value = e?.message || String(e)
     stage.value = ''
+    phase.value = 'idle'
   } finally {
     stopPoll()
     busy.value = false
@@ -209,26 +224,26 @@ export async function runDownloadAndInstall(): Promise<void> {
 }
 
 /**
- * 安装已经下载好的包。
+ * 安装已经下载好的包（旧的二次点击入口）。
  *
- * <p>与下载分开是刻意的（2026-10-31）：应用内的"下载"和系统的"安装"
- * 是两个动作，中间隔着一次系统弹窗。混在一起会让用户看到
- * "点了下载，弹了个安装框，回来按钮又变回去了"。
- *
- * <p>只在 `ready === true` 时有效；否则什么都不做（防止误调）。
+ * <p>保留导出只为一个场景：`ready === true` 的瞬间（自动安装开始前）
+ * 外部万一调到了，也还能走安装。UI 已经**不再**提供「安装」按钮 ——
+ * 下载结束会自动调起安装器（见 `runDownloadAndInstall`）。
  */
 export async function runInstall(): Promise<void> {
   if (!ready.value) return
   busy.value = true
-  stage.value = '安装中…'
+  phase.value = 'installing'
+  stage.value = '正在调起安装程序…'
   error.value = ''
   try {
     stage.value = await installDownloaded()
+    phase.value = 'done'
   } catch (e: any) {
     error.value = e?.message || String(e)
     stage.value = ''
+    phase.value = 'idle'
   } finally {
-    // 交给系统安装器之后就不再是"待安装"态
     ready.value = false
     busy.value = false
   }
@@ -240,6 +255,13 @@ export async function runCancel(): Promise<void> {
     await cancelDownload()
   } catch {
     /* 取消失败不影响界面状态，由轮询纠正 */
+  } finally {
+    // 取消后回到可再次点击「下载并安装」的状态（否则按钮会卡在「处理中…」）
+    if (phase.value === 'downloading') {
+      phase.value = 'idle'
+      stage.value = ''
+      percent.value = 0
+    }
   }
 }
 
