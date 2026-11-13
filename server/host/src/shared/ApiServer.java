@@ -12641,6 +12641,40 @@ public class ApiServer {
              * 多少站冲突、哪些站会消失、哪些停用状态会失效，再决定。
              * 原来一步到位，点错仓就只能靠一层 .bak 回滚，而且回滚本身也是覆盖。
              */
+            /*
+             * 一次把「四种并法各自会怎样」全算出来（merge×keep/replace/both + replace）。
+             *
+             * 只回当前策略一份 diff 的后果：用户想比较「追加 vs 替换」必须先切按钮，
+             * 而切按钮会清空预览、只能再点一次「读取并预览」——dryRun 每次都会
+             * fetchTextAccel 重新抓配置，等于比较一次多等一轮网络。于是「先看结果
+             * 再决定怎么并」这个顺序在界面上根本做不到，只能把策略摆到读取之前。
+             *
+             * planSites 是纯内存比对：不写盘、不联网、不改入参对象（同 key 更新走
+             * new JSONObject(...) 拷贝）。四次调用成本可忽略，所以直接算齐。
+             * 顶层 diff 仍是当前策略那份——老客户端只要它，行为不变。
+             *
+             * 结构：plans.merge.{keep|replace|both} + plans.replace。注意
+             * plans.merge.replace 是**冲突策略**（用导入的覆盖），与顶层 replace 模式
+             * 不是一回事，取值时别把 mode 和 onConflict 弄混。
+             */
+            JSONObject plans = new JSONObject();
+            JSONObject mergePlans = new JSONObject();
+            for (String cm : new String[]{"keep", "replace", "both"}) {
+                JSONObject p = planSites(existingSites, kept, true, cm);
+                JSONObject d = p.optJSONObject("diff");
+                d.put("healthLost", healthLostKeys(existingSites, p.optJSONArray("sites")));
+                d.put("mode", "merge");
+                d.put("onConflict", cm);
+                mergePlans.put(cm, d);
+            }
+            JSONObject replacePlan = planSites(existingSites, kept, false, "");
+            JSONObject replaceDiff = replacePlan.optJSONObject("diff");
+            replaceDiff.put("healthLost", healthLostKeys(existingSites, replacePlan.optJSONArray("sites")));
+            replaceDiff.put("mode", "replace");
+            replaceDiff.put("onConflict", "");
+            plans.put("merge", mergePlans);
+            plans.put("replace", replaceDiff);
+
             JSONObject pv = new JSONObject()
                     .put("ok", true)
                     .put("dryRun", true)
@@ -12649,12 +12683,17 @@ public class ApiServer {
                     .put("onConflict", isMerge ? conflictMode : "")
                     .put("sites", okCount)
                     .put("totalSites", siteCount())
+                    // 本地站点表**原始条数**（含未实现的），与 diff.total 同一口径。
+                    // 用 siteCount() 会把"只有内置站能实现"的场景报成 1 个，
+                    // 跟下面「写入后共 5 条」对不上（实测空壳环境）。
+                    .put("existingSites", existingSites.length())
                     // 内置基线条数：这些站不在配置文件里，替换导入也删不掉。
                     // 预览里要报出来，否则用户以为「替换 = 清空」。
                     .put("builtinSites", implementedBaselineCount())
                     .put("skipped", skipped)
                     .put("depot", depotOut)
                     .put("dex2jvm", dex2jvm)
+                    .put("plans", plans)
                     .put("diff", diff);
             // 存下原文，确认导入时复用（见 importPreviewSlot 的注释）
             importPreviewSlot = new String[]{url, raw, String.valueOf(System.currentTimeMillis())};

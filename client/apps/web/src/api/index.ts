@@ -1348,6 +1348,8 @@ export interface ConfigImportResult {
   mode?: ImportMode
   sites?: number
   totalSites?: number
+  /** 本地站点表原始条数（含未实现的），与 diff.total 同口径 */
+  existingSites?: number
   /**
    * 内置基线条数（静态注册的站）。
    *
@@ -1360,6 +1362,19 @@ export interface ConfigImportResult {
   url?: string
   msg?: string
   diff?: ConfigImportDiff
+  /**
+   * 四种并法各会怎样（dryRun 一次算齐）。
+   *
+   * 有它才能做到「读完再选策略」：切换 追加/替换/冲突策略 都从这份里取，
+   * 不再重新请求（dryRun 每次都会重新抓配置，切一次就等一轮网络）。
+   * 老后端没有这个字段，调用方要回退到 `diff`。
+   *
+   * 注意 `merge.replace` 是**冲突策略**（用导入的覆盖），与 `replace` 模式不是一回事。
+   */
+  plans?: {
+    merge?: Partial<Record<ImportConflict, ConfigImportDiff>>
+    replace?: ConfigImportDiff
+  }
   /** 导入后留下的旧配置快照（供「恢复上一次配置」） */
   backup?: ConfigBackupInfo
 }
