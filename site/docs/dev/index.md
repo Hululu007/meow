@@ -16,6 +16,7 @@
 | [AI 助手](./ai-assistant.md) | 工具、编排、哑 REST 边界 |
 | [配置系统](./config-system.md) | 导入、落盘、jar 加载、站点分派 |
 | [插件系统](./plugin-system.md) | manifest、插件源、校验 |
+| [插件生态统一规范](./plugin-ecosystem.md) | 三端清单/状态/生命周期、迁移路线 |
 | [TV 接入与 Fongmi](./tv-integration.md) | `/config.json`、加载器、签名与分发 |
 | [数据与状态](./data-state.md) | 数据目录、policy.json、跨端通道 |
 | [Docker 部署](./docker.md) | 四容器、`.env`、排障、多架构 |

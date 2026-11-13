@@ -61,6 +61,7 @@ const devSidebar = [
     items: [
       { text: '配置系统', link: '/dev/config-system' },
       { text: '插件系统', link: '/dev/plugin-system' },
+      { text: '插件生态统一规范', link: '/dev/plugin-ecosystem' },
     ],
   },
   {
