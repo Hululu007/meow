@@ -150,9 +150,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # 不能用 ${{ runner.temp }}：它在 Windows 上是 D:/a/_temp 这种带反斜杠的路径，
-          # 在 bash 里反斜杠会被吃掉，glob 全落空 → 误报"产物不全"并整步失败（踩过）。
-          OUT="$RUNNER_TEMP/plugins-out"
+          # ★ Windows runner 的 $RUNNER_TEMP 是 D:\a\_temp 这种带反斜杠的路径，
+          #   bash 直接拼会落空（glob 全不匹配 → 静默 ok=0、缓存永远不保存）。
+          #   先统一成 /，再断言目录存在：配置错要红，不能伪装成"产物不全"。
+          OUT="$(cygpath -u "$RUNNER_TEMP" 2>/dev/null || echo "$RUNNER_TEMP")/plugins-out"
+          [ -d "$OUT" ] || { echo "::error::产物目录不存在：$OUT"; exit 1; }
           ONLY='${{ inputs.plugins_only }}'
           ok=1
           if [ -z "$ONLY" ]; then
