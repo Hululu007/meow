@@ -402,7 +402,13 @@ jobs:
     needs: build
     # 双架构都成功才发布：matrix 里任一腿失败 → build.result != success。
     # dispatch 只出 artifact，索引留给真正的 tag 发版。
-    if: github.event_name == 'push' && needs.build.result == 'success'
+    #
+    # ★ 还必须是 `fpk-v*` 的 tag：release.yml 全量发版会**复用**本 workflow
+    #   （workflow_call），那时 github.ref_name 是 `release-v1.2.2`，而下面的
+    #   「解析版本」只认 fpk-v 形式 —— 少了这道判断，每次全量发版的 fpk 腿
+    #   都会红（2026-11-13 实测：release-v1.2.2 因这一门禁整条 release 判失败，
+    #   构建本身全绿）。FnDepot 索引只由 fpk 单链 tag 更新。
+    if: github.event_name == 'push' && needs.build.result == 'success' && startsWith(github.ref_name, 'fpk-v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # ★ 跨 tag 串行：两次发版同时写同一份 fnpack.json 会互相覆盖
