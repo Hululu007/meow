@@ -231,17 +231,18 @@ describe('更新检查与设置页的性能护栏', () => {
     expect(api, '缺 health 合并缓存').toContain('healthInflight')
   })
 
-  it('设置页分区懒挂载 + 直播源进分区才拉', () => {
+  it('设置页分区全部立即渲染（懒挂载彻底移除）+ 直播源进分区才拉', () => {
     const s = readFileSync(SETTINGS, 'utf8')
-    expect(s, '缺分区懒挂载').toContain('visitedSec')
-    expect(s, '缺分区懒挂载').toContain('min-h-[20rem]')
     /*
-     * 2026-11-13 用户报「滚动后才出现下一配置区，远没有改之前有体验」：
-     * 懒挂载只该对**真电视**（遥控器几何选焦）生效，PC/Web/触屏一律立即渲染。
-     * 这两条断言防止后人把守卫删掉——删了 PC 上又是一屏空卡片。
+     * 2026-11-13 用户口径：懒挂载（"到过才挂内容" + 20rem 空占位）**完全放开**，
+     * 电视也不要 —— 一屏只露出当前分区、下面全是空卡片，体验比性能折扣更糟。
+     * 这里正向断言：占位类名与状态机都不许再出现。
      */
-    expect(s, '懒挂载缺「仅电视」守卫').toContain('const lazySections = tvMode && !isTouchDevice')
-    expect(s, 'visitedSec 缺非电视直通').toContain('if (!lazySections) return true')
+    expect(s, 'min-h-[20rem] 占位类名又回来了').not.toContain("'min-h-[20rem]'")
+    expect(s, '懒挂载状态机又回来了').not.toContain('visitedSecs')
+    expect(s, '分区标记函数又回来了').not.toContain('markSec(')
+    // 包裹层保留（恒 true 直通），但不能再有第二套开关
+    expect(s, 'visitedSec 应该恒真').toMatch(/function visitedSec\(_id: string\): boolean \{\s*return true\s*\}/)
     expect(s, '直播源仍在 onMounted 里拉').not.toContain('void refreshLives()')
     expect(s, '缺 ensureLives').toContain('ensureLives')
   })

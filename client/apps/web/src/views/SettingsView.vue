@@ -3965,39 +3965,24 @@ const navItems = computed(() =>
 const activeSec = ref<string>('conn')
 
 /**
- * 分区懒挂载：**电视上到过才挂内容**，PC / Web 一次性全渲染。
+ * 分区呈现：**全部立即渲染**（2026-11-13 用户口径「完全放开即可，TV 也不要」）。
  *
- * 为什么当初要懒挂载：14 个分区一次全挂，「搜索与源」那种几百行的源列表在
- * TV 的 WebView 上首屏要建几千个节点；tv-nav 的焦点是几何最近邻，候选节点
- * 越多，方向键越不跟手。没访问过的分区只保留一个占位高度（`min-h-[20rem]`），
- * 页面总长度不变，滚动条、scroll spy、导航跳转的落点都还准。
+ * 曾经做过"到过才挂内容"的懒挂载（3e0c185）：14 个分区只挂当前一块，其余用
+ * `min-h-[20rem]` 空占位，滚到才长出来。理由是 TV 的 tv-nav 用几何最近邻选焦、
+ * 「搜索与源」几百行列表会建几千节点，方向键变钝。
  *
- * ★ 2026-11-13 用户报「滚动后才能出现下一配置区，远没有改之前有体验」：
- *   这条优化只对**真电视**成立（遥控器几何选焦 × 几千节点），PC/Web 没有这个
- *   负担，空占位反而像"页面坏了"——一屏 14 个分区只露出当前一块，下面全是空卡片。
- *   所以按形态分流：电视（无触屏）懒挂载照旧，其它形态一律立即渲染
- *   （= 改之前的行为）。TV 壳跑在手机上算触屏，也走立即渲染。
+ * 实测体验代价更大：一屏只暴露当前分区，下面全是空卡片（用户「远没有改之前
+ * 有体验」，PC/手机/TV 一致），所以彻底放开、不再有任何占位。
+ *
+ * 将来若 TV 上方向键真被节点数拖慢，**应改 tv-nav 的候选集裁剪**（例如方向键
+ * 只在当前分区内选焦），而不是再把内容藏起来——藏内容是对用户可见的退化。
+ *
+ * `visitedSec` 恒 true，模板里的 `<template v-if="visitedSec('x')">` 包裹层
+ * 因此等价于直通；保留它只是为了让那次改动可以原地回滚，不持有任何状态。
  */
-const isTouchDevice =
-  typeof window !== 'undefined' &&
-  (!!window.matchMedia?.('(pointer: coarse)').matches || (navigator.maxTouchPoints || 0) > 0)
-
-const lazySections = tvMode && !isTouchDevice
-
-const visitedSecs = ref<Record<string, boolean>>({ conn: true })
-
-function visitedSec(id: string): boolean {
-  if (!lazySections) return true
-  return !!visitedSecs.value[id]
+function visitedSec(_id: string): boolean {
+  return true
 }
-
-function markSec(id: string): void {
-  if (!id || visitedSecs.value[id]) return
-  visitedSecs.value = { ...visitedSecs.value, [id]: true }
-}
-
-// 纯滚动进入某个分区时也要挂上（导航点击由 scrollToSec 自己处理）
-watch(activeSec, (id) => markSec(id))
 /**
  * 遥控器最近一次停留的左侧导航项（分区 id）。
  *
@@ -4212,9 +4197,7 @@ async function scrollToSec(id: string) {
   if (!el) return
   activeSec.value = id
   lastNavSec.value = id
-  // 懒挂载：先把这一段的内容挂上，等一帧再算落点，
-  // 否则跳过去看到的还是空占位（高度也不对）。
-  markSec(id)
+  // 所有分区都已挂载（不再懒挂载），只需等一帧让 DOM 稳定再算落点
   await nextTick()
   // 进"数据与维护"时刷新一次缓存统计：数字是文案的一部分，
   // 不刷新会一直显示上次打开时的旧值
@@ -4607,7 +4590,7 @@ onBeforeUnmount(() => {
         class="flex min-w-0 flex-col gap-3 lg:-ml-1 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:px-1"
       >
     <!-- ══════════ 连接 ══════════ -->
-    <section data-sec="conn" class="set-card shrink-0" :class="visitedSec('conn') ? '' : 'min-h-[20rem]'">
+    <section data-sec="conn" class="set-card shrink-0">
       <template v-if="visitedSec('conn')">
       <div class="set-head">
         <h2 class="set-title">连接</h2>
@@ -4737,7 +4720,7 @@ onBeforeUnmount(() => {
     <section
       v-if="desktop"
       data-sec="plugin"
-      class="set-card shrink-0" :class="visitedSec('plugin') ? '' : 'min-h-[20rem]'"
+      class="set-card shrink-0"
     >
       <template v-if="visitedSec('plugin')">
       <div class="set-head">
@@ -5082,7 +5065,7 @@ onBeforeUnmount(() => {
       </section>
 
     <!-- ══════════ 本机执行（仅 TV）══════════ -->
-    <section v-if="tvMode" data-sec="localexec" class="set-card shrink-0" :class="visitedSec('localexec') ? '' : 'min-h-[20rem]'">
+    <section v-if="tvMode" data-sec="localexec" class="set-card shrink-0">
       <template v-if="visitedSec('localexec')">
       <div class="set-head">
         <h2 class="set-title">本机执行</h2>
@@ -5141,7 +5124,7 @@ onBeforeUnmount(() => {
       </section>
 
     <!-- ══════════ 运行时模块（仅 TV）══════════ -->
-    <section v-if="tvMode" data-sec="runtime" data-runtime-module class="set-card shrink-0" :class="visitedSec('runtime') ? '' : 'min-h-[20rem]'">
+    <section v-if="tvMode" data-sec="runtime" data-runtime-module class="set-card shrink-0">
       <template v-if="visitedSec('runtime')">
       <div class="set-head">
         <h2 class="set-title">运行时模块</h2>
@@ -5217,7 +5200,7 @@ onBeforeUnmount(() => {
       </section>
 
     <!-- ══════════ 桌面端行为（仅 PC）══════════ -->
-    <section v-if="desktop" data-sec="desktop" class="set-card shrink-0" :class="visitedSec('desktop') ? '' : 'min-h-[20rem]'">
+    <section v-if="desktop" data-sec="desktop" class="set-card shrink-0">
       <template v-if="visitedSec('desktop')">
       <div class="set-head">
         <h2 class="set-title">桌面端行为</h2>
@@ -5256,7 +5239,7 @@ onBeforeUnmount(() => {
         · 「数据与维护」区的重置源健康 + 清空搜索缓存
       合并依据是用户问题：「某部剧搜不到」原来要找三个区，现在都在这里。
     -->
-    <section data-sec="source" class="set-card shrink-0" :class="visitedSec('source') ? '' : 'min-h-[20rem]'">
+    <section data-sec="source" class="set-card shrink-0">
       <template v-if="visitedSec('source')">
       <div class="set-head">
         <h2 class="set-title">搜索与源</h2>
@@ -5743,7 +5726,7 @@ onBeforeUnmount(() => {
       </section>
 
     <!-- ══════════ 直播源 ══════════ -->
-    <section data-sec="live" class="set-card shrink-0" :class="visitedSec('live') ? '' : 'min-h-[20rem]'">
+    <section data-sec="live" class="set-card shrink-0">
       <template v-if="visitedSec('live')">
       <div class="set-head">
         <h2 class="set-title">直播源</h2>
@@ -5941,7 +5924,7 @@ onBeforeUnmount(() => {
       </section>
 
     <!-- ══════════ 播放 ══════════ -->
-    <section data-sec="play" class="set-card shrink-0" :class="visitedSec('play') ? '' : 'min-h-[20rem]'">
+    <section data-sec="play" class="set-card shrink-0">
       <template v-if="visitedSec('play')">
       <div class="set-head">
         <h2 class="set-title">播放</h2>
@@ -6027,7 +6010,7 @@ onBeforeUnmount(() => {
       </section>
 
     <!-- ══════════ 弹幕 ══════════ -->
-    <section data-sec="danmaku" class="set-card shrink-0" :class="visitedSec('danmaku') ? '' : 'min-h-[20rem]'">
+    <section data-sec="danmaku" class="set-card shrink-0">
       <template v-if="visitedSec('danmaku')">
       <div class="set-head">
         <h2 class="set-title">弹幕</h2>
@@ -6237,7 +6220,7 @@ onBeforeUnmount(() => {
       </section>
 
     <!-- ══════════ 外观 ══════════ -->
-    <section data-sec="appearance" class="set-card shrink-0" :class="visitedSec('appearance') ? '' : 'min-h-[20rem]'">
+    <section data-sec="appearance" class="set-card shrink-0">
       <template v-if="visitedSec('appearance')">
       <div class="set-head">
         <h2 class="set-title">外观</h2>
@@ -6307,7 +6290,7 @@ onBeforeUnmount(() => {
       （用户要求拆开：存储、WebDAV、维护各管一件事）。
       历史记录条数从原「浏览与搜索」搬来 —— 它是"留多久"，属于存储不属搜索。
     -->
-    <section data-sec="storage" class="set-card shrink-0" :class="visitedSec('storage') ? '' : 'min-h-[20rem]'">
+    <section data-sec="storage" class="set-card shrink-0">
       <template v-if="visitedSec('storage')">
       <div class="set-head">
         <h2 class="set-title">存储</h2>
@@ -6553,7 +6536,7 @@ onBeforeUnmount(() => {
       </section>
 
     <!-- ══════════ WebDAV ══════════ -->
-    <section data-sec="sync" class="set-card shrink-0" :class="visitedSec('sync') ? '' : 'min-h-[20rem]'">
+    <section data-sec="sync" class="set-card shrink-0">
       <template v-if="visitedSec('sync')">
       <div class="set-head">
         <h2 class="set-title">WebDAV</h2>
@@ -6788,7 +6771,7 @@ onBeforeUnmount(() => {
       </section>
 
     <!-- ══════════ AI ══════════ -->
-    <section data-sec="ai" class="set-card flex shrink-0 flex-col" :class="visitedSec('ai') ? '' : 'min-h-[20rem]'">
+    <section data-sec="ai" class="set-card flex shrink-0 flex-col">
       <template v-if="visitedSec('ai')">
       <div class="set-head">
         <h2 class="set-title">AI</h2>
@@ -6898,7 +6881,7 @@ onBeforeUnmount(() => {
       </section>
 
     <!-- ══════════ 网络与加速 ══════════ -->
-    <section data-sec="net" class="set-card shrink-0" :class="visitedSec('net') ? '' : 'min-h-[20rem]'">
+    <section data-sec="net" class="set-card shrink-0">
       <template v-if="visitedSec('net')">
       <div class="set-head">
         <h2 class="set-title">网络与加速</h2>
@@ -6947,7 +6930,7 @@ onBeforeUnmount(() => {
       </section>
 
     <!-- ══════════ 更新 ══════════ -->
-    <section data-sec="update" class="set-card shrink-0" :class="visitedSec('update') ? '' : 'min-h-[20rem]'">
+    <section data-sec="update" class="set-card shrink-0">
       <template v-if="visitedSec('update')">
       <div class="set-head">
         <h2 class="set-title">更新</h2>
@@ -7115,7 +7098,7 @@ onBeforeUnmount(() => {
       </section>
 
     <!-- ══════════ 维护 ══════════ -->
-    <section data-sec="maint" class="set-card flex shrink-0 flex-col" :class="visitedSec('maint') ? '' : 'min-h-[20rem]'">
+    <section data-sec="maint" class="set-card flex shrink-0 flex-col">
       <template v-if="visitedSec('maint')">
       <div class="set-head">
         <h2 class="set-title">维护</h2>
