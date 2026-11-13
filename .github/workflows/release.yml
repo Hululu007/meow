@@ -129,12 +129,36 @@ jobs:
       - name: 构建 web
         working-directory: client
         run: |
-          pnpm install --no-frozen-lockfile
+          pnpm install --frozen-lockfile
           pnpm --filter @meow/web build
       - uses: actions/upload-artifact@v4
         with:
           name: web-dist
           path: client/apps/web/dist
+          if-no-files-found: error
+
+      # ── fnOS fpk 用的那份 dist（2026-11-13）──────────────────────────
+      # fpk 的 web 必须挂在 /app/meow/ 子路径下（base + VITE_API_BASE 都是编译期
+      # 常量），和上面那份不是同一份产物，所以 fpk 以前在自己两条矩阵腿里各建
+      # 一次 —— 全量里最后一段"三处重复"（见 _tv.yml:68 的同款注释）。
+      # 现在在这里顺手多产一份，fpk 两腿直接下载复用。
+      # ★ 只在全量 tag 上建：tv-v*/pc-v*/docker-v* 不需要它，不许多花这 40 秒。
+      - name: 构建 web（fpk 版，/app/meow base，仅全量）
+        if: ${{ startsWith(github.ref, 'refs/tags/release-v') }}
+        working-directory: client
+        run: |
+          set -euo pipefail
+          # typecheck 上面刚跑过（build = vue-tsc && vite build），这里只出产物
+          VITE_API_BASE=/app/meow pnpm --filter @meow/web exec vite build \
+            --base=/app/meow/ --outDir dist-fpk
+          test -f apps/web/dist-fpk/index.html
+          # 自检：base 必须真的落到 index.html 里，否则 fpk 端白屏
+          grep -q '/app/meow/' apps/web/dist-fpk/index.html
+      - uses: actions/upload-artifact@v4
+        if: ${{ startsWith(github.ref, 'refs/tags/release-v') }}
+        with:
+          name: web-dist-fpk
+          path: client/apps/web/dist-fpk
           if-no-files-found: error
 
   tv:

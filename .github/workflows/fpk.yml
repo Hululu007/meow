@@ -176,38 +176,86 @@ jobs:
           # javac 21 产出的 class 版本 (65) 在 java-21 上直接可跑。
           java-version: '21'
 
+      # ── 复用全量链产出的 fpk 版 dist（2026-11-13）──────────────────────
+      # 只有被 release.yml 在 release-v* 上调用时才探测：单链 fpk-v* / dispatch
+      # 根本没有这个 artifact，探测只会多出一条"下载失败"的红叉噪音。
+      # 注意顺序：探测放在 pnpm/node 之前 —— 复用成功时这两步也要一起跳过。
+      - name: 尝试复用 web job 的 fpk 版 dist
+        id: distdl
+        if: ${{ startsWith(github.ref, 'refs/tags/release-v') }}
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist-fpk
+          path: client/apps/web/dist
+
+      # 判据是**内容**不是"文件在不在"：index.html 里必须真带 /app/meow/ 前缀，
+      # 否则宁可直接自建 —— 复用到一份 base 错的产物等于端上白屏。
+      - name: 校验复用产物（不可用就让下一步自建）
+        id: distok
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok=0
+          if [ -f client/apps/web/dist/index.html ] \
+             && grep -q '/app/meow/' client/apps/web/dist/index.html; then ok=1; fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          if [ "$ok" = "1" ]; then
+            echo "复用 web-dist-fpk（跳过 node/pnpm/install/typecheck/vite）"
+          else
+            echo "没有可复用的 dist → 自行构建"
+          fi
+
       - uses: pnpm/action-setup@v4
+        if: steps.distok.outputs.ok != '1'
         with:
           version: 11.9.0
       - uses: actions/setup-node@v4
+        if: steps.distok.outputs.ok != '1'
         with:
           node-version: '22'
           cache: pnpm
           cache-dependency-path: client/pnpm-lock.yaml
 
-      - name: 前端构建（包内 web 必须是新鲜的）
+      - name: 前端构建（没有可复用产物时才跑：单链 fpk-v* / dispatch / 全量回退）
+        if: steps.distok.outputs.ok != '1'
         working-directory: client
         run: |
           set -euo pipefail
-          pnpm install --no-frozen-lockfile
+          pnpm install --frozen-lockfile
           pnpm --filter @meow/web typecheck
           # fnOS 微应用挂在 /app/meow 下：base 必须与 ui/config 的 gatewayPrefix 一致，
           # 否则 assets / 接口会请求到站点根。其它构建目标（web/docker/desktop/tv）不受影响。
           VITE_API_BASE=/app/meow pnpm --filter @meow/web exec vite build --base=/app/meow/
           test -f apps/web/dist/index.html
+          grep -q '/app/meow/' apps/web/dist/index.html
 
       # fnpack 官方二进制（Linux x86）。地址来自官方文档：
       #   https://developer.fnnas.com/docs/cli/fnpack
       # 拿不到时 build-fpk.sh 会退化成 tar 手工打包（结构已核对，但未经安装验证），
       # 所以这里只警告、不中断；日志里出现 ::warning:: 就要当心。
+      # 外网固定版本文件 → 进 actions/cache：两腿各拉一次变成整轮一次。
+      - name: 缓存 fnpack
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/meow/fnpack-1.2.3
+          key: fnpack-1.2.3-linux-amd64
       - name: 安装 fnpack
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/bin"
-          URL="https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64"
-          if curl -fsSL --retry 3 --connect-timeout 20 "$URL" -o "$RUNNER_TEMP/bin/fnpack"; then
-            chmod +x "$RUNNER_TEMP/bin/fnpack"
+          BIN="$HOME/.cache/meow/fnpack-1.2.3"
+          mkdir -p "$(dirname "$BIN")" "$RUNNER_TEMP/bin"
+          if [ ! -x "$BIN" ]; then
+            URL="https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64"
+            if curl -fsSL --retry 3 --connect-timeout 20 "$URL" -o "$BIN"; then
+              chmod +x "$BIN"
+            else
+              rm -f "$BIN"
+            fi
+          fi
+          if [ -x "$BIN" ]; then
+            ln -sf "$BIN" "$RUNNER_TEMP/bin/fnpack"
             echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
             "$RUNNER_TEMP/bin/fnpack" --version || true
           else
@@ -220,6 +268,21 @@ jobs:
       - name: 构建 apiserver.jar（源码编译）
         run: bash server/build-plugin-linux.sh
 
+      # arm 腿要用 docker 里的 rust 镜像交叉编译（x86 腿不需要，这也是两腿耗时
+      # 不对等的根源）。镜像 ~200MB，每次冷拉；存成 tar 进缓存，命中就 load。
+      # key 带上 build-arm.sh 的 hash：脚本换了（比如镜像 tag 变）就自然失效。
+      - name: 缓存 rust 交叉编译镜像（仅 arm）
+        id: rustimg
+        if: matrix.platform == 'arm'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rust-1-alpine.tar.gz
+          key: rust-1-alpine-${{ hashFiles('client/apps/fnos/build-arm.sh') }}
+      - name: 载入 rust 镜像（命中缓存，跳过 200MB 拉取）
+        if: matrix.platform == 'arm' && steps.rustimg.outputs.cache-hit == 'true'
+        shell: bash
+        run: docker load -i "${{ runner.temp }}/rust-1-alpine.tar.gz"
+
       # ★ SRC/OUT 必须和下面「组包」step 用同一组值：build-arm.sh 产出的
       #   <OUT>/meowd-aarch64 是 build-fpk.sh 在 arm 分支的唯一输入。
       #   2026-11-06 踩过：这里只传了 IMG，脚本回落到 /tmp/meow-src，
@@ -231,6 +294,13 @@ jobs:
           OUT: ${{ runner.temp }}/out-${{ matrix.platform }}
           IMG: docker.io/library/rust:1-alpine
         run: bash client/apps/fnos/build-arm.sh
+
+      # 未命中时 build-arm.sh 已经把镜像拉下来了，这里导出一份给下次用。
+      # gzip -1：tar 里是已压缩的层，压太狠只烧 CPU。
+      - name: 保存 rust 镜像到缓存（仅 arm，未命中时）
+        if: matrix.platform == 'arm' && steps.rustimg.outputs.cache-hit != 'true'
+        shell: bash
+        run: docker save docker.io/library/rust:1-alpine | gzip -1 > "${{ runner.temp }}/rust-1-alpine.tar.gz"
 
       - name: 组包
         env:

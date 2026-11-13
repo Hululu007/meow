@@ -48,7 +48,7 @@ jobs:
       #   `npm error could not determine executable to run`。
       - name: 安装前端依赖（build-gnu.ps1 需要 tauri CLI）
         working-directory: client
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       # 前端 dist 由 release.yml 的 web job 统一构建（同一次 run 的 artifact）
       - name: 取前端 dist
