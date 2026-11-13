@@ -399,16 +399,18 @@ jobs:
   #   在日志里一眼可见，不能静默过去（静默 = 用户以为发了新版）。
   publish-index:
     name: 回写 FnDepot 索引
-    needs: build
+    needs: [plan, build]
     # 双架构都成功才发布：matrix 里任一腿失败 → build.result != success。
-    # dispatch 只出 artifact，索引留给真正的 tag 发版。
+    # dispatch 只出 artifact，索引留给真正的 tag 发版（dispatch 的 ref 是分支名）。
     #
-    # ★ 还必须是 `fpk-v*` 的 tag：release.yml 全量发版会**复用**本 workflow
-    #   （workflow_call），那时 github.ref_name 是 `release-v1.2.2`，而下面的
-    #   「解析版本」只认 fpk-v 形式 —— 少了这道判断，每次全量发版的 fpk 腿
-    #   都会红（2026-11-13 实测：release-v1.2.2 因这一门禁整条 release 判失败，
-    #   构建本身全绿）。FnDepot 索引只由 fpk 单链 tag 更新。
-    if: github.event_name == 'push' && needs.build.result == 'success' && startsWith(github.ref_name, 'fpk-v')
+    # ★ 全量 `release-v*` 与单链 `fpk-v*` **都要写**（2026-11-13 用户口径：
+    #   全量发版必须把 FnDepot 一起更新，否则飞牛应用中心停在旧版，1.2.2 就踩过）。
+    #   上一版曾用 `startsWith(github.ref_name,'fpk-v')` 把全量挡掉 —— 那是
+    #   治标：真正的原因是「解析版本」从 tag 名里抠版本，而 workflow_call 时
+    #   ref 是 `release-v<版本>`，抠不出来就 exit 1（release-v1.2.2 整条判红）。
+    #   现在改为直接取 plan 的输出（它就是读 client/package.json 算出来的），
+    #   两条链同一口径，不再依赖 ref 长什么样。
+    if: github.event_name == 'push' && needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # ★ 跨 tag 串行：两次发版同时写同一份 fnpack.json 会互相覆盖
@@ -419,26 +421,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 版本号以 tag 为准（和 plan 里「tag 必须等于 fpk-v<version>」同一口径）。
-      # 这里不读 needs.plan.outputs：本 job 只 needs build，拿不到 plan 的输出。
+      # 版本 = plan 的输出（= client/package.json），并保留两道校验：
+      #   1) 必须等于 package.json（防 plan 输出被别的路径污染）
+      #   2) **如果**触发 ref 是 fpk-v* tag，则 tag 必须等于 fpk-v<版本>
+      #      （单链补包时防止 tag 写错，产物名与 tag 对不上）
       - name: 解析版本
         id: v
         shell: bash
+        env:
+          VER_IN: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF#refs/tags/}"
-          VER="${TAG#fpk-v}"
-          if [ -z "$VER" ] || [ "$TAG" != "fpk-v$VER" ]; then
-            echo "::error::索引未更新：tag=$TAG 不是 fpk-v<版本> 形式"
-            exit 1
-          fi
+          VER="$VER_IN"
+          [ -n "$VER" ] || { echo "::error::索引未更新：plan 没给出构建版本"; exit 1; }
           PV=$(node -p "require('./client/package.json').version")
           if [ "$VER" != "$PV" ]; then
-            echo "::error::索引未更新：tag=$TAG 的版本 $VER 与 client/package.json 的 $PV 不一致"
+            echo "::error::索引未更新：plan 版本 $VER 与 client/package.json 的 $PV 不一致"
             exit 1
           fi
+          TAG="${GITHUB_REF#refs/tags/}"
+          case "$TAG" in
+            fpk-v*)
+              if [ "$TAG" != "fpk-v$VER" ]; then
+                echo "::error::索引未更新：tag=$TAG 与版本号 fpk-v$VER 不一致"
+                exit 1
+              fi
+              ;;
+            release-v*)
+              # 全量链：tag 由 release.yml 的「tag 与版本号一致」门禁保证
+              ;;
+            *)
+              echo "::error::索引未更新：无法识别的触发 ref=$TAG"
+              exit 1
+              ;;
+          esac
           echo "version=$VER" >> "$GITHUB_OUTPUT"
-          echo "发布版本：$VER"
+          echo "发布版本：$VER（ref=$TAG）"
 
       # ★ 更新说明的单一真源是 CHANGELOG.md 的 `## <版本>` 小节，
       #   规则与 release.yml / sync-packages.ps1 一致（空行丢弃、没编号的行补 `n. `）。
