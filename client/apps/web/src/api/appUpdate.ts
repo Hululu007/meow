@@ -764,9 +764,19 @@ function repoOf(relJson: string): string {
 export const DEFAULT_MIRROR_SOURCE =
   'https://raw.githubusercontent.com/upchr/meow/updates/packages.json'
 
-/** 是否官方私有仓的 release 端点（决定要不要试公开静态清单兜底） */
-function isOfficialReleaseSource(url: string): boolean {
-  return /^https:\/\/api\.github\.com\/repos\/upchr\/meow\/releases\//i.test(url.trim())
+/**
+ * 是否官方仓的 release 端点（决定要不要试公开静态清单兜底）。
+ *
+ * <p>两种形态都算 —— 客户端默认源是**资产形态**，如果只认 API 形态，
+ * 默认源一失败就会跳过 `updates` 分支的静态清单兜底（2026-11-13 改默认源时
+ * 差点漏掉这里：`updates` 分支每次发版都由 sync-packages 重写，是真实可用的）。
+ */
+export function isOfficialReleaseSource(url: string): boolean {
+  const u = url.trim()
+  return (
+    /^https:\/\/api\.github\.com\/repos\/upchr\/meow\/releases\//i.test(u) ||
+    /^https:\/\/github\.com\/upchr\/meow\/releases\//i.test(u)
+  )
 }
 
 /**

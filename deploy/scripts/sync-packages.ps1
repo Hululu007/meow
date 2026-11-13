@@ -902,13 +902,20 @@ if ($DryRun) {
 #   否则 push 被拒 —— "每次发版后要更新代码"是很烦的摩擦。
 #
 # 为什么客户端仍然只需配一次地址：
-#   清单挂在 Release 上之后，客户端填的是 **repo 级**端点：
-#     https://api.github.com/repos/<owner>/<repo>/releases/latest
-#   它自己从资产列表里找 `packages.json` 的 id 再拉内容。
-#   地址里没有 asset id，所以永远不用改。
+#   清单挂在 Release 上之后，客户端填的是 **repo 级**端点，地址里没有 asset id
+#   也没有 tag，所以永远不用改。有两种形态：
 #
-#   反例（不可用）：`github.com/<o>/<r>/releases/latest/download/packages.json`
-#   私有仓打不开（实测 000），只能走 API。
+#     · 资产：`github.com/<o>/<r>/releases/latest/download/packages.json`
+#       —— 客户端现用这个（api 端点在部分网络被干扰，见 appUpdate.ts 的注释）
+#     · API ：`api.github.com/repos/<o>/<r>/releases/latest`
+#       —— 能按版本挑最高的那条、跳过没清单的 release；私有仓只能用它
+#          （私有仓的资产地址实测 000）
+#
+#   ★ 资产形态的两个代价（发版侧要守住，否则用户收不到更新）：
+#     ① 它按**发布时间**取，补发旧版 hotfix 会让「最新」指回旧版本
+#        （客户端只会不提示，不会降级 —— isNewer 严格大于才提示）；
+#     ② latest 那条若没带 packages.json 就直接 404（不像 API 形态能跳过）。
+#        所以每次发版都必须上传清单，且「本次 tag 的资产二次校验」不能去掉。
 if (-not $DryRun -and -not $SkipUpload) {
     Write-Host "`n上传清单到 Release $tag …" -ForegroundColor Cyan
 

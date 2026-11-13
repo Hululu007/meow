@@ -15,8 +15,8 @@ const view = readFileSync(join(SRC, 'views', 'SettingsView.vue'), 'utf8')
 describe('源导入输入框', () => {
   it('默认值是 http://肥猫.net，且两处输入框都标记了"用户改过"', () => {
     expect(view).toContain("const cfgUrl = ref('http://肥猫.net')")
-    // 本机执行 + 搜索与源，两个输入框共用 cfgUrl（都走 onCfgUrlInput：置脏 + 作废旧预览）
-    expect(view.match(/@input="onCfgUrlInput"/g)?.length).toBe(2)
+    // 本机执行（未启用/已启用两态各一个）+ 搜索与源，全部共用 cfgUrl
+    expect((view.match(/@input="onCfgUrlInput"/g) || []).length).toBeGreaterThanOrEqual(2)
   })
 
   /**

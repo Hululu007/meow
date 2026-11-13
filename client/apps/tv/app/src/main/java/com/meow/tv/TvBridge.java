@@ -893,9 +893,18 @@ public class TvBridge {
 
     // ------------------------------------------------------------ 运行时模块
 
-    /** 公开静态清单兜底（主仓 updates 分支；开源前 404，不影响私有 token 路径）。 */
-    private static final String MODULE_MIRROR_SOURCE =
-            "https://raw.githubusercontent.com/upchr/meow/updates/packages.json";
+    /**
+     * 公开静态清单兜底（主仓 updates 分支；开源前 404，不影响私有 token 路径）。
+     *
+     * <p>★ 顺序：jsDelivr 在前、raw 在后（2026-11-13 .77 实测：`raw.githubusercontent.com`
+     * 在这类网络里 TCP 直接不通，而 `cdn.jsdelivr.net` 可下）。兜底路径只在主源全失败时
+     * 才走，多半就是"被墙"的场景 —— 用 raw 打头等于兜底永远不生效。
+     * jsDelivr 对分支 ref 有小时级缓存，这份清单只用来比版本号，晚几小时无妨。
+     */
+    private static final String[] MODULE_MIRROR_SOURCES = {
+            "https://cdn.jsdelivr.net/gh/upchr/meow@updates/packages.json",
+            "https://raw.githubusercontent.com/upchr/meow/updates/packages.json",
+    };
 
     /** 上一次 moduleCheck 的清单结果（下载时复用，避免页面上"检查→下载"两次拉清单）。 */
     private volatile String moduleCatalogJson = "";
@@ -1009,10 +1018,15 @@ public class TvBridge {
                 String asset = moduleManifestAssetUrl(text, tk);
                 if (!asset.isEmpty()) text = AppUpdater.fetchManifest(asset, tk);
             }
-            // 公开源兜底：官方静态清单（开源后可用的 raw 固定分支）
+            // 公开源兜底：官方静态清单（主仓 updates 分支，jsDelivr 优先）
             if ((text == null || !text.contains("\"packages\"")) && tk.trim().isEmpty()) {
-                String alt = AppUpdater.fetchManifest(MODULE_MIRROR_SOURCE, "");
-                if (alt != null && alt.contains("\"packages\"")) text = alt;
+                for (String mirror : MODULE_MIRROR_SOURCES) {
+                    String alt = AppUpdater.fetchManifest(mirror, "");
+                    if (alt != null && alt.contains("\"packages\"")) {
+                        text = alt;
+                        break;
+                    }
+                }
             }
             // 清单没拿到就必须给真实原因：直接交给 pick("") 会抛
             // JSONException("End of input at character 0 of")，页面只能显示
@@ -1033,6 +1047,34 @@ public class TvBridge {
             return out.toString();
         } catch (Throwable t) {
             moduleCatalogJson = "";
+            return "{\"ok\":false,\"error\":\"" + AppUpdater.escape(t.getMessage()) + "\"}";
+        }
+    }
+
+    /**
+     * 用**已经拉到的清单原文**产出 pick 结果。
+     *
+     * <p>踩过（1.2.5 真机实测）：`netJobStart("manifest-any")` 返回的是
+     * packages.json **原文**，页面却当成 pick 结果用 —— `chk.url` 是 undefined，
+     * 于是把**清单地址**当模块 APK 下载，15 秒后报
+     * {@code SocketTimeoutException ...（已尝试 1 个地址）}。
+     *
+     * <p>「文本 → pick」的解析（ABI/platform 匹配）必须留在原生，页面不重复实现一套。
+     */
+    @JavascriptInterface
+    public String moduleCheckFromText(String text) {
+        try {
+            if (text == null || !text.contains("\"packages\"")) {
+                return "{\"ok\":false,\"error\":\"清单内容不完整\"}";
+            }
+            moduleCatalogJson = text;
+            org.json.JSONObject pick =
+                    com.meow.tv.runtime.RuntimeModuleCatalog.pick(text);
+            org.json.JSONObject out = new org.json.JSONObject(pick.toString());
+            out.put("ok", true);
+            out.put("source", "netjob");
+            return out.toString();
+        } catch (Throwable t) {
             return "{\"ok\":false,\"error\":\"" + AppUpdater.escape(t.getMessage()) + "\"}";
         }
     }

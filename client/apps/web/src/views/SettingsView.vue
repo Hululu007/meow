@@ -89,6 +89,7 @@ import {
   getBackupUpdateSource,
   getUpdateSource,
   getUpdateToken,
+  isNewer,
   setBackupUpdateSource,
   setUpdateSource,
   APP_PACKAGE_ID,
@@ -3064,7 +3065,23 @@ async function modInstall() {
       if (b.netJobStart && b.netJobPoll) {
         try {
           const text = await fetchTextViaNativeJob('manifest-any', pipe, tok)
-          return JSON.parse(text) as Record<string, unknown>
+          // ★ netJob 返回的是 packages.json **原文**，不是 pick 结果（1.2.5 真机踩过）：
+          //   当初直接 `return JSON.parse(text)` → chk.url/version 全是 undefined →
+          //   把清单地址当模块 APK 下载，15s 后报「已尝试 1 个地址」的 SocketTimeout。
+          //   「文本 → pick」必须回原生做（ABI/platform 匹配只有一套实现）。
+          if (typeof b.moduleCheckFromText === 'function') {
+            return JSON.parse(String(b.moduleCheckFromText(text) || '{}')) as Record<
+              string,
+              unknown
+            >
+          }
+          // 老壳没有 moduleCheckFromText：退回同步逐条（慢，但不会拿错数据）
+          let legacy: Record<string, unknown> = { ok: false }
+          for (const c of pipe.split('|')) {
+            legacy = checkOne(c)
+            if (legacy.ok !== false) break
+          }
+          return legacy
         } catch (e) {
           return { ok: false, error: e instanceof Error ? e.message : String(e) }
         }
@@ -3083,6 +3100,18 @@ async function modInstall() {
     }
     if (chk.ok === false) {
       modMsg.value = '检查失败：' + (chk.error || '未知错误')
+      return
+    }
+    // 已是最新就别再下 50MB —— 按钮是「检查更新」，不是「重装」
+    // （2026-11-13 真机实测：点一次就重新下载整个模块，白等也白耗流量）
+    const curVer = String(modState.value.version || '')
+    const latestVer = String(chk.version || '')
+    if (curVer && latestVer && !isNewer(latestVer, curVer)) {
+      modMsg.value = `已是最新（v${curVer}）`
+      return
+    }
+    if (!chk.url) {
+      modMsg.value = '检查失败：清单缺下载地址'
       return
     }
     modMsg.value = `下载中（${fmtSize(Number(chk.size) || 0)}，${chk.abi}）…`
@@ -3171,6 +3200,17 @@ async function payloadInstall() {
     if (chk.ok === false && backup && backup !== src) chk = checkOne(backup)
     if (chk.ok === false) {
       payMsg.value = '检查失败：' + String(chk.error || '未知错误')
+      return
+    }
+    // 与模块同款：已是最新就不再重复下 10MB（按钮是「检查更新」）
+    const payCur = String(payloadCurrent.value || '')
+    const payLatest = String(chk.version || '')
+    if (payCur && payLatest && !isNewer(payLatest, payCur)) {
+      payMsg.value = `已是最新（v${payCur}）`
+      return
+    }
+    if (!chk.url) {
+      payMsg.value = '检查失败：清单缺下载地址'
       return
     }
     payMsg.value = `下载中（${fmtSize(Number(chk.size) || 0)}）…`
@@ -3377,6 +3417,20 @@ function startLocalExec() {
   } finally {
     localBusy.value = false
   }
+}
+
+/** 停用本机网关：只停网关，不改后端地址（避免自动切错，交给用户改） */
+function stopLocalExec() {
+  const b = bridge()
+  if (!b) return
+  try {
+    if (typeof b.stopLocalGateway === 'function') b.stopLocalGateway()
+  } catch {
+    /* 桥坏了也继续把界面状态复位 */
+  }
+  localGw.value = ''
+  localMsg.value = '已停用本机网关。后端地址未改动——若仍指向 127.0.0.1:9978，请到「后端地址」改回 NAS。'
+  refreshLocalExec()
 }
 
 /** 把「后端地址」切到本机网关（用户在设置页看到的那一行要跟着变） */
@@ -5354,53 +5408,110 @@ onBeforeUnmount(() => {
         <span class="set-hint">TV 本机网关 · 不依赖后端</span>
         <span class="set-actions flex items-center text-[11px] text-ink-3">{{ localSites }} 个本机站点</span>
       </div>
-      <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-        电视可脱离后端，直接运行配置里的 jar。点按钮一次完成：启动本机网关并切换后端地址。
-      </p>
-      <p class="mt-1 text-[11px] leading-relaxed text-ink-3">
-        站点浏览、搜索、详情、播放、弹幕可用；聚合搜索、解析器、直播、片库、缓存、进度同步仍需后端。
-      </p>
-      <div class="mt-2 flex flex-wrap items-center gap-2">
-        <button
-          class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-dim"
-          :disabled="localBusy"
-          @click="startLocalExec()"
-        >
-          {{ localGw ? '重启本机网关' : '启用本机执行' }}
-        </button>
-        <span v-if="localGw" class="text-[11px] text-ink-3">网关地址 {{ localGw }}</span>
-      </div>
-      <div class="mt-3 flex flex-wrap items-center gap-2">
-        <span class="w-20 shrink-0 text-xs text-ink-3">配置地址</span>
-        <input
-          v-model="cfgUrl"
-          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent"
-          placeholder="https://example.com/config.json"
-          @input="onCfgUrlInput"
-        />
-        <button
-          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover disabled:opacity-40"
-          :disabled="localBusy"
-          @click="importLocalConfig()"
-        >
-          导入到本机
-        </button>
-        <button
-          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover"
-          @click="refreshLocalExec()"
-        >
-          刷新状态
-        </button>
-      </div>
+      <!-- 未启用：只露一个动作，配置项收进折叠（避免和「搜索与源」的地址框混淆） -->
+      <template v-if="!localGw">
+        <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+          电视可脱离后端，直接运行配置里的 jar。点按钮一次完成：启动本机网关并切换后端地址。
+        </p>
+        <p class="mt-1 text-[11px] leading-relaxed text-ink-3">
+          站点浏览、搜索、详情、播放、弹幕可用；聚合搜索、解析器、直播、片库、缓存、进度同步仍需后端。
+        </p>
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-dim disabled:opacity-40"
+            :disabled="localBusy"
+            @click="startLocalExec()"
+          >
+            {{ localBusy ? '启动中…' : '启用本机执行' }}
+          </button>
+          <button
+            class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover"
+            @click="refreshLocalExec()"
+          >
+            刷新状态
+          </button>
+        </div>
+        <details class="mt-3">
+          <summary class="cursor-pointer select-none text-[11px] text-ink-3">
+            可选：改用自定义配置导入（会启动网关并切后端）
+          </summary>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <span class="w-20 shrink-0 text-xs text-ink-3">配置地址</span>
+            <input
+              v-model="cfgUrl"
+              class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent"
+              placeholder="https://example.com/config.json"
+              @input="onCfgUrlInput"
+            />
+            <button
+              class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover disabled:opacity-40"
+              :disabled="localBusy"
+              @click="importLocalConfig()"
+            >
+              导入到本机
+            </button>
+          </div>
+          <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+            只导入 <code class="rounded bg-field px-1">csp_</code> + jar 的站点；drpy / 直连 http 走后端。
+            jar 需为 dex（含 <code class="rounded bg-field px-1">classes.dex</code>）。
+          </p>
+          <p class="mt-1 text-[11px] leading-relaxed text-ink-3">
+            可填自建后端 <code class="rounded bg-field px-1">http://&lt;后端&gt;/config.json</code>，
+            或肥猫 <code class="rounded bg-field px-1">http://xn--z7x900a.net/tv</code>；jar 地址跟随配置。
+          </p>
+        </details>
+      </template>
+
+      <!-- 已启用：网关状态 + 配置项常显 -->
+      <template v-else>
+        <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+          本机网关运行中：<code class="rounded bg-field px-1">{{ localGw }}</code>。
+          站点浏览、搜索、详情、播放、弹幕走本机；聚合搜索、解析器、直播、片库、缓存、进度同步仍需后端。
+        </p>
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-dim disabled:opacity-40"
+            :disabled="localBusy"
+            @click="startLocalExec()"
+          >
+            重启本机网关
+          </button>
+          <button
+            class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover"
+            @click="stopLocalExec()"
+          >
+            停用
+          </button>
+          <button
+            class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover"
+            @click="refreshLocalExec()"
+          >
+            刷新状态
+          </button>
+        </div>
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+          <span class="w-20 shrink-0 text-xs text-ink-3">配置地址</span>
+          <input
+            v-model="cfgUrl"
+            class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 text-xs outline-none transition focus:border-accent"
+            placeholder="https://example.com/config.json"
+            @input="onCfgUrlInput"
+          />
+          <button
+            class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover disabled:opacity-40"
+            :disabled="localBusy"
+            @click="importLocalConfig()"
+          >
+            导入到本机
+          </button>
+        </div>
+        <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+          只导入 <code class="rounded bg-field px-1">csp_</code> + jar 的站点；drpy / 直连 http 走后端。
+          jar 需为 dex（含 <code class="rounded bg-field px-1">classes.dex</code>）。
+        </p>
+      </template>
+
       <p v-if="localMsg" class="mt-2 text-[11px] text-accent">{{ localMsg }}</p>
-      <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-        配置地址填 JSON（可含 jar）。只导入 <code class="rounded bg-field px-1">csp_</code> + jar 的站点；
-        drpy / 直连 http 走后端。jar 需为 dex（含 <code class="rounded bg-field px-1">classes.dex</code>）。
-      </p>
-      <p class="mt-1 text-[11px] leading-relaxed text-ink-3">
-        可填自建后端 <code class="rounded bg-field px-1">http://&lt;后端&gt;/config.json</code>，
-        或肥猫 <code class="rounded bg-field px-1">http://xn--z7x900a.net/tv</code>；jar 地址跟随配置。
-      </p>
     
       </template>
       </section>

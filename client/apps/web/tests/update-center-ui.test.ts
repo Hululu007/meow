@@ -154,9 +154,15 @@ describe('模块链参与 git 加速', () => {
     expect(src).toContain('安装超时')
   })
 
-  it('更新中心 checkModule 同样按候选试清单', () => {
+  it('更新中心 checkModule / checkPayload 同样按候选试清单', () => {
     const src = readFileSync(STORE, 'utf8')
-    expect(src).toContain('for (const c of downloadCandidates(src))')
+    // 2026-11-13：候选**一次并成 pipe 交给原生**（fetchManifestAny 并发竞速），
+    // 不再在 JS 里串行 for 循环 —— 串行时直连被墙要等满 15s 才轮到下一个，
+    // 实测一次检查 30–40 秒，而且是同步桥，整页冻住。
+    expect(src).toContain("callBridgeManifest(b, 'moduleCheckCandidates'")
+    expect(src).toContain("callBridgeManifest(b, 'payloadCheckCandidates'")
+    expect(src, '候选没有并成 pipe').toContain("cands.join('|')")
+    expect(src, 'release 端点形态必须保留逐条解析资产的那条路').toContain('!isReleaseEndpoint(src)')
   })
 
   it('原生：清单支持多候选，模块下载校验候选必须包含原地址', () => {
@@ -174,6 +180,42 @@ describe('模块链参与 git 加速', () => {
       'public String moduleDownload(String source, String token, String urlsPipe)',
     )
     expect(br, '候选没有"必须包含原 url"的安全闸').toContain('if (!c.contains(real)) continue;')
+  })
+})
+
+/**
+ * 模块「检查更新」的数据形状（2026-11-13 .77 真机踩到，1.2.5 已中招）。
+ *
+ * netJob 返回的是 packages.json **原文**，页面当年直接当 pick 结果用：
+ * `chk.url` 是 undefined → `assetCands=''` → 原生拿**清单地址**当 APK 下载
+ * → 15 秒后 SocketTimeout「已尝试 1 个地址」。
+ *
+ * 这三条锁住修法，少一条就复发：
+ *   1. 原文必须回原生转成 pick（moduleCheckFromText）；
+ *   2. 没有该方法的旧壳退回同步逐条；
+ *   3. 已是最新就别再下 50MB。
+ */
+describe('模块检查：netJob 原文不能当 pick 结果', () => {
+  const SETTINGS = join(ROOT, 'client', 'apps', 'web', 'src', 'views', 'SettingsView.vue')
+  const BRIDGE = join(ROOT, 'client', 'apps', 'tv', 'app', 'src', 'main', 'java', 'com', 'meow', 'tv', 'TvBridge.java')
+  const src = readFileSync(SETTINGS, 'utf8')
+  const br = readFileSync(BRIDGE, 'utf8')
+
+  it('netJob 拿到的原文要经过原生 moduleCheckFromText 再解析', () => {
+    const at = src.indexOf('async function modInstall')
+    const block = src.slice(at, at + 2600)
+    expect(block, '又把清单原文直接当 pick 结果了').toContain('b.moduleCheckFromText(text)')
+    expect(block, '旧壳回退丢了').toContain("for (const c of pipe.split('|'))")
+  })
+
+  it('原生提供 moduleCheckFromText（pick 只有一套实现）', () => {
+    expect(br).toContain('public String moduleCheckFromText(String text)')
+    expect(br).toContain('com.meow.tv.runtime.RuntimeModuleCatalog.pick(text)')
+  })
+
+  it('已是最新时不再下载整个模块 / 载荷', () => {
+    expect(src).toContain('!isNewer(latestVer, curVer)')
+    expect(src).toContain('!isNewer(payLatest, payCur)')
   })
 })
 

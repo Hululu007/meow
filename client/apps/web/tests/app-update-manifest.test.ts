@@ -7,6 +7,7 @@ import {
   isTagReleaseEndpoint,
   downloadCandidates,
   isGitHubDownloadUrl,
+  isOfficialReleaseSource,
 } from '@/api/appUpdate'
 
 /**
@@ -141,5 +142,30 @@ describe('清单里的相对地址解析', () => {
   it('空值不产生假地址', () => {
     expect(resolveUrl('https://x.test/packages.json', '')).toBe('')
     expect(resolveUrl('', 'a.apk')).toBe('')
+  })
+})
+
+describe('官方源的静态清单兜底要认得两种形态', () => {
+  it('API 形态（用户手填过）算官方源', () => {
+    expect(
+      isOfficialReleaseSource('https://api.github.com/repos/upchr/meow/releases/latest'),
+    ).toBe(true)
+  })
+
+  it('资产形态（客户端默认源）也算 —— 否则默认源失败时不会去试 updates 分支', () => {
+    expect(
+      isOfficialReleaseSource(
+        'https://github.com/upchr/meow/releases/latest/download/packages.json',
+      ),
+    ).toBe(true)
+  })
+
+  it('别人的 fork / 自建地址不算（不能把外部清单当官方兜底）', () => {
+    expect(
+      isOfficialReleaseSource(
+        'https://github.com/someone/meow/releases/latest/download/packages.json',
+      ),
+    ).toBe(false)
+    expect(isOfficialReleaseSource('http://127.0.0.1:8123/packages.json')).toBe(false)
   })
 })

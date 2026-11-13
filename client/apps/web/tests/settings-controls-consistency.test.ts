@@ -244,7 +244,11 @@ describe('设置页字号层级与标签', () => {
     const block = src.slice(at, end)
     expect(block).toContain('class="set-head"')
     expect(block).not.toContain('class="set-grid mt-2"')
-    expect(block).toContain('网关地址 {{ localGw }}')
+    // 两态：未启用只留动作 + 折叠配置；已启用才常显网关状态与配置项
+    expect(block).toContain('v-if="!localGw"')
+    expect(block).toContain('本机网关运行中')
+    expect(block).toContain('@click="stopLocalExec()"')
+    expect(block.indexOf('<details')).toBeLessThan(block.indexOf('导入到本机'))
   })
 
   it('搜索与源副标题不再提已经独立出去的直播源', () => {

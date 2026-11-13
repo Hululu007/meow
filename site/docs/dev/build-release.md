@@ -80,9 +80,54 @@ CI 建 draft Release → 人工 Publish → release:published
 - **全量 Release 会复制继承的插件资产**（`release-v*`）；单链发布不复制，url 仍指向旧
   Release——**不要删旧 Release**，否则那条插件 url 失效。同一 tag 重跑幂等（合并、重传、
   回读校验）。
-- 客户端**不直接信任 `/releases/latest`**：内置默认源地址虽写成它，但只当入口；实际拉
+- 客户端**内置默认源是资产形态**：`github.com/upchr/meow/releases/latest/download/packages.json`
+  —— GitHub 的「最新已发布 Release」指针，直接 302 到那条 Release 的清单。
+  选它而不是 `api.github.com` 的原因：部分网络对 api 端点的 HTTPS 有干扰（实测
+  TCP 通、请求被 reset），而资产地址与 GitHub 加速代理兼容（`api` 只有 `gh-proxy` 支持）。
+- **两个代价，发版侧要守住**：① 它按发布时间取，补发旧版 hotfix 会让「最新」指回旧版本
+  （客户端只不提示、不降级）；② latest 那条若没有 `packages.json` 就直接 404，
+  不像 API 形态能跳过。所以 **`fpk-v*` 单链 Release 不要设为 Latest**（它被
+  `sync-packages` 排除，没有清单）。
+- 用户手填 `api.github.com/repos/upchr/meow/releases/latest` 时走**加固路径**：拉
   `/releases` 列表，过滤 draft/prerelease/模块与插件 tag（`tv-plugins|plugins|docker|fpk-v`
   开头的不要），要求有 `packages.json` 资产，再按 tag 版本号取最大（补发旧版不会降级）。
+  两种形态都算「官方源」，失败时都会再试 `updates` 分支的静态清单兜底。
+
+### 各端读什么、怎么校验
+
+| 端 | 壳 | 模块 / 载荷 | 插件 | 读清单的路径 |
+|---|---|---|---|---|
+| PC（Tauri） | `meow-pc`（exe） | — | 插件源（`packages.json`/`index.json`） | JS 算候选 → Rust 单次 GET |
+| TV（Android） | `meow-tv`（apk） | `tv-node-<abi>` / `danmu-payload` | — | JS 算候选 → 原生 pipe 并发竞速 |
+| Web / Docker | 无自更新（更新中心隐藏该行） | — | — | — |
+| fnOS | fpk（FnDepot `fnpack.json` 主 + 主仓 `fpk-updates` 镜像） | — | — | `fpkUpgrade.ts` → meowd RPC |
+
+- **源优先级**：手填 `Prefs.updateSource` > 内置默认 > 插件源（`getPluginSource()`，仅 Tauri）。
+  备用源只在主源失败后试，**不自动回落官方源**（自定义源可能是 fork/内网，静默换源会
+  提示错误版本）。TV 的模块/载荷用同一份源与令牌。
+- **校验**：两端原生都要求 `sha256` 非空并校验，不匹配不落盘；只接受 `http(s)`。
+  清单缺 `sha256` 时直接拒绝下载。
+- **令牌**：`Prefs.updateToken` 只进原生请求头（不进 URL/日志）；带 token 的请求不挂代理
+  （私有仓必须直连）。
+
+### GitHub 加速：一套候选，四处消费
+
+候选生成只有一个真源 `client/apps/web/src/api/gitAccel.ts`（纯函数，Prefs 由调用方传入）：
+
+- **只代理公开 GitHub**：`raw`/`gist` 主机、`api.github.com`（仅无 token 时）、
+  `github.com/.../releases/.../download/...`。自建服务器与仓库网页一律直连。
+- **只有 raw 地址能换 jsDelivr**（索引/清单或 <20MB）；jsDelivr 地址会先翻成 raw 再
+  生成候选，否则相对 `download_url` 解析不到可加速的宿主。
+- **顺序**：直连（`directFirst`）→ 内置前缀（`gh-proxy` / `ghfast` / `ghproxy.net`，
+  `gh.llkk` 默认停用）→ jsDelivr；失败的前缀进 10 分钟冷却，成功的清除。
+- **消费方**：① 前端拉清单/下载壳（候选列表传给原生）；② PC 插件安装器
+  （设置页写 `git-proxies.json`，Rust 侧 `expand_public_candidates`）；③ TV 原生
+  （JS 把候选拼成 `|` 管道，`fetchManifestAny` **并发竞速**）；④ JVM/TV 下载 spider jar
+  （`Jars.setAccelProxies` / `LocalSpiderHost`）；⑤ fnOS 应用内升级（`fpkUpgrade.ts`）。
+- **代理会漂移**（实测同一天 `ghproxy.net` 从 200 变超时、`gh-proxy` 正常），所以
+  候选是「多个 + 冷却」而不是写死一个。
+
+
 
 ## 五、本地发版 vs CI 发版
 

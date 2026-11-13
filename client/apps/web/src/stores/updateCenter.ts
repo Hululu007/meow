@@ -19,6 +19,7 @@ import {
   getUpdateSource,
   getUpdateToken,
   isNewer,
+  isReleaseEndpoint,
 } from '@/api/appUpdate'
 import {
   addPluginSource,
@@ -200,6 +201,44 @@ export function isTvShell(): boolean {
 }
 
 /**
+ * 用桥方法取清单（模块 / 载荷共用）。
+ *
+ * <p><b>为什么候选要一次交给原生</b>：`AppUpdater.fetchManifestAny` 是**并发竞速**
+ * （总耗时 ≈ 最慢的那条）。JS 侧串行逐个试时，直连被墙要等满 15s 才轮到下一个，
+ * 实测一次「检查」要 30–40 秒 —— 而且是同步桥，整页冻住。
+ *
+ * <p><b>为什么 release 端点形态仍走逐条</b>：带 pipe 的通道只认正文含 `"packages"`
+ * 的响应（代理的 HTML 错误页会 200），会把 release 元数据 JSON 当失败丢掉；
+ * 单地址通道才会再解析一层资产。用户手填 `api.github.com/.../releases/latest`
+ * 时必须保留那条路径。
+ */
+function callBridgeManifest(
+  b: any,
+  method: string,
+  src: string,
+  token: string,
+  cands: string[],
+): Record<string, unknown> {
+  const parse = (s: unknown): Record<string, unknown> => {
+    try {
+      return JSON.parse(String(s || '{}')) as Record<string, unknown>
+    } catch {
+      return { ok: false, error: '清单解析失败' }
+    }
+  }
+  if (cands.length > 1 && !isReleaseEndpoint(src)) {
+    const one = parse(b[method](src, token, cands.join('|')))
+    if (one.ok !== false) return one
+  }
+  let out: Record<string, unknown> = { ok: false }
+  for (const c of cands) {
+    out = parse(b[method](c, token, ''))
+    if (out.ok !== false) break
+  }
+  return out
+}
+
+/**
  * 只读一次模块安装状态（本地桥，不发请求）。
  *
  * <p>为什么要单独做：更新中心原先把「版本未知」显示成「未安装」，
@@ -260,25 +299,31 @@ export async function checkModule(silent = false): Promise<boolean> {
     const src = (await getUpdateSource()) || ''
     const tok = getUpdateToken()
     // ★ 清单也走全局加速（2026-11-12）：模块清单在 GitHub 上，被墙用户直连
-    //   必失败。候选由 downloadCandidates 按「GitHub 加速」算好，逐个试。
-    //   与设置页 modInstall、App 自更新同一套语义。
+    //   必失败。候选由 downloadCandidates 按「GitHub 加速」算好。
     // ★ 桥方法名带 Candidates：WebView 桥不支持同名重载；老壳回退两参版。
-    const checkOne = (u: string) =>
-      JSON.parse(
-        String(
-          (b.moduleCheckCandidates ? b.moduleCheckCandidates(u, tok, '') : b.moduleCheck(u, tok)) ||
-            '{}',
-        ),
-      )
-    let chk: Record<string, unknown> = { ok: false }
-    for (const c of downloadCandidates(src)) {
-      chk = checkOne(c)
-      if (chk.ok !== false) break
+    const cands = downloadCandidates(src)
+    let chk: Record<string, unknown>
+    if (typeof b.moduleCheckCandidates === 'function') {
+      chk = callBridgeManifest(b, 'moduleCheckCandidates', src, tok, cands)
+    } else {
+      try {
+        chk = JSON.parse(String(b.moduleCheck(src, tok) || '{}')) as Record<string, unknown>
+      } catch {
+        chk = { ok: false, error: '检查失败' }
+      }
     }
     // 显式备用源：主源失败才试（与应用更新同一份 Prefs）
     const backup = getBackupUpdateSource()
     if (chk.ok === false && backup && backup !== src) {
-      chk = checkOne(backup)
+      if (typeof b.moduleCheckCandidates === 'function') {
+        chk = callBridgeManifest(b, 'moduleCheckCandidates', backup, tok, downloadCandidates(backup))
+      } else {
+        try {
+          chk = JSON.parse(String(b.moduleCheck(backup, tok) || '{}')) as Record<string, unknown>
+        } catch {
+          chk = { ok: false, error: '检查失败' }
+        }
+      }
     }
     if (chk.ok === false) throw new Error(String(chk.error || '检查失败'))
     const latestVersion = String(chk.version || '')
@@ -374,16 +419,20 @@ export async function checkPayload(silent = false): Promise<boolean> {
     }
     const src = (await getUpdateSource()) || ''
     const tok = getUpdateToken()
-    const checkOne = (u: string) =>
-      JSON.parse(String(b.payloadCheckCandidates(u, tok, '') || '{}')) as Record<string, unknown>
-    let chk: Record<string, unknown> = { ok: false }
-    for (const c of downloadCandidates(src)) {
-      chk = checkOne(c)
-      if (chk.ok !== false) break
-    }
+    // 与 checkModule 同款：候选一次交给原生并发竞速（见 callBridgeManifest 的注释）
+    const cands = downloadCandidates(src)
+    let chk: Record<string, unknown> = callBridgeManifest(
+      b,
+      'payloadCheckCandidates',
+      src,
+      tok,
+      cands,
+    )
     // 显式备用源：主源失败才试（与应用更新同一份 Prefs）
     const backup = getBackupUpdateSource()
-    if (chk.ok === false && backup && backup !== src) chk = checkOne(backup)
+    if (chk.ok === false && backup && backup !== src) {
+      chk = callBridgeManifest(b, 'payloadCheckCandidates', backup, tok, downloadCandidates(backup))
+    }
     if (chk.ok === false) throw new Error(String(chk.error || '检查失败'))
     const latest = String(chk.version || '')
     if (!latest) throw new Error('清单里没有弹幕组件版本')

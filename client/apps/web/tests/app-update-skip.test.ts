@@ -44,9 +44,22 @@ describe('跳过版本', () => {
 })
 
 describe('内置默认更新源', () => {
-  it('有默认值，且是 GitHub release 端点而不是裸文件名', async () => {
+  it('有默认值，且是 repo 级地址（不含 asset id / tag，发版不用改）', async () => {
     const { DEFAULT_UPDATE_SOURCE } = await import('@/api/appUpdate')
-    expect(DEFAULT_UPDATE_SOURCE).toMatch(/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+\/releases\//)
+    // 只有两种合法形态，都是「永远不用改地址」的 repo 级端点：
+    //   · 资产：https://github.com/<o>/<r>/releases/latest/download/packages.json
+    //   · API ：https://api.github.com/repos/<o>/<r>/releases/latest
+    // 现用资产形态 —— api 端点在部分网络被干扰（见 appUpdate.ts 该常量的注释）。
+    const REPO_LEVEL = [
+      /^https:\/\/github\.com\/[^/]+\/[^/]+\/releases\/latest\/download\/packages\.json$/,
+      /^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+\/releases\/latest\/?$/,
+    ]
+    expect(REPO_LEVEL.some((re) => re.test(DEFAULT_UPDATE_SOURCE))).toBe(true)
+  })
+
+  it('默认源钉死版本号就会永远不再更新（防止有人照抄 tags/<tag> 地址）', async () => {
+    const { DEFAULT_UPDATE_SOURCE } = await import('@/api/appUpdate')
+    expect(DEFAULT_UPDATE_SOURCE).not.toMatch(/\/releases\/(tags|download)\/v?\d/)
   })
 
   it('没配更新源时 getUpdateSource 返回内置值（不是空串）', async () => {
