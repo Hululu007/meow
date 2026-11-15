@@ -40,56 +40,28 @@ html[data-legacy-css='1'] {
  *   这里不再维护，见 legacy-generated.css。
  */
 
-/* ── 3. aspect-ratio → padding-top 占位 ───────────────────────
- * 88 以下不支持。海报是 2:3，用 padding-top:150% 保持比例。
- *
- * ★ 坑：不能无脑给 `> *` 加 height:100%。
- *   海报卡里除图片外还有角标、hover 播放按钮、底部渐变（h-16）。
- *   把它们全拉成 100% 高，会让那条本应只在底部 64px 的黑色渐变
- *   铺满整张图 —— 表现为"所有海报都发暗"（实测踩过）。
- *
- *   正确做法：只处理"还没定位"的子元素（图片外层容器），
- *   已经 absolute 的保持原样。
+/* ── 3. aspect-ratio 降级已迁到 legacy-generated.css ──────────────
+ * ★ 2026-11-13 投影仪事故：这里和生成物各写了一份同样的规则，改一处漏一处，
+ *   结果生成物（后加载）把排除 .poster-badge 的修复盖掉了。
+ *   现在只在 scripts/gen-legacy-css.mjs 生成，唯一真源。
  */
-html[data-legacy-css='1'] .aspect-\[2\/3\] {
-  position: relative;
-  height: 0;
-  padding-top: 150%;
-}
-html[data-legacy-css='1'] .aspect-\[2\/3\] > :not(.absolute):not(.fixed) {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-}
-html[data-legacy-css='1'] .aspect-\[16\/9\] {
-  position: relative;
-  height: 0;
-  padding-top: 56.25%;
-}
-html[data-legacy-css='1'] .aspect-\[16\/9\] > :not(.absolute):not(.fixed) {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-}
-/* 正方形：播放统计的色块用 aspect-square（2026-11-12 盘点发现漏了） */
-html[data-legacy-css='1'] .aspect-square {
-  position: relative;
-  height: 0;
-  padding-top: 100%;
-}
-html[data-legacy-css='1'] .aspect-square > :not(.absolute):not(.fixed) {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-}
 
 /* ── 4. inset / inset-x / inset-y ─────────────────────────────── */
+/*
+ * ★ 打分角标必须长写（2026-11-13 投影仪复现）：产物把 tokens.css 里的
+ *   `left:auto;bottom:auto;right:.375rem;top:.375rem` 压成了
+ *   `inset:.375rem .375rem auto auto`，而 `inset` 简写要 Chrome 87 ——
+ *   Chrome 66 整条失效后角标回落到基础规则的左下，和集数角标叠在一起。
+ */
+html[data-legacy-css='1'] .poster-badge--score {
+  left: auto;
+  bottom: auto;
+  right: 0.375rem;
+  top: 0.375rem;
+}
+html[data-legacy-css='1'] .poster-badge--score.poster-badge--after-action {
+  right: 2.5rem;
+}
 html[data-legacy-css='1'] .inset-0 { top: 0; right: 0; bottom: 0; left: 0; }
 html[data-legacy-css='1'] .inset-x-0 { left: 0; right: 0; }
 html[data-legacy-css='1'] .inset-y-0 { top: 0; bottom: 0; }

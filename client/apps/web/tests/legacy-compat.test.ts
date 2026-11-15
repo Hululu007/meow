@@ -346,8 +346,12 @@ describe('inset 简写与 aspect-square 兜底', () => {
   })
 
   it('aspect-square 有 padding-top 占位兜底', () => {
-    const hand = readFileSync(join(__dirname, '..', 'src', 'styles', 'legacy-css.css'), 'utf8')
-    expect(hand).toMatch(/\.aspect-square\s*\{[^}]*padding-top:\s*100%/)
+    // 2026-11-13 起 aspect 规则只在生成物里（手写层同一份规则被删，见 legacy-css.css §3）
+    const gen = readFileSync(
+      join(__dirname, '..', 'src', 'styles', 'legacy-generated.css'),
+      'utf8',
+    )
+    expect(gen).toMatch(/\.aspect-square[^{]*\{[^}]*padding-top:\s*100%/)
   })
 })
 
@@ -446,5 +450,51 @@ describe('新 API 使用门禁（Chromium 66）', () => {
       missing,
       `这些 API 在 Chromium 66 上不存在，先加 polyfill 或换老写法：${missing.join('、')}`,
     ).toEqual([])
+  })
+})
+
+/**
+ * 2026-11-13 投影仪复现：海报整片发暗 + 角标跑到左上角。
+ *
+ * 根因在 legacy-css 的 aspect 降级：
+ *   1) `> :not(.absolute):not(.fixed)` 把 `.poster-badge` 也抓进来（它的
+ *      position:absolute 写在 tokens.css，没有 .absolute 工具类）→ 角标被
+ *      拉成 100%×100%，它的 rgba(0,0,0,.78) 底色盖满整张海报；
+ *   2) 产物把打分角标压成 `inset:.375rem .375rem auto auto`，inset 简写要
+ *      Chrome 87，66 上整条失效 → 角标落到左下和集数叠住。
+ */
+describe('legacy 层：海报角标（Chrome 66）', () => {
+  const handwritten = readFileSync(
+    join(__dirname, '..', 'src', 'styles', 'legacy-css.css'),
+    'utf8',
+  )
+  const generated = readFileSync(
+    join(__dirname, '..', 'src', 'styles', 'legacy-generated.css'),
+    'utf8',
+  )
+  const NL = String.fromCharCode(10)
+
+  it('生成的 aspect 子元素规则必须排除 .poster-badge', () => {
+    const lines = generated
+      .split(NL)
+      .filter((l) => l.includes("data-legacy-css='1'") && l.includes('> :not(.absolute)'))
+    expect(lines.length, '没找到 aspect 子元素降级规则').toBeGreaterThanOrEqual(1)
+    for (const l of lines) {
+      expect(l, `漏了 :not(.poster-badge)：${l}`).toContain(':not(.poster-badge)')
+    }
+  })
+
+  it('手写层不再重复 aspect 规则（唯一真源在生成器）', () => {
+    expect(handwritten).not.toContain('.aspect-\[2\/3\] >')
+    expect(handwritten).toContain('legacy-generated.css')
+  })
+
+  it('打分角标在 legacy 层用长写覆盖（inset 简写要 Chrome 87）', () => {
+    expect(handwritten).toContain("html[data-legacy-css='1'] .poster-badge--score {")
+    expect(handwritten).toContain('right: 0.375rem;')
+    expect(handwritten).toContain('top: 0.375rem;')
+    expect(handwritten).toContain(
+      "html[data-legacy-css='1'] .poster-badge--score.poster-badge--after-action",
+    )
   })
 })

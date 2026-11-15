@@ -9,6 +9,7 @@
  */
 
 /* ── 逻辑属性 → 物理属性 ── */
+html[data-legacy-css='1'] .mobile-tabbar[data-v-b8ab26bc]:before { top: 0; right: 0; }
 html[data-legacy-css='1'] .inset-0 { top: 0; right: 0; }
 html[data-legacy-css='1'] .inset-x-0 { left: 0; right: 0; }
 html[data-legacy-css='1'] .inset-x-1 { left: 0.25rem; right: 0.25rem; }
@@ -72,6 +73,7 @@ html[data-legacy-css='1'] .py-\[7px\] { padding-top: 7px; padding-bottom: 7px; }
 @media (min-width:48rem) { html[data-legacy-css='1'] .md\:py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; } }
 @media (min-width:64rem) { html[data-legacy-css='1'] .lg\:px-1 { padding-left: 0.25rem; padding-right: 0.25rem; } }
 @media (min-width:64rem) { html[data-legacy-css='1'] .lg\:px-6 { padding-left: 1.5rem; padding-right: 1.5rem; } }
+html[data-legacy-css='1'] .poster-badge--score { top: .375rem .375rem auto auto; right: .375rem .375rem auto auto; }
 
 /* ── flex gap → 后代 margin ──
  * ★ 容器判定用属性选择器（[class*="flex"] 等），不能用 .flex 工具类：
@@ -82,9 +84,9 @@ html[data-legacy-css='1'] .py-\[7px\] { padding-top: 7px; padding-bottom: 7px; }
  * 排除 grid：grid 的 gap 在 Chromium 66 是支持的，加 margin 会叠加双倍间距。
  * flex-wrap 容器：换行后相邻兄弟会把每行首元素顶偏，改为"每子项都带 margin"。
  */
-html[data-legacy-css='1'] [class*="flex"]:not([class*="flex-col"]):not([class*="flex-wrap"]):not([class*="grid"]).mtb-item[data-v-263316ac] > * + * { margin-left: 3px; }
-html[data-legacy-css='1'] [class*="flex-col"]:not([class*="grid"]).mtb-item[data-v-263316ac] > * + * { margin-top: 3px; }
-html[data-legacy-css='1'] [class*="flex-wrap"]:not([class*="grid"]).mtb-item[data-v-263316ac] > * { margin-right: 3px; margin-bottom: 3px; }
+html[data-legacy-css='1'] [class*="flex"]:not([class*="flex-col"]):not([class*="flex-wrap"]):not([class*="grid"]).mtb-item[data-v-b8ab26bc] > * + * { margin-left: 3px; }
+html[data-legacy-css='1'] [class*="flex-col"]:not([class*="grid"]).mtb-item[data-v-b8ab26bc] > * + * { margin-top: 3px; }
+html[data-legacy-css='1'] [class*="flex-wrap"]:not([class*="grid"]).mtb-item[data-v-b8ab26bc] > * { margin-right: 3px; margin-bottom: 3px; }
 html[data-legacy-css='1'] [class*="flex"]:not([class*="flex-col"]):not([class*="flex-wrap"]):not([class*="grid"]).tile > * + * { margin-left: .75rem; }
 html[data-legacy-css='1'] [class*="flex-col"]:not([class*="grid"]).tile > * + * { margin-top: .75rem; }
 html[data-legacy-css='1'] [class*="flex-wrap"]:not([class*="grid"]).tile > * { margin-right: .75rem; margin-bottom: .75rem; }
@@ -181,6 +183,12 @@ html[data-legacy-css='1'] [class*="flex-wrap"]:not([class*="grid"]).gap-px > * {
 @media (max-width:639px) { html[data-legacy-css='1'] [class*="flex"]:not([class*="flex-col"]):not([class*="flex-wrap"]):not([class*="grid"]).set-sub > * + * { margin-left: .125rem; } }
 @media (max-width:639px) { html[data-legacy-css='1'] [class*="flex-col"]:not([class*="grid"]).set-sub > * + * { margin-top: .125rem; } }
 @media (max-width:639px) { html[data-legacy-css='1'] [class*="flex-wrap"]:not([class*="grid"]).set-sub > * { margin-right: .125rem; margin-bottom: .125rem; } }
+html[data-legacy-css='1'] [class*="flex"]:not([class*="flex-col"]):not([class*="flex-wrap"]):not([class*="grid"]).set-btn > * + * { margin-left: .375rem; }
+html[data-legacy-css='1'] [class*="flex-col"]:not([class*="grid"]).set-btn > * + * { margin-top: .375rem; }
+html[data-legacy-css='1'] [class*="flex-wrap"]:not([class*="grid"]).set-btn > * { margin-right: .375rem; margin-bottom: .375rem; }
+html[data-legacy-css='1'] [class*="flex"]:not([class*="flex-col"]):not([class*="flex-wrap"]):not([class*="grid"]).menu-item[data-v-99a14ea4] > * + * { margin-left: .5rem; }
+html[data-legacy-css='1'] [class*="flex-col"]:not([class*="grid"]).menu-item[data-v-99a14ea4] > * + * { margin-top: .5rem; }
+html[data-legacy-css='1'] [class*="flex-wrap"]:not([class*="grid"]).menu-item[data-v-99a14ea4] > * { margin-right: .5rem; margin-bottom: .5rem; }
 
 /* ── gap-x / gap-y（产物是 column-gap / row-gap）──
  * ★ 只按主轴补：gap-x 只给 flex-row 的 margin-left，gap-y 只给 flex-col 的 margin-top。
@@ -236,9 +244,11 @@ html[data-legacy-css='1'] [class*="flex-wrap"]:not([class*="grid"]).gap-y-6 > * 
  *   `h-[N×比例]`，不要只依赖本文件的 padding-top 占位。
  */
 html[data-legacy-css='1'] .aspect-\[2\/3\]:not([class*="h-["]) { position: relative; height: 0; padding-top: 150%; }
-html[data-legacy-css='1'] .aspect-\[2\/3\]:not([class*="h-["]) > :not(.absolute):not(.fixed) { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+html[data-legacy-css='1'] .aspect-\[2\/3\]:not([class*="h-["]) > :not(.absolute):not(.fixed):not(.poster-badge) { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+html[data-legacy-css='1'] .aspect-square:not([class*="h-["]) { position: relative; height: 0; padding-top: 100%; }
+html[data-legacy-css='1'] .aspect-square:not([class*="h-["]) > :not(.absolute):not(.fixed):not(.poster-badge) { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
 html[data-legacy-css='1'] .aspect-video:not([class*="h-["]) { position: relative; height: 0; padding-top: 56.25%; }
-html[data-legacy-css='1'] .aspect-video:not([class*="h-["]) > :not(.absolute):not(.fixed) { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+html[data-legacy-css='1'] .aspect-video:not([class*="h-["]) > :not(.absolute):not(.fixed):not(.poster-badge) { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
 
 /* ── rotate 独立属性 → transform（Chrome 104 才有 rotate）──
  * ★ 用 transform 而不是重写 rotate：老内核只认 transform。

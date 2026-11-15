@@ -25,12 +25,17 @@ const outFile = outArgIdx > 0 && process.argv[outArgIdx + 1]
   ? process.argv[outArgIdx + 1]
   : join(webRoot, 'src', 'styles', 'legacy-generated.css')
 
-const cssFile = readdirSync(distDir).find((n) => n.startsWith('index-') && n.endsWith('.css'))
-if (!cssFile) {
-  console.error('找不到 dist/assets/index-*.css，先跑 vite build')
+/*
+ * ★ 扫**全部** *.css，不只 index-*.css（2026-11-13）：懒加载页面（设置/播放统计）
+ *   的类只出现在各自的 chunk 里。只读 index 时 aspect-square 这类"只在一个页面用"
+ *   的类会被漏掉，手写层又已并入生成物，结果就是那块彻底没有降级。
+ */
+const cssFiles = readdirSync(distDir).filter((n) => n.endsWith('.css'))
+if (!cssFiles.length) {
+  console.error('dist/assets 里没有 .css，先跑 vite build')
   process.exit(1)
 }
-const css = readFileSync(join(distDir, cssFile), 'utf8')
+const css = cssFiles.map((f) => readFileSync(join(distDir, f), 'utf8')).join(String.fromCharCode(10))
 
 /** 括号配对 */
 function matchBrace(src, from) {
@@ -150,6 +155,14 @@ for (const r of rules) {
     if (an && namedAspect.has(an[1])) {
       const a = namedAspect.get(an[1])
       aspects.push({ cls, media: r.media, w: a.w, h: a.h })
+    } else {
+      /*
+       * aspect-ratio：裸数字（`aspect-square` 产物是 `aspect-ratio:1`，不是 `1/1`）。
+       * 2026-11-13 踩过：只认分数写法时 aspect-square 被静默跳过，
+       * 而手写层已并入生成物 → 播放统计的色块彻底没有降级。
+       */
+      const ab = /aspect-ratio\s*:\s*([0-9.]+)\s*(?:;|$)/.exec(r.body)
+      if (ab) aspects.push({ cls, media: r.media, w: Number(ab[1]), h: 1 })
     }
   }
 
@@ -286,7 +299,10 @@ for (const it of aspects) {
    */
   const skipFixedH = ':not([class*="h-["])'
   emit(`${P} .${esc}${skipFixedH} { position: relative; height: 0; padding-top: ${p}%; }`, it.media)
-  emit(`${P} .${esc}${skipFixedH} > :not(.absolute):not(.fixed) { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }`, it.media)
+  // ★ 必须排除 .poster-badge：角标的 position:absolute 写在 tokens.css（没有 .absolute
+  //   工具类），只写 :not(.absolute) 会把 0.375rem 的胶囊拉成 100%×100%，
+  //   它的 rgba(0,0,0,.78) 底色盖满整张海报（2026-11-13 投影仪实测）。
+  emit(`${P} .${esc}${skipFixedH} > :not(.absolute):not(.fixed):not(.poster-badge) { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }`, it.media)
 }
 
 lines.push('')
