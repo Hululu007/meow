@@ -166,10 +166,26 @@ public final class UrlSafety {
     /** 返回 {scheme, host}，非 http/https 或解析不出 host 时返回 null。 */
     private static String[] schemeAndHost(String url) {
         if (url == null || url.trim().isEmpty()) return null;
+        URI uri;
+        try {
+            uri = URI.create(url.trim());
+        } catch (Throwable e) {
+            /*
+             * CatVod 的 URL 常带未编码的非法字符——实测潮流源的解析地址里有 `|`
+             * （多清晰度/Referer 分隔符），Java 的 URI 视为非法字符直接抛
+             * IllegalArgumentException，schemeAndHost 返回 null 后整个端点
+             * 403 "url not allowed"（2026-11-14 OECT 实测，与 SafeDNS 无关）。
+             * 只补查询串里的非法字符再试一次；解析仍失败才算不可信。
+             */
+            try {
+                uri = URI.create(encodeIllegal(url.trim()));
+            } catch (Throwable e2) {
+                return null;
+            }
+        }
         String scheme;
         String host;
         try {
-            URI uri = URI.create(url.trim());
             scheme = uri.getScheme();
             host = uri.getHost();
         } catch (Throwable e) {
@@ -178,5 +194,26 @@ public final class UrlSafety {
         if (scheme == null || host == null || host.isEmpty()) return null;
         if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) return null;
         return new String[]{scheme, host};
+    }
+
+    /**
+     * 把 URL 里 URI 非法字符（空格、`|`、`"<>{}^\`` 等）按百分比编码，
+     * 只在首次 URI.create 失败时作为兜底——正常 URL 一个字符都不动。
+     */
+    private static String encodeIllegal(String url) {
+        StringBuilder sb = new StringBuilder(url.length() + 16);
+        for (int i = 0; i < url.length(); i++) {
+            char c = url.charAt(i);
+            boolean safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+                    || "-._~".indexOf(c) >= 0          // unreserved
+                    || ":/?#[]@".indexOf(c) >= 0        // 语法字符
+                    || "!$&'()*+,;=".indexOf(c) >= 0;   // 保留字符
+            if (safe) {
+                sb.append(c);
+            } else {
+                sb.append('%').append(String.format("%02X", (int) c));
+            }
+        }
+        return sb.toString();
     }
 }
