@@ -36,7 +36,17 @@ describe('问题0：跳过提示条要能被遥控器够到', () => {
 
   it('进入区间时主动聚焦（否则几何选焦走不到这个浮层）', () => {
     expect(code).toContain('focusSkipBar')
-    expect(code).toMatch(/watch\(inIntro[\s\S]{0,200}focusSkipBar/)
+    // 2026-11-15 修6：watch 加了 immediate（inIntro 初值即 true，非 immediate
+    // 永不触发——自动跳过的另一半根因），watch 体变成多行，窗口放宽
+    expect(code).toMatch(/watch\(\s*inIntro,[\s\S]{0,300}focusSkipBar/)
+    expect(code).toMatch(/immediate: true[\s\S]{0,120}watch\(\s*inOutro/)
+    expect(code).toMatch(/watch\(\s*inIntro,[\s\S]{0,500}immediate: true/)
+  })
+
+  it('跳过前倒计时=0 是「立即跳」而不是不跳（2026-11-15 修6）', () => {
+    // 设置页 0 档标签是"立即跳"；startSkipCountdown 不得对 0 早退
+    expect(code).toMatch(/total <= 0[\s\S]{0,200}doSkipIntro/)
+    expect(code).toMatch(/total <= 0[\s\S]{0,260}doSkipOutro/)
   })
 })
 
@@ -80,6 +90,23 @@ describe('问题5：偶发播放失败', () => {
     expect(i).toBeGreaterThan(-1)
     const body = pv.slice(i, i + 1400)
     expect(body).toContain('removeItem(FAILED_KEY)')
+  })
+
+  it('已缓冲播放中，网络类迟到错误不再判死（2026-11-15 修3）', () => {
+    // failPlay 里必须有"缓冲护体"：currentTime>0 + 网络类 kind + 有余量缓冲
+    const i = code.indexOf('function failPlay')
+    expect(i).toBeGreaterThan(-1)
+    const body = code.slice(i, i + 1600)
+    expect(body).toContain('bufferedAheadSec(v) > 1')
+    expect(body).toMatch(/kind === 'network' \|{2} kind === 'timeout' \|{2} kind === 'stall'/)
+    expect(body).toContain('startLoad()')
+  })
+
+  it('手动选弹幕必须 fresh（否则吃到旧剧缓存，2026-11-15 修1）', () => {
+    const i = code.indexOf('async function pickDm')
+    expect(i).toBeGreaterThan(-1)
+    const body = code.slice(i, i + 800)
+    expect(body).toContain('loadDanmaku(proxyDanmakuByUrl(item.url), { fresh: true })')
   })
 })
 

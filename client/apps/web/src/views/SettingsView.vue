@@ -52,6 +52,7 @@ import {
   updatePluginSource,
 } from '@/api'
 import { LLM_PRESETS, chat, llmConfig, saveLlmConfig } from '@/ai/llm'
+import { scanLanBackends, type LanHit } from '@/utils/lanScanWeb'
 import { useAppStore } from '@/stores/app'
 import { listHistory } from '@/stores/history'
 import {
@@ -494,6 +495,46 @@ function pickFound(f: { url: string; label?: string; version?: string }) {
   connDialog.api = f.url
   if (!connDialog.config.trim()) connDialog.config = f.url + '/config.json'
   connDialog.msg = '已选中 ' + f.url + '，点「保存并重连」'
+}
+
+// ---------------------------------------------------------------- Web/PC 局域网扫描
+//
+// TV 的「局域网自动发现」走原生 LanScan（socket 探测）；Web / PC 没有那个
+// 桥，这里用页面 fetch 探各 IP 的 /api/health（端口 30010 / 9979，与
+// LanScan 的常扫端口对齐）。命中后只**填**地址框，保存仍走「保存」按钮——
+// 与 TV 弹层"点结果只是选中"的行为一致，避免误连。
+const webScan = reactive({
+  scanning: false,
+  found: [] as LanHit[],
+  msg: '',
+})
+
+async function startWebScan() {
+  if (webScan.scanning) return
+  webScan.scanning = true
+  webScan.found = []
+  webScan.msg = '正在扫描局域网（约 10–20 秒）…'
+  try {
+    const r = await scanLanBackends()
+    if (r.httpsBlocked) {
+      webScan.msg = '当前是 https 页面，浏览器会拦掉所有 http 探测；请用 http 地址打开后再扫'
+    } else if (r.hits.length) {
+      webScan.found = r.hits
+      webScan.msg = `找到 ${r.hits.length} 个后端，点一下填入地址框，再点「保存」`
+    } else {
+      webScan.msg = '没找到。可直接手填地址（如 http://192.168.1.10:30010）'
+    }
+  } catch (e) {
+    webScan.msg = '扫描失败：' + (e instanceof Error ? e.message : String(e))
+  } finally {
+    webScan.scanning = false
+  }
+}
+
+/** 点 Web 扫描结果：只填地址框（不直接保存） */
+function pickWebFound(f: LanHit) {
+  apiUrl.value = f.url
+  webScan.msg = '已选中 ' + f.url + '，点上方「保存」生效'
 }
 
 /**
@@ -5033,6 +5074,34 @@ onBeforeUnmount(() => {
         <span class="text-[11px] text-ink-3">
           扫描局域网列出可连的后端；或用手机扫码一次性配好常用设置
         </span>
+      </div>
+
+      <!--
+        Web / PC：没有原生 LanScan，用页面 fetch 探 /api/health（2026-11-15 修5，
+        对齐 TV 的自动发现）。https 页面拦 http 探测，工具里会给出对应提示。
+      -->
+      <div v-if="!tvMode" class="mt-3 flex flex-wrap items-center gap-2">
+        <button
+          class="rounded-md bg-card px-3 py-1.5 text-xs font-medium transition hover:bg-card-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent/60"
+          :disabled="webScan.scanning"
+          @click="startWebScan()"
+        >
+          {{ webScan.scanning ? '扫描中…' : '扫描局域网' }}
+        </button>
+        <span class="text-[11px] text-ink-3">
+          {{ webScan.msg || '扫同网段 30010 / 9979 端口的后端，点结果填进地址框' }}
+        </span>
+      </div>
+      <div v-if="webScan.found.length" class="mt-2 flex flex-wrap gap-2">
+        <button
+          v-for="f in webScan.found"
+          :key="f.url"
+          class="rounded-full bg-card px-3 py-1.5 text-xs text-ink-2 transition hover:bg-card-hover hover:text-ink"
+          :title="`版本 ${f.version} · ${f.sites} 个站点，点击填入地址框`"
+          @click="pickWebFound(f)"
+        >
+          {{ f.url }} <span class="ml-1 text-[10px] opacity-60">v{{ f.version }}</span>
+        </button>
       </div>
 
       <!--

@@ -89,6 +89,8 @@ const props = withDefaults(defineProps<{
   lineName?: string
   /** 是否有其他线路可换（决定错误页是否显示「换线路」） */
   canSwitchLine?: boolean
+  /** 当前环境能用原生播放器（TV 壳才有）：决定控制栏是否显示「原生」按钮 */
+  nativeAvailable?: boolean
   /** 父组件正在进行自动换源时显示的提示，例如「正在尝试线路 2/3」 */
   autoRetryHint?: string
   /**
@@ -140,6 +142,8 @@ const emit = defineEmits<{
   (e: 'retry', kind: 'line'): void
   /** 切线路：传目标线路名 */
   (e: 'line', name: string): void
+  /** 用户点了控制栏「原生」按钮：由父组件调 openNative（有当前集 header/进度上下文） */
+  (e: 'nativePlay'): void
   /** 切集：传目标集的下标 */
   (e: 'switch', index: number): void
   /**
@@ -664,7 +668,20 @@ function clearSkipTimer(which: 'intro' | 'outro') {
 
 function startSkipCountdown(which: 'intro' | 'outro') {
   const total = skipCdTotal.value
-  if (total <= 0) return
+  /*
+   * ★ 0 = 立即跳，不是"不跳"（2026-11-15 修6）。
+   *
+   * 设置页「跳过前倒计时」的 0 档标签就是"立即跳"，但这里原来
+   * `total <= 0` 直接 return——区间内只挂出跳过按钮、永不自动执行。
+   * 症状正是用户报的：连播=立即播放时切下一集，右下角只有"跳过片头"
+   * 按钮，得手点；把连播改成倒计时 3s（顺手把倒计时档调到非 0）才恢复。
+   * 现在与标签语义对齐：进入区间且未取消 → 直接跳。
+   */
+  if (total <= 0) {
+    if (which === 'intro') doSkipIntro()
+    else doSkipOutro()
+    return
+  }
   clearSkipTimer(which)
   const cdRef = which === 'intro' ? introCd : outroCd
   const timerRef = which === 'intro' ? 'introTimer' : 'outroTimer'
@@ -737,25 +754,37 @@ function dismissSkip(which: 'intro' | 'outro') {
 }
 
 // 进入区间 → 起倒计时；离开区间 → 复位（下次进还能再提示）
-watch(inIntro, (v) => {
-  if (v) {
-    if (!introDismissed.value) startSkipCountdown('intro')
-    focusSkipBar('intro')
-  } else {
-    clearSkipTimer('intro')
-    introDismissed.value = false
-  }
-})
-watch(inOutro, (v) => {
-  if (v) {
-    // 片尾自动跳只在播放中做，暂停时用户可能在拖进度
-    if (!outroDismissed.value && playing.value) startSkipCountdown('outro')
-    focusSkipBar('outro')
-  } else {
-    clearSkipTimer('outro')
-    outroDismissed.value = false
-  }
-})
+// ★ 必须 immediate（2026-11-15 修6）：片头标记按"剧"记（site+vod_id），
+//   挂载那一刻 marks 已经在手、currentTime 还是 0 → inIntro 的初值就是
+//   true 且之后不再变化，非 immediate 的 watch 永远等不到第一次触发 ——
+//   这就是"只显示跳过按钮、自动跳永远不来"的另一半根因。
+watch(
+  inIntro,
+  (v) => {
+    if (v) {
+      if (!introDismissed.value) startSkipCountdown('intro')
+      focusSkipBar('intro')
+    } else {
+      clearSkipTimer('intro')
+      introDismissed.value = false
+    }
+  },
+  { immediate: true },
+)
+watch(
+  inOutro,
+  (v) => {
+    if (v) {
+      // 片尾自动跳只在播放中做，暂停时用户可能在拖进度
+      if (!outroDismissed.value && playing.value) startSkipCountdown('outro')
+      focusSkipBar('outro')
+    } else {
+      clearSkipTimer('outro')
+      outroDismissed.value = false
+    }
+  },
+  { immediate: true },
+)
 // 暂停时停表，恢复播放重新计时（避免暂停期间"跳过"悄悄发生）
 watch(playing, (p) => {
   if (!p) {
@@ -1491,6 +1520,35 @@ function classifyHlsDetail(detail: string): PlayErrorKind {
  * 一次网络抖动也会被当成"浏览器解不了这个格式"送去转码。
  */
 function failPlay(detail: string, kind: PlayErrorKind = 'unknown') {
+  /*
+   * ★ 已缓冲播放中，迟到的网络类错误不打断（2026-11-15 修3）。
+   *
+   * 用户实测：视频正在播、缓冲还有一大段，一次"线路不通/超时"的提醒
+   * 直接把错误页盖上来，连已缓冲的时长都看不成了。这类错误只说明
+   * "**继续取流**失败"，不代表当前缓冲也废了——只要画面还能往前走，
+   * 就静默重连（hls.startLoad），缓冲耗尽、取流仍失败时 hls 会再报
+   * fatal，那时已无缓冲可护，照常走失败流程。
+   *
+   * 只豁免网络类 kind：fake/http 是地址级判死，media 是解码失败，
+   * 缓冲救不了它们，维持原行为。
+   */
+  const v = video.value
+  if (
+    v &&
+    v.currentTime > 0 &&
+    (kind === 'network' || kind === 'timeout' || kind === 'stall') &&
+    bufferedAheadSec(v) > 1
+  ) {
+    if (hls.value) {
+      try {
+        hls.value.startLoad()
+      } catch {
+        /* 引擎已在销毁中就算了 */
+      }
+    }
+    extendStallForFragment()
+    return
+  }
   /*
    * ★ 先撤看门狗再报错（2026-11-02）。
    *
@@ -3324,7 +3382,12 @@ async function pickDm(item: DanmakuCandidate) {
   dmManualSource.value = item.source || ''
   clearDmUpgrade()
   showDmSearch.value = false
-  await loadDanmaku(proxyDanmakuByUrl(item.url))
+  // ★ 手选必须 fresh：普通路径先读 IndexedDB（key=URL），若这个 URL 的缓存
+  //   是上一部剧写入的（聚合源同集同 URL、或后端 cacheKey 撞名），读回来的
+  //   就是旧剧的弹幕——用户看到"选了 A 剧显示 B 剧弹幕，清缓存才正常"。
+  //   fresh 同时跳过本地与后端缓存，取所选源这一集的实时弹幕，
+  //   加载完成后会把正确内容写回缓存（loadDanmaku 内部 putLocalDanmaku）。
+  await loadDanmaku(proxyDanmakuByUrl(item.url), { fresh: true })
 }
 
 function clearDmOverride() {
@@ -4584,6 +4647,8 @@ onMounted(() => {
   window.addEventListener('pagehide', onPageHide)
   // 隐藏到托盘/最小化不会触发 pagehide，音频会继续播；用 visibilitychange 兜住
   document.addEventListener('visibilitychange', onVisibilityChange)
+  // TV 壳从原生播放器（ExoPlayer）返回时的恢复广播（mediaExclusive.ts 发出）
+  window.addEventListener('meow:webview-resume', onWebviewResume)
   // ★ 实测 WebView2 在窗口被 Tauri hide() 后仍报 visibilityState='visible'，
   // 单靠上面的 visibilitychange 不会触发。Rust 隐藏窗口前会 eval 这个钩子。
   ;(window as unknown as { __meowPauseMedia?: () => void }).__meowPauseMedia = pauseMediaOnHide
@@ -4691,6 +4756,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', onFullscreenChange)
   window.removeEventListener('pagehide', onPageHide)
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  window.removeEventListener('meow:webview-resume', onWebviewResume)
   const w = window as unknown as { __meowPauseMedia?: () => void }
   if (w.__meowPauseMedia === pauseMediaOnHide) w.__meowPauseMedia = undefined
   // 所有一次性定时器都要清：组件销毁后它们仍会触发 ref 写入
@@ -4710,21 +4776,84 @@ function onPageHide() {
   flushProgress(true)
 }
 
+/**
+ * 页面隐藏前是否正在播（hidden 时由我们自动暂停）。
+ *
+ * 窗口被隐藏（关闭到托盘 / 最小化 / 切到别的应用）时暂停媒体。
+ * 只挂 pagehide 不够：隐藏到托盘不会触发 pagehide，Chromium 也不会自动
+ * 停掉正在出声的 <video>，用户会听到"窗口没了但还在播"。
+ *
+ * TV 场景的恢复判据：原生播放器盖上来 → visibilityState=hidden →
+ * pauseMediaOnHide 先停了视频；壳 onResume 的 __meowWebviewResume 又因为
+ * "发现全都已暂停"而不恢复（mediaExclusive 的 pausedBySystem=false）——
+ * 两道闸互相拆台，返回播放页就停在暂停态（2026-11-15 实测 .76）。
+ * 只有这个标志能证明"暂停是我们干的"，恢复可见时据此续播。
+ * PC 最小化仍保持"回来是暂停态"（用户主动离开，更可控）。
+ */
+let playingBeforeHide = false
+
 function pauseMediaOnHide() {
+  const v = video.value
+  playingBeforeHide = !!(v && !v.paused && !v.ended)
   flushProgress(true)
   pause()
 }
 
-/**
- * 窗口被隐藏（关闭到托盘 / 最小化 / 切到别的应用）时暂停媒体。
- *
- * 只挂 pagehide 不够：隐藏到托盘不会触发 pagehide，Chromium 也不会自动
- * 停掉正在出声的 <video>，用户会听到"窗口没了但还在播"。
- * 恢复可见时故意不自动续播：用户是主动离开的，回来先看到暂停态更可控。
- */
 function onVisibilityChange() {
-  if (document.visibilityState !== 'hidden') return
+  if (document.visibilityState !== 'hidden') {
+    resumeAfterVisibility()
+    return
+  }
   pauseMediaOnHide()
+}
+
+/** 重新可见：把隐藏前正在播的续上（仅 TV；PC 最小化保持"回来是暂停态"） */
+function resumeAfterVisibility() {
+  if (!isTvEnv()) return
+  if (!playingBeforeHide) return
+  playingBeforeHide = false
+  const v = video.value
+  if (!v || v.ended) return
+  // 系统暂停期间取流管线可能停在半路：先推 hls，再补 play
+  if (hls.value) {
+    try {
+      hls.value.startLoad()
+    } catch {
+      /* 引擎已在销毁中就算了 */
+    }
+  }
+  window.setTimeout(() => {
+    const el = video.value
+    if (!el || el.ended) return
+    if (el.paused) safePlay(el)
+  }, 250)
+}
+
+/**
+ * TV 壳从原生播放器（ExoPlayer）回到本页的恢复（2026-11-15 修2）。
+ *
+ * mediaExclusive 的 `__meowWebviewResume` 只负责"把该响的响起来"，取流
+ * 管线它碰不到：WebView 被系统暂停期间 hls.js 的 pending 分片请求被掐、
+ * MSE 不再追加，表现为回页后一直缓冲/定格，退出重进才恢复（实测）。
+ * 这里推进两步：引擎侧 startLoad，元素侧补一次 play（延迟 300ms，
+ * 等内核从系统暂停里完全醒过来）。用户手动暂停的（resume 钩子里
+ * pausedBySystem=false）不会走到这条广播，不会被我们强行续播。
+ */
+function onWebviewResume() {
+  const v = video.value
+  if (!v || v.ended) return
+  if (hls.value) {
+    try {
+      hls.value.startLoad()
+    } catch {
+      /* 引擎已在销毁中就算了 */
+    }
+  }
+  window.setTimeout(() => {
+    const el = video.value
+    if (!el || el.ended) return
+    if (el.paused) safePlay(el)
+  }, 300)
 }
 
 watch(
@@ -5480,6 +5609,24 @@ defineExpose({ restart, seekTo, getTime, pause })
             <path d="m17 4 3 3-3 3" />
           </svg>
           <span class="hidden max-w-[7rem] truncate sm:inline">{{ lineName || '线路' }}</span>
+        </button>
+
+        <!--
+          原生播放（TV 壳）：紧跟线路按钮右侧，主动把当前集交给 ExoPlayer。
+          触发父组件的 tryNative（带 header / 续播进度）；Web / PC 无桥不显示。
+        -->
+        <button
+          v-if="nativeAvailable"
+          class="hidden shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20 backdrop-blur sm:flex"
+          title="用原生播放器播放"
+          @click.stop="emit('nativePlay')"
+        >
+          <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2.5" y="4.5" width="19" height="13" rx="2" />
+            <path d="M10 8.5v5l4.5-2.5z" fill="currentColor" stroke="none" />
+            <path d="M8 20.5h8" />
+          </svg>
+          <span class="hidden sm:inline">原生</span>
         </button>
 
         <!--

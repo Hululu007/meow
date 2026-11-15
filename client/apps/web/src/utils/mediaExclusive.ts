@@ -131,5 +131,15 @@ export function installMediaExclusivity(): void {
         }
       }
     }
+    /*
+     * ★ 广播给播放器组件（2026-11-15 修2）。
+     *
+     * 只 play() 不够：WebView 被系统暂停期间，hls.js 的取流管线常停在半路
+     * （MSE 不再追加、pending 分片请求被掐）。表现为"从原生播放器回来后
+     * 画面定格/一直缓冲，要退出重进才正常"。VideoPlayer 监听
+     * meow:webview-resume 推进引擎（startLoad）并补一次 play；
+     * play 已被上面恢复时重复调无副作用。
+     */
+    window.dispatchEvent(new CustomEvent('meow:webview-resume'))
   }
 }

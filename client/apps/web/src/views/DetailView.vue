@@ -632,6 +632,23 @@ onBeforeUnmount(() => {
               </svg>
               {{ favorited ? '已收藏' : '收藏' }}
             </button>
+
+            <!--
+              去搜索（2026-11-15 修4）：当前源失效/不齐时，用剧名跳搜索页
+              找其他源。片名来自详情数据；空名（部分源详情字段缺失）不显示。
+            -->
+            <button
+              v-if="item?.vod_name"
+              class="flex items-center gap-2 rounded-lg bg-card px-5 py-2.5 text-sm font-medium text-ink-2 transition hover:bg-card-hover hover:text-ink"
+              title="用剧名去搜索其他源"
+              @click="router.push({ name: 'search', query: { wd: item.vod_name } })"
+            >
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-3.8-3.8" />
+              </svg>
+              去搜索
+            </button>
           </div>
         </div>
       </div>
