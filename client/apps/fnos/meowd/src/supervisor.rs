@@ -48,11 +48,36 @@ pub async fn run(
     }
 
     let (java_tx, java_rx) = watch::channel(false);
-    let mut java_task = tokio::spawn(java_loop(cfg.clone(), deps, java_rx));
-
-    tokio::select! {
-        _ = shutdown.changed() => {}
-        _ = &mut java_task => {}
+    let mut java_task = tokio::spawn(java_loop(cfg.clone(), deps.clone(), java_rx.clone()));
+    // ★ 一个 JoinHandle 只能被 poll 到 Ready 一次：select 里已经消费掉的句柄，
+    //   后面再 timeout(..., &mut java_task) 会 panic "JoinHandle polled after completion"。
+    //   release 是 panic=abort，整个 meowd 会被带走，真正的 bind 错误反而看不到
+    //   （2026-11-16 OECT 实测只剩这一条 panic）。java_done 记录"句柄已 poll 完"。
+    let mut java_done = false;
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => break,
+            res = &mut java_task => {
+                // 收到停止信号之后才结束 → 正常收尾，尾部不需要再 poll
+                if *shutdown.borrow() {
+                    java_done = true;
+                    break;
+                }
+                // 没收到停止信号却自己结束：重建 Java 守护，别把整个 supervisor 收掉
+                match res {
+                    Ok(()) => warn!("java supervisor exited unexpectedly; restarting"),
+                    Err(e) => warn!(error = %e, "java supervisor task failed; restarting"),
+                }
+                tokio::select! {
+                    _ = shutdown.changed() => {
+                        java_done = true;
+                        break;
+                    }
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                }
+                java_task = tokio::spawn(java_loop(cfg.clone(), deps.clone(), java_rx.clone()));
+            }
+        }
     }
 
     // 顺序：先插件后 Java。插件退出时可能还在回调后端，反过来会打到已停的服务。
@@ -63,7 +88,12 @@ pub async fn run(
         }
     }
     let _ = java_tx.send(true);
-    if tokio::time::timeout(Duration::from_secs(15), &mut java_task).await.is_err() {
+    // 只有没被 select 消费过的句柄才能再 poll
+    if !java_done
+        && tokio::time::timeout(Duration::from_secs(15), &mut java_task)
+            .await
+            .is_err()
+    {
         warn!("java task did not stop within 15s");
     }
     info!("supervisor exited");

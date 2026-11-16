@@ -21,12 +21,123 @@ running() {
     kill -0 "$p" 2>/dev/null
 }
 
+# 期望版本：TRIM_APPVER 在 start 场景可能为空，退回包内 bin/VERSION；
+# 都拿不到时输出空串，调用方按"只收养、不杀"处理。
+expected_version() {
+    if [ -n "${TRIM_APPVER:-}" ]; then
+        printf '%s' "$TRIM_APPVER"
+        return 0
+    fi
+    if [ -n "${TRIM_APPDEST:-}" ] && [ -f "$TRIM_APPDEST/bin/VERSION" ]; then
+        tr -d '[:space:]' < "$TRIM_APPDEST/bin/VERSION"
+    fi
+}
+
+# 端口上是不是本应用的 meowd？成功输出 "pid version"，否则返回 1。
+# 用于发现「pid 文件丢了/被覆盖成死 PID，但进程其实还活着」的脱管实例。
+probe_shell() {
+    if command -v curl >/dev/null 2>&1; then
+        out="$(curl -fsS -m 2 "http://127.0.0.1:$PORT/api/_shell/info" 2>/dev/null)" || return 1
+    elif command -v wget >/dev/null 2>&1; then
+        out="$(wget -q -T 2 -O - "http://127.0.0.1:$PORT/api/_shell/info" 2>/dev/null)" || return 1
+    else
+        return 1
+    fi
+    case "$out" in
+        *'"app":"meow"'*'"role":"shell"'*) ;;
+        *) return 1 ;;
+    esac
+    p="$(printf '%s' "$out" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' | head -1)"
+    v="$(printf '%s' "$out" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p' | head -1)"
+    [ -n "$p" ] || return 1
+    printf '%s %s\n' "$p" "$v"
+}
+
+# 只认「本安装的 meowd」：exe 是 meowd（QEMU 模拟下 exe 是 qemu 本体，改看 cmdline
+# 里的 /bin/meowd），且 cmdline 的端口/data 都对得上。端口被别的应用占用时绝不误杀。
+is_our_meowd() {
+    [ -n "${1:-}" ] || return 1
+    [ -d "/proc/$1" ] || return 1
+    exe="$(readlink "/proc/$1/exe" 2>/dev/null || true)"
+    cmd="$(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null || true)"
+    case "$exe" in
+        */meowd) ;;
+        *)
+            case "$cmd" in
+                *"/bin/meowd "*|*"/bin/meowd") ;;
+                *) return 1 ;;
+            esac
+            ;;
+    esac
+    case "$cmd" in
+        *"--port=$PORT"*) ;;
+        *) return 1 ;;
+    esac
+    if [ -n "${TRIM_PKGVAR:-}" ]; then
+        case "$cmd" in
+            *"--data=$TRIM_PKGVAR/data"*) ;;
+            *) return 1 ;;
+        esac
+    fi
+    return 0
+}
+
+# meowd 被强杀后，它的 Java 在独立进程组里可能变成孤儿占着 API 端口；
+# 按 cmdline 精确匹配后收掉，避免新后端起不来。
+stop_leftover_api() {
+    command -v ss >/dev/null 2>&1 || return 0
+    line="$(ss -lntp 2>/dev/null | grep -F ":$API_PORT " | head -1)"
+    [ -n "$line" ] || return 0
+    p="$(printf '%s' "$line" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -1)"
+    [ -n "$p" ] || return 0
+    cmd="$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null || true)"
+    case "$cmd" in *ApiServer*) ;; *) return 0 ;; esac
+    case "$cmd" in *"--port=$API_PORT"*) ;; *) return 0 ;; esac
+    if [ -n "${TRIM_PKGVAR:-}" ]; then
+        case "$cmd" in *"--data-dir=$TRIM_PKGVAR/data"*) ;; *) return 0 ;; esac
+    fi
+    kill -TERM "$p" 2>/dev/null
+    i=0
+    while [ "$i" -lt 20 ]; do
+        kill -0 "$p" 2>/dev/null || break
+        sleep 0.25
+        i=$((i + 1))
+    done
+    kill -KILL "$p" 2>/dev/null
+    sleep 0.3
+}
+
 case "${1:-}" in
 start)
     mkdir -p "$TRIM_PKGVAR/run" "$TRIM_PKGVAR/logs" "$TRIM_PKGVAR/data" 2>/dev/null
     if running; then
         exit 0
     fi
+
+    # pid 文件缺失/指向死 PID，但端口上其实还有本应用的 meowd（手工启动、或上一轮
+    # stop 没杀干净）：同版本补写 pid 文件收养；旧版本先停掉再起新的。
+    # 不处理的话新实例会 bind 失败退出，应用中心表现就是"启动一下又停用"。
+    if info="$(probe_shell)"; then
+        p="${info%% *}"
+        v="${info#* }"
+        if is_our_meowd "$p"; then
+            want="$(expected_version)"
+            if [ -z "$want" ] || [ "$v" = "$want" ]; then
+                printf '%s' "$p" > "$PIDFILE"
+                exit 0
+            fi
+            kill -TERM "$p" 2>/dev/null
+            i=0
+            while [ "$i" -lt 40 ]; do
+                kill -0 "$p" 2>/dev/null || break
+                sleep 0.25
+                i=$((i + 1))
+            done
+            kill -KILL "$p" 2>/dev/null
+            stop_leftover_api
+        fi
+    fi
+
     rm -f "$PIDFILE"
 
     # meowd 自己会写 pid 文件并 setsid 脱离本脚本会话

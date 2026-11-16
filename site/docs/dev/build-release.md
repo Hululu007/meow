@@ -150,6 +150,10 @@ CI 建 draft Release → 人工 Publish → release:published
   `seed/apiserver/VERSION`（Docker 是 `/app/VERSION`、PC 插件是插件目录下的 `VERSION`），
   `ApiServer.java` / Cargo 里都不再写死版本。这样按源码 hash 的构建缓存才能跨版本复用；
   改了这套机制必须同步四条打包路径的「VERSION == manifest version」断言
+- **fpk 的 pid/log 必须落在 `$TRIM_PKGVAR`**：`meowd` 在没有 `TRIM_PKGVAR` 时（手工启动）
+  把数据根退回 `--data` 的父目录；`cmd/main start` 启动前先探端口，同版本实例补写 pid
+  文件收养、旧版本先停再起。这两层是「stop 杀不掉旧进程 → 新实例 bind 失败 →
+  应用中心启动一下又停用」的兜底，别简化回去（2026-11-16 OECT 实测）
 - **dex2jar 只带 13 个 jar**（Dex2jarCmd 可达集）：上游把 ANTLR 工具链 + icu4j 一起发，
   整包 19.7MB → 裁后 1.5MB。白名单在 `deploy/scripts/fetch-dex2jar.{sh,ps1}`，另需同步
   `deploy/docker/Dockerfile.apiserver` 与 `build-fpk.sh` 的 jar 数断言；`ci.yml` 有转换冒烟

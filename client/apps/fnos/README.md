@@ -35,6 +35,22 @@ PLATFORM=arm SRC=/tmp/meow-src OUT=/tmp/meow-out-arm bash client/apps/fnos/build
    而 fpk 的 Java 在 30011 → Bili/Hxq 的 play 返回 `http://127.0.0.1:-1/proxy?...`。
    `Jars.pinProxyPort(port)` 在 jar 加载后反射写私有静态字段 `a`；启动和导入后各调一次。
 
+## 进程管理：pid/log 必须落在 `$TRIM_PKGVAR`
+
+`meowd` 的 `pkg_var` = `$TRIM_PKGVAR`，`run/`、`logs/` 都在它下面；`cmd/main` 的
+`status` / `stop` 只认 `$TRIM_PKGVAR/run/meowd.pid`。三条别删：
+
+1. **没有 `TRIM_PKGVAR` 的手工启动**：`meowd` 把 `pkg_var` 退回 `--data` 的父目录
+   （`resolve_pkg_var`，要求绝对路径且父目录不是 `/`），保证 pid/log 仍落在同一处。
+   否则 stop 找不到进程、端口一直被占：2026-11-16 OECT 实测「停不掉 → 新实例
+   `bind 30010` 失败 → 应用中心启动一下又停用」。
+2. **`cmd/main start` 先探端口再启动**：同版本实例 → 补写 pid 文件收养；旧版本 →
+   先停掉再起新的。身份校验 = exe（或 cmdline）含 `/bin/meowd` + `--port` + `--data`
+   全部对上，端口被别的应用占用时不会误杀。这段同时兜住「升级时旧进程没被 stop 杀掉」。
+3. **`meowd` 的 supervisor 不能二次 poll `JoinHandle`**：`select!` 里已经消费过的句柄，
+   再 `timeout(..., &mut task)` 会 panic `JoinHandle polled after completion`；
+   release 是 `panic = "abort"`，会带走整个进程，并掩盖真正的 `bind` 错误。
+
 ## 2026-11-09 实装记录
 
 - NAS 1.1.7 → 1.1.8 纯壳升级成功；`seed/apiserver/` 只有 `apiserver.jar`。

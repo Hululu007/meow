@@ -32,7 +32,10 @@ pub struct Config {
 impl Config {
     pub fn load() -> Self {
         let app_dest = env_path("TRIM_APPDEST").unwrap_or_else(|| PathBuf::from("."));
-        let pkg_var = env_path("TRIM_PKGVAR").unwrap_or_else(|| app_dest.join("var"));
+        let trim_pkg_var = env_path("TRIM_PKGVAR");
+        let pkg_var = trim_pkg_var
+            .clone()
+            .unwrap_or_else(|| app_dest.join("var"));
         let gateway_socket = env_path("MEOW_GATEWAY_SOCKET")
             .unwrap_or_else(|| app_dest.join("meow.sock"));
 
@@ -63,6 +66,21 @@ impl Config {
         };
 
         parse_args(&mut cfg);
+
+        // ★ 手工启动（没走 cmd/main，TRIM_PKGVAR 缺失）时 `--data` 指向的是真实数据目录，
+        //   但 pkg_var 还停在 app_dest/var —— pid/log 会落到另一个目录，cmd/main 的
+        //   status/stop 永远看不到这个进程。2026-11-16 OECT 实测：stop 报成功却杀不掉，
+        //   端口一直被占，应用中心点启动就是"启动一下又停用"。
+        //   所以没有 TRIM_PKGVAR 时让 pkg_var 跟随 `--data` 的父目录，与 cmd/main 对齐。
+        //   **TRIM_PKGVAR 存在时绝不覆盖**：否则测试实例会抢真实实例的 pid 文件。
+        if trim_pkg_var.is_none() {
+            let derived = resolve_pkg_var(&cfg.data_dir, &cfg.app_dest);
+            if derived != cfg.pkg_var {
+                cfg.pkg_var = derived;
+                cfg.run_dir = cfg.pkg_var.join("run");
+                cfg.log_dir = cfg.pkg_var.join("logs");
+            }
+        }
         cfg
     }
 
@@ -163,4 +181,54 @@ fn parse_args(cfg: &mut Config) {
 #[allow(dead_code)]
 pub fn dirname(p: &Path) -> PathBuf {
     p.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// 没有 `TRIM_PKGVAR` 时的数据根：优先 `--data` 的父目录。
+///
+/// 只接受绝对路径，且父目录不能是 `/`（`--data=/data` 这种会把 run/log 写到根目录下）。
+/// 其余情况退回老规则 `app_dest/var`，行为与历史一致。
+fn resolve_pkg_var(data_dir: &Path, app_dest: &Path) -> PathBuf {
+    if data_dir.is_absolute() {
+        if let Some(parent) = data_dir.parent() {
+            if !parent.as_os_str().is_empty() && parent != Path::new("/") {
+                return parent.to_path_buf();
+            }
+        }
+    }
+    app_dest.join("var")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_pkg_var;
+    use std::path::Path;
+
+    #[test]
+    fn pkg_var_follows_data_parent_when_trim_absent() {
+        // 手工启动 `--data=<appdata>/meow/data` → pid/log 必须回到 <appdata>/meow
+        // （与 cmd/main 的 $TRIM_PKGVAR 同路径），否则 stop 杀不掉（OECT 实测）。
+        // 用 temp_dir 造绝对路径，Windows/Unix 都能跑。
+        let root = std::env::temp_dir().join("meow-appdata");
+        let p = resolve_pkg_var(&root.join("data"), Path::new("app"));
+        assert_eq!(p, root);
+    }
+
+    #[test]
+    fn pkg_var_falls_back_for_relative_or_rootdata() {
+        let app = Path::new("app");
+        // 相对路径不可信（cwd 未知）
+        assert_eq!(resolve_pkg_var(Path::new("data"), app), app.join("var"));
+        // 父目录是 / 时不要把 run/log 写到根分区（Unix 下才判定为根）
+        assert_eq!(resolve_pkg_var(Path::new("/data"), app), app.join("var"));
+    }
+
+    #[test]
+    fn default_data_dir_keeps_legacy_location() {
+        // 不传 --data：data_dir = <pkg_var>/data，推导结果与老行为完全一致
+        let app = std::env::temp_dir().join("meow-appdest");
+        assert_eq!(
+            resolve_pkg_var(&app.join("var").join("data"), &app),
+            app.join("var")
+        );
+    }
 }
