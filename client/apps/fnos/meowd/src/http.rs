@@ -134,7 +134,7 @@ fn apply_cors(res: &mut Response, origin: &str) {
     h.insert(
         header::ACCESS_CONTROL_EXPOSE_HEADERS,
         HeaderValue::from_static(
-            "Content-Length,Content-Range,Accept-Ranges,X-Danmaku-Source,X-Danmaku-Count,X-Danmaku-Empty",
+            "Content-Length,Content-Range,Accept-Ranges,X-Danmaku-Source,X-Danmaku-Count,X-Danmaku-Total,X-Danmaku-Empty",
         ),
     );
 }

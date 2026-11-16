@@ -1187,7 +1187,7 @@ public class ApiServer {
         h.add("Access-Control-Allow-Headers", "Content-Type,Range,X-Meow-Token");
         h.add("Access-Control-Expose-Headers",
                 "Content-Length,Content-Range,Accept-Ranges,"
-                        + "X-Danmaku-Source,X-Danmaku-Count,X-Danmaku-Empty");
+                        + "X-Danmaku-Source,X-Danmaku-Count,X-Danmaku-Total,X-Danmaku-Empty");
 
         String method = ex.getRequestMethod();
         String path = ex.getRequestURI().getPath();
@@ -7678,7 +7678,7 @@ public class ApiServer {
             }
         }
         try {
-            return fetchDanmakuAuto0(clean, ep, cacheKey, sourceOut);
+            return fetchDanmakuAuto0(clean, ep, cacheKey, sourceOut, fresh);
         } finally {
             // fresh 没有登记 inflight，不能误删别的请求的标记
             if (!fresh) DANMAKU_INFLIGHT.remove(cacheKey);
@@ -7760,12 +7760,18 @@ public class ApiServer {
      * 留一倍余量；再长用户已经在看转圈了，不如先给个空让界面别卡。
      */
     private static String fetchDanmakuAuto0(
-            String clean, int ep, String cacheKey, String[] sourceOut) {
+            String clean, int ep, String cacheKey, String[] sourceOut, boolean skipCacheWrite) {
         String[] order = danmakuOrder();
         // 单源不必起线程：少一层调度，也让日志更直白
         if (order.length == 1) {
             String only = order[0];
             String r = runDanmakuSource(only, clean, ep);
+            if (skipCacheWrite) {
+                if (sourceOut != null) {
+                    sourceOut[0] = (r == null || r.isEmpty()) ? "none" : sourceTagOf(only);
+                }
+                return r == null ? "" : r;
+            }
             return storeDanmaku(cacheKey, r, sourceTagOf(only), sourceOut);
         }
 
@@ -7819,7 +7825,32 @@ public class ApiServer {
             }
         }
 
-        String out = storeDanmaku(cacheKey, firstResult, sourceTagOf(firstSrc), sourceOut);
+        String out;
+        if (skipCacheWrite) {
+            /*
+             * ★ fresh 请求**只补空缓存，不覆盖已有内容**（2026-11-16 实测）。
+             *
+             * fresh 的本意是"这次强制重抓一份给调用方"，但它的 firstResult 是
+             * **先到先用**的结果（通常腾讯）。如果照原样 storeDanmaku，就会把
+             * 后台积累的更优缓存（聚合合并结果 42293）覆盖回腾讯 54535——
+             * 前端 12 秒的缓存优先检查随即又能看到"变差"的一份，升级链断掉。
+             *
+             * 但缓存为空/负缓存时必须写：否则冷启动首抓失败后缓存永远为空，
+             * 每次请求都重抓（前端 30s 重试也救不回来）。
+             */
+            String cachedNow = DANMAKU_CACHE.get(cacheKey);
+            boolean cacheEmpty = cachedNow == null || cachedNow.isEmpty();
+            if (cacheEmpty) {
+                out = storeDanmaku(cacheKey, firstResult, sourceTagOf(firstSrc), sourceOut);
+            } else {
+                out = firstResult == null ? "" : firstResult;
+                if (sourceOut != null) {
+                    sourceOut[0] = (out.isEmpty()) ? "none" : sourceTagOf(firstSrc);
+                }
+            }
+        } else {
+            out = storeDanmaku(cacheKey, firstResult, sourceTagOf(firstSrc), sourceOut);
+        }
 
         /*
          * 后台补全：没完成的源继续跑，只在"明显更全"时覆盖缓存。
@@ -7860,14 +7891,37 @@ public class ApiServer {
      * 内置直连与 danmu_api 对同一集常有几百条差异（不同源漏几集/多几段），
      * 为这点差异换一次缓存会让用户下次看到的位置对不上。
      *
+     * <p><b>聚合源例外</b>（2026-11-16）：danmu_api 是**多站合并**结果，
+     * 语义上就比任一单站更全（实测其内容包含腾讯 76.6% 的文本、另含
+     * B站/优酷等独有弹幕），且时间轴通常与片长对齐。它比当前结果多就覆盖，
+     * 不再要求 1.2 倍——否则「42293 vs 40000 = 1.06 倍」这种更干净的合并
+     * 结果会被当成"差异不大"丢掉。
+     *
      * @return 被采纳时返回新内容，否则 null
      */
     private static String tellLaterIfBetter(
             String clean, int ep, String src, String candidate, String current) {
         int cn = countTags(candidate);
         int cur = countTags(current);
-        if (cn <= cur) return null;
-        if (cur > 0 && cn < (int) (cur * 1.2)) return null;
+        boolean isAgg = "aggregator".equals(src);
+        if (cur > 0) {
+            if (isAgg) {
+                /*
+                 * 聚合源的下限放宽到 0.5 倍（2026-11-16 二轮）。
+                 *
+                 * 聚合结果的**有效条数**通常远高于单源（时间轴与片长对齐），
+                 * 但 cap 提到 60000 后，单源的"总条数"可能反而更大——本集
+                 * 腾讯 54535 条里 31% 超出片长（死数据），聚合 42293 条几乎
+                 * 全在片长内。按总条数比，42293 < 54535 会被永远拒掉。
+                 * 下限 0.5 倍防"聚合只返回几百条"时反向劣化。
+                 */
+                if (cn < (int) (cur * 0.5)) return null;
+            } else if (cn < (int) (cur * 1.2)) {
+                return null;
+            }
+        } else if (cn <= 0) {
+            return null;
+        }
         String cacheKey = "dm|" + clean + "|" + ep;
         DANMAKU_CACHE.put(cacheKey, candidate, 30 * 60_000L);
         DANMAKU_SRC_CACHE.put(cacheKey, sourceTagOf(src), 30 * 60_000L);
@@ -7877,25 +7931,77 @@ public class ApiServer {
         return candidate;
     }
 
+    /** 单集弹幕条数上限（2026-11-16 从 40000 提到 60000）。 */
+    private static final int DANMAKU_CAP = 60_000;
+
+    /**
+     * 截断前的真实条数（`clean|ep` → total），供响应头 X-Danmaku-Total 用。
+     * 只在本次抓取路径写入、响应时读走删除；缓存命中路径没有这个头（可接受）。
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<String, Integer> DANMAKU_TOTAL =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 当前线程最近一次源抓取的"截断前总数"。
+     *
+     * <p>底层的分片解析函数（{@code fetchTencentXml} / {@code fetchIqiyiBulletXml}）
+     * 手里只有 vid/tvId，没有 clean/ep；而 cap 发生在它们内部。用 ThreadLocal 把
+     * 真实条数带回 {@link #runDanmakuSource}（同线程同步调用），由那里转存到
+     * {@link #DANMAKU_TOTAL}。不改成传参是因为底层函数有 5 处调用点。
+     */
+    private static final ThreadLocal<int[]> DANMAKU_TOTAL_TL = new ThreadLocal<>();
+
+    /**
+     * 超上限时**按时间均匀采样**（输入已按时间升序）。
+     *
+     * <p>原来是直接截前 N 条——超长片会从某一分钟起整段没有弹幕（片尾全空）。
+     * 均匀采样保证全片覆盖、密度按比例下降。
+     */
+    private static java.util.List<String[]> capDanmakuList(java.util.List<String[]> sorted) {
+        int size = sorted.size();
+        if (size <= DANMAKU_CAP) return sorted;
+        java.util.List<String[]> out = new java.util.ArrayList<>(DANMAKU_CAP);
+        for (int i = 0; i < DANMAKU_CAP; i++) {
+            out.add(sorted.get((int) ((long) i * size / DANMAKU_CAP)));
+        }
+        return out;
+    }
+
     /** 执行单个源。异常一律吞成空串，让并发抢先不会因一个源炸掉整条链。 */
     private static String runDanmakuSource(String src, String clean, int ep) {
+        String r = "";
+        /*
+         * 入口先清空：底层解析函数（fetchTencentXml / fetchIqiyiBulletXml）还有
+         * 4 处直连调用点（手动搜索面板、loadDanmakuById），那些路径 set 完没人
+         * remove，会把这个值留在**线程池线程**上。不清的话，本线程下一次抓取
+         * 若没触顶（size <= CAP）就会 get 到上一集的残留，把别人的总数当成
+         * 这集的上报（X-Danmaku-Total 显示错数）。
+         */
+        DANMAKU_TOTAL_TL.remove();
         try {
-            if ("aggregator".equals(src)) return fetchDanmakuFromAggregators(clean, ep);
-            if ("iqiyi".equals(src)) {
-                String r = fetchIqiyiByTitle(clean, ep);
+            if ("aggregator".equals(src)) {
+                r = fetchDanmakuFromAggregators(clean, ep);
+            } else if ("iqiyi".equals(src)) {
+                r = fetchIqiyiByTitle(clean, ep);
                 if (r.isEmpty()) {
                     System.err.println("[danmaku] iqiyi returned empty for " + clean + " ep" + ep);
                 } else {
                     System.err.println("[danmaku] iqiyi ok for " + clean + " ep" + ep
                             + " (" + r.length() + "B)");
                 }
-                return r;
+            } else if ("tencent".equals(src)) {
+                r = fetchDanmakuFromTencent(clean, ep);
             }
-            if ("tencent".equals(src)) return fetchDanmakuFromTencent(clean, ep);
         } catch (Throwable t) {
             System.err.println("[danmaku] source " + src + " threw: " + t);
         }
-        return "";
+        // 底层函数触顶截断时留下的真实总数 → 转存给响应头（X-Danmaku-Total）
+        int[] trueTotal = DANMAKU_TOTAL_TL.get();
+        DANMAKU_TOTAL_TL.remove();
+        if (trueTotal != null && r != null && !r.isEmpty()) {
+            DANMAKU_TOTAL.merge(clean + "|" + ep, trueTotal[0], Math::max);
+        }
+        return r == null ? "" : r;
     }
 
     /** 源 key → 回传给前端的来源标记。 */
@@ -8804,11 +8910,14 @@ public class ApiServer {
             sorted = new ArrayList<>(all);
         }
         sorted.sort((x, y) -> Integer.compare(Integer.parseInt(x[0]), Integer.parseInt(y[0])));
-        int cap = Math.min(sorted.size(), 40000);
-        StringBuilder sb = new StringBuilder(cap * 48 + 64);
+        java.util.List<String[]> capped = capDanmakuList(sorted);
+        if (capped.size() < sorted.size()) {
+            // 截断前的真实条数 → ThreadLocal 带回 runDanmakuSource（本函数没有 clean/ep）
+            DANMAKU_TOTAL_TL.set(new int[]{sorted.size()});
+        }
+        StringBuilder sb = new StringBuilder(capped.size() * 48 + 64);
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?><i>");
-        for (int i = 0; i < cap; i++) {
-            String[] b = sorted.get(i);
+        for (String[] b : capped) {
             sb.append("<d p=\"").append(b[0]).append(",1,25,")
                     .append(b[1]).append(",0,0,0,0\">").append(b[2]).append("</d>");
         }
@@ -9051,6 +9160,11 @@ public class ApiServer {
         // 而响应头对播放器透明，前端却能在 fetch 后读到。
         ex.getResponseHeaders().set("X-Danmaku-Source", from);
         ex.getResponseHeaders().set("X-Danmaku-Count", String.valueOf(countTags(xml)));
+        // 触顶截断时告诉前端"真实总数"（前端据此把数字显示成 60000+）
+        Integer trueTotal = DANMAKU_TOTAL.remove(clean + "|" + epNo);
+        if (trueTotal != null && trueTotal > countTags(xml)) {
+            ex.getResponseHeaders().set("X-Danmaku-Total", String.valueOf(trueTotal));
+        }
         if (xml.isEmpty() || EMPTY_DANMAKU_XML.equals(xml)) {
             ex.getResponseHeaders().set("X-Danmaku-Empty", "1");
         }
@@ -9177,6 +9291,16 @@ public class ApiServer {
                 .replaceAll("第\\s*\\d+\\s*季", "")
                 .replaceAll("[\\(（][^\\)）]{0,20}[\\)）]", "")
                 .trim();
+        /*
+         * 空格归一（2026-11-16）：不同源把同一部片写成「庆余年 第二季」/
+         * 「庆余年·第二季」/「庆余年第二季」，缓存 key 因此分成三份、各抓一遍
+         * （内容完全一样）。这里只删**中文语境**的空格与常见连接符。
+         *
+         * ★ 英文单词之间的空格必须保留：「The Last of Us」删成
+         *   「TheLastofUs」会让腾讯/爱奇艺的片名搜索直接搜不到。
+         */
+        r = r.replaceAll("[\\u3000·・:：_/\\\\|]+", "")
+                .replaceAll("(?<=[^A-Za-z0-9])[ \\t]+|[ \\t]+(?=[^A-Za-z0-9])", "");
         return r.isEmpty() ? s.trim() : r;
     }
 
@@ -9533,11 +9657,13 @@ public class ApiServer {
         }
 
         all.sort((x, y) -> Integer.compare(Integer.parseInt(x[0]), Integer.parseInt(y[0])));
-        int cap = Math.min(all.size(), 40000);
-        StringBuilder sb = new StringBuilder(cap * 48 + 64);
+        java.util.List<String[]> capped = capDanmakuList(all);
+        if (capped.size() < all.size()) {
+            DANMAKU_TOTAL_TL.set(new int[]{all.size()});
+        }
+        StringBuilder sb = new StringBuilder(capped.size() * 48 + 64);
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?><i>");
-        for (int i = 0; i < cap; i++) {
-            String[] b = all.get(i);
+        for (String[] b : capped) {
             sb.append("<d p=\"").append(b[0]).append(",1,25,")
                     .append(b[1]).append(",0,0,0,0\">")
                     .append(b[2]).append("</d>");
@@ -10675,7 +10801,7 @@ public class ApiServer {
         applyCors(ex);
         out.set("Access-Control-Expose-Headers",
                 "Content-Length,Content-Range,Accept-Ranges,"
-                        + "X-Danmaku-Source,X-Danmaku-Count,X-Danmaku-Empty");
+                        + "X-Danmaku-Source,X-Danmaku-Count,X-Danmaku-Total,X-Danmaku-Empty");
         if (ct != null) out.set("Content-Type", ct);
         String cr = c.getHeaderField("Content-Range");
         if (cr != null) out.set("Content-Range", cr);

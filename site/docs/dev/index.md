@@ -10,6 +10,7 @@
 | [接口契约](./api-contract.md) | 前后端契约：响应、错误码、降级 |
 | [前端手册](./frontend.md) | 前端不可回退决策与踩坑 |
 | [播放与转码](./playback.md) | 八类播放错误、转码决策、ABR、看门狗 |
+| [投屏](./casting.md) | A/B 两类投屏、URL 可达性、会话设计、设备矩阵 |
 | [弹幕](./danmaku.md) | 四源优先级、降级、缓存与调度 |
 | [片库与离线缓存](./library-cache.md) | WebDAV/SMB/local、Range、断点续传 |
 | [直播](./live.md) | 两源聚合、跨源合并、线路池 |

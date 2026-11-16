@@ -50,6 +50,7 @@ const devSidebar = [
     items: [
       { text: '前端手册', link: '/dev/frontend' },
       { text: '播放与转码', link: '/dev/playback' },
+      { text: '投屏', link: '/dev/casting' },
       { text: '弹幕', link: '/dev/danmaku' },
       { text: '片库与离线缓存', link: '/dev/library-cache' },
       { text: '直播', link: '/dev/live' },

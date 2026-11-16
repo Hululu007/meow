@@ -229,6 +229,17 @@ public final class LocalSites {
      *
      * @return 是否写成功（失败不影响端上表，只是网关看不到新站）
      */
+    /**
+     * 网关文件里**缺失**才从导入配置补的表（+flags）。
+     *
+     * <p>与 ApiServer 的 `CONFIG_TABLES_TO_SEED` 是同一份清单、同一语义：
+     * 两条导入入口（正式导入 / 导入到本机）必须补齐同一组表，否则
+     * "走哪个按钮"会决定解析器/hosts/广告过滤能不能用。
+     */
+    private static final String[] TABLES_TO_SEED = {
+            "parses", "lives", "doh", "hosts", "headers", "rules", "ads", "proxy", "flags",
+    };
+
     static synchronized boolean syncGatewayConfig(Context ctx, String rawConfig, String base) {
         if (ctx == null || rawConfig == null || rawConfig.trim().isEmpty()) return false;
         try {
@@ -273,6 +284,26 @@ public final class LocalSites {
                         at.put(o.optString("key", ""), out.length());
                         out.put(o);
                     }
+                }
+            }
+            /*
+             * ★ 本地缺失才补的 8 张能力表（+flags），语义与 ApiServer 的
+             * CONFIG_TABLES_TO_SEED 一致（2026-11-16 补"导入到本机"缺口）。
+             *
+             * 不补的后果（实测 .77）：网关 config.sites.json 只剩 sites/spider，
+             * 解析器（parses 空 -> /api/parse 报"配置里没有解析器"）、域级 DoH
+             * 映射（doh 空 -> 一批源在污染网络下永远搜不到）、hosts、广告规则、
+             * proxy/headers 全部缺失。
+             *
+             * 判断"缺失"= null 或空数组：用户/后端写过的非空表一律保留，
+             * 下一次导入不会覆盖手改值。
+             */
+            for (String table : TABLES_TO_SEED) {
+                JSONArray have = cur.optJSONArray(table);
+                if (have != null && have.length() > 0) continue;
+                JSONArray fromImport = in.optJSONArray(table);
+                if (fromImport != null && fromImport.length() > 0) {
+                    cur.put(table, fromImport);
                 }
             }
             writeText(f, cur.toString());

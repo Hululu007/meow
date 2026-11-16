@@ -582,10 +582,23 @@ fn resolve_data_dir(m: &Manifest, cfg: &Config, port: Option<u16>) -> PathBuf {
 }
 
 /// 占位符展开。fpk 只有 `{pkgVar}` 是 PC 没有的（扩展位见设计 §7）。
+///
+/// ★ `{appData}` 必须与 PC 的 Tauri `app_data_dir` 同义：**应用数据根**。
+///   fpk 的 `--data-dir` 是 `{appData}/data`，所以取父目录。
+///   曾经错映射成 `{pkgVar}`（`{appcenter}/meow/var`），导致 danmu-api 插件的
+///   `inject.target = "{appData}/data/policy.json"` 被写到 `{var}/data/policy.json`
+///   —— 而 ApiServer 读的是 `{appdata}/data/policy.json`。
+///   症状：插件在跑、9321 在监听，但 policy 里没有 danmakuApi，聚合源退化成
+///   全挂的公网镜像（2026-11-16 OECT 实测：三个内置镜像 000 / 402）。
 fn expand(s: &str, port: Option<u16>, data_dir: &Path, cfg: &Config) -> String {
+    let app_data = cfg
+        .data_dir
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| cfg.pkg_var.to_string_lossy().into_owned());
     let mut out = s
         .replace("{pkgVar}", &cfg.pkg_var.to_string_lossy())
-        .replace("{appData}", &cfg.pkg_var.to_string_lossy())
+        .replace("{appData}", &app_data)
         .replace("{dataDir}", &data_dir.to_string_lossy());
     if let Some(p) = port {
         out = out.replace("{port}", &p.to_string());
@@ -892,9 +905,45 @@ mod tests {
         dir
     }
 
+    fn test_cfg() -> Config {
+        let root = test_dir("cfg");
+        Config {
+            bind: "127.0.0.1".into(),
+            shell_port: 0,
+            api_bind: "127.0.0.1".into(),
+            api_port: 0,
+            app_dest: root.clone(),
+            gateway_socket: root.join("meow.sock"),
+            pkg_var: root.join("var"),
+            web_dir: root.join("web"),
+            seed_dir: root.join("seed"),
+            data_dir: root.join("appdata").join("data"),
+            run_dir: root.join("run"),
+            log_dir: root.join("logs"),
+        }
+    }
+
     #[test]
-    fn manifest_uses_pc_contract_field_names() {
-        let text = r#"{
+    fn expand_appdata_is_appdata_root_not_pkgvar() {
+        // 回归：{appData} 曾错映射成 {pkgVar}，danmu-api 的 danmakuApi 被注入到
+        // {var}/data/policy.json，而 ApiServer 读 {appdata}/data/policy.json
+        // —— 插件在跑但聚合源永远是空的（2026-11-16 OECT 实测）。
+        let cfg = test_cfg();
+        let out = expand(
+            "{appData}/data/policy.json",
+            Some(9321),
+            &cfg.pkg_var.join("plugins/danmu-api"),
+            &cfg,
+        );
+        let want = format!(
+            "{}/data/policy.json",
+            cfg.data_dir.parent().unwrap().display()
+        );
+        assert_eq!(out, want);
+    }
+
+    #[test]
+    fn manifest_uses_pc_contract_field_names() {        let text = r#"{
           "id": "danmu-api", "name": "弹幕聚合服务", "capability": "danmaku",
           "exec": "node", "execFallback": ["../node/node"], "args": ["danmu_api/server.js"],
           "cwd": ".", "port": 9321, "portFallback": [9322, 9323],
