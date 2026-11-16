@@ -3480,6 +3480,17 @@ function switchToGateway() {
   setRuntimeBase(gw)
   apiUrl.value = gw
   void store.boot()
+  /*
+   * ★ 必须整页刷新（2026-11-16）。
+   *
+   * 页面上的后端级设置（安全DNS/弹幕API/缓存配额/噪音词/jsRuntime）都是
+   * onMounted 里从**上一个后端**读的（loadPolicy）。不刷新的话，切到网关后
+   * 显示的还是旧后端的值，而之后任何修改都 POST 到 9978（新后端）——
+   * "看着是 A、改的是 B"，用户会以为设置丢了/改了没用。
+   * 手填地址路径本来就 reload（见 saveApi），这里对齐，而不是逐个重拉
+   * 十几个分区（漏一个就又是错位）。
+   */
+  location.reload()
 }
 
 /**
@@ -5483,7 +5494,7 @@ onBeforeUnmount(() => {
           电视可脱离后端，直接运行配置里的 jar。点按钮一次完成：启动本机网关并切换后端地址。
         </p>
         <p class="mt-1 text-[11px] leading-relaxed text-ink-3">
-          站点浏览、搜索、详情、播放、弹幕可用；聚合搜索、解析器、直播、片库、缓存、进度同步仍需后端。
+          站点浏览、搜索（含聚合搜索）、详情、播放、弹幕、直播、片库与缓存都走本机；需要二次解析的源（parse=1）暂不支持。
         </p>
         <div class="mt-2 flex flex-wrap items-center gap-2">
           <button
@@ -5535,7 +5546,7 @@ onBeforeUnmount(() => {
       <template v-else>
         <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
           本机网关运行中：<code class="rounded bg-field px-1">{{ localGw }}</code>。
-          站点浏览、搜索、详情、播放、弹幕走本机；聚合搜索、解析器、直播、片库、缓存、进度同步仍需后端。
+          站点浏览、搜索（含聚合搜索）、详情、播放、弹幕、直播、片库与缓存都走本机；需要二次解析的源（parse=1）暂不支持。
         </p>
         <div class="mt-2 flex flex-wrap items-center gap-2">
           <button

@@ -334,6 +334,20 @@ const volume = ref(getPrefs().volume ?? 1)
 const muted = ref(getPrefs().muted ?? false)
 const dmOn = ref(getPrefs().danmaku)
 const dmCount = ref(0)
+/** 原始解析条数（含超出片长的部分）——「可用/共 N」里的 N */
+const dmTotal = ref(0)
+/** 后端是否因上限截断过（X-Danmaku-Total > XML 条数），显示时给 N 加 + */
+const dmTruncated = ref(false)
+/**
+ * 本轮弹幕的原始列表。
+ *
+ * <p>弹幕可能**先于 metadata** 到达（此时 duration=0 没法过滤），
+ * 等片长就绪（onLoaded/durationchange）要按片长重新过滤一次；
+ * 原始列表留着才能重算，不能只存过滤后的。
+ */
+let dmRawList: Danmu[] = []
+/** 上次应用片长时用的 duration（避免每次 durationchange 都重建渲染列表） */
+let dmAppliedDur = -1
 const dmLoading = ref(false)
 /**
  * 这一集弹幕的来源（`iqiyi` / `tencent` / `danmu_api` / `aggregator`）。
@@ -1648,6 +1662,28 @@ let suppressClick = false
 /** suppressClick 的自动复位定时器（长按后浏览器不一定补 click） */
 let suppressTimer: number | undefined
 
+/**
+ * 最近一次 stage pointerdown 时的控制栏可见性（"点击前"快照）。
+ *
+ * ★ 为什么不能用 click 到达时的 showCtrl（2026-11-16 在 MuMu 实测踩过）：
+ *   Chrome 在 pointerup 之后、click 之前会补发一次合成 mousemove，而根节点
+ *   有 `@mousemove="wake"` —— 它先把控制栏打开。于是 click 里读到的永远是
+ *   "已显示"，触屏单击反而走 `hideControlBar()`，表现是「点一下，控制栏
+ *   闪 222ms 就没了」（实测 222/223ms，鼠标与触摸都复现）。
+ *   pointerdown 一定早于这次合成 mousemove，所以快照只能在这里取。
+ */
+let pressVisible = false
+/**
+ * 上面快照的时间戳。
+ *
+ * 遥控器 tv-nav 的 `el.click()` 和脚本派发的 MouseEvent 都**没有 pointerdown**，
+ * 沿用旧快照会把上一次点击的状态当成这次的，所以超过有效期就回退到当前值。
+ */
+let pressAt = 0
+/** 快照有效期：正常点击 pointerdown→click 只有几十毫秒，留足慢速点击余量 */
+const PRESS_SNAPSHOT_MS = 800
+
+
 /** 标记"接下来那一次 click 不算单击"，400ms 后自动失效 */
 function suppressNextClick() {
   suppressClick = true
@@ -1666,28 +1702,37 @@ function onStageClick(e: MouseEvent) {
     return
   }
   /*
-   * 触屏（2026-11-12 用户口径，三区统一）：
-   *   单击 = 只呼出/收起控制栏；
-   *   双击 = 左区 -10s / 右区 +10s / 中区 暂停播放；
-   *   长按 = 左区 2× 快退 / 右区 2× 快进 / 中区无动作。
-   * 单击仍然延迟 220ms，用来区分双击；双击事件里会 clearTimeout，
-   * 所以不会出现"先切控制栏再暂停"。双击动作本身不再等待。
+   * ★ 鼠标走桌面语义（2026-11-16，MuMu .77 验证）：单击 = 暂停/播放。
    *
-   * ★ 不让单击暂停：左右两区占了屏幕 2/3，点哪都可能"手滑一下视频就停"。
-   *   暂停留给双击（明确意图）和按钮（看得见的入口）。
+   * 为什么必须按"指针类型"而不是"设备能力"分流：TV 壳/模拟器的 WebView 报
+   * `pointer: coarse`，`isTouch` 恒为 true —— 但用户可能插着鼠标（MuMu 的
+   * 系统鼠标、外接 USB 鼠标）。只看 isTouch 会让鼠标点画面变成"切控制栏"，
+   * 与 PC 的习惯相反。
+   *
+   * ★ 判据必须是严格 `=== 'mouse'`，不能用 `!== 'touch'`：
+   *   MuMu 实测遥控器 tv-nav 的 `el.click()` 是空串、`dispatchEvent(new
+   *   MouseEvent('click'))` 是 undefined —— 用反向判据会把这两类也当鼠标，
+   *   遥控器 OK 键就从"唤出控制栏/聚焦"变成"暂停"（属于回退）。
    */
-  if (isTouch.value) {
+  const mouseClick = (e as PointerEvent).pointerType === 'mouse'
+  if (isTouch.value && !mouseClick) {
     /*
-     * ★ 必须用**点击前**的可见状态决定动作。
+     * 触屏单击（2026-11-12 用户口径，三区统一）：
+     *   单击 = 只呼出/收起控制栏；
+     *   双击 = 左区 -10s / 右区 +10s / 中区 暂停播放；
+     *   长按 = 左区 2× 快退 / 右区 2× 快进 / 中区无动作。
+     * 单击仍然延迟 220ms，用来区分双击；双击事件里会 clearTimeout，
+     * 所以不会出现"先切控制栏再暂停"。双击动作本身不再等待。
      *
-     * 这个 click 之后还会冒泡到播放器根节点触发 `onWrapClick` 的 `wake()`，
-     * 也就是"栏一定会被撑开"。如果 220ms 后再无条件 toggle，
-     * 刚被撑开的栏立刻又被收起 —— 表现是「点一下画面，控制栏闪一下就没了」
-     * （实测：收起态点一下，220ms 后消失，比 5 秒自动隐藏快得多）。
+     * ★ 不让单击暂停：左右两区占了屏幕 2/3，点哪都可能"手滑一下视频就停"。
+     *   暂停留给双击（明确意图）和按钮（看得见的入口）。
      *
-     * 所以：点击前是收起的 → 220ms 后只需续期；点击前是显示的 → 收起。
+     * ★ 可见性必须用 pointerdown 快照，不能用 click 时的 showCtrl：
+     *   浏览器在 pointerup 后、click 前补发的 mousemove 会先把栏打开，
+     *   click 读到"已显示"就会把它收起（闪 222ms 的由来，见 pressVisible 注释）。
      */
-    const wasVisible = showCtrl.value
+    const wasVisible =
+      Date.now() - pressAt < PRESS_SNAPSHOT_MS ? pressVisible : showCtrl.value
     clickTimer = window.setTimeout(() => {
       if (wasVisible) hideControlBar()
       else wake()
@@ -1786,6 +1831,10 @@ let longPressTimer: number | undefined
 let pressStart = { x: 0, y: 0 }
 
 function onStagePointerDown(e: PointerEvent) {
+  // ★ 先取"点击前"快照再做任何判断：onStageClick 用它决定单击是呼出还是收起。
+  //   pointerdown 一定早于浏览器在 pointerup 后补发的合成 mousemove（见 pressVisible）。
+  pressVisible = showCtrl.value
+  pressAt = Date.now()
   // 手势起点对触屏与鼠标都记录：横滑 seek 两端共用
   pressStart = { x: e.clientX, y: e.clientY }
   swipe.reset(e.clientX)
@@ -2567,6 +2616,22 @@ function onLoaded() {
   }
   // HLS 的内嵌字幕要等清单解析完才有
   setTimeout(refreshTextTracks, 500)
+  /*
+   * 片长就绪/变化后，按片长重新过滤一次弹幕（2026-11-16）。
+   *
+   * 弹幕可能先于 metadata 到达（duration=0 时没法过滤），此时第一批是整个
+   * 原始列表；等这里拿到真实片长，把超出片长的部分剔掉再重载渲染列表。
+   * durationchange 会多次触发（清单位移/码率切换），所以用 dmAppliedDur
+   * 挡住"片长没实际变化"的重复重建（重建会闪一下弹幕）。
+   */
+  if (dmRawList.length) {
+    const d = duration.value
+    if (d > 0 && Math.abs(d - dmAppliedDur) > 1) {
+      applyDmList(dmRawList, dmTotal.value)
+      const el = video.value
+      if (el) dm.value?.sync(el.currentTime)
+    }
+  }
 }
 
 // ---------------------------------------------------------------- 进度条
@@ -3328,13 +3393,27 @@ const dmPendingUpgrade = ref<{
   url: string
   xml: string
   count: number
+  /** 后端 X-Danmaku-Total：截断前真实条数（升级后也要带着，否则 "N+" 会丢） */
+  total: number
   source: string
 } | null>(null)
 /** 本集是否已经应用过后台补全（诊断用） */
 const dmUpgradeApplied = ref(false)
 /** 每集只做一次后台补全检查 */
 let dmUpgradeChecked = false
-let dmUpgradeTimer: number | undefined
+/**
+ * 后台补全的检查点（毫秒，相对首屏成功那一刻）。
+ *
+ * 为什么是这五个点：聚合源实测 7~14 秒才写完缓存，"写完 → 前端看到"还要
+ * 等下一个检查点。原来只有 12/30/60 —— 12s 那次常赶在聚合写缓存之前
+ * （MuMu 实测 +25s 才升级，就是被迫等 30s 那个点）。8s 起每 4~6 秒探一次，
+ * 最早能在聚合写完后的 4 秒内替换，30s 兜住慢源。
+ *
+ * 成本：每个点只是一次后端内存缓存查询（命中即返回，微秒级），**不会重复
+ * 打上游**——首屏失败时已写 30 秒负缓存，前四个点都会命中负缓存返回空。
+ */
+const DM_UPGRADE_CHECKPOINTS = [8_000, 12_000, 16_000, 22_000, 30_000]
+let dmUpgradeTimers: number[] = []
 /** 最近一次用户主动 seek 的时间（判断"刚 seek"） */
 let dmLastSeekAt = 0
 /** 弹幕轻提示（沿用此源 / 已切换到更全的来源） */
@@ -3560,6 +3639,9 @@ function clearDmOverride() {
   if (props.danmakuUrl) loadDanmaku(props.danmakuUrl)
   else {
     dmCount.value = 0
+    dmTotal.value = 0
+    dmTruncated.value = false
+    dmRawList = []
     dm.value?.clear()
   }
 }
@@ -4335,9 +4417,58 @@ function filterDanmaku(list: Danmu[]): Danmu[] {
   return out
 }
 
-async function loadDanmaku(url: string, opts: { fresh?: boolean } = {}) {
+/**
+ * 丢弃时间轴超出本集片长的弹幕（2026-11-16 用户报「弹幕数虚高」）。
+ *
+ * <p>为什么源侧会给出超片长的弹幕：弹幕源与播放源的**版本时长不一致**。
+ * 实测《庆余年第二季》第 01 集：播放源 45:24，腾讯该 cid 的弹幕时间轴到
+ * 3983s（66 分钟版本）——31.4%（12549 条）永远不可能被画出来，白占
+ * 带宽/缓存/渲染队列内存（32 位 TV 上尤其明显）。
+ *
+ * <p>为什么留 60 秒容差而不是 0：片源与弹幕版本的片头/片尾常有几十秒偏差，
+ * 卡死 0 会把"本应显示"的片尾弹幕误删。
+ *
+ * <p>duration 未就绪（0/NaN，例如 HLS 清单还没解析完就先把弹幕显示出来）
+ * 时**不过滤**——否则会把全部弹幕当超长丢掉，回到"进播放页没弹幕"。
+ */
+const DM_TAIL_MARGIN_SEC = 60
+
+function filterByDuration(list: Danmu[]): Danmu[] {
+  const d = duration.value
+  if (!(d > 0) || !Number.isFinite(d)) return list
+  const max = d + DM_TAIL_MARGIN_SEC
+  return list.filter((x) => x.time <= max)
+}
+
+/**
+ * 应用一批弹幕（唯一的入口）：记录原始列表 → 按片长过滤 → 交给渲染器 →
+ * 更新「可用/共」计数。本地缓存、网络、后台补全三处都走这里，保证口径一致。
+ *
+ * @param totalHint 后端 X-Danmaku-Total（截断前真实条数），没传则用 list 长度
+ */
+function applyDmList(raw: Danmu[], totalHint = 0) {
+  dmRawList = raw
+  dmAppliedDur = duration.value
+  dmTotal.value = Math.max(raw.length, totalHint)
+  dmTruncated.value = totalHint > 0 && totalHint > raw.length
+  const usable = filterByDuration(raw)
+  dmCount.value = usable.length
+  dm.value?.load(filterDanmaku(usable))
+}
+
+async function loadDanmaku(
+  url: string,
+  opts: { fresh?: boolean; serverOnly?: boolean } = {},
+) {
   const fresh = opts.fresh === true
-  if (!fresh) {
+  /**
+   * 只看后端（跳过 IndexedDB 读，网络请求**不带** fresh）。
+   *
+   * 后台补全检查用：先读后端 30 分钟缓存——聚合源的补全结果此时多半已写完，
+   * 而 fresh=1 会绕过缓存重抓（重新"先到先用"，又拿回直连的小份）。
+   */
+  const serverOnly = opts.serverOnly === true
+  if (!fresh && !serverOnly) {
     dmLoading.value = true
     clearDmRetry()
   }
@@ -4347,15 +4478,14 @@ async function loadDanmaku(url: string, opts: { fresh?: boolean } = {}) {
     //
     // ★ fresh 检查必须绕过本地：否则 30 天的旧副本会永远挡住后台补全
     //   （2026-11-09 实锤：首屏 8000 条写本地后，服务端补全的 12000 永远取不到）。
-    if (!fresh) {
+    if (!fresh && !serverOnly) {
       const local = await getLocalDanmaku(url)
       if (local) {
         const cached: Danmu[] = parseDanmakuXml(local.xml)
         if (cached.length) {
           dmSource.value = local.source || 'local'
-          dmCount.value = cached.length
           dmLocalCount.value = cached.length
-          dm.value?.load(filterDanmaku(cached))
+          applyDmList(cached)
           const cv = video.value
           if (cv) dm.value?.sync(cv.currentTime)
           dmLoading.value = false
@@ -4377,22 +4507,28 @@ async function loadDanmaku(url: string, opts: { fresh?: boolean } = {}) {
     // 分不清"这集本来没弹幕"和"所有源都失败了"。
     const src = res.headers.get('X-Danmaku-Source') || ''
     const empty = res.headers.get('X-Danmaku-Empty') === '1'
+    // 后端裁到上限时给出截断前的真实条数（X-Danmaku-Total），用于显示 "N+"
+    const totalHeader = Number(res.headers.get('X-Danmaku-Total') || 0) || 0
     const list: Danmu[] = parseDanmakuXml(xml)
 
     /*
-     * 后台补全检查：首屏之后 12 秒再问一次，如果新结果明显更全（≥1.2 倍）
-     * 就在安全点整份替换，而不是只写缓存。
+     * 后台补全检查：首屏之后 12 秒再问一次，如果新结果明显更全（≥1.2 倍）就
+     * 在安全点整份替换，而不是只写缓存。
      *
      * 安全点：currentTime < 15 秒，或用户刚主动 seek。播放中途无提示地
      * 换会让弹幕突然变密/位置跳动，比少几千条更糟。
+     *
+     * ★ 比较口径是**按片长过滤后的可用条数**（2026-11-16）：聚合源与直连源
+     *   的原始条数可能只差 5%（42293 vs 40000 过不了 1.2 门槛），但聚合源的
+     *   时间轴与片长对齐（可用 42292 vs 28046 = 1.51 倍）——按总条数比较会把
+     *   真正更全的合并结果丢掉。
      */
-    if (fresh) {
-      const cur = dmCount.value
-      const better = isBetterDanmaku(cur, list.length)
+    if (fresh || serverOnly) {
+      const better = isBetterDanmaku(dmCount.value, filterByDuration(list).length)
       if (!empty && better && !dmOverrideUrl.value) {
-        const up = { url, xml, count: list.length, source: src }
+        const up = { url, xml, count: list.length, total: totalHeader, source: src }
         const v = video.value
-        const safe = isSafeDanmakuSwap(v?.currentTime || 0, dmLastSeekAt)
+        const safe = isSafeDanmakuSwap(v?.currentTime || 0, dmLastSeekAt, Date.now(), v?.paused === true)
         if (safe) applyDmUpgrade(up)
         else dmPendingUpgrade.value = up
       }
@@ -4401,8 +4537,7 @@ async function loadDanmaku(url: string, opts: { fresh?: boolean } = {}) {
 
     dmLocalCount.value = 0
     dmSource.value = src && src !== 'none' ? src : ''
-    dmCount.value = list.length
-    dm.value?.load(filterDanmaku(list))
+    applyDmList(list, totalHeader)
     // 非空才存：空结果多半是上游抖动，存下来会让下次也读到空
     if (list.length && !empty) {
       void putLocalDanmaku(url, xml, list.length, src)
@@ -4439,6 +4574,9 @@ async function loadDanmaku(url: string, opts: { fresh?: boolean } = {}) {
       if (fv) dm.value?.sync(fv.currentTime)
     } else {
       dmCount.value = 0
+    dmTotal.value = 0
+    dmTruncated.value = false
+    dmRawList = []
       dmSource.value = ''
     }
   } finally {
@@ -4452,38 +4590,57 @@ async function loadDanmaku(url: string, opts: { fresh?: boolean } = {}) {
  * <p>每集独立：上一集挂起的"更全结果"绝不能带到下一集。
  */
 function clearDmUpgrade() {
-  if (dmUpgradeTimer !== undefined) window.clearTimeout(dmUpgradeTimer)
-  dmUpgradeTimer = undefined
+  for (const t of dmUpgradeTimers) window.clearTimeout(t)
+  dmUpgradeTimers = []
   dmUpgradeChecked = false
   dmPendingUpgrade.value = null
   dmUpgradeApplied.value = false
 }
 
-/** 首屏成功后安排一次后台补全检查（每集一次）。 */
+/** 首屏成功后按 {@link DM_UPGRADE_CHECKPOINTS} 安排后台补全检查（每集一次）。 */
 function scheduleDmUpgrade(url: string) {
   if (dmUpgradeChecked || dmOverrideUrl.value) return
   dmUpgradeChecked = true
-  dmUpgradeTimer = window.setTimeout(() => {
-    dmUpgradeTimer = undefined
-    if (props.danmakuUrl !== url || dmOverrideUrl.value) return
-    void loadDanmaku(url, { fresh: true })
-  }, 12_000)
+  /*
+   * 每个检查点**只读后端缓存**（serverOnly），不碰 IndexedDB、不强制重抓。
+   *
+   * 为什么不用 fresh：fresh 绕过缓存重新并发抓，又落回"直连先到"的小份，
+   * 拿不到后台补全的聚合结果（2026-11-16 实测）；而且 fresh 结果不覆盖
+   * 已有缓存（防止把聚合覆盖回腾讯），对"缓存已空"才有意义。
+   *
+   * 为什么是五个点：见 DM_UPGRADE_CHECKPOINTS 的注释。命中更全的就走
+   * 安全点替换（暂停时任意位置 / 开头 60 秒 / 刚 seek），之后各点自动短路。
+   */
+  for (const at of DM_UPGRADE_CHECKPOINTS) {
+    dmUpgradeTimers.push(
+      window.setTimeout(() => {
+        if (props.danmakuUrl !== url || dmOverrideUrl.value || dmUpgradeApplied.value) return
+        void loadDanmaku(url, { serverOnly: true })
+      }, at),
+    )
+  }
 }
 
 /** 应用后台补全：整份替换 + 更新本地缓存 + 轻提示。 */
-function applyDmUpgrade(up: { url: string; xml: string; count: number; source: string }) {
+function applyDmUpgrade(up: {
+  url: string
+  xml: string
+  count: number
+  total: number
+  source: string
+}) {
   const list = parseDanmakuXml(up.xml)
   if (!list.length) return
   dmSource.value = up.source
-  dmCount.value = list.length
   dmLocalCount.value = 0
   dmUpgradeApplied.value = true
   dmPendingUpgrade.value = null
-  dm.value?.load(filterDanmaku(list))
+  // 升级后的这份也可能触顶：带上 total，否则 "N+" 会悄悄退化成 "N"
+  applyDmList(list, up.total)
   const v = video.value
   if (v) dm.value?.sync(v.currentTime)
   void putLocalDanmaku(up.url, up.xml, list.length, up.source)
-  showDmHint(`已切换到更全的弹幕源（${list.length} 条）`)
+  showDmHint(`已切换到更全的弹幕源（${filterByDuration(list).length} 条可用）`)
 }
 
 /** 用户主动 seek：记时间；有挂起的补全就趁这个安全点应用。 */
@@ -4941,7 +5098,8 @@ onBeforeUnmount(() => {
   clearTimeout(suppressTimer)
   clearTimeout(fsHintTimer)
   clearTimeout(dmHintTimer)
-  if (dmUpgradeTimer !== undefined) clearTimeout(dmUpgradeTimer)
+  for (const t of dmUpgradeTimers) clearTimeout(t)
+  dmUpgradeTimers = []
 })
 
 function onPageHide() {
@@ -5069,6 +5227,9 @@ watch(
     if (v) void loadDanmaku(v)
     else {
       dmCount.value = 0
+    dmTotal.value = 0
+    dmTruncated.value = false
+    dmRawList = []
       dm.value?.clear()
     }
   },
@@ -5236,7 +5397,7 @@ defineExpose({ restart, seekTo, getTime, pause })
             <span class="text-amber-400/90">弹幕加载失败（重试中…）</span>
           </template>
           <template v-else>
-            弹幕 {{ dmCount }} 条<template v-if="dmLoading"> · 加载中…</template>
+            弹幕 {{ dmCount }}<template v-if="dmTotal > dmCount"> / {{ dmTotal }}{{ dmTruncated ? '+' : '' }}</template> 条<template v-if="dmLoading"> · 加载中…</template>
             <template v-else-if="dmSource"> · {{ dmSourceLabel }}</template>
           </template>
         </div>
@@ -6531,7 +6692,7 @@ defineExpose({ restart, seekTo, getTime, pause })
           <template v-if="dmOverrideUrl">已手动指定弹幕源 · {{ dmCount }} 条</template>
           <template v-else-if="dmEmpty && !dmLoading">当前 0 条（来源暂不可用）</template>
           <template v-else>
-            当前 {{ dmCount }} 条<template v-if="dmSource"> · {{ dmSourceLabel }}</template>
+            当前 {{ dmCount }}<template v-if="dmTotal > dmCount"> / {{ dmTotal }}{{ dmTruncated ? '+' : '' }}</template> 条<template v-if="dmSource"> · {{ dmSourceLabel }}</template>
           </template>
         </span>
         <button
@@ -6547,7 +6708,7 @@ defineExpose({ restart, seekTo, getTime, pause })
         v-if="dmCount || dmLocalCount || dmPendingUpgrade || dmUpgradeApplied"
         class="mt-1.5 text-[10px] leading-relaxed text-ink-3/70"
       >
-        来源 {{ dmSourceLabel || dmSource || '未知' }} · {{ dmCount }} 条
+        来源 {{ dmSourceLabel || dmSource || '未知' }} · {{ dmCount }}<template v-if="dmTotal > dmCount"> / {{ dmTotal }}{{ dmTruncated ? '+' : '' }}</template> 条
         <template v-if="dmLocalCount"> · 本地缓存 {{ dmLocalCount }}</template>
         <template v-if="dmPendingUpgrade">
           · 更全的 {{ dmPendingUpgrade?.count }} 条待应用（seek 后生效）

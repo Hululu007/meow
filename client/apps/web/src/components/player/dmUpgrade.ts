@@ -36,9 +36,24 @@ export function isSafeDanmakuSwap(
   currentTime: number,
   lastSeekAt: number,
   now = Date.now(),
+  paused = false,
 ): boolean {
   if (!Number.isFinite(currentTime)) return false
-  return currentTime < 15 || now - lastSeekAt < 3000
+  /*
+   * 2026-11-16 放宽：原来只有"开头 15 秒 / 3 秒内 seek"才算安全点。
+   * 实测续播用户（从 30 分钟处继续看）永远满足不了 → 后台补全明明拿到了
+   * 更全的聚合弹幕（有效 42292 vs 28046），却只能挂起等下一次主动拖动，
+   * 用户感知就是"弹幕数一直不变"。
+   *
+   * 现在的判据：
+   *   · 暂停中 —— 替换无感，最安全；
+   *   · 开头 60 秒 —— "从第 1 集看/刚进这集"的主场景；
+   *   · 10 秒内主动 seek —— 画面本来就要跳。
+   * 播放中途（非暂停、非开头）仍不静默替换：弹幕突然变密/位置跳动的
+   * 观感比"少几千条"更糟，继续走挂起（用户暂停或拖动后自动生效）。
+   */
+  if (paused) return true
+  return currentTime < 60 || now - lastSeekAt < 10_000
 }
 
 /**

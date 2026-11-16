@@ -275,13 +275,23 @@ describe('直播播放页：播放交互（缓冲/音量/亮度/调试/画中画
       'utf8',
     )
     const i = player.indexOf('function onStageClick')
-    const body = player.slice(i, i + 1600)
+    const body = player.slice(i, i + 3200)
     /*
      * 关键判据：这个 click 之后还会冒泡到根节点触发 onWrapClick 的 wake()，
      * 所以必须记下**点击前**的可见状态 —— 否则 220ms 后无条件 toggle 会把
      * 刚被撑开的控制栏又收起来（用户报的「点一下闪一下就没」）。
+     *
+     * 2026-11-16 加严：click 到达时的 showCtrl 会被浏览器在 pointerup 后补发的
+     * 合成 mousemove 提前改成 true（MuMu 实测 222ms 后收起），所以快照必须在
+     * pointerdown 时取；这里锁住"用 pressVisible 快照，且不再直接读 showCtrl"。
      */
-    expect(body, '要记下点击前的可见状态').toContain('const wasVisible = showCtrl.value')
+    expect(body, '要记下点击前的可见状态').toContain('pressVisible')
+    expect(body, '合成 mousemove 不能污染快照').toMatch(
+      /Date\.now\(\)\s*-\s*pressAt\s*<\s*PRESS_SNAPSHOT_MS/,
+    )
+    expect(body, '不能退回直接读 showCtrl').not.toContain(
+      'const wasVisible = showCtrl.value',
+    )
     expect(body, '显示中才收起').toContain('if (wasVisible) hideControlBar()')
     expect(body, '收起态只需续期').toContain('else wake()')
     expect(body, '单击要延迟 220ms 判双击').toContain('}, 220)')

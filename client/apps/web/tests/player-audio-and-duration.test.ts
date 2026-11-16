@@ -20,7 +20,11 @@ const TV_NAV = readFileSync(
 )
 
 function codeOnly(s: string): string {
-  return s
+  // Windows 上源码可能是 CRLF，跨行 indexOf 断言必须归一化行尾
+  // （这里用 fromCharCode 拼，避免转义字符在编辑链路里被吞）
+  const lf = String.fromCharCode(10)
+  const normalized = s.split(String.fromCharCode(13) + lf).join(lf)
+  return normalized
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/\/\*[\s\S]*?\*\//g, '')
 }

@@ -30,7 +30,14 @@ import { isPlayErrorPayload, shouldTranscode, type PlayErrorPayload } from '@/co
 import type { PlayResult } from '@/api/types'
 import { getPrefs } from '@/stores/prefs'
 import { getLinePref, setLinePref } from '@/stores/linePref'
-import { clearProgress, getProgress, pushHistory, saveProgress } from '@/stores/history'
+import {
+  clearProgress,
+  episodeNumber,
+  findHistoryByTitle,
+  getProgress,
+  pushHistory,
+  saveProgress,
+} from '@/stores/history'
 import {
   consumeNewEpisodes,
   markSeen,
@@ -1496,18 +1503,60 @@ async function loadPrefetchPolicy() {
 }
 void loadPrefetchPolicy()
 
-/** 恢复上次进度 */
-function applyResume() {
+/**
+ * 跨源兜底命中的那条历史记录（`site` + `vod_id`）。
+ *
+ * 「从头开始」要把它一起清掉，否则退出再进来又会被同一条记录续播回原位——
+ * 表现为"点了从头开始，下次还是跳到 45 分钟"（自查出来的死循环）。
+ */
+let resumedFromOther: { site: string; vod_id: string } | null = null
+
+/** 恢复上次进度（`loaded` 事件带当前集的真实时长） */
+function applyResume(ev?: { duration?: number }) {
   // 新片已 loaded：从这里开始收到的进度才属于当前这一集（见 progressArmed）
   progressArmed = true
   if (resumeApplied) return
   resumeApplied = true
-  const it = vodId ? getProgress({ site, vod_id: vodId }, rawId.value, epName.value) : null
+  let it = vodId ? getProgress({ site, vod_id: vodId }, rawId.value, epName.value) : null
+  let from = ''
+  /*
+   * 跨源兜底（2026-11-16）：A 源失效换 B 源后 `site`/`vod_id` 全变，
+   * getProgress 按 `site+vod_id` 必然查不到，用户只能重新找集、拖进度。
+   *
+   * 判据与详情页一致：片名归一化后完全相等（挡掉解说版/粤语版/第一季），
+   * 再用**集号**对齐（三个真实源实测集名是 第01集 / 01 [1080P] / 1，
+   * 集名比较必然失败）。集号解析不出来或对不上就不兜底。
+   */
+  if (!it && vodId) {
+    const want = episodeNumber(epName.value)
+    if (want) {
+      for (const h of findHistoryByTitle(title)) {
+        if (h.site === site && h.vod_id === vodId) continue
+        if (typeof h.pos !== 'number' || h.pos < 1) continue
+        if (episodeNumber(h.ep) !== want) continue
+        it = { pos: h.pos, dur: h.dur || 0, at: h.ep_at || 0 }
+        from = h.siteName || h.site
+        resumedFromOther = { site: h.site, vod_id: h.vod_id }
+        break
+      }
+    }
+  }
+  /*
+   * 时长校验要用**当前这集真实的 duration**，不能只看历史里存的 dur：
+   * 跨源兜底时 `it.dur` 是 A 源的（48 分钟），B 源这集可能只有 30 分钟，
+   * 照 `pos=40min` 跳过去会直接落到片尾（播完自动下一集）。
+   */
+  const realDur = Number.isFinite(ev?.duration) && (ev?.duration || 0) > 0 ? ev!.duration! : 0
   let target = 0
   let label = ''
-  if (it && it.pos > 5 && !(it.dur > 0 && it.pos > it.dur - 10)) {
+  if (
+    it &&
+    it.pos > 5 &&
+    !(it.dur > 0 && it.pos > it.dur - 10) &&
+    !(realDur > 0 && it.pos > realDur - 10)
+  ) {
     target = it.pos
-    label = '继续播放'
+    label = from ? `继续播放（来自 ${from}）` : '继续播放'
   }
   // 源站给的起播点（毫秒→秒）也参与比较，取较大的那个。
   // 与 Fongmi 的 VodSkipPolicy 一致：片头跳过本质上也是"从某个位置开始"，
@@ -1544,6 +1593,15 @@ function restartFromTop() {
   resumeTip.value = null
   // 同时清掉已存的进度，否则退出再进来还会"续播"
   if (vodId) clearProgress({ site, vod_id: vodId })
+  /*
+   * 跨源兜底来的那条也要清：否则"从头开始 → 退出 → 再进来"又被它
+   * 续播回原来的位置，用户看到的是"从头开始不生效"（死循环）。
+   * A 源已经失效，留着这条进度只会反复干扰。
+   */
+  if (resumedFromOther) {
+    clearProgress(resumedFromOther)
+    resumedFromOther = null
+  }
 }
 
 // ---------------------------------------------------------------- 线路切换

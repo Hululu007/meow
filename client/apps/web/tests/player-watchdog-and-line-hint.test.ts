@@ -20,7 +20,10 @@ const PLAY = readFileSync(join(WEB, 'src', 'views', 'PlayView.vue'), 'utf8')
 const LIB = readFileSync(join(WEB, 'src', 'views', 'LibraryView.vue'), 'utf8')
 
 function codeOnly(s: string): string {
-  return s
+  // Windows 上源码可能是 CRLF，跨行 indexOf 断言必须归一化行尾
+  const lf = String.fromCharCode(10)
+  const normalized = s.split(String.fromCharCode(13) + lf).join(lf)
+  return normalized
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '')
@@ -105,7 +108,9 @@ describe('假死看门狗：已有 metadata 但 currentTime 恒 0', () => {
     const code = codeOnly(PLAYER)
     const i = code.indexOf('function failPlay')
     expect(i).toBeGreaterThan(-1)
-    const body = code.slice(i, i + 500)
+    // 2026-11-16：failPlay 增加了「已缓冲播放中不判死」守卫，emit 前多了一段，窗口放大
+    const body = code.slice(i, i + 1600)
+    expect(body).toContain('bufferedAheadSec(v) > 1')
     const clearIdx = body.indexOf('clearStartupWatchdog()')
     const emitIdx = body.indexOf("emit('error'")
     expect(clearIdx).toBeGreaterThan(-1)

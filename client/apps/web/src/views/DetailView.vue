@@ -11,7 +11,7 @@ import {
   sessionNewEpisodes,
   type NewEpisodesRange,
 } from '@/stores/favUpdates'
-import { getProgress, listHistory, pushHistory } from '@/stores/history'
+import { episodeNumber, findHistoryByTitle, getProgress, listHistory, pushHistory } from '@/stores/history'
 import { getLinePref } from '@/stores/linePref'
 import { useAppStore } from '@/stores/app'
 import PosterImage from '@/components/common/PosterImage.vue'
@@ -284,17 +284,45 @@ function searchOtherSources() {
  * 按集名在当前线路里找而不是按 url——用户可能换过线路，
  * url 必然变了，但集名（「第03集」）在各线路间通常一致。
  * 名字对不上就放弃续播：宁可从第一集开始，也不要跳到一个不存在的集。
+ *
+ * <h3>跨源兜底（2026-11-16）</h3>
+ *
+ * A 源失效换 B 源时 `site` / `vod_id` 全变，上面的同源查找必然落空。
+ * 此时按**归一化片名完全相等**找同剧在其他源上的记录，再用**集号**定位
+ * 同一集——三个真实源实测集名是 `第01集`(AppYQK) / `01 [1080P]`(Gz360) /
+ * `1`(Gulu)，集名比较在这里必然失败，只有数字能对上。
+ *
+ * 已知取舍：同名不同物（解说版/粤语版/深度解读）靠"归一化后完全相等"挡掉；
+ * 片长不同的剪辑版会把 pos 带过去，交给播放页用**真实时长**再校验一次。
  */
 const lastWatched = computed(() => {
   const v = item.value
   if (!v) return null
-  const it = listHistory().find((x) => x.site === site && x.vod_id === (v.vod_id || id))
-  if (!it || typeof it.pos !== 'number' || it.pos < 1 || !it.ep_at) return null
+  const myVod = v.vod_id || id
   const eps = lines.value[activeLine.value]?.episodes || []
-  const ep = (it.ep ? eps.find((e) => e.name === it.ep) : null) ||
-    eps.find((e) => e.url === it.ep_url)
-  if (!ep) return null
-  return { ep, pos: it.pos, label: it.ep || ep.name, flag: it.flag || '' }
+  if (!eps.length) return null
+
+  // ① 本片自己的历史（同 site + vod_id）
+  const own = listHistory().find((x) => x.site === site && x.vod_id === myVod)
+  if (own && typeof own.pos === 'number' && own.pos >= 1 && own.ep_at) {
+    const ep =
+      (own.ep ? eps.find((e) => e.name === own.ep) : undefined) ||
+      eps.find((e) => e.url === own.ep_url)
+    if (ep) return { ep, pos: own.pos, label: own.ep || ep.name, flag: own.flag || '', from: '' }
+  }
+
+  // ② 跨源兜底：片名归一化相等 + 集号对得上
+  for (const it of findHistoryByTitle(v.vod_name || '')) {
+    if (it.site === site && it.vod_id === myVod) continue
+    if (typeof it.pos !== 'number' || it.pos < 1) continue
+    const want = episodeNumber(it.ep || '')
+    if (!want) continue
+    const ep = eps.find((e) => episodeNumber(e.name) === want)
+    if (!ep) continue
+    // flag 留空：B 源用自己的线路，套 A 源的线路名没有意义
+    return { ep, pos: it.pos, label: ep.name, flag: '', from: it.siteName || it.site }
+  }
+  return null
 })
 
 /** 继续上次那一集 */
@@ -580,13 +608,20 @@ onBeforeUnmount(() => {
               :data-tv-first="lines.length ? '' : undefined"
               class="flex items-center gap-2 rounded-lg bg-accent px-6 py-2.5 text-sm font-semibold text-on-accent transition hover:bg-accent-dim disabled:opacity-40"
               :disabled="!lines.length"
-              :title="`从 ${clock(lastWatched.pos)} 继续`"
+              :title="lastWatched.from
+                ? `从 ${clock(lastWatched.pos)} 继续（上次在 ${lastWatched.from} 看的）`
+                : `从 ${clock(lastWatched.pos)} 继续`"
               @click="playResume"
             >
               <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M8 5v14l11-7z" />
               </svg>
               继续看 {{ lastWatched.label }}
+              <!-- 跨源兜底时标明来处，否则用户会以为"在 A 源看过的进度"凭空出现 -->
+              <span
+                v-if="lastWatched.from"
+                class="rounded bg-black/15 px-1.5 py-0.5 text-xs font-normal opacity-90"
+              >来自 {{ lastWatched.from }}</span>
             </button>
             <button
               v-else

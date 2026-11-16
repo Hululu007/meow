@@ -253,9 +253,17 @@ describe('首屏等待预算（调序后"出弹幕慢了"的根因）', () => {
     expect(loop).not.toContain('+ 6_000L')
   })
 
-  it('聚合在后台补全时，只有明显更全才覆盖（1.2 倍门槛）', () => {
+  it('后台补全的覆盖门槛在 tellLaterIfBetter：单源 1.2 倍、聚合 0.5 倍', () => {
+    // 2026-11-16：覆盖逻辑抽成了独立函数（跑完的源都走它），日志也跟着过去；
+    // 聚合放宽到 0.5 倍是因为 cap=60000 后单源"总条数"反而更大
+    // （腾讯 54535 里 31% 超出片长，聚合 42293 几乎都在片长内）。
+    const fn = region('private static String tellLaterIfBetter', 2600)
+    expect(fn).toContain('bg-upgrade')
+    expect(fn).toContain('isAgg')
+    expect(fn).toMatch(/cur \* 1\.2/)
+    expect(fn).toMatch(/cur \* 0\.5/)
+    // 调用点仍在并发收尾里
     const loop = region('private static String fetchDanmakuAuto0', 6000)
-    expect(loop).toContain('bg-upgrade')
-    expect(loop).toMatch(/1\.2|120\s*\/\s*100/)
+    expect(loop).toContain('tellLaterIfBetter(')
   })
 })

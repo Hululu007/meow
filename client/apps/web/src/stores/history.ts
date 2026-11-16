@@ -225,6 +225,86 @@ export function getProgress(
   return { pos: it.pos, dur: it.dur ?? 0, at: it.ep_at }
 }
 
+/* ------------------------------------------------------------------ 跨源续播 */
+
+/**
+ * 片名归一化（跨源匹配用）。
+ *
+ * <p>为什么需要：换源（A 站挂了 → B 站）后 `site` / `vod_id` 全变，历史按
+ * `site+vod_id` 查不到任何东西，用户得重新找集、拖进度。片名是唯一跨源
+ * 稳定（但也最脏）的标识。
+ *
+ * <p>归一化只做**确定安全**的几件事：去掉空白与包裹符号、去掉括号内容
+ * （实测聚合搜索里同一部剧会写成「庆余年 第二季 (2024)」「庆余年第二季」）、
+ * 中文数字季号转阿拉伯（「第二季」→「第2季」）。
+ * **不把「第2季」等价成「2」**：实测 B 站上「庆余年2」是一堆 UGC 合集，
+ * 而正片源统一写「第二季」，等价过来反而更容易撞错片。
+ */
+export function normTitleForMatch(s: string): string {
+  return (s || '')
+    .replace(/[(（][^)）]{0,30}[)）]/g, ' ')      // 半/全角括号内容（年份、清晰度、备注）
+    .replace(/[《》〈〉【】\[\]()（）]/g, ' ')      // 包裹符号本身
+    .replace(/[\s\u3000·・:：\-—–_/\\|,，.。!！?？'"]+/g, '')
+    .replace(/第([一二三四五六七八九十])季/g, (_m, c: string) => {
+      const map: Record<string, string> = {
+        一: '1', 二: '2', 三: '3', 四: '4', 五: '5',
+        六: '6', 七: '7', 八: '8', 九: '9', 十: '10',
+      }
+      return '第' + map[c] + '季'
+    })
+    .replace(/第0+(\d+)季/g, '第$1季')
+    .toLowerCase()
+}
+
+/**
+ * 从集名里提取集号。
+ *
+ * <p>三个真实源同一部剧的集名实测完全不同：`第01集`（AppYQK）、
+ * `01 [1080P]`（Gz360）、`1`（Gulu）—— 能对上的只有数字。
+ * 所以跨源续播**必须按集号**定位，不能按集名（同源跨线路的集名兜底
+ * 见 {@link getProgress}，那条对跨源无效）。
+ *
+ * <p>匹配顺序：「第3集」→ `EP3` → 第一个数字。这样「4K 第03集」取 3
+ * 而不是 4；「彩蛋」「预告」这类没有数字的返回 0，调用方应放弃兜底。
+ */
+export function episodeNumber(name?: string): number {
+  const s = name || ''
+  const m =
+    s.match(/第\s*(\d{1,4})\s*[集话期回]/) ||
+    s.match(/(?:EP|E|P|Vol\.?)\s*(\d{1,4})/i) ||
+    s.match(/(\d{1,4})/)
+  if (!m) return 0
+  const n = Number(m[1])
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+/**
+ * 按片名找同剧在**其他源**上的历史（跨源续播兜底）。
+ *
+ * <p>只在「本片自己没有历史」时调用（{@link getProgress} 返回 null）。
+ * 按 `ep_at` 倒序：`at` 会被"点一下封面"刷新，`ep_at` 才是真正播过的时间；
+ * 同一部剧试过多个源时，取最近真正在看的那条。
+ *
+ * <p>调用方负责两件事，本函数不做：
+ * <ol>
+ *   <li>跳过自己（`site` + `vod_id` 相同的那条）；</li>
+ *   <li>集号匹配（{@link episodeNumber}）—— 目标源的集列表只有调用方有。</li>
+ * </ol>
+ */
+export function findHistoryByTitle(title: string): HistoryItem[] {
+  const t = normTitleForMatch(title)
+  if (!t) return []
+  return listHistory()
+    .filter(
+      (x) =>
+        typeof x.pos === 'number' &&
+        x.pos > 0 &&
+        !!x.ep_at &&
+        normTitleForMatch(x.vod_name) === t,
+    )
+    .sort((a, b) => (b.ep_at || 0) - (a.ep_at || 0))
+}
+
 /** 清掉一部片的进度（"从头开始"或看完时用） */
 export function clearProgress(
   key: { site: string; vod_id: string },

@@ -32,14 +32,17 @@ describe('isBetterDanmaku', () => {
 
 describe('isSafeDanmakuSwap', () => {
   const now = 1_000_000
-  it('15 秒内可以直接换', () => {
+  it('开头 60 秒可以直接换（2026-11-16 从 15 秒放宽）', () => {
     expect(isSafeDanmakuSwap(0, 0, now)).toBe(true)
-    expect(isSafeDanmakuSwap(14.9, 0, now)).toBe(true)
+    expect(isSafeDanmakuSwap(59.9, 0, now)).toBe(true)
   })
-  it('超过 15 秒只有刚 seek 才换', () => {
-    expect(isSafeDanmakuSwap(20, 0, now)).toBe(false)
-    expect(isSafeDanmakuSwap(20, now - 1000, now)).toBe(true)
-    expect(isSafeDanmakuSwap(20, now - 5000, now)).toBe(false)
+  it('暂停时任意位置都安全（替换无感）', () => {
+    expect(isSafeDanmakuSwap(1800, 0, now, true)).toBe(true)
+  })
+  it('播放中段只有 10 秒内 seek 才换（续播用户靠这条）', () => {
+    expect(isSafeDanmakuSwap(120, 0, now)).toBe(false)
+    expect(isSafeDanmakuSwap(120, now - 5000, now)).toBe(true)
+    expect(isSafeDanmakuSwap(120, now - 15000, now)).toBe(false)
   })
 })
 
@@ -77,8 +80,11 @@ describe('源码门禁', () => {
     'utf8',
   )
 
-  it('后台补全用 fresh 绕过本地缓存，并只应用一次', () => {
-    expect(player).toContain("loadDanmaku(url, { fresh: true })")
+  it('后台补全走 serverOnly 三次检查，手动选源才用 fresh', () => {
+    // 12/30/60 秒三次只读后端缓存（serverOnly）；fresh 会触发真抓，
+    // 播放中反复真抓纯属浪费，所以只留给"手动选源"这一条路径。
+    expect(player).toContain("loadDanmaku(url, { serverOnly: true })")
+    expect(player).toContain("loadDanmaku(proxyDanmakuByUrl(item.url), { fresh: true })")
     expect(player).toContain('scheduleDmUpgrade')
     expect(player).toContain('dmPendingUpgrade')
     expect(player).toContain('已切换到更全的弹幕源')
@@ -120,5 +126,64 @@ describe('源码门禁', () => {
     expect(backend).toContain('List<String> customHosts')
     expect(backend).toContain('customHosts.toArray(new String[0])')
     expect(backend).toContain('if (!fs.get(idx).isDone()) continue;')
+  })
+})
+
+describe('截断总数（X-Danmaku-Total）全链路', () => {
+  // 这个 describe 在「源码门禁」之外，常量要自己读
+  const player = read('src/components/player/VideoPlayer.vue')
+  const backend = readFileSync(
+    join(ROOT, '..', '..', '..', 'server', 'host', 'src', 'shared', 'ApiServer.java'),
+    'utf8',
+  )
+
+  it('后端：入口清空 ThreadLocal，避免上一请求的残留当成本集总数', () => {
+    // 底层 fetchTencentXml/fetchIqiyiBulletXml 还有直连调用点（手动搜索、
+    // loadDanmakuById），那些路径 set 完没人 remove。不清的话同线程下一次
+    // 抓取若没触顶就会读到别人的总数（X-Danmaku-Total 报错数）。
+    const i = backend.indexOf('private static String runDanmakuSource')
+    expect(i).toBeGreaterThan(-1)
+    const body = backend.slice(i, i + 2600)
+    const clear = body.indexOf('DANMAKU_TOTAL_TL.remove()')
+    const firstFetch = Math.min(
+      ...['fetchDanmakuFromAggregators(', 'fetchIqiyiByTitle(', 'fetchDanmakuFromTencent(']
+        .map((k) => body.indexOf(k)),
+    )
+    expect(clear).toBeGreaterThan(-1)
+    expect(clear).toBeLessThan(firstFetch)
+  })
+
+  it('后端：触顶后响应头带截断前总数', () => {
+    expect(backend).toContain('DANMAKU_CAP = 60_000')
+    expect(backend).toContain('set("X-Danmaku-Total"')
+    expect(backend).toMatch(/capDanmakuList\([^)]*\)/)
+  })
+
+  it('前端：升级后的那份也要带 total，否则 "N+" 会退化成 "N"', () => {
+    expect(player).toContain('total: totalHeader')
+    expect(player).toMatch(/applyDmUpgrade\(up: \{[^}]*total: number/)
+    expect(player).toContain('applyDmList(list, up.total)')
+  })
+})
+
+describe('后台补全检查点（2026-11-16 前移）', () => {
+  const player = read('src/components/player/VideoPlayer.vue')
+
+  it('检查点是 8/12/16/22/30 秒，而不是旧的 12/30/60', () => {
+    // 聚合源实测 7~14 秒才写完缓存；旧的 12s 那个点常赶在它之前，
+    // MuMu 上表现为"要等到 +25 秒才升级"。前移到 8s 起每 4~6 秒探一次。
+    expect(player).toMatch(/DM_UPGRADE_CHECKPOINTS = \[8_000, 12_000, 16_000, 22_000, 30_000\]/)
+    // 每个点都必须只读后端缓存（serverOnly），不能改成 fresh（会落回小份）
+    const i = player.indexOf('function scheduleDmUpgrade')
+    const body = player.slice(i, i + 1400)
+    expect(body).toContain('loadDanmaku(url, { serverOnly: true })')
+    expect(body).not.toContain('fresh: true')
+  })
+
+  it('切集/卸载要把五个定时器全清掉', () => {
+    expect(player).toContain('if (dmUpgradeChecked || dmOverrideUrl.value) return')
+    // 两处清理都必须遍历数组（单变量写法会漏掉其余四个定时器）
+    expect((player.match(/for \(const t of dmUpgradeTimers\) (window\.)?clearTimeout\(t\)/g) || []).length)
+      .toBeGreaterThanOrEqual(2)
   })
 })
