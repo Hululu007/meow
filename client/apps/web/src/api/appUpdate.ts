@@ -342,6 +342,16 @@ export interface AppUpdate {
   lasttime?: string
   /** 清单里命中的 id（meow-pc / meow-tv），下载时用来挑文件名 */
   packageId?: string
+  /**
+   * 这条更新来自哪条通道。
+   *
+   * <p>`shell` = PC/TV 安装包（`packages.json`）；`fpk` = fnOS 应用（FnDepot 索引）。
+   * 弹框的标题/文件名/安装动作按它分派，但**状态机只有一套** ——
+   * 「发现 → 待提示 → 按路由弹 → 稍后记住版本」两端语义完全一致。
+   */
+  kind?: 'shell' | 'fpk'
+  /** 直接展示的文件名（fpk 由版本+架构拼，壳由清单 id 推） */
+  fileName?: string
 }
 
 /**

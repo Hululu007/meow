@@ -41,6 +41,19 @@ import {
   cancelDownload,
   type AppUpdate,
 } from '@/api/appUpdate'
+import {
+  checkFpkUpdate,
+  detectFpkShell,
+  fpkFileName,
+  fpkIsVersionSkipped,
+  fpkSkipVersion,
+  runFpkUpgrade,
+  waitForRestart,
+  type FpkLatest,
+  type FpkProgress,
+  type FpkShellInfo,
+  type InstalledApp,
+} from '@/api/fpkUpgrade'
 
 /** 检查中（防重复点击 / 防启动自动检查与手动检查并发） */
 export const checking = ref(false)
@@ -89,8 +102,66 @@ export const promptPending = ref(false)
 
 /** 当前平台（决定提示哪些 id；web 端没有"安装包"概念） */
 export const platform = computed(() => currentPlatform())
-/** 本端能不能装包（PC / TV 可以，纯 Web 不行） */
-export const canUpdate = computed(() => platform.value !== 'web')
+
+/**
+ * 这一端能装哪种更新。`null` = 还没探测完。
+ *
+ * <p><b>为什么不是 `platform !== 'web'`（2026-11-16）</b>：fnOS 的 fpk 应用
+ * 也是「装了就能升级的完整应用」，只是它跑在浏览器里。按平台字符串判会把
+ * fnOS 一并排除——弹框永远不出现。现在按**能力**判：
+ *   · PC（Tauri）/ TV（原生桥）→ `shell`（同步可判）；
+ *   · 其余页面 → 探一次 `detectFpkShell()`（`/api/_shell/*` + `/app-center/*` 同源）
+ *     → 通了就是 `fpk`；
+ *   · 都不通（普通浏览器直连 30010）→ `none`。
+ */
+export type UpdateCapability = 'shell' | 'fpk' | 'none'
+export const capability = ref<UpdateCapability | null>(null)
+/** 当前这条更新属于哪条通道（决定标题/文件名/安装动作） */
+export const kind = ref<'shell' | 'fpk'>('shell')
+/** 本端能不能装更新（PC / TV / fnOS 托管页面可以） */
+export const canUpdate = computed(
+  () => capability.value === 'shell' || capability.value === 'fpk',
+)
+
+/** fpk 检查结果的缓存（安装时要用到 info/installed/latest 三件套） */
+export const fpkInfo = ref<FpkShellInfo | null>(null)
+export const fpkInstalled = ref<InstalledApp | null>(null)
+export const fpkLatest = ref<FpkLatest | null>(null)
+export const fpkCurrent = ref('')
+
+let capabilityPromise: Promise<UpdateCapability> | null = null
+
+/**
+ * 探测本端的更新能力（结果缓存，整个会话只探一次）。
+ *
+ * <p>探测失败不抛：普通浏览器直连 `:30010` 时 `/app-center/*` 不通，
+ * 属于正常情况，返回 `none` 即可，界面不会出现永远灰着的按钮。
+ */
+export function probeCapability(): Promise<UpdateCapability> {
+  if (capabilityPromise) return capabilityPromise
+  capabilityPromise = (async () => {
+    if (currentPlatform() !== 'web') {
+      capability.value = 'shell'
+      kind.value = 'shell'
+      return 'shell'
+    }
+    try {
+      const det = await detectFpkShell()
+      if (det) {
+        capability.value = 'fpk'
+        kind.value = 'fpk'
+        fpkInfo.value = det.info
+        fpkInstalled.value = det.installed
+        return 'fpk'
+      }
+    } catch {
+      /* 落 none */
+    }
+    capability.value = 'none'
+    return 'none'
+  })()
+  return capabilityPromise
+}
 
 /** 进行中任务的定时器（模块级：跨组件只有一份轮询） */
 let pollTimer: number | undefined
@@ -122,7 +193,15 @@ function resetCheckState(): void {
  * @returns 找到的新版本；没有则 null
  */
 export async function runCheck(opts: { silent?: boolean } = {}): Promise<AppUpdate | null> {
+  // 手动检查时允许重探一次：启动瞬间应用中心可能还没就绪，
+  // 一次探测失败不能把整个会话的更新入口永久关掉（静默检查不重探，
+  // 免得每次启动都多打两次接口）。
+  if (capability.value === null || (capability.value === 'none' && !opts.silent)) {
+    capabilityPromise = null
+    await probeCapability()
+  }
   if (!canUpdate.value) return null
+  if (kind.value === 'fpk') return runCheckFpk(opts)
   if (checking.value) return found.value
   checking.value = true
   if (!opts.silent) resetCheckState()
@@ -153,6 +232,61 @@ export async function runCheck(opts: { silent?: boolean } = {}): Promise<AppUpda
 }
 
 /**
+ * fpk 通道的检查（把 FnDepot 索引的一条 release 映射成同一个 `AppUpdate`）。
+ *
+ * <p>数据形状对齐壳：`notes` 直接来自索引的 `changelog`（就是 CHANGELOG 那 6 条），
+ * `fileName` 用版本+架构拼，安装动作在 `runDownloadAndInstall` 里分派。
+ */
+async function runCheckFpk(opts: { silent?: boolean }): Promise<AppUpdate | null> {
+  if (checking.value) return found.value
+  checking.value = true
+  if (!opts.silent) resetCheckState()
+  else error.value = ''
+  try {
+    const res = await checkFpkUpdate()
+    if (!res) {
+      // 页面失去 fnOS 托管（例如直连 30010）→ 本端不再提供更新
+      capability.value = 'none'
+      return null
+    }
+    fpkInfo.value = res.info
+    fpkInstalled.value = res.installed
+    fpkCurrent.value = res.current
+    fpkLatest.value = res.latest
+    const up: AppUpdate | null = res.latest
+      ? {
+          kind: 'fpk',
+          version: res.latest.version,
+          url: res.latest.url,
+          sha256: res.latest.pkg.sha256,
+          size: res.latest.pkg.size,
+          notes: res.latest.notes.join('\n'),
+          lasttime: String(res.latest.release.updated_at || '').slice(0, 10),
+          packageId: 'meow-fpk',
+          fileName: fpkFileName(res.latest),
+        }
+      : null
+    if (up && opts.silent && fpkIsVersionSkipped(up.version)) {
+      found.value = up
+      checked.value = true
+      return null
+    }
+    found.value = up
+    checked.value = true
+    return up
+  } catch (e: any) {
+    if (opts.silent) {
+      console.warn('[update] fpk 自动检查失败：', e?.message || e)
+      return null
+    }
+    error.value = e?.message || String(e)
+    return null
+  } finally {
+    checking.value = false
+  }
+}
+
+/**
  * 下载 → 校验 → **直接调起安装器**（一步到位，2026-11-13 用户要求）。
  *
  * <p><b>为什么不再停在「点安装」</b>：原来的流程是下载完把按钮改成「安装」，
@@ -166,6 +300,7 @@ export async function runCheck(opts: { silent?: boolean } = {}): Promise<AppUpda
  * 系统层面的确认弹窗仍然存在，这不是"静默安装"。
  */
 export async function runDownloadAndInstall(): Promise<void> {
+  if (kind.value === 'fpk') return runFpkDownloadAndInstall()
   const up = found.value
   if (!up || busy.value) return
   busy.value = true
@@ -226,6 +361,52 @@ export async function runDownloadAndInstall(): Promise<void> {
 }
 
 /**
+ * fpk 通道的「下载并安装」：浏览器下载 → sha256 → 交应用中心 → 等重启 → 刷新。
+ *
+ * <p>与壳的差别只有最后一步：壳把包交给系统安装器后主进程就退出；
+ * fpk 是应用中心原地替换载荷并重启 meowd，页面会短暂断开，
+ * 所以这里必须 `waitForRestart()` 轮询 `/api/health`，通了再 reload ——
+ * 否则用户看到的是白页/502，以为升级失败。
+ *
+ * <p>安装阶段不允许关弹框（`closeDialog` 里已按 `busy` 拦住）：
+ * 应用中心的任务一旦提交就停不下来，关掉只会让人以为没在装。
+ */
+async function runFpkDownloadAndInstall(): Promise<void> {
+  const latest = fpkLatest.value
+  const info = fpkInfo.value
+  if (!latest || !info || busy.value) return
+  busy.value = true
+  phase.value = 'downloading'
+  percent.value = 0
+  stage.value = '正在下载安装包…'
+  error.value = ''
+  try {
+    await runFpkUpgrade(latest, fpkInstalled.value, info, (p: FpkProgress) => {
+      percent.value = Math.max(0, Math.min(100, p.percent || 0))
+      stage.value = p.text
+      if (p.phase === 'installing' || p.phase === 'done') phase.value = 'installing'
+    })
+    // 应用中心返回成功 ≠ 服务已起来：继续等 meowd 的 health
+    percent.value = 100
+    phase.value = 'installing'
+    stage.value = '正在等待服务恢复…'
+    const ok = await waitForRestart(120_000)
+    if (ok) {
+      // 直接刷新，让页面与新载荷同版本（不清缓存会把旧 index.html 拉回来）
+      location.reload()
+      return
+    }
+    throw new Error('升级已提交，但服务在 2 分钟内没有恢复；请稍后手动刷新页面')
+  } catch (e: any) {
+    error.value = e?.message || String(e)
+    stage.value = ''
+    phase.value = 'idle'
+  } finally {
+    busy.value = false
+  }
+}
+
+/**
  * 安装已经下载好的包（旧的二次点击入口）。
  *
  * <p>保留导出只为一个场景：`ready === true` 的瞬间（自动安装开始前）
@@ -270,7 +451,10 @@ export async function runCancel(): Promise<void> {
 /** 记住「这个版本稍后」（下次只有更高版本才再提示） */
 export function rememberSkip(): void {
   const v = found.value?.version
-  if (v) skipVersionLs(v)
+  if (!v) return
+  // 两条通道分开记：同一条版本线（1.2.11），共用 key 会互相压制
+  if (kind.value === 'fpk') fpkSkipVersion(v)
+  else skipVersionLs(v)
 }
 
 /**

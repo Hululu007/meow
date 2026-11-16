@@ -12,7 +12,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   detectFpkShell,
-  fetchIndexes,
+  fetchFpkIndexesCached,
   fpkIndexUrl,
   humanReason,
   pickLatestFromIndexes,
@@ -24,6 +24,7 @@ import {
   type FpkShellInfo,
   type InstalledApp,
 } from '@/api/fpkUpgrade'
+import { seedFpkState } from '@/stores/updateCenter'
 
 const visible = ref(false)
 const loading = ref(false)
@@ -102,19 +103,23 @@ async function refresh(): Promise<void> {
     installed = det.installed
     // 应用中心的已安装版本更权威（升级后重启期间 meowd 报的还是旧值）。
     current.value = det.installed?.version || det.info.version
-    const indexes = await fetchIndexes(undefined, current.value)
+    const indexes = await fetchFpkIndexesCached(current.value)
     const picked = pickLatestFromIndexes(indexes, det.info, current.value)
     if (disposed) return
     if (!picked) {
       target.value = null
+      // 写回更新中心那一行：两处必须显示同一组数字（2026-11-16 用户截图）
+      seedFpkState(current.value, null)
       upToDate.value = true
       return
     }
     if ('noPackage' in picked) {
+      seedFpkState(current.value, null)
       error.value = `新版本 v${picked.version} 没有当前架构（${det.info.arch || 'x86'}）的安装包`
       return
     }
     target.value = picked.latest
+    seedFpkState(current.value, picked.latest)
   } catch (e) {
     error.value = humanReason(e)
   } finally {

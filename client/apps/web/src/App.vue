@@ -19,14 +19,15 @@ import TrayHintDialog from '@/components/common/TrayHintDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { installTvMenuBridge } from '@/stores/tvMenu'
 import {
-  canUpdate,
   closeDialog as closeUpdateDialog,
   dialogOpen as updateDialogOpen,
   found as updFound,
   openDialog as openUpdateDialog,
+  probeCapability,
   promptPending,
   runCheck as runUpdateCheck,
 } from '@/stores/appUpdate'
+import { fpkMarkPrompted, fpkPromptDue } from '@/api/fpkUpgrade'
 import { isDesktop, listPlugins } from '@/api'
 import { markChecked, runBackgroundChecks } from '@/stores/updateCenter'
 
@@ -314,33 +315,62 @@ onMounted(async () => {
  * 「检查更新」时才是非静默，那时错误必须显示出来。
  */
 function scheduleAutoUpdateCheck() {
-  // 壳：用户可在「更新中心」关掉；默认保留原来的 5 秒静默检查 + 弹框。
-  if (canUpdate.value && getPrefs().autoCheckApp) {
-    autoUpdateTimer = window.setTimeout(() => {
-      void runUpdateCheck({ silent: true }).then((up) => {
-        markChecked('app')
-        // 只有"真的发现新版本"才标记；没有更新时完全无感。
-        // 这里只置待提示标记，**不直接开弹框**——可能正停在播放页，
-        // 弹框会盖住画面。由 tryPromptUpdate 在合适的路由上再开。
-        if (up) {
+  /*
+   * 先探"这一端能装哪种更新"，再决定调度哪条通道：
+   *   · PC / TV → shell（同步可判）；
+   *   · fnOS 托管页面 → fpk（探测 `/api/_shell/*` + `/app-center/*`）；
+   *   · 普通浏览器直连 30010 → none（不查、不弹）。
+   *
+   * 探测是异步的，所以整个调度放进 then 里 —— 不能再像以前那样用
+   * 同步的 `canUpdate` 判，否则 fnOS 永远进不来。
+   */
+  void probeCapability().then((cap) => {
+    // 壳：用户可在「更新中心」关掉；默认保留原来的 5 秒静默检查 + 弹框。
+    if (cap === 'shell' && getPrefs().autoCheckApp) {
+      autoUpdateTimer = window.setTimeout(() => {
+        void runUpdateCheck({ silent: true }).then((up) => {
+          markChecked('app')
+          // 只有"真的发现新版本"才标记；没有更新时完全无感。
+          // 这里只置待提示标记，**不直接开弹框**——可能正停在播放页，
+          // 弹框会盖住画面。由 tryPromptUpdate 在合适的路由上再开。
+          if (up) {
+            promptPending.value = true
+            tryPromptUpdate()
+          }
+        })
+      }, AUTO_CHECK_DELAY_MS)
+    }
+    /*
+     * fnOS fpk：与壳**同一套**弹框状态机（`runCheck` 内部按 kind 分派）。
+     *
+     * ★ 不套 `runBackgroundChecks` 的 24h 节流：那条是"只更新状态"的设计，
+     *   套到弹框上会导致"检查过就不再提示"。
+     * ★ 但要有自己的 24h 同版本冷却（用户点空白/返回关掉后，下次打开别又弹）；
+     *   点「稍后」由 `fpkSkipVersion` 长期记住，语义与壳一致。
+     */
+    if (cap === 'fpk' && getPrefs().autoCheckFpk) {
+      autoUpdateTimer = window.setTimeout(() => {
+        void runUpdateCheck({ silent: true }).then((up) => {
+          if (!up || !fpkPromptDue(up.version)) return
+          fpkMarkPrompted(up.version)
           promptPending.value = true
           tryPromptUpdate()
-        }
-      })
-    }, AUTO_CHECK_DELAY_MS)
-  }
-  // 模块 / 插件 / fpk：24h 节流、只更新状态，不弹框、不自动下载。
-  // 30 秒后再跑，避开首屏和壳检查。
-  //
-  // ★ TV 上**不跑**：这三项在 TV 上要去 GitHub 拉模块清单/插件索引，
-  //   而 TV 用户多半根本不用运行时模块（可选功能）。开机就为三个用不上的
-  //   功能打外网，纯浪费带宽和时间。改成用户打开设置页/更新中心时再跑
-  //   （见 SettingsView.onMounted 的 runBackgroundChecks）。
-  if (!isTvShell()) {
-    bgUpdateTimer = window.setTimeout(() => {
-      void runBackgroundChecks()
-    }, 30_000)
-  }
+        })
+      }, AUTO_CHECK_DELAY_MS)
+    }
+    // 模块 / 插件 / fpk 状态：24h 节流、只更新状态，不弹框、不自动下载。
+    // 30 秒后再跑，避开首屏和上面那条检查。
+    //
+    // ★ TV 上**不跑**：这三项在 TV 上要去 GitHub 拉模块清单/插件索引，
+    //   而 TV 用户多半根本不用运行时模块（可选功能）。开机就为三个用不上的
+    //   功能打外网，纯浪费带宽和时间。改成用户打开设置页/更新中心时再跑
+    //   （见 SettingsView.onMounted 的 runBackgroundChecks）。
+    if (!isTvShell()) {
+      bgUpdateTimer = window.setTimeout(() => {
+        void runBackgroundChecks()
+      }, 30_000)
+    }
+  })
 }
 
 /**

@@ -11,6 +11,7 @@ import {
 import type { VodItem } from '@/api/types'
 import { rankGroups } from '@/api/searchRank'
 import { siteAffinity } from '@/api/searchAffinity'
+import { networkErrorText, nextRetryDelay } from '@/api/networkRetry'
 import PosterCard from '@/components/common/PosterCard.vue'
 import PosterImage from '@/components/common/PosterImage.vue'
 import { colsStyle, useCardCols } from '@/composables/useCardCols'
@@ -60,6 +61,16 @@ let runSeq = 0
  * 300ms 请求量又多一半。500ms 时一次搜索约 6~8 个请求。
  */
 const SEARCH_POLL_MS = 500
+/**
+ * 本页第一次搜索是否还没跑完。
+ *
+ * 冷启动深链直接落在搜索页时，第一次搜索常撞上端内网关还在启动（fetch 直接
+ * reject，没有状态码）。用它把"重试"限制在这唯一一次上：之后用户自己搜失败
+ * 基本是源站/后端真挂了，反复请求没有意义。
+ */
+let firstRun = true
+/** 退避用（仓库里没有公共 sleep 工具，单独加一个比拉依赖划算） */
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 /**
  * 搜索进度（已返回源数 / 总源数）。
  *
@@ -191,8 +202,9 @@ const { cols: listCols } = useCardCols({ width: contentWidth })
  *
  * 没有这个开关时，「重新搜索」和普通搜索完全一样 —— 后端有缓存，
  * 同词第二次是毫秒级返回同一份结果，用户点多少次都看不到新东西。
+ * @param retry 内部用：本页第一次搜索已经自动重试过几次（见 catch 里的退避）
  */
-async function run(force = false) {
+async function run(force = false, retry = 0) {
   const k = wd.value.trim()
   if (!k) return
   addSearchHistory(k)
@@ -290,18 +302,39 @@ async function run(force = false) {
        */
       if (lastError) {
         error.value = groups.value.length
-          ? `部分结果已返回，但搜索任务出错：${lastError}`
-          : `搜索失败：${lastError}`
+          ? `部分结果已返回，但搜索任务出错：${networkErrorText(lastError, '重新搜索')}`
+          : `搜索失败：${networkErrorText(lastError, '重新搜索')}`
       } else if (!groups.value.length) {
         error.value = '所有站点都没有找到结果'
       }
     }
   } catch (e: any) {
-    if (runId === runSeq) error.value = e?.message || String(e)
+    if (runId !== runSeq) return
+    /*
+     * 冷启动竞态：本页第一次搜索撞上"后端还没接客" → 退避重试。
+     *
+     * 踩过（2026-11-16，.77 实测两次）：深链/刷新直接落在 `#/search?wd=` 时，
+     * 搜索在页面加载后几百毫秒就发出，而端内网关（127.0.0.1:9978）冷启动
+     * 还在起 —— fetch 直接 reject，浏览器只给一句英文 `Failed to fetch`。
+     * 一次就放弃会让用户以为"搜索坏了/源挂了"，其实一两秒后自己就好。
+     *
+     * 这里保持 loading（不把错误抛到界面上），退避后再来一次；给用户的
+     * 观感就是"首屏慢了一点"，而不是先弹错再自愈。
+     */
+    const delay = nextRetryDelay({ firstRun, retry, error: e, sameKeyword: wd.value === k })
+    if (delay !== null) {
+      await sleep(delay)
+      // 等待期间换了关键词/又发起了新搜索：这次重试作废，交给新的那次
+      if (runId !== runSeq || wd.value !== k) return
+      return run(force, retry + 1)
+    }
+    error.value = networkErrorText(e, '重新搜索')
   } finally {
     if (runId === runSeq) {
       loading.value = false
       searchFinal.value = true
+      // 重试时外层这一次的 finally 会因 runId 变化被跳过，由最后一次收尾
+      firstRun = false
     }
   }
 }
@@ -399,22 +432,45 @@ const HOT_TABS = [
 const hotTab = ref<string>(HOT_TABS[0].id)
 const hotItems = ref<Array<{ vod_id: string; vod_name: string; vod_remarks?: string }>>([])
 const hotLoading = ref(false)
+/** 热播榜请求序号：重试与切页签都换号，旧请求不许再收尾（同 runSeq 的用途） */
+let hotSeq = 0
+/** 热播榜是不是本页第一次拉取（只有这次才为冷启动竞态重试） */
+let hotFirstRun = true
 
 /**
  * 拉热播榜。
  *
  * <p>走豆瓣源的 category 接口（后端缓存 10 分钟），失败就静默留空 ——
  * 空闲态没有热播榜也能用（右边还有最近搜索），不该弹错误。
+ *
+ * <p>但**冷启动**要退避重试：它和搜索一样在首屏就发请求，端内网关还没起来时
+ * 会直接 reject，界面于是长期停在"热播榜暂时拿不到"（2026-11-16 在 .77 见过）。
+ * 只给本页第一次拉取重试，之后切页签失败不再重试（那时后端早已就绪）。
  */
-async function loadHot() {
+async function loadHot(retry = 0) {
+  const tab = hotTab.value
+  // 与搜索的 runSeq 同一个套路：重试/切页签都换序号，旧的那次不许再收尾
+  const seq = ++hotSeq
   hotLoading.value = true
   try {
-    const r = await fetchCategory('Douban', hotTab.value, 1)
+    const r = await fetchCategory('Douban', tab, 1)
+    if (seq !== hotSeq) return
     hotItems.value = (r.list || []).slice(0, 20)
-  } catch {
+  } catch (e) {
+    if (seq !== hotSeq) return
+    const delay = nextRetryDelay({ firstRun: hotFirstRun, retry, error: e, sameKeyword: true })
+    if (delay !== null) {
+      await sleep(delay)
+      // 等待期间切了页签、或又被拉了一次：这次重试作废
+      if (seq !== hotSeq || hotTab.value !== tab) return
+      return loadHot(retry + 1)
+    }
     hotItems.value = []
   } finally {
-    hotLoading.value = false
+    if (seq === hotSeq) {
+      hotLoading.value = false
+      hotFirstRun = false
+    }
   }
 }
 
@@ -747,7 +803,18 @@ onBeforeUnmount(() => {
     >
       <!-- 源筛选：桌面在左侧竖排；手机上变结果上方的横向胶囊，
            否则 375px 屏会被 152px 的侧栏吃掉四成宽度 -->
-      <aside v-if="siteTabs.length > 1" class="md:w-[15rem] md:shrink-0">
+      <!--
+        ★ data-tv-col：TV 的左右键默认只走「同一行」（tv-nav 的 rowBest，
+          本来是为了不让首页海报右键跳到上方分类胶囊）。但源列表每项约 33px、
+          右侧结果卡片至少 100px（列表视图约 104、海报网格约 230），两列行高
+          天然对不齐 —— 只有「站点纵向中心刚好落进某张卡片带内」的那一两个能
+          在同一行里找到候选，其余站点按 → 毫无反应
+          （2026-11-16 用户报：「第三个能跳，第一二个不能」）。
+
+        标列之后左右键会走 tv-nav 的跨列兜底：按 → 落到纵向最近的那张卡片、
+        按 ← 从卡片回到最近的站点；上下键仍只在各自列内走，不会穿栏。
+      -->
+      <aside v-if="siteTabs.length > 1" data-tv-col="left" class="md:w-[15rem] md:shrink-0">
         <p class="mb-2 hidden text-[11px] text-ink-3 md:block">
           搜索({{ visibleHits.length }}/{{ hits.length }})
         </p>
@@ -807,7 +874,10 @@ onBeforeUnmount(() => {
         </div>
       </aside>
 
-      <div class="min-w-0 flex-1 md:h-full md:min-h-0 md:overflow-y-auto md:p-2.5">
+      <div
+        data-tv-col="right"
+        class="min-w-0 flex-1 md:h-full md:min-h-0 md:overflow-y-auto md:p-2.5"
+      >
         <div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 md:mb-4">
           <p class="text-xs text-ink-3">
             找到 {{ visibleHits.length }} 条结果<template

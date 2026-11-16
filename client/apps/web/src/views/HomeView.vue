@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fetchCategory, fetchHome } from '@/api'
+import { networkErrorText, nextRetryDelay } from '@/api/networkRetry'
 import type { HomeClass, HomeResult, VodItem } from '@/api/types'
 import PosterCard from '@/components/common/PosterCard.vue'
 import { colsStyle, useCardCols } from '@/composables/useCardCols'
@@ -50,12 +51,31 @@ function reset() {
   error.value = ''
 }
 
-async function loadHome() {
+/**
+ * 首屏是不是还没跑完（只有它能给"冷启动后端未就绪"重试）。
+ *
+ * 踩过（2026-11-16，.77 装完包第一次打开）：页面比端内网关（127.0.0.1:9978）
+ * 先就绪，`/home` 直接 reject —— 旧代码把英文 `Failed to fetch` 贴成一整屏错误、
+ * 且不重试。正常重启不会遇到（后端早就绪），但"装完就打开"这个真实场景会。
+ */
+let firstLoad = true
+/** 首屏请求序号：重试与换站点都换号，旧的那次不许再收尾（同 SearchView 的 runSeq） */
+let homeSeq = 0
+/** 退避用（仓库没有公共 sleep 工具） */
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+/**
+ * @param retry 内部用：本页首屏已经自动重试过几次（见 catch 里的退避）
+ */
+async function loadHome(retry = 0) {
   if (!site.value) return
+  const seq = ++homeSeq
+  const siteAtStart = site.value
   loading.value = true
   error.value = ''
   try {
-    const h = await fetchHome(site.value)
+    const h = await fetchHome(siteAtStart)
+    if (seq !== homeSeq) return
     home.value = h
     classes.value = h.class || []
     if (classes.value.length) {
@@ -67,9 +87,30 @@ async function loadHome() {
       error.value = '该站点返回空数据（源可能已失效）'
     }
   } catch (e: any) {
-    error.value = e?.message || String(e)
+    if (seq !== homeSeq) return
+    /*
+     * 冷启动竞态：保持 loading（界面是骨架屏而不是错误页），退避后再来一次。
+     * 给用户的观感是"首屏慢了一点"，而不是先甩一整页 Failed to fetch。
+     */
+    const delay = nextRetryDelay({
+      firstRun: firstLoad,
+      retry,
+      error: e,
+      sameKeyword: site.value === siteAtStart,
+    })
+    if (delay !== null) {
+      await sleep(delay)
+      // 等待期间换了站点/又刷新了一次：这次重试作废，交给新的那次
+      if (seq !== homeSeq || site.value !== siteAtStart) return
+      return loadHome(retry + 1)
+    }
+    error.value = networkErrorText(e, '刷新')
   } finally {
-    loading.value = false
+    if (seq === homeSeq) {
+      loading.value = false
+      // 重试时外层这一次会被 seq 变化跳过，由最后一次收尾
+      firstLoad = false
+    }
   }
 }
 
@@ -96,7 +137,7 @@ async function fillFirstScreen() {
     }
     if (!list.value.length) error.value = '该分类暂无数据'
   } catch (e: any) {
-    error.value = e?.message || String(e)
+    error.value = networkErrorText(e, '刷新')
   } finally {
     loading.value = false
   }
@@ -117,7 +158,7 @@ async function loadCategory(p: number) {
     pagecount.value = Number(r.pagecount || 0)
     error.value = ''
   } catch (e: any) {
-    error.value = e?.message || String(e)
+    error.value = networkErrorText(e, '重试')
   } finally {
     loadingMore.value = false
     // 内容不足一屏时继续补，否则用户看不到滚动条也就触发不了下次加载
@@ -345,7 +386,7 @@ watch(
       <div class="mt-5 flex flex-wrap items-center justify-center gap-2">
         <button
           class="rounded-md bg-card px-4 py-2.5 text-sm hover:bg-card-hover"
-          @click="loadHome"
+          @click="loadHome()"
         >
           刷新
         </button>

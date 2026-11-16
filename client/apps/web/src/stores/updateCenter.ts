@@ -32,7 +32,7 @@ import {
 } from '@/api'
 import {
   detectFpkShell,
-  fetchIndexes,
+  fetchFpkIndexesCached,
   pickLatestFromIndexes,
   type FpkLatest,
   type FpkShellInfo,
@@ -546,7 +546,7 @@ export async function checkFpk(silent = false): Promise<boolean> {
     }
     fpkVisible.value = true
     fpkCurrent.value = det.installed?.version || det.info.version
-    const indexes = await fetchIndexes(undefined, fpkCurrent.value)
+    const indexes = await fetchFpkIndexesCached(fpkCurrent.value)
     const picked = pickLatestFromIndexes(indexes, det.info as FpkShellInfo, fpkCurrent.value)
     if (!picked) {
       fpkLatest.value = null
@@ -566,6 +566,38 @@ export async function checkFpk(silent = false): Promise<boolean> {
   } finally {
     checking.fpk = false
   }
+}
+
+/**
+ * 只填「当前版本」的轻探测（不判 checked、不标记最近检查）。
+ *
+ * <p>目的：设置页刚打开时，「fnOS 应用」那行就有版本号，不再出现
+ * 「— 未检查」和下面「当前 v1.2.7」互相打架（2026-11-16 用户截图）。
+ * 探测本身要打 `/api/_shell/info` + `/app-center/v1/app/installed`，
+ * 与 `checkFpk` 共用同一个 `detectFpkShell` 缓存，不额外发第二次。
+ */
+export async function probeFpkCurrent(): Promise<void> {
+  if (isDesktop() || isTvShell() || fpkCurrent.value) return
+  try {
+    const det = await detectFpkShell()
+    if (!det) return
+    fpkVisible.value = true
+    fpkCurrent.value = det.installed?.version || det.info.version
+  } catch {
+    /* 探测失败保持"未检查"，不写错误 —— 用户没主动问 */
+  }
+}
+
+/**
+ * 把「应用更新」区块已经查到的一次结果写回更新中心那一行。
+ *
+ * <p>两个组件各自挂载都会查一次（索引有 60s 缓存，网络只有一次），
+ * 但状态是两套；不写回就会出现同一页面上下两行版本号不一致。
+ */
+export function seedFpkState(current: string, latest: FpkLatest | null): void {
+  if (current) fpkCurrent.value = current
+  fpkVisible.value = true
+  fpkLatest.value = latest
 }
 
 /**

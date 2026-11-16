@@ -13,15 +13,18 @@ import {
 import { isDesktop } from '@/api'
 import { getPrefs, savePrefs } from '@/stores/prefs'
 import {
+  capability,
   checked as updChecked,
   checking as updChecking,
   error as updError,
   found as updFound,
   openDialog as openUpdDialog,
   platform as updPlatform,
+  probeCapability,
   runCheck as runUpdCheck,
 } from '@/stores/appUpdate'
 import { isVersionSkipped } from '@/api/appUpdate'
+import { checkBackendFpk, type FpkLatest } from '@/api/fpkUpgrade'
 import {
   checkFpk,
   checkModule,
@@ -121,7 +124,13 @@ const fpkLabel = computed(() => {
  * 插件和 fpk 也该有状态，实际那两行根本不显示。
  */
 const scopeLabel = computed(() =>
-  tv ? '壳 / 运行时模块 / 弹幕组件' : desktop ? '壳 / 本机插件' : '壳 / fnOS 应用',
+  tv
+    ? '壳 / 运行时模块 / 弹幕组件'
+    : desktop
+      ? '壳 / 本机插件'
+      : capability.value === 'none'
+        ? '更新'
+        : '壳 / fnOS 应用',
 )
 
 /**
@@ -204,13 +213,40 @@ function toggleAuto(key: keyof typeof auto, value: boolean): void {
   savePrefs({ [field]: value } as any)
 }
 
+/**
+ * 「后端 fnOS 应用」只读提示（TV / PC 连到 NAS 时显示）。
+ *
+ * <p>数据来源是 `/api/_shell/info` 的 meowd 版本 + 同一条 FnDepot 索引；
+ * **不提供安装按钮**：应用中心 RPC 与 `/app-center/*` 只在 fnOS 网关同源下
+ * 可用，TV/PC 连的是 30010，硬做等于把应用中心写权限搬到客户端。
+ */
+const backendFpk = ref<{ current: string; latest: FpkLatest | null } | null>(null)
+const backendChecking = ref(false)
+
+async function checkBackend(): Promise<void> {
+  if (backendChecking.value) return
+  backendChecking.value = true
+  try {
+    backendFpk.value = await checkBackendFpk()
+  } finally {
+    backendChecking.value = false
+  }
+}
+
 onMounted(() => {
-  // 不主动发网络请求：设置页经常被打开，自动检查由 App.vue 的
-  // 24h 后台任务负责；这里只展示已有状态。
+  // 不主动跑"模块/插件"的网络检查：设置页经常被打开，自动检查由 App.vue 的
+  // 24h 后台任务负责。
   //
-  // 模块安装状态是本地桥调用（不发请求），先读一次：
-  // 否则「版本未知」会被显示成「未安装」，再叠一句「未检查」。
+  // 但 **fpk 这一行必须补一次轻检查**：它的状态以前只在手动点「检查」后才有，
+  // 于是出现「fnOS 应用 — 未检查」而同页「应用更新」区块已经写着
+  // 「当前 v1.2.7 · 发现 v1.2.11」的自相矛盾（2026-11-16 用户截图）。
+  // 索引有 60s 缓存，与下方区块共用，不会多打一份网络。
   hydrateModuleState()
+  void probeCapability().then((cap) => {
+    if (cap === 'fpk' && !fpkChecked.value) void checkFpk(true)
+    // TV / PC 连到 fnOS 后端：只读显示「NAS 上有新版」，不在客户端执行
+    if (cap === 'shell') void checkBackend()
+  })
 })
 </script>
 
@@ -354,8 +390,12 @@ onMounted(() => {
       <span v-if="errors.plugins" class="text-[10px] text-hot">{{ errors.plugins }}</span>
     </div>
 
-    <!-- fpk -->
-    <div v-if="!desktop && !tv" class="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2" data-update-row="fpk">
+    <!-- fpk：只有被 fnOS 应用中心托管（capability=fpk）才显示；直连 30010 时这一行点了也没用 -->
+    <div
+      v-if="!desktop && !tv && capability === 'fpk'"
+      class="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2"
+      data-update-row="fpk"
+    >
       <span class="w-24 shrink-0 text-[11px] text-ink-2">fnOS 应用</span>
       <span class="font-mono text-[11px] text-ink-3">{{ fpkCurrent || '—' }}</span>
       <span class="text-[11px] text-ink-3">{{ fpkLabel }}</span>
@@ -379,6 +419,27 @@ onMounted(() => {
       <span v-if="errors.fpk" class="text-[10px] text-hot">{{ errors.fpk }}</span>
     </div>
 
+    <!-- 后端 fnOS 应用（TV / PC 连到 NAS）：只读，不在客户端执行升级 -->
+    <div
+      v-if="capability === 'shell' && backendFpk"
+      class="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2"
+      data-update-row="backend-fpk"
+    >
+      <span class="w-24 shrink-0 text-[11px] text-ink-2">后端 fnOS 应用</span>
+      <span class="font-mono text-[11px] text-ink-3">{{ backendFpk.current }}</span>
+      <span class="text-[11px] text-ink-3">
+        {{ backendFpk.latest ? `发现 v${backendFpk.latest.version}（请在 NAS 上升级）` : '已是最新' }}
+      </span>
+      <span class="flex-1" />
+      <button
+        class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
+        :disabled="backendChecking"
+        @click="checkBackend()"
+      >
+        检查
+      </button>
+    </div>
+
     <p class="mt-2 text-[11px] text-ink-3">
       检查只更新状态，不会自动安装；升级仍走各自入口。
       <template v-if="lastParts.length">最近检查：{{ lastParts.join(' · ') }}</template>
@@ -386,7 +447,8 @@ onMounted(() => {
 
     <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line pt-2 text-[11px]">
       <span class="text-ink-3">启动自动检查：</span>
-      <label class="flex items-center gap-1 text-ink-2">
+      <!-- 勾选框只显示「这一端真的会跑」的通道：Web 上「壳」勾了也没行为（2026-11-16 修） -->
+      <label v-if="capability === 'shell'" class="flex items-center gap-1 text-ink-2">
         <input type="checkbox" :checked="auto.app" @change="toggleAuto('app', ($event.target as HTMLInputElement).checked)" />
         壳
       </label>
@@ -398,11 +460,16 @@ onMounted(() => {
         <input type="checkbox" :checked="auto.plugins" @change="toggleAuto('plugins', ($event.target as HTMLInputElement).checked)" />
         插件
       </label>
-      <label v-if="!desktop && !tv" class="flex items-center gap-1 text-ink-2">
+      <label v-if="capability === 'fpk'" class="flex items-center gap-1 text-ink-2">
         <input type="checkbox" :checked="auto.fpk" @change="toggleAuto('fpk', ($event.target as HTMLInputElement).checked)" />
         fnOS 应用
       </label>
-      <span class="text-[10px] text-ink-3">模块/插件/fpk 最多 24h 一次，只更新状态，不弹框、不自动下载</span>
+      <span class="text-[10px] text-ink-3">
+        <template v-if="capability === 'fpk'">
+          模块/插件最多 24h 一次，只更新状态；fnOS 应用发现新版会弹框提示（不会自动下载）
+        </template>
+        <template v-else>模块/插件最多 24h 一次，只更新状态，不弹框</template>
+      </span>
     </div>
   </div>
 </template>

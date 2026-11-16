@@ -69,10 +69,17 @@ const noteLines = computed(() => {
  * 条目 id 与设备不符的情况已经在 `checkAppUpdate` / `startDownload` 里
  * 被三层校验拦下了（见 `entryFitsPlatform`），走不到这一步。
  */
-const platformName = computed(() => (platform.value === 'windows-x64' ? 'Windows' : 'Android'))
+const platformName = computed(() => {
+  // fpk 和壳是同一条版本线（都是 1.2.x），但安装形态不同：
+  // 这里必须说清"这是 NAS 上的应用"，否则用户会以为是给当前设备装 exe/apk
+  if (found.value?.kind === 'fpk') return 'fnOS 应用'
+  return platform.value === 'windows-x64' ? 'Windows' : 'Android'
+})
 
 /** 将要下载的文件名（原生侧会再净化一次，这里只是给用户看） */
-const fileName = computed(() => (found.value ? fileNameFor(found.value) : ''))
+const fileName = computed(() =>
+  found.value ? found.value.fileName || fileNameFor(found.value) : '',
+)
 
 /** 文件大小（原生给的是字节） */
 function fmtSize(n: number): string {
@@ -81,14 +88,25 @@ function fmtSize(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
-/** 下载中 = 取消下载；安装阶段不可取消（安装器已经交出去了）；其余 = 稍后 */
+/**
+ * 下载中 = 取消下载；安装阶段不可取消；其余 = 稍后。
+ *
+ * <p>fpk 的下载在浏览器里（`downloadFpk`），没有原生任务可取消；
+ * 下载中给「取消下载」会点了没反应，所以 fpk 一律显示「稍后」，
+ * 由 store 的 `busy` 拦住关闭（不会出现"关掉还在装"的误解）。
+ */
 const secondaryLabel = computed(() => {
+  if (found.value?.kind === 'fpk') {
+    return phase.value === 'installing' ? '安装中…' : '稍后'
+  }
   if (phase.value === 'downloading') return '取消下载'
   if (phase.value === 'installing') return '安装中…'
   return '稍后'
 })
 /** 安装阶段禁用次按钮：这时点「稍后」既关不掉弹框也会让人以为能中断 */
-const secondaryDisabled = computed(() => phase.value === 'installing')
+const secondaryDisabled = computed(
+  () => phase.value === 'installing' || (found.value?.kind === 'fpk' && phase.value === 'downloading'),
+)
 
 /**
  * 主按钮：**只走一次**。

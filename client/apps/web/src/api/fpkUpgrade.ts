@@ -904,3 +904,157 @@ export async function waitForRestart(timeoutMs = 90000): Promise<boolean> {
   }
   return false
 }
+
+/* ------------------------------------------------------------------ *
+ * 对齐壳更新：把 fpk 也接进同一套「发现 → 弹框 → 稍后」状态机
+ * ------------------------------------------------------------------ */
+
+/**
+ * fpk 的「稍后」版本必须**单独存**。
+ *
+ * <p>壳和 fpk 是同一条产品版本线（都是 1.2.11），共用一个 key 会互相压制：
+ * 在 PC 上对 1.2.11 点过「稍后」，fnOS 页就不再提示它；反过来也一样。
+ * 两者的安装形态不同（系统安装器 vs 应用中心重启），跳过意图不能通用。
+ */
+const FPK_SKIP_KEY = 'meow.fpk.skipVersion'
+
+function readFpkSkip(): string {
+  try {
+    return localStorage.getItem(FPK_SKIP_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+export function fpkSkippedVersion(): string {
+  return readFpkSkip()
+}
+
+export function fpkIsVersionSkipped(version: string): boolean {
+  return !!version && readFpkSkip() === version
+}
+
+export function fpkSkipVersion(version: string): void {
+  try {
+    localStorage.setItem(FPK_SKIP_KEY, version || '')
+  } catch {
+    /* 隐私模式忽略 */
+  }
+}
+
+export function fpkClearSkipped(): void {
+  try {
+    localStorage.removeItem(FPK_SKIP_KEY)
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 弹框里展示/下载用的包名（与应用中心登记的 fpk 文件名一致） */
+export function fpkFileName(latest: FpkLatest): string {
+  return `${FPK_APP_NAME}_${latest.version}_${latest.arch}.fpk`
+}
+
+/**
+ * 同一个版本 24 小时内最多提示一次（防止每次开页面都弹）。
+ *
+ * <p>与「稍后」分开：稍后是明确表态（只有更高版本才再提示，长期有效）；
+ * 这里只防"点空白/按返回关掉后，下次打开又弹"的骚扰。
+ */
+const FPK_PROMPT_KEY = 'meow.fpk.prompted'
+const FPK_PROMPT_COOLDOWN_MS = 24 * 60 * 60 * 1000
+
+export function fpkPromptDue(version: string): boolean {
+  if (!version) return false
+  try {
+    const raw = JSON.parse(localStorage.getItem(FPK_PROMPT_KEY) || 'null') as
+      | { version?: string; at?: number }
+      | null
+    if (!raw || raw.version !== version) return true
+    return Date.now() - Number(raw.at || 0) >= FPK_PROMPT_COOLDOWN_MS
+  } catch {
+    return true
+  }
+}
+
+export function fpkMarkPrompted(version: string): void {
+  if (!version) return
+  try {
+    localStorage.setItem(FPK_PROMPT_KEY, JSON.stringify({ version, at: Date.now() }))
+  } catch {
+    /* 隐私模式忽略 */
+  }
+}
+
+/**
+ * 索引结果的短缓存（60s）。
+ *
+ * <p>设置页里「更新中心」那行与「应用更新」区块是两棵组件，
+ * 各自挂载都会查一次；启动弹框检查又是一次。同一分钟内三次 16KB 请求
+ * 纯属浪费，而且会让两处短暂显示不同步。缓存的是**索引原文**，
+ * 「哪个版本比当前新」仍然每次按 current 重新挑。
+ */
+let fpkIndexCache: { at: number; key: string; data: FpkIndex[] } | null = null
+
+export async function fetchFpkIndexesCached(current = '', ttlMs = 60_000): Promise<FpkIndex[]> {
+  const key = fpkIndexUrls().join('|')
+  if (fpkIndexCache && fpkIndexCache.key === key && Date.now() - fpkIndexCache.at < ttlMs) {
+    return fpkIndexCache.data
+  }
+  const data = await fetchIndexes(undefined, current)
+  fpkIndexCache = { at: Date.now(), key, data }
+  return data
+}
+
+export function clearFpkIndexCache(): void {
+  fpkIndexCache = null
+}
+
+/** 检查一次 fpk 更新（供弹框状态机复用，与 FpkUpgradePanel 同一路径） */
+export async function checkFpkUpdate(): Promise<{
+  info: FpkShellInfo
+  installed: InstalledApp | null
+  current: string
+  latest: FpkLatest | null
+} | null> {
+  const det = await detectFpkShell()
+  if (!det) return null
+  // 应用中心的已安装版本更权威（升级后重启期间 meowd 报的还是旧值）
+  const current = det.installed?.version || det.info.version
+  if (!current) return null
+  const indexes = await fetchFpkIndexesCached(current)
+  const picked = pickLatestFromIndexes(indexes, det.info, current)
+  if (!picked) return { ...det, current, latest: null }
+  if ('noPackage' in picked) {
+    throw new Error(
+      `新版本 v${picked.version} 没有当前架构（${det.info.arch || 'x86'}）的安装包`,
+    )
+  }
+  return { ...det, current, latest: picked.latest }
+}
+
+/**
+ * TV/PC 连到「fnOS 后端」时，查一下 NAS 上有没有新版（**只读提示**）。
+ *
+ * <p>为什么不在客户端直接升：`/app-center/*` 与 `update/task` 只在 fnOS 网关
+ * （5666/8666）同源下可用，TV/PC 连的是 30010，拿不到也不该拿应用中心的写权限。
+ *
+ * <p>为什么不在 meowd 里查：meowd 的 reqwest **没开 TLS**（为了 2MB 静态体积），
+ * 访问不了 jsDelivr/raw.githubusercontent；而 TV/PC 的 WebView 本来就具备
+ * 与「运行时模块」检查相同的外网能力，放在客户端查零成本。
+ */
+export async function checkBackendFpk(): Promise<{
+  current: string
+  latest: FpkLatest | null
+} | null> {
+  const info = await shellInfo()
+  if (!info || !info.version || !info.arch) return null
+  try {
+    const indexes = await fetchFpkIndexesCached(info.version)
+    const picked = pickLatestFromIndexes(indexes, info, info.version)
+    if (picked && 'latest' in picked) return { current: info.version, latest: picked.latest }
+    return { current: info.version, latest: null }
+  } catch {
+    return null
+  }
+}
