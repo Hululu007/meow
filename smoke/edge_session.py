@@ -117,7 +117,37 @@ class EdgeSession:
             except Exception:
                 pass
             self.proc = None
+        # ★ 上面那条只对"launcher 还活着"有效：Edge 的启动器进程会先退出、
+        #   把工作交给浏览器主进程，此时 taskkill /PID <launcher> /T 找不到树根，
+        #   整棵树残留（2026-11-16 实测：多个实例留下 38 个进程在后台放音，
+        #   用户听到"多路视频在响"）。按 --user-data-dir 命令行匹配杀是唯一
+        #   与启动器生命周期无关的判据。
+        self._kill_by_profile()
         self._rm_profile()
+
+    def _kill_by_profile(self) -> None:
+        """按本实例 profile 的**唯一目录名**匹配杀所有 msedge 进程。
+
+        每个实例的 profile 目录名唯一（prefix-pid-ms），不会误伤别的实例。
+        ★ 不能用完整 `--user-data-dir=<路径>` 前缀匹配：Edge 给该值**加了引号**
+          （实测 `--user-data-dir="P:\\..."`，连主进程也带），前缀匹配恒为 0 命中。
+          只匹配目录名片段（不含盘符/反斜杠/引号）最稳。
+        """
+        if sys.platform != "win32":
+            return
+        token = os.path.basename(self.profile)
+        script = (
+            "$p = Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | "
+            "Where-Object { $_.CommandLine -and $_.CommandLine.Contains('%s') }; "
+            "$p | ForEach-Object { taskkill /PID $_.ProcessId /T /F 2>&1 | Out-Null }"
+        ) % token
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                capture_output=True, timeout=60,
+            )
+        except Exception:
+            pass
 
     def _rm_profile(self) -> None:
         for _ in range(3):
