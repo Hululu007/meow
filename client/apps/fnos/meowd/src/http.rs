@@ -20,7 +20,40 @@ pub struct AppState {
     pub plugins: plugins::Registry,
 }
 
+/// TCP（30010）入口。
+///
+/// <p>fpk 的 web 构建用 `--base=/app/meow/`（子路径部署要求，见 build-fpk.sh），
+/// index.html 里所有资源引用都带前缀。但 TCP 监听一直是**裸路径**路由：
+/// 直接打开 `http://<IP>:30010/` 时，浏览器去取 `/app/meow/assets/*.js`，
+/// 被 SPA fallback 回 index.html（200 text/html）→ HTML 被当 JS 执行报错 →
+/// **纯黑屏**（2026-11-16 用户实测 OECT，手机浏览器全黑）。
+///
+/// <p>所以 TCP 上同时提供带前缀的入口：根路径 307 到 `/app/meow/`，
+/// 前缀路由剥掉后再交给同一套应用路由（assets 正常命中）；裸路径照旧
+/// （`/api`、`/assets` 直连仍可用，不破坏已有脚本与探针）。
 pub fn build_router(state: AppState) -> Router {
+    let inner = app_routes(state);
+    let nested = format!("{GATEWAY_PREFIX}/");
+    Router::new()
+        .route("/", get(app_root_redirect))
+        .route(GATEWAY_PREFIX, get(app_root_redirect))
+        .nest_service(nested.as_str(), inner.clone())
+        .merge(inner)
+}
+
+/// 根路径 → 带前缀入口。
+///
+/// ★ 只在 TCP 路由里挂：网关路由（unix）收到的是**已剥掉前缀**的路径，
+///   若那里也跳 `/app/meow/` 会 302 回网关前缀、再剥前缀、再 302 —— 死循环。
+async fn app_root_redirect() -> Response {
+    Response::builder()
+        .status(StatusCode::TEMPORARY_REDIRECT)
+        .header(header::LOCATION, format!("{GATEWAY_PREFIX}/"))
+        .body(Body::empty())
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+fn app_routes(state: AppState) -> Router {
     let cfg = state.cfg.clone();
     // SPA：命中文件就发文件，否则回 index.html（前端是 hash/history 路由）
     let static_svc = ServeDir::new(cfg.web_dir.clone())
@@ -117,7 +150,9 @@ pub const GATEWAY_PREFIX: &str = "/app/meow";
 /// 实测不能改用 `Router::layer`：axum 的 layer 是路由命中之后才执行，
 /// `/app/meow/healthz` 那时已经落到 ServeDir 兜底并返回 index.html 了。
 pub fn build_gateway_router(state: AppState) -> Router {
-    let inner = build_router(state).layer(middleware::from_fn(set_forwarded_prefix));
+    // ★ 用 app_routes 而不是 build_router：后者带"根路径 307 到 /app/meow/"，
+    //   而网关收到的是**已剥前缀**的路径，"/" 再跳回前缀会 302 死循环。
+    let inner = app_routes(state).layer(middleware::from_fn(set_forwarded_prefix));
     let nested = format!("{GATEWAY_PREFIX}/");
     Router::new()
         // iframe 入口 url 不带尾斜杠（与 FnDepot 一致），统一 301 过去
@@ -183,6 +218,10 @@ mod tests {
         let web = root.join("web");
         let _ = std::fs::create_dir_all(&web);
         std::fs::write(web.join("index.html"), "<html>meow</html>").unwrap();
+        // TCP 前缀路由的判据：真实资源文件（不是 SPA fallback 的 index.html）
+        let assets = web.join("assets");
+        let _ = std::fs::create_dir_all(&assets);
+        std::fs::write(assets.join("probe.js"), "console.log('meow')").unwrap();
         let cfg = Config {
             bind: "127.0.0.1".to_string(),
             shell_port: 0,
@@ -243,5 +282,50 @@ mod tests {
     async fn gateway_rejects_prefix_collision() {
         let res = request("/app/meowx").await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ---------------- TCP（30010）入口：带前缀的 web 资源必须真命中文件 ----------------
+    //
+    // 2026-11-16 用户实测：直接开 `http://<IP>:30010/` 黑屏。根因是 fpk 的 web
+    // 构建 base=/app/meow/，index 引用 `/app/meow/assets/*`，而 TCP router 只有
+    // 裸路径 → 被 SPA fallback 成 index.html（200 text/html），浏览器把 HTML
+    // 当 JS 执行报错 → 全黑。
+
+    async fn request_tcp(uri: &str) -> Response {
+        build_router(test_state())
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn tcp_root_redirects_to_app_prefix() {
+        let res = request_tcp("/").await;
+        assert_eq!(res.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(res.headers().get(header::LOCATION).unwrap(), "/app/meow/");
+    }
+
+    #[tokio::test]
+    async fn tcp_serves_assets_behind_prefix() {
+        let res = request_tcp("/app/meow/assets/probe.js").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let ct = res
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.contains("javascript"), "content-type 应为 JS，实际 {ct}");
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        assert_eq!(bytes.as_ref(), b"console.log('meow')");
+    }
+
+    #[tokio::test]
+    async fn tcp_keeps_bare_paths_for_api_and_assets() {
+        // 裸 /healthz 仍可用（探针/脚本依赖）
+        let res = request_tcp("/healthz").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        // 裸 /assets 也仍可用（不破坏已有直连）
+        let res = request_tcp("/assets/probe.js").await;
+        assert_eq!(res.status(), StatusCode::OK);
     }
 }
