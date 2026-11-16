@@ -84,7 +84,7 @@ describe('源码门禁', () => {
     // 12/30/60 秒三次只读后端缓存（serverOnly）；fresh 会触发真抓，
     // 播放中反复真抓纯属浪费，所以只留给"手动选源"这一条路径。
     expect(player).toContain("loadDanmaku(url, { serverOnly: true })")
-    expect(player).toContain("loadDanmaku(proxyDanmakuByUrl(item.url), { fresh: true })")
+    expect(player).toContain("loadDanmaku(proxyDanmakuByUrl(item.url), { fresh: true, pick: true })")
     expect(player).toContain('scheduleDmUpgrade')
     expect(player).toContain('dmPendingUpgrade')
     expect(player).toContain('已切换到更全的弹幕源')
@@ -166,6 +166,53 @@ describe('截断总数（X-Danmaku-Total）全链路', () => {
   })
 })
 
+describe('首屏空 → 后台补全能救回来（2026-11-16 复查）', () => {
+  const player = read('src/components/player/VideoPlayer.vue')
+
+  it('从 0 条补上时直接应用，不受 1.2 倍门槛限制', () => {
+    // isBetterDanmaku 对 current<=0 返回 false（它是给"换更全的"设计的），
+    // 首屏全源失败时后台补全拿到 4 万条也应用不了 → 整集没弹幕。
+    expect(player).toContain('const fillEmpty = dmCount.value === 0 && usable > 0')
+    expect(player).toContain('if (fillEmpty || safe) applyDmUpgrade(up)')
+  })
+
+  it('首屏空也要安排检查点（不能只在非空时排）', () => {
+    // 原写法把 scheduleDmUpgrade 放在 `if (list.length && !empty)` 里，
+    // 首屏空就一个检查点都没有，只能等 30 秒那一次重试。
+    expect(player).toContain(
+      'if (list.length && !empty) {\n      void putLocalDanmaku(url, xml, list.length, src)\n    }',
+    )
+    expect(player).toMatch(/scheduleDmUpgrade\(url\)\n    \/\/ 手动换源/)
+  })
+
+  it('升级成功后清掉空态与 30 秒重试', () => {
+    const i = player.indexOf('function applyDmUpgrade')
+    expect(i).toBeGreaterThan(-1)
+    const body = player.slice(i, i + 900)
+    expect(body).toContain('clearDmRetry()')
+  })
+})
+
+describe('聚合结果不被单源覆盖（2026-11-16 复查）', () => {
+  const backend = readFileSync(
+    join(ROOT, '..', '..', '..', 'server', 'host', 'src', 'shared', 'ApiServer.java'),
+    'utf8',
+  )
+
+  it('缓存已是聚合时，单源要 2 倍才覆盖（否则同一集来回震荡）', () => {
+    /*
+     * 腾讯 54535 vs 聚合 42293 = 1.29 倍会通过原来的 1.2 倍门槛，
+     * 把缓存覆盖回单源；下一次进来可用条数又从 42292 掉到 28046。
+     */
+    const i = backend.indexOf('private static String tellLaterIfBetter')
+    expect(i).toBeGreaterThan(-1)
+    const body = backend.slice(i, i + 2800)
+    expect(body).toContain('String curSrc = DANMAKU_SRC_CACHE.get(cacheKey)')
+    expect(body).toContain('"danmu_api".equals(curSrc)')
+    expect(body).toContain('cur * 2.0')
+  })
+})
+
 describe('后台补全检查点（2026-11-16 前移）', () => {
   const player = read('src/components/player/VideoPlayer.vue')
 
@@ -185,5 +232,55 @@ describe('后台补全检查点（2026-11-16 前移）', () => {
     // 两处清理都必须遍历数组（单变量写法会漏掉其余四个定时器）
     expect((player.match(/for \(const t of dmUpgradeTimers\) (window\.)?clearTimeout\(t\)/g) || []).length)
       .toBeGreaterThanOrEqual(2)
+  })
+
+  it('检查点不能因「已升级过」短路（否则锁死在 8 秒那份）', () => {
+    /*
+     * 聚合源 7~14 秒才写完缓存，8 秒那轮可能拿到不完整的一份。原来这里
+     * 判 dmUpgradeApplied 直接 return，后面 12/16/22/30 全被跳过，用户
+     * 永远停在偏小的结果上。是否替换应交给 loadDanmaku 的 1.2 倍门槛。
+     */
+    const i = player.indexOf('function scheduleDmUpgrade')
+    const body = player.slice(i, i + 1600)
+    expect(body).not.toContain('dmUpgradeApplied.value) return')
+    expect(body).toContain('if (props.danmakuUrl !== url || dmOverrideUrl.value) return')
+  })
+})
+
+describe('手选弹幕必须真正生效（2026-11-16 定因）', () => {
+  const player = read('src/components/player/VideoPlayer.vue')
+
+  it('pickDm 必须带 pick 标记，不能只带 fresh', () => {
+    /*
+     * fresh 分支原本是给「后台补全」设计的：判据是
+     *   `!empty && better && !dmOverrideUrl`
+     * 而 pickDm 第一行就把 dmOverrideUrl 设成所选 URL —— 只带 fresh 时
+     * 这份结果永远进不了 applyDmList，用户看到的就是「选中后弹幕没反应」。
+     * 2026-11-15 的 d3d30b4 把 pickDm 从普通路径改成 fresh 时引入。
+     */
+    expect(player).toContain('{ fresh: true, pick: true }')
+    expect(player).toContain('const pick = opts.pick === true')
+  })
+
+  it('pick 分支先于后台补全分支，且无条件 apply', () => {
+    const i = player.indexOf('async function loadDanmaku(')
+    expect(i).toBeGreaterThan(-1)
+    const body = player.slice(i, i + 6000)
+    const pickAt = body.indexOf('if (pick) {')
+    const upgradeAt = body.indexOf('if (fresh || serverOnly) {')
+    expect(pickAt).toBeGreaterThan(-1)
+    expect(upgradeAt).toBeGreaterThan(-1)
+    expect(pickAt).toBeLessThan(upgradeAt)
+    const pickBody = body.slice(pickAt, upgradeAt)
+    expect(pickBody).toContain('applyDmList(list, totalHeader)')
+    // 手选不看条数、不受 dmOverrideUrl 门槛，也不等安全点
+    expect(pickBody).not.toContain('dmOverrideUrl')
+    expect(pickBody).not.toContain('isBetterDanmaku')
+    expect(pickBody).not.toContain('isSafeDanmakuSwap')
+  })
+
+  it('pick 也要显式收掉 loading（fresh 原本不设）', () => {
+    expect(player).toMatch(/if \(!fresh \|\| pick\) dmLoading\.value = false/)
+    expect(player).toMatch(/if \(\(!fresh && !serverOnly\) \|\| pick\)/)
   })
 })

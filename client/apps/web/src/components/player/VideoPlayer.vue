@@ -3679,9 +3679,10 @@ async function pickDm(item: DanmakuCandidate) {
   // ★ 手选必须 fresh：普通路径先读 IndexedDB（key=URL），若这个 URL 的缓存
   //   是上一部剧写入的（聚合源同集同 URL、或后端 cacheKey 撞名），读回来的
   //   就是旧剧的弹幕——用户看到"选了 A 剧显示 B 剧弹幕，清缓存才正常"。
-  //   fresh 同时跳过本地与后端缓存，取所选源这一集的实时弹幕，
-  //   加载完成后会把正确内容写回缓存（loadDanmaku 内部 putLocalDanmaku）。
-  await loadDanmaku(proxyDanmakuByUrl(item.url), { fresh: true })
+  //   fresh 同时跳过本地与后端缓存，取所选源这一集的实时弹幕。
+  //   pick=true 让结果**无条件生效**（fresh 本身是给后台补全设计的，
+  //   带 dmOverrideUrl 门槛会把这次手选结果丢掉）；非空时写回本地缓存。
+  await loadDanmaku(proxyDanmakuByUrl(item.url), { fresh: true, pick: true })
 }
 
 function clearDmOverride() {
@@ -4438,6 +4439,7 @@ const dmSourceLabel = computed(() => {
   const map: Record<string, string> = {
     iqiyi: '爱奇艺',
     tencent: '腾讯',
+    '360': '360',
     danmu_api: '弹幕聚合',
     aggregator: '第三方站',
     unknown: '未知来源',
@@ -4521,7 +4523,7 @@ function applyDmList(raw: Danmu[], totalHint = 0) {
 
 async function loadDanmaku(
   url: string,
-  opts: { fresh?: boolean; serverOnly?: boolean } = {},
+  opts: { fresh?: boolean; serverOnly?: boolean; pick?: boolean } = {},
 ) {
   const fresh = opts.fresh === true
   /**
@@ -4531,7 +4533,18 @@ async function loadDanmaku(
    * 而 fresh=1 会绕过缓存重抓（重新"先到先用"，又拿回直连的小份）。
    */
   const serverOnly = opts.serverOnly === true
-  if (!fresh && !serverOnly) {
+  /**
+   * 用户手选了一条源（`pickDm`）。
+   *
+   * 手选也带 fresh（必须绕过缓存，否则同 URL 的旧剧副本会串片），但它的
+   * **结果必须无条件采用**——不能走下面「后台补全」那套门槛：
+   * 那里要求「新结果 ≥1.2 倍才算更好」且「dmOverrideUrl 为空」，而 pickDm
+   * 刚把 dmOverrideUrl 设成所选 URL，于是手选结果永远被丢弃，表现为
+   * 「选中后弹幕没反应、条数不变」（2026-11-16 定因；2026-11-15 的
+   * d3d30b4 把 pickDm 从普通路径改成 fresh 时引入，普通路径是直接 apply 的）。
+   */
+  const pick = opts.pick === true
+  if ((!fresh && !serverOnly) || pick) {
     dmLoading.value = true
     clearDmRetry()
   }
@@ -4575,10 +4588,32 @@ async function loadDanmaku(
     const list: Danmu[] = parseDanmakuXml(xml)
 
     /*
-     * 后台补全检查：首屏之后 12 秒再问一次，如果新结果明显更全（≥1.2 倍）就
+     * 手选：用户明确点了这条源，直接整份采用。
+     * 不看条数多少（选了就得用）、不等安全点（点击本身就是用户的意图）、
+     * 也不受 dmOverrideUrl 门槛（它就是这次手选设的）。
+     */
+    if (pick) {
+      dmLocalCount.value = 0
+      // 手选走的是后端 url 直取分支，没有 X-Danmaku-Source 头；
+      // 用 pickDm 记住的来源 key 兜底，面板才不显示"未知来源"。
+      dmSource.value = (src && src !== 'none' ? src : '') || dmManualSource.value
+      applyDmList(list, totalHeader)
+      dmEmpty.value = list.length === 0 || empty
+      dmRetried = false
+      // 与普通路径一致：非空才存，空结果多是上游抖动，存了下次也读到空
+      if (list.length && !empty) {
+        void putLocalDanmaku(url, xml, list.length, src)
+      }
+      const pv = video.value
+      if (pv) dm.value?.sync(pv.currentTime)
+      return
+    }
+
+    /*
+     * 后台补全检查：首屏之后按检查点再问一次，如果新结果明显更全（≥1.2 倍）就
      * 在安全点整份替换，而不是只写缓存。
      *
-     * 安全点：currentTime < 15 秒，或用户刚主动 seek。播放中途无提示地
+     * 安全点：暂停时任意位置、开头 60 秒，或用户刚主动 seek。播放中途无提示地
      * 换会让弹幕突然变密/位置跳动，比少几千条更糟。
      *
      * ★ 比较口径是**按片长过滤后的可用条数**（2026-11-16）：聚合源与直连源
@@ -4587,12 +4622,20 @@ async function loadDanmaku(
      *   真正更全的合并结果丢掉。
      */
     if (fresh || serverOnly) {
-      const better = isBetterDanmaku(dmCount.value, filterByDuration(list).length)
-      if (!empty && better && !dmOverrideUrl.value) {
+      const usable = filterByDuration(list).length
+      /*
+       * 从 0 条补上：首屏全源失败（上游抖动/后端 30 秒负缓存）时 dmCount 是 0，
+       * isBetterDanmaku 对 current<=0 一律返回 false —— 后台补全拿到 4 万条也
+       * 应用不了，用户整集看不到弹幕。这种"从无到有"直接应用：
+       * 不会让已在场的弹幕跳动，用户只会觉得"终于有了"。
+       */
+      const fillEmpty = dmCount.value === 0 && usable > 0
+      const better = isBetterDanmaku(dmCount.value, usable)
+      if (!empty && (fillEmpty || better) && !dmOverrideUrl.value) {
         const up = { url, xml, count: list.length, total: totalHeader, source: src }
         const v = video.value
         const safe = isSafeDanmakuSwap(v?.currentTime || 0, dmLastSeekAt, Date.now(), v?.paused === true)
-        if (safe) applyDmUpgrade(up)
+        if (fillEmpty || safe) applyDmUpgrade(up)
         else dmPendingUpgrade.value = up
       }
       return
@@ -4604,8 +4647,13 @@ async function loadDanmaku(
     // 非空才存：空结果多半是上游抖动，存下来会让下次也读到空
     if (list.length && !empty) {
       void putLocalDanmaku(url, xml, list.length, src)
-      scheduleDmUpgrade(url)
     }
+    /*
+     * 空结果**也要**安排检查点（2026-11-16 复查）：原来只在非空时排，
+     * 首屏空 → 8~30 秒的后台补全永远取不到，只能等 30 秒那一次重试；
+     * 重试也空就整集没弹幕。现在交给检查点 + fillEmpty 兜住。
+     */
+    scheduleDmUpgrade(url)
     // 手动换源或切换剧集后，从当前进度继续显示，不从头开始
     const v = video.value
     if (v) dm.value?.sync(v.currentTime)
@@ -4623,7 +4671,14 @@ async function loadDanmaku(
       dmEmpty.value = false
     }
   } catch {
-    if (fresh) return
+    if (fresh) {
+      /*
+       * 手选失败要说话：面板已经关了，静默 return 用户会以为"点了没反应"。
+       * 保留当前在场的弹幕（可能是自动源那份），只提示这次没取到。
+       */
+      if (pick) showDmHint('这个弹幕源暂时取不到，换个源试试')
+      return
+    }
     // 网络彻底失败（断网/后端挂了）：再试一次本地。
     // 前面已经查过，但那次可能因为 IndexedDB 还没打开而返回 null。
     const fallback = await getLocalDanmaku(url)
@@ -4643,7 +4698,8 @@ async function loadDanmaku(
       dmSource.value = ''
     }
   } finally {
-    if (!fresh) dmLoading.value = false
+    // pick 虽然带 fresh（绕过缓存），但它是用户点出来的请求，必须收掉 loading
+    if (!fresh || pick) dmLoading.value = false
   }
 }
 
@@ -4672,12 +4728,17 @@ function scheduleDmUpgrade(url: string) {
    * 已有缓存（防止把聚合覆盖回腾讯），对"缓存已空"才有意义。
    *
    * 为什么是五个点：见 DM_UPGRADE_CHECKPOINTS 的注释。命中更全的就走
-   * 安全点替换（暂停时任意位置 / 开头 60 秒 / 刚 seek），之后各点自动短路。
+   * 安全点替换（暂停时任意位置 / 开头 60 秒 / 刚 seek）。
+   *
+   * ★ 不能因 dmUpgradeApplied 短路（2026-11-16 复查）：聚合源 7~14 秒才写完
+   *   缓存，8 秒那一轮可能只拿到不完整的一份；一旦置位就永久跳过后面四点，
+   *   用户会锁死在偏小的结果上。现在每轮都问，是否替换交给 loadDanmaku 的
+   *   1.2 倍门槛（42218 → 42293 过不了门槛，不会重复换、不会来回跳）。
    */
   for (const at of DM_UPGRADE_CHECKPOINTS) {
     dmUpgradeTimers.push(
       window.setTimeout(() => {
-        if (props.danmakuUrl !== url || dmOverrideUrl.value || dmUpgradeApplied.value) return
+        if (props.danmakuUrl !== url || dmOverrideUrl.value) return
         void loadDanmaku(url, { serverOnly: true })
       }, at),
     )
@@ -4698,6 +4759,13 @@ function applyDmUpgrade(up: {
   dmLocalCount.value = 0
   dmUpgradeApplied.value = true
   dmPendingUpgrade.value = null
+  /*
+   * 清掉「空弹幕 30 秒重试」。升级成功后它已经没用了；不清的话 30 秒后
+   * 还会再走一遍普通路径，白闪一下（而且 dmEmpty 也会被它重新写回）。
+   * clearDmRetry 同时把 dmEmpty 置 false —— 从 0 条补上 4 万条时，
+   * 空态文案必须一起消失，否则「有弹幕却显示来源不可用」。
+   */
+  clearDmRetry()
   // 升级后的这份也可能触顶：带上 total，否则 "N+" 会悄悄退化成 "N"
   applyDmList(list, up.total)
   const v = video.value
@@ -4764,6 +4832,14 @@ onMounted(() => {
   v?.addEventListener('pause', () => {
     playing.value = false
     dm.value?.pause()
+    /*
+     * 暂停是「无感替换」的最佳时机（2026-11-16 复查）：播放中途拿到的更全
+     * 结果会挂起等 seek，但用户一暂停画面就静止了，此时整份换上不会造成
+     * "弹幕突然变密/位置跳动"。上方注释一直写"暂停或拖动后自动生效"，
+     * 实际只实现了拖动 —— 这里补上暂停这条。
+     */
+    const dmPend = dmPendingUpgrade.value
+    if (dmPend && !dmOverrideUrl.value) applyDmUpgrade(dmPend)
     // ★ 用户主动暂停 → 撤销"seek 后续播"的意图。seeked 事件在 hls 拉
     //   分片时可能迟到几百毫秒，期间用户按了暂停的话，resumeAfterSeek
     //   还挂着就会把视频强拉回播放（2026-11-16 横滑手势实测踩过：
@@ -5470,7 +5546,7 @@ defineExpose({
           </template>
           <template v-else>
             弹幕 {{ dmCount }}<template v-if="dmTotal > dmCount"> / {{ dmTotal }}{{ dmTruncated ? '+' : '' }}</template> 条<template v-if="dmLoading"> · 加载中…</template>
-            <template v-else-if="dmSource"> · {{ dmSourceLabel }}</template>
+            <template v-else-if="dmSourceLabel"> · {{ dmSourceLabel }}</template>
           </template>
         </div>
       </div>
@@ -6774,7 +6850,7 @@ defineExpose({
           <template v-if="dmOverrideUrl">已手动指定弹幕源 · {{ dmCount }} 条</template>
           <template v-else-if="dmEmpty && !dmLoading">当前 0 条（来源暂不可用）</template>
           <template v-else>
-            当前 {{ dmCount }}<template v-if="dmTotal > dmCount"> / {{ dmTotal }}{{ dmTruncated ? '+' : '' }}</template> 条<template v-if="dmSource"> · {{ dmSourceLabel }}</template>
+            当前 {{ dmCount }}<template v-if="dmTotal > dmCount"> / {{ dmTotal }}{{ dmTruncated ? '+' : '' }}</template> 条<template v-if="dmSourceLabel"> · {{ dmSourceLabel }}</template>
           </template>
         </span>
         <button

@@ -7996,6 +7996,8 @@ public class ApiServer {
         int cn = countTags(candidate);
         int cur = countTags(current);
         boolean isAgg = "aggregator".equals(src);
+        String cacheKey = "dm|" + clean + "|" + ep;
+        String curSrc = DANMAKU_SRC_CACHE.get(cacheKey);
         if (cur > 0) {
             if (isAgg) {
                 /*
@@ -8008,18 +8010,32 @@ public class ApiServer {
                  * 下限 0.5 倍防"聚合只返回几百条"时反向劣化。
                  */
                 if (cn < (int) (cur * 0.5)) return null;
+            } else if ("danmu_api".equals(curSrc)) {
+                /*
+                 * ★ 聚合结果不被单源覆盖（2026-11-16 复查）。
+                 *
+                 * 聚合是多站合并，语义上就比任一单源更全；而单源的"总条数"
+                 * 里含大量超出片长的死数据。原来只按 1.2 倍总条数判，腾讯
+                 * 54535 vs 聚合 42293（1.29 倍）会把聚合**覆盖回单源** →
+                 * 同一集每次进来拿到的份都不一样（一次可用 42292，一次
+                 * 28046），前端还会因"没更全"而不升级。
+                 *
+                 * 留 2 倍出口只是兜底"聚合异常地少"（比如只回几百条），
+                 * 避免聚合一旦写入就永久锁死。
+                 */
+                if (cn < (int) (cur * 2.0)) return null;
             } else if (cn < (int) (cur * 1.2)) {
                 return null;
             }
         } else if (cn <= 0) {
             return null;
         }
-        String cacheKey = "dm|" + clean + "|" + ep;
         DANMAKU_CACHE.put(cacheKey, candidate, 30 * 60_000L);
         DANMAKU_SRC_CACHE.put(cacheKey, sourceTagOf(src), 30 * 60_000L);
         danmakuDiskPut(cacheKey, candidate);
         System.err.println("[danmaku] bg-upgrade " + clean + " ep" + ep
-                + " " + src + ": " + cur + " -> " + cn);
+                + " " + src + ": " + cur + " -> " + cn
+                + (curSrc == null ? "" : " (was " + curSrc + ")"));
         return candidate;
     }
 

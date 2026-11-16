@@ -105,8 +105,10 @@ describe('问题5：偶发播放失败', () => {
   it('手动选弹幕必须 fresh（否则吃到旧剧缓存，2026-11-15 修1）', () => {
     const i = code.indexOf('async function pickDm')
     expect(i).toBeGreaterThan(-1)
-    const body = code.slice(i, i + 800)
-    expect(body).toContain('loadDanmaku(proxyDanmakuByUrl(item.url), { fresh: true })')
+    const body = code.slice(i, i + 900)
+    // pick=true 是 2026-11-16 补的：只带 fresh 会被后台补全的
+    // 「!dmOverrideUrl」门槛丢掉，手选表现为"点了没反应"。
+    expect(body).toContain('loadDanmaku(proxyDanmakuByUrl(item.url), { fresh: true, pick: true })')
   })
 })
 
