@@ -7,6 +7,7 @@ mod plugins;
 mod proxy;
 mod supervisor;
 mod upgrade;
+mod version;
 
 use std::path::PathBuf;
 use std::sync::Arc;

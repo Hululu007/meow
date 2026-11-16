@@ -63,6 +63,15 @@ if [ ! -d "$DEX2JAR_DIR/lib" ]; then
     bash "$SRC/deploy/scripts/fetch-dex2jar.sh" "$DEX2JAR_DIR"
 fi
 [ -d "$DEX2JAR_DIR/lib" ] || { echo "缺少 $DEX2JAR_DIR/lib" >&2; exit 1; }
+# ★ 结构化门禁：dex2jar 必须正好是裁剪后的 13 个 jar。
+#   不拦的话，手工放进来的完整包会让 fpk 一夜变大 18MB —— 1.1.7 就是这样涨的
+#   （ANTLR 工具链 + icu4j 全被打进包），而当时没有任何体积/白名单检查。
+#   白名单与判据见 deploy/scripts/fetch-dex2jar.sh。
+D2J_N="$(find "$DEX2JAR_DIR/lib" -maxdepth 1 -name '*.jar' | wc -l)"
+[ "$D2J_N" -eq 13 ] || {
+    echo "dex2jar lib 里有 $D2J_N 个 jar（应为 13）——先跑 deploy/scripts/fetch-dex2jar.sh 裁剪" >&2
+    exit 1
+}
 
 echo "[2/5] build meowd (musl, platform=$PLATFORM, docker $RUST_IMAGE)"
 if [ "$PLATFORM" = "arm" ]; then
@@ -111,6 +120,12 @@ fi
 # 包内 app/ 的内容会落到 $TRIM_APPDEST
 mkdir -p "$PKG/app/bin" "$PKG/app/web" "$PKG/app/seed/apiserver" "$PKG/app/plugins"
 install -m 0755 "$OUT/meowd" "$PKG/app/bin/meowd"
+# ★ /api/health 的 version 由 meowd **运行时**读这个文件（src/version.rs），不是编译期常量。
+#   这样做是为了让 Cargo.toml 的版本号不再参与编译：否则每发一版都要重编整个 crate
+#   （实测两腿各 33-35s），而版本号本质上只是元数据。
+APP_VER="$(sed -n 's/^version[[:space:]]*=[[:space:]]*//p' "$PKG/manifest" | tr -d '[:space:]')"
+[ -n "$APP_VER" ] || { echo "manifest 里读不到 version" >&2; exit 1; }
+printf '%s\n' "$APP_VER" > "$PKG/app/bin/VERSION"
 test -f "$SRC/client/apps/web/dist/index.html" || {
     echo "缺少 client/apps/web/dist/index.html —— 网页没构建，打出来的包是白屏" >&2
     exit 1
@@ -203,6 +218,16 @@ VER="$(sed -n 's/^version[[:space:]]*=[[:space:]]*//p' "$PKG/manifest" | tr -d '
 mv "$PKG/meow.fpk" "$OUT/meow_${VER}_${PLATFORM}.fpk"
 ls -lh "$OUT/meow_${VER}_${PLATFORM}.fpk"
 
+# ★ 体积绊线（不是设计目标，是"有人又把大依赖打进来"的报警器）：
+#   2026-11-16 实测量级 19.5MiB（dex2jar 裁剪后）。1.1.7 那次没拦，一夜 +18MB。
+FPK_BYTES="$(stat -c%s "$OUT/meow_${VER}_${PLATFORM}.fpk")"
+FPK_MAX_MIB="${FPK_MAX_MIB:-24}"
+if [ "$FPK_BYTES" -gt $((FPK_MAX_MIB * 1048576)) ]; then
+    echo "fpk 体积 $(awk -v b="$FPK_BYTES" 'BEGIN{printf "%.1f", b/1048576}')MiB 超过绊线 ${FPK_MAX_MIB}MiB。" >&2
+    echo "先看是不是有大依赖被顺手打进包（参考 dex2jar 裁剪：deploy/scripts/fetch-dex2jar.sh）。" >&2
+    exit 1
+fi
+
 echo "[5/5] static check"
 FPK="$OUT/meow_${VER}_${PLATFORM}.fpk"
 tar -tzf "$FPK" >/dev/null                       # 至少是合法 tar.gz
@@ -215,6 +240,15 @@ grep -qE "^platform[[:space:]]*=[[:space:]]*$PLATFORM" "$TMPX/manifest" || { ech
 test -f "$TMPX/app/web/index.html" || { echo "包内缺 web/index.html" >&2; exit 1; }
 test -f "$TMPX/app/seed/apiserver/apiserver.jar" || { echo "包内缺 apiserver.jar" >&2; exit 1; }
 test -d "$TMPX/app/seed/apiserver/tools/dex2jar/lib" || { echo "包内缺 dex2jar（JVM dex 源转换需要）" >&2; exit 1; }
+D2J_PKG_N="$(find "$TMPX/app/seed/apiserver/tools/dex2jar/lib" -maxdepth 1 -name '*.jar' | wc -l)"
+[ "$D2J_PKG_N" -eq 13 ] || { echo "包内 dex2jar 有 $D2J_PKG_N 个 jar（应为裁剪后的 13）" >&2; exit 1; }
+# meowd 的 /api/health version 读的是这个文件（src/version.rs）；与 manifest 必须一致，
+# 否则会出现"装的是 1.2.9、health 报别的版本"这类只有用户能看见的漂移。
+test -f "$TMPX/app/bin/VERSION" || { echo "包内缺 bin/VERSION（health 的版本来源）" >&2; exit 1; }
+[ "$(tr -d '[:space:]' < "$TMPX/app/bin/VERSION")" = "$VER" ] || {
+    echo "bin/VERSION 与 manifest version 不一致：$(cat "$TMPX/app/bin/VERSION") vs $VER" >&2
+    exit 1
+}
 if [ "$HAS_SPIDER" = "1" ]; then
     test -f "$TMPX/app/seed/apiserver/spider.jar" || { echo "包内缺 spider.jar" >&2; exit 1; }
 fi

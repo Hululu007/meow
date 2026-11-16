@@ -1,6 +1,7 @@
 [package]
 name = "meowd"
-version = "1.2.9"
+version = "0.0.0"  # 冻结：版本号不参与编译，真实版本由 fpk 的 bin/VERSION 在运行时提供
+# （见 src/version.rs）。改这里会让 meowd 每发一版重编一次，别当发布版本号用。
 edition = "2021"
 description = "猫窝 Meow fnOS 无头壳：静态托管 + /api 反代 + Java 后端守护"
 license = "MIT"

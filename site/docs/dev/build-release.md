@@ -144,8 +144,17 @@ CI 建 draft Release → 人工 Publish → release:published
 - **TV keystore 永不入库**（见 [TV 接入 · 签名](./tv-integration.md#七五签名与分发-密钥备份)）
 - **公开 Release 不允许出现源包文件**：`spider*.jar`、`config.sites.json`、
   `node-payload-danmu.zip` 会被 `publish` 拦下
-- 打 fpk 后**必须回读包内版本串**：CI 解包比对 `manifest`、`ApiServer.class` 与
-  `install_dep_apps`（manifest 与 Cargo 漂移过一次）
+- 打 fpk 后**必须回读包内版本串**：CI 解包比对 `manifest`、`ApiServer.class`、
+  `app/bin/VERSION` 与 `install_dep_apps`（manifest 与 Cargo 漂移过一次）
+- **meowd 的版本号是运行时的**：`/api/health` 读包内 `bin/VERSION`，Cargo 版本冻结在
+  `0.0.0` 且 `bump-version` 不再改它——否则每发一版都要重编整个 crate（两腿各 33-35s）。
+  改了这套机制就必须同步 `build-fpk.sh` 的 `bin/VERSION == manifest version` 断言
+- **dex2jar 只带 13 个 jar**（Dex2jarCmd 可达集）：上游把 ANTLR 工具链 + icu4j 一起发，
+  整包 19.7MB → 裁后 1.5MB。白名单在 `deploy/scripts/fetch-dex2jar.{sh,ps1}`，另需同步
+  `deploy/docker/Dockerfile.apiserver` 与 `build-fpk.sh` 的 jar 数断言；`ci.yml` 有转换冒烟
+- **FnDepot 只保留最近 3 版**（`keep` 输入）：客户端只取"大于当前的最大值"，中间版本
+  无功能作用。`download_url` 必须保持相对路径（gitee 镜像才带包体）；删文件用
+  `git update-index --index-info`（blobless 克隆里 `git rm` 会读不到对象）
 
 ## 七、相关
 

@@ -78,6 +78,11 @@ on:
         required: false
         type: boolean
         default: false
+      keep:
+        description: 'FnDepot 保留最近几个版本（默认 3；清理发生在写索引之后）'
+        required: false
+        type: string
+        default: '3'
   # ★ 索引只在「Release 被 Publish」之后写（2026-11-13 与 sync-packages 对齐）。
   #   全量 release-v<ver> 与单链 fpk-v<ver> 都走这一条；draft 阶段不产生任何
   #   用户可见的索引，Publish 之前随时可以删掉草稿。
@@ -96,6 +101,10 @@ on:
         type: string
       mirror_tag:
         description: '主仓镜像 Release 的 tag（默认用触发 ref 的 tag 名）'
+        required: false
+        type: string
+      keep:
+        description: 'FnDepot 保留最近几个版本（默认 3）'
         required: false
         type: string
     secrets:
@@ -294,20 +303,50 @@ jobs:
       # ★ 自建 jar，不复制现成产物。
       #   2026-11-06 踩过：复制 server/build/ 下 11-03 的旧 jar，health 报 1.0.5。
       #   build-fpk.sh 默认就会跑这个脚本，并且会二次校验 jar 内 VERSION。
+      # ★ 复用已构建产物：同 commit 重跑、或两腿里后跑的那条腿直接命中。
+      #   · apiserver.jar 按源码指纹缓存。VERSION 串在 ApiServer.java 里，版本一变指纹就变，
+      #     所以缓存不可能把"旧版本的 jar"带进新包；build-fpk.sh 还会二次断言 jar 内 VERSION。
+      #   · dex2jar 目录按 fetch 脚本指纹缓存：省掉每次 20MB 下载（裁剪白名单也在那个脚本里，
+      #     白名单一变 key 就变，不会用到旧的全量包）。
+      - name: 缓存 apiserver.jar 与 dex2jar
+        id: buildcache
+        uses: actions/cache@v4
+        with:
+          path: |
+            server/build/plugins/apiserver/apiserver.jar
+            server/tools/dex2jar
+          key: jar-d2j-${{ hashFiles('server/host/src/**','server/host/libs/**','server/build-plugin-linux.sh','deploy/scripts/fetch-dex2jar.sh') }}
+
       - name: 构建 apiserver.jar（源码编译）
+        if: steps.buildcache.outputs.cache-hit != 'true'
         run: bash server/build-plugin-linux.sh
 
       # meowd 的 cargo 编译是单腿最大开销（实测 x86 78s、arm 83~102s，占整条
       # fpk 链一半以上）。缓存 CARGO_HOME（crates 索引与包）与 target（增量产物）：
       # 第二次起只重编改动的 crate。
-      # key 跟着 Cargo.lock 走；restore-keys 兜住"加了依赖"的场景（能复用大部分）。
+      # ★ key 不能用 hashFiles(Cargo.lock)：Cargo.lock 里 `name = "meowd"` 那条的 version
+      #   以前跟着发版走，会让**每一版都 miss 并存一份 ~79MB 的新缓存**（2026-11-16 实测
+      #   累积 14 条 / 1.08GB，会挤掉 PC / 插件的缓存）。这里先把它归一化再 hash。
+      - name: 计算 cargo 缓存指纹（剔除本包版本号）
+        id: lockfp
+        shell: bash
+        run: |
+          set -euo pipefail
+          FP="$(awk '
+            /^name = "meowd"$/ { inmeowd = 1; print; next }
+            inmeowd && /^version = / { print "version = \"0.0.0\""; inmeowd = 0; next }
+            { print }
+          ' client/apps/fnos/meowd/Cargo.lock | sha256sum | cut -c1-40)"
+          echo "fp=$FP" >> "$GITHUB_OUTPUT"
+          echo "cargo-lock 指纹: $FP"
+
       - name: 缓存 cargo 依赖与增量产物
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/meow/cargo-home
             ~/.cache/meow/cargo-target-${{ matrix.platform }}
-          key: cargo-${{ matrix.platform }}-${{ hashFiles('client/apps/fnos/meowd/Cargo.lock') }}
+          key: cargo-${{ matrix.platform }}-${{ steps.lockfp.outputs.fp }}
           restore-keys: |
             cargo-${{ matrix.platform }}-
 
@@ -333,6 +372,8 @@ jobs:
           OUT: ${{ runner.temp }}/out-${{ matrix.platform }}
           PLATFORM: ${{ matrix.platform }}
           VERSION: ${{ needs.plan.outputs.version }}
+          # apiserver.jar 命中缓存时复用（build-fpk.sh 会强制校验 jar 内 VERSION）
+          SKIP_JAR_BUILD: ${{ steps.buildcache.outputs.cache-hit == 'true' && '1' || '0' }}
           # CI 直连 Docker Hub；daocloud 镜像站只在 NAS 上有意义
           RUST_IMAGE: docker.io/library/rust:1-alpine
         run: |
@@ -801,12 +842,21 @@ jobs:
           fi
           D="$RUNNER_TEMP/FnDepot"
           AUTH="https://x-access-token:${TOKEN}@github.com/upchr/FnDepot.git"
-          git clone "$AUTH" "$D" || fail "克隆 upchr/FnDepot 失败（检查 PAT 是否过期/无权限）"
-          # 立刻把 token 从 remote 里摘掉，避免后续日志/配置泄露；
-          # 之后的 fetch/push 都显式带 AUTH（GITHUB_TOKEN 推不了别的仓库）。
-          git -C "$D" remote set-url origin "https://github.com/upchr/FnDepot.git"
-          git -C "$D" fetch "$AUTH" main || fail "同步 FnDepot 远端索引失败"
-          git -C "$D" reset --hard FETCH_HEAD || fail "对齐远端 main 失败"
+          # ★ 不整仓 clone：仓库里 28 个 fpk（842MB）对写索引毫无用处——我们只需要
+          #   fnpack.json，再把自己那两个新包 `git add` 进去。
+          #   --filter=blob:none 让 git 只拉树、不拉历史 blob；--depth=1 不拉历史提交；
+          #   sparse-checkout 把 meow/*.fpk 排除出工作树。
+          #   实测（2026-11-16）：1.3s / .git 3.7MB（原 842MB / 14s）。
+          #   ★ 包体仍必须留在 **index** 里（源协议要求相对 download_url 指向本仓库），
+          #   所以是"不进工作树"，不是"从仓库删掉"。
+          mkdir -p "$D"
+          git -C "$D" init -q
+          git -C "$D" remote add origin "https://github.com/upchr/FnDepot.git"
+          git -C "$D" config core.sparseCheckout true
+          printf '%s\n' '/*' '!meow/*.fpk' > "$D/.git/info/sparse-checkout"
+          git -C "$D" fetch --depth=1 --filter=blob:none "$AUTH" main \
+            || fail "拉取 FnDepot 索引失败（检查 PAT 是否过期/无权限）"
+          git -C "$D" checkout -q FETCH_HEAD || fail "检出 FnDepot 索引失败"
           git -C "$D" log --oneline -1
           echo "repo=$D" >> "$GITHUB_OUTPUT"
 
@@ -925,6 +975,80 @@ jobs:
           done
           ls -l "$REPO/meow"
 
+      # 只保留最近 keep 版（默认 3）：索引条目与包体文件一起删。
+      #
+      # 为什么 3：客户端只取"大于当前版本的最大值"，中间版本没有功能作用；3 版覆盖
+      # os_min_version 兜底（老系统可能需要低版本）和商店旧索引缓存窗口。1 版没有兜底，
+      # 5 版只是多留 150MB。★ 若以后上调 os_min_version，记得临时把 keep 调大或手工留一版。
+      #
+      # ★ 删文件用 `git update-index --index-info`，不能用 `git rm`：sparse + blob:none
+      #   的克隆里旧包 blob 不在本地，`git rm`/`--force-remove` 会去读对象并报
+      #   "unable to read <sha>"（本地实测踩过）。index-info 只改索引，不碰对象库。
+      - name: 精简旧版本
+        id: depotprune
+        if: steps.depotwrite.outcome == 'success'
+        shell: bash
+        env:
+          REPO: ${{ steps.depot.outputs.repo }}
+          KEEP: ${{ inputs.keep || '3' }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::索引未更新：$*"; exit 1; }
+          cd "$REPO"
+          IDX=fnpack.json
+          KEEP="${KEEP:-3}"
+          case "$KEEP" in ''|*[!0-9]*) fail "keep 必须是正整数：$KEEP" ;; esac
+          [ "$KEEP" -ge 1 ] || fail "keep 至少为 1"
+
+          # tr -d '\r'：Windows 上的 jq 会输出 CRLF，带着 \r 的版本号查 releases 永远查不到
+          # （本地演练实测过）。CI 是 Linux 无所谓，顺手抹掉让本地也能复现。
+          mapfile -t ALL < <(jq -r '.apps.meow.releases | keys[]' "$IDX" | tr -d '\r' | sort -V)
+          total=${#ALL[@]}
+          if [ "$total" -le "$KEEP" ]; then
+            echo "版本数 $total ≤ keep=$KEEP，无需精简"
+            exit 0
+          fi
+          drop_n=$((total - KEEP))
+          DROP=("${ALL[@]:0:drop_n}")
+          KEPT=("${ALL[@]:drop_n}")
+
+          # 收集要删的包体文件（只删 ./meow/ 形态；绝对 URL 指向的 Release 资产不归这里管）
+          TO_DELETE=()
+          for v in "${DROP[@]}"; do
+            while IFS= read -r u; do
+              case "$u" in
+                ./meow/*)
+                  used=0
+                  for k in "${KEPT[@]}"; do
+                    if jq -e --arg v "$k" --arg u "$u" \
+                      '[.apps.meow.releases[$v].packages[].download_url] | index($u) != null' \
+                      "$IDX" >/dev/null; then used=1; break; fi
+                  done
+                  [ "$used" = "1" ] || TO_DELETE+=("${u#./}")
+                  ;;
+              esac
+            done < <(jq -r --arg v "$v" '.apps.meow.releases[$v].packages[]?.download_url // empty' "$IDX" | tr -d '\r')
+          done
+
+          for p in "${TO_DELETE[@]:-}"; do
+            [ -n "$p" ] || continue
+            printf '0 %s\t%s\n' "0000000000000000000000000000000000000000" "$p" \
+              | git update-index --index-info
+            rm -f "$p" 2>/dev/null || true
+          done
+
+          printf '%s\n' "${DROP[@]}" \
+            | jq -R -s 'split("\n") | map(select(length > 0))' > "$RUNNER_TEMP/drop.json"
+          jq --slurpfile drop "$RUNNER_TEMP/drop.json" \
+            '.apps.meow.releases |= with_entries(select(.key as $k | ($drop[0] | index($k)) == null))' \
+            "$IDX" > "$RUNNER_TEMP/fnpack.pruned.json"
+          mv "$RUNNER_TEMP/fnpack.pruned.json" "$IDX"
+
+          # 断言：保留的版本一个不少、删掉的确实不在了
+          jq -e --argjson keep "$KEEP" '.apps.meow.releases | length == $keep' "$IDX" >/dev/null \
+            || fail "精简后版本数与 keep=$KEEP 不一致"
+          echo "已精简：删除 ${DROP[*]}；保留 ${KEPT[*]}（包体删除 ${#TO_DELETE[@]} 个）"
+
       - name: 提交并推送
         id: depotpush
         if: steps.depotwrite.outcome == 'success'
@@ -938,7 +1062,10 @@ jobs:
           fail() { echo "::error::索引未更新：$*"; exit 1; }
           cd "$REPO"
           AUTH="https://x-access-token:${TOKEN}@github.com/upchr/FnDepot.git"
-          git add fnpack.json meow
+          # ★ --sparse：meow/*.fpk 在 sparse-checkout 的排除范围里，普通 `git add meow`
+          #   会忽略它们（文件不进 index，推上去就是"索引有、包体没有"）。
+          #   只显式加本次两个包，避免把工作树里别的意外改动带进来。
+          git add --sparse fnpack.json "meow/meow_${VER}_x86.fpk" "meow/meow_${VER}_arm.fpk"
           # 幂等：同版本重跑且产物没变时不留空提交。
           if git diff --cached --quiet; then
             echo "索引与包体无实质变化，跳过提交"
@@ -988,7 +1115,9 @@ jobs:
           E="$RUNNER_TEMP/FnDepot"
           if [ -n "${DEPOT_TOKEN:-}" ] && [ -d "$E" ]; then
             A="https://x-access-token:${DEPOT_TOKEN}@github.com/upchr/FnDepot.git"
-            git -C "$E" fetch -q "$A" main 2>/dev/null && git -C "$E" show FETCH_HEAD:fnpack.json > "$DEP" 2>/dev/null || true
+            # 与检出时同样的浅克隆 + 无 blob：只取 fnpack.json 这一个文件所在的树
+            git -C "$E" fetch -q --depth=1 --filter=blob:none "$A" main 2>/dev/null \
+              && git -C "$E" show FETCH_HEAD:fnpack.json > "$DEP" 2>/dev/null || true
           fi
 
           [ -s "$MAIN" ] || { warn "读不到主仓索引，跳过一致性比对（上面应已报错）"; exit 0; }
@@ -1018,7 +1147,9 @@ jobs:
           ONLY_DEP="$(comm -13 "$RUNNER_TEMP/v-main.txt" "$RUNNER_TEMP/v-depot.txt" | paste -sd' ' -)"
           ONLY_MAIN="$(comm -23 "$RUNNER_TEMP/v-main.txt" "$RUNNER_TEMP/v-depot.txt" | paste -sd' ' -)"
           [ -z "$ONLY_DEP" ]  || warn "只在 FnDepot 里有的版本：$ONLY_DEP"
-          [ -z "$ONLY_MAIN" ] || warn "只在主仓镜像里有的版本：$ONLY_MAIN"
+          # 主仓镜像保留全部版本、FnDepot 只留最近 keep 版（2026-11-16 起），
+          # 所以"只在主仓有"是预期状态，只打印不告警。
+          [ -z "$ONLY_MAIN" ] || echo "主仓镜像比 FnDepot 多出的历史版本（预期）：$ONLY_MAIN"
 
           echo "两份索引一致：$VER（x86/arm 的 sha256、size、os_min_version 全部相同）"
 

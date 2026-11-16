@@ -17,7 +17,7 @@ pub async fn healthz(State(st): State<AppState>) -> impl IntoResponse {
     Json(json!({
         "ok": true,
         "role": "web",
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": crate::version::get(),
         "deps": st.deps.json(),
         "plugins": plugins::json(&st.plugins),
     }))
@@ -27,7 +27,7 @@ pub async fn shell_info(State(st): State<AppState>) -> impl IntoResponse {
     Json(json!({
         "app": "meow",
         "role": "shell",
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": crate::version::get(),
         "pid": std::process::id(),
         "port": st.cfg.shell_port,
         "apiPort": st.cfg.api_port,
@@ -47,7 +47,7 @@ pub async fn api_health(State(st): State<AppState>) -> Response {
             warn!("backend health probe failed: {e}");
             json!({
                 "ok": false,
-                "version": env!("CARGO_PKG_VERSION"),
+                "version": crate::version::get(),
                 "sites": 0,
                 "ext": 0,
                 "error": format!("backend unreachable: {e}"),
@@ -59,7 +59,7 @@ pub async fn api_health(State(st): State<AppState>) -> Response {
         obj.insert(
             "shell".to_string(),
             json!({
-                "version": env!("CARGO_PKG_VERSION"),
+                "version": crate::version::get(),
                 "pid": std::process::id(),
                 "port": st.cfg.shell_port,
             }),

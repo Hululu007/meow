@@ -78,6 +78,26 @@ jobs:
         working-directory: server/host
         run: python3 test_empty_shell_sites.py
 
+  # dex2jar 被裁到 13 个 jar（见 deploy/scripts/fetch-dex2jar.sh 的注释）。裁剪判据是
+  # "Dex2jarCmd 可达性"，静态判断可能漏；这里用真实 dex 夹具真跑一次转换：
+  # 少一个运行期需要的 jar 时症状是 ClassNotFoundException，只会在用户导入源包时炸。
+  dex2jar:
+    name: dex2jar 裁剪冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: 缓存已裁剪的 dex2jar
+        uses: actions/cache@v4
+        with:
+          path: server/tools/dex2jar
+          key: dex2jar-${{ hashFiles('deploy/scripts/fetch-dex2jar.sh') }}
+      - name: 转换夹具
+        run: bash deploy/scripts/smoke-dex2jar.sh
+
   drpy:
     name: drpy 运行时（npm test）
     runs-on: ubuntu-latest

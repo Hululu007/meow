@@ -21,10 +21,22 @@ FROM eclipse-temurin:17-jdk AS dex2jar
 ARG DEX2JAR_VERSION=2.4
 # 固定版本 + SHA256；不用 apt/curl，避免构建机仓库不可达。
 ADD https://github.com/pxb1988/dex2jar/releases/download/v${DEX2JAR_VERSION}/dex-tools-v${DEX2JAR_VERSION}.zip /tmp/dex2jar.zip
+# ★ 裁到 Dex2jarCmd 实际可达的 13 个 jar（上游把 ANTLR 工具链 + icu4j 一起打了进来，
+#   19.7MB → 1.5MB）。白名单与判据见 deploy/scripts/fetch-dex2jar.sh，改一处必须同步三处：
+#   fetch-dex2jar.sh / fetch-dex2jar.ps1 / 这里，以及 build-fpk.sh 的 13 断言。
+#   jar 名带版本号：升级 DEX2JAR_VERSION 时这里会因数量对不上而失败，不会静默打残包。
 RUN echo "ee7c45eb3c1d2474a6145d8d447e651a736a22d9664b6d3d3be5a5a817dda23a  /tmp/dex2jar.zip" | sha256sum -c - \
  && cd /tmp \
  && jar xf dex2jar.zip \
- && mv "dex-tools-v${DEX2JAR_VERSION}" /opt/dex2jar
+ && mv "dex-tools-v${DEX2JAR_VERSION}" /opt/dex2jar \
+ && cd /opt/dex2jar/lib \
+ && for f in *.jar; do \
+      case "$f" in \
+        antlr-runtime-3.5.2.jar|antlr4-runtime-4.9.3.jar|asm-9.5.jar|asm-analysis-9.5.jar|asm-commons-9.5.jar|asm-tree-9.5.jar|asm-util-9.5.jar|d2j-base-cmd-v2.4.jar|dex-ir-v2.4.jar|dex-reader-api-v2.4.jar|dex-reader-v2.4.jar|dex-tools-v2.4.jar|dex-translator-v2.4.jar) ;; \
+        *) rm -f "$f" ;; \
+      esac; \
+    done \
+ && test "$(ls -1 *.jar | wc -l)" -eq 13
 
 # ---------- 运行 ----------
 FROM ${RUNTIME_BASE}
