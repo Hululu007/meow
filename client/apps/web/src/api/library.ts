@@ -1,4 +1,4 @@
-import { apiBase, request } from './index'
+import { apiBase, isDesktop, request } from './index'
 
 /**
  * 本地 / NAS 片库的前端接口。
@@ -1087,6 +1087,17 @@ export interface CastDevice {
   location: string
   /** AVTransport 控制地址。后端不缓存设备表，后续操作要带回来。 */
   controlUrl: string
+  /** ConnectionManager 控制地址（能力预判用，可能没有）。 */
+  connControlUrl?: string
+  /** 设备稳定标识，跨重启不变。 */
+  udn?: string
+  type?: string
+  /** dlna=标准渲染器；meow=装了我们的设备（走会话 API）。 */
+  kind?: 'dlna' | 'meow'
+  /** meow 设备基地址（http://ip:port）。 */
+  base?: string
+  /** meow 设备一次性令牌。 */
+  token?: string
 }
 
 /** 发现局域网里的 DLNA 渲染器。 */
@@ -1106,7 +1117,7 @@ export async function castControl(
   action: 'play' | 'pause' | 'stop' | 'seek',
   device: CastDevice,
   extra?: { url?: string; title?: string; seconds?: number },
-): Promise<{ ok: boolean; msg?: string }> {
+): Promise<{ ok: boolean; msg?: string; code?: string }> {
   try {
     const r = await fetch(`${apiBase()}/api/cast`, {
       method: 'POST',
@@ -1114,9 +1125,231 @@ export async function castControl(
       body: JSON.stringify({ action, device, ...extra }),
     })
     if (!r.ok) return { ok: false, msg: `HTTP ${r.status}` }
+    return (await r.json()) as { ok: boolean; msg?: string; code?: string }
+  } catch (e) {
+    return { ok: false, msg: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** 接收端当前状态；position/duration 是**秒**。 */
+export interface CastStatus {
+  ok: boolean
+  state?: string
+  position?: number
+  duration?: number
+  msg?: string
+}
+
+/**
+ * 轮询接收端状态（等价于 GetTransportInfo + GetPositionInfo）。
+ *
+ * <p>不用事件订阅：投屏场景 1.5s 一次足够，且 TV 的 Chrome 66 长连接会被固件杀。
+ */
+export async function castStatus(device: CastDevice): Promise<CastStatus> {
+  try {
+    const r = await fetch(`${apiBase()}/api/cast`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'status', device }),
+    })
+    if (!r.ok) return { ok: false, msg: `HTTP ${r.status}` }
+    return (await r.json()) as CastStatus
+  } catch (e) {
+    return { ok: false, msg: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** 接收端支持的 MIME（ConnectionManager.GetProtocolInfo）；空数组=设备没提供。 */
+export async function castProtocols(device: CastDevice): Promise<string[]> {
+  try {
+    const r = await fetch(`${apiBase()}/api/cast`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'protocols', device }),
+    })
+    if (!r.ok) return []
+    const j = (await r.json()) as { ok?: boolean; sink?: string[] }
+    return j.sink || []
+  } catch {
+    return []
+  }
+}
+
+// ---------------------------------------------------------------- B 类：会话投屏
+
+/** 推给"装了我们的设备"的媒体描述。position/duration 单位秒。 */
+export interface CastMedia {
+  url: string
+  title?: string
+  poster?: string
+  site?: string
+  vodId?: string
+  ep?: string
+  danmakuUrl?: string
+  position?: number
+  duration?: number
+}
+
+function meowUrl(dev: CastDevice, path: string, extra = ''): string {
+  const base = (dev.base || '').replace(/\/$/, '')
+  const ct = dev.token ? `ct=${encodeURIComponent(dev.token)}` : ''
+  const q = [ct, extra].filter(Boolean).join('&')
+  return `${base}${path}${q ? '?' + q : ''}`
+}
+
+export type CastSenderKind = 'pc' | 'tv' | 'web'
+
+/** 投屏来源身份：接收端用它显示"谁投过来的"，配合 remote IP 唯一区分设备。 */
+export interface CastSender {
+  name: string
+  kind: CastSenderKind
+  /** TV 的厂商 + 型号，Web/PC 为空 */
+  model?: string
+}
+
+/**
+ * 判断当前投屏来源是 PC / TV / Web，并给出可读名称。
+ *
+ * <p>TV 壳有 `window.meowTv.platform()`，设备名取 `deviceName()`（Android
+ * Build.MANUFACTURER + MODEL）；PC 是 Tauri 壳；其余一律按 Web 处理。
+ * 名称可以被 `localStorage['meow.cast.senderName']` 覆盖（多设备同名时用）。
+ */
+export function castSenderIdentity(): CastSender {
+  let custom = ''
+  try {
+    custom = (localStorage.getItem('meow.cast.senderName') || '').trim()
+  } catch {
+    /* 隐私模式可能禁用 localStorage */
+  }
+  try {
+    const tv = (
+      window as unknown as {
+        meowTv?: { platform?: () => string; deviceName?: () => string }
+      }
+    ).meowTv
+    if (tv && typeof tv.platform === 'function' && tv.platform() === 'tv') {
+      const model =
+        typeof tv.deviceName === 'function' ? String(tv.deviceName() || '').trim() : ''
+      return { kind: 'tv', name: custom || model || 'TV', model }
+    }
+  } catch {
+    /* 旧 WebView 访问未定义属性本身会抛 */
+  }
+  if (isDesktop()) return { kind: 'pc', name: custom || 'PC' }
+  return { kind: 'web', name: custom || 'Web' }
+}
+
+/** 建/换会话（接收端会立刻打开媒体）。 */
+export async function castSessionPlay(
+  device: CastDevice,
+  media: CastMedia,
+  sender?: CastSender,
+): Promise<{ ok: boolean; sessionId?: string; state?: string; msg?: string }> {
+  try {
+    const r = await fetch(meowUrl(device, '/api/cast/session'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ media, sender: sender || castSenderIdentity() }),
+    })
+    if (!r.ok) return { ok: false, msg: `HTTP ${r.status}` }
+    return (await r.json()) as { ok: boolean; sessionId?: string; state?: string; msg?: string }
+  } catch (e) {
+    return { ok: false, msg: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** 轮询接收端会话状态。 */
+export async function castSessionStatus(
+  device: CastDevice,
+  sessionId: string,
+): Promise<CastStatus> {
+  try {
+    const r = await fetch(meowUrl(device, '/api/cast/session', `id=${encodeURIComponent(sessionId)}`))
+    if (!r.ok) return { ok: false, msg: `HTTP ${r.status}` }
+    const j = (await r.json()) as CastStatus & { position?: number; duration?: number }
+    return j
+  } catch (e) {
+    return { ok: false, msg: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** 遥控：play / pause / seek / stop。 */
+export async function castSessionCommand(
+  device: CastDevice,
+  sessionId: string,
+  action: 'play' | 'pause' | 'seek' | 'stop',
+  value?: number,
+): Promise<{ ok: boolean; msg?: string }> {
+  try {
+    const r = await fetch(meowUrl(device, '/api/cast/command'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, action, value }),
+    })
+    if (!r.ok) return { ok: false, msg: `HTTP ${r.status}` }
     return (await r.json()) as { ok: boolean; msg?: string }
   } catch (e) {
     return { ok: false, msg: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+// ---------------------------------------------------------------- 接收端开关（PC/TV 本机）
+
+export interface ReceiverInfo {
+  ok: boolean
+  running: boolean
+  port?: number
+  name?: string
+  udn?: string
+  state?: string
+  sessionId?: string
+  msg?: string
+}
+
+export async function fetchReceiver(): Promise<ReceiverInfo | null> {
+  try {
+    const r = await fetch(`${apiBase()}/api/cast/receiver`)
+    if (!r.ok) return null
+    return (await r.json()) as ReceiverInfo
+  } catch {
+    return null
+  }
+}
+
+export async function setReceiver(enabled: boolean, name?: string): Promise<ReceiverInfo | null> {
+  try {
+    const body: Record<string, unknown> = { enabled }
+    if (typeof name === 'string') body.name = name
+    const r = await fetch(`${apiBase()}/api/cast/receiver`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!r.ok) return null
+    return (await r.json()) as ReceiverInfo
+  } catch {
+    return null
+  }
+}
+
+export interface ReceiverPending {
+  ok: boolean
+  sessionId?: string
+  state?: string
+  media?: CastMedia
+  position?: number
+  duration?: number
+  sender?: string
+}
+
+/** PC 网页轮询：有没有人投到我。 */
+export async function receiverPending(): Promise<ReceiverPending | null> {
+  try {
+    const r = await fetch(`${apiBase()}/api/cast/receiver/pending`)
+    if (!r.ok) return null
+    return (await r.json()) as ReceiverPending
+  } catch {
+    return null
   }
 }
 

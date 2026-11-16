@@ -23,6 +23,12 @@ const router = createRouter({
       name: 'play',
       component: () => import('@/views/PlayView.vue'),
     },
+    // 投屏接收页：别人把会话投到本机时由它播放（保留弹幕）
+    {
+      path: '/ext-play',
+      name: 'extPlay',
+      component: () => import('@/views/ExternalPlayView.vue'),
+    },
     { path: '/search', name: 'search', component: () => import('@/views/SearchView.vue') },
     // 我的：历史 + 收藏一个一级入口（手机底栏第五格）。两个视图以 embedded
     // 形态内嵌，分区写进 ?tab=（从详情返回不丢当前分区）

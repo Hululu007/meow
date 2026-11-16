@@ -688,6 +688,7 @@ export async function fetchParse(
 export function proxyStream(
   url: string,
   header?: Record<string, string> | string,
+  opts?: { base?: string; token?: string },
 ): string {
   let h: Record<string, string> = {}
   if (typeof header === 'string') {
@@ -715,13 +716,107 @@ export function proxyStream(
   if (h['User-Agent'] || h['user-agent'])
     params.set('ua', h['User-Agent'] || h['user-agent'])
   if (Object.keys(extra).length) params.set('headers', JSON.stringify(extra))
-  return `${base()}/api/proxy/stream?${params.toString()}`
+  const ct = opts?.token ? `&ct=${encodeURIComponent(opts.token)}` : ''
+  return `${opts?.base || base()}/api/proxy/stream?${params.toString()}${ct}`
 }
 
-/** 弹幕地址（后端统一抓取 + 转 XML） */
-export function proxyDanmaku(name: string, episode = '1'): string {
+/** 投屏旁路基地址 + 一次性令牌。 */
+export interface CastBase {
+  base: string
+  token: string
+}
+
+/**
+ * 投给第三方设备前剔除敏感头。
+ *
+ * <p>投屏 URL 会被电视和沿途日志看到；Cookie / Authorization 一旦进 query 就是泄露。
+ * 需要这些头的源在投屏场景下会失败——这是有意的取舍，后续可改成服务端 ticket
+ * （URL 里只带 ticket，头留在后端）。
+ */
+export function sanitizeCastHeader(
+  header?: Record<string, string> | string,
+): Record<string, string> | undefined {
+  let h: Record<string, string> = {}
+  if (typeof header === 'string') {
+    try {
+      h = JSON.parse(header)
+    } catch {
+      h = {}
+    }
+  } else if (header) {
+    h = header
+  }
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(h)) {
+    if (typeof v !== 'string' || !v) continue
+    const lk = k.toLowerCase()
+    if (
+      lk === 'cookie' ||
+      lk === 'authorization' ||
+      lk === 'proxy-authorization' ||
+      lk === 'x-api-key' ||
+      lk === 'token'
+    )
+      continue
+    out[k] = v
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+let castBaseCache: CastBase | null = null
+
+/** 页面本身就是从局域网 http 打开的？ */
+function isLanPage(): boolean {
+  if (typeof location === 'undefined') return false
+  if (!/^https?:$/.test(location.protocol)) return false
+  const h = (location.hostname || '').toLowerCase()
+  if (!h) return false
+  if (h === 'localhost' || h.startsWith('127.') || h === '[::1]') return false
+  // tauri.localhost / TV 的 meow.local 都不是接收端能访问的地址
+  if (h.endsWith('.localhost') || h.endsWith('.local')) return false
+  return true
+}
+
+/**
+ * 取"接收端能访问"的投屏基地址。
+ *
+ * <p>三种形态：
+ * <ul>
+ *   <li>页面本身是局域网 http（Docker / fnOS / 手动填 LAN 后端）→ 用 `location.origin`；
+ *       同源与子路径部署都成立，不需要令牌</li>
+ *   <li>PC（tauri.localhost）/ TV（meow.local）/ localhost 开发页 → 问后端要
+ *       `/api/cast/base`，它在 0.0.0.0 起一个白名单+令牌的旁路监听</li>
+ *   <li>拿不到（没有局域网地址 / 监听起不来）→ 返回 null，调用方提示用户</li>
+ * </ul>
+ *
+ * @param peerHost 接收端 IP：多网卡时后端优先选与它同 /24 的网卡
+ */
+export async function castBase(peerHost = '', force = false): Promise<CastBase | null> {
+  if (isLanPage()) return { base: location.origin, token: '' }
+  if (castBaseCache && !force && !peerHost) return castBaseCache
+  try {
+    const q = peerHost ? `?peer=${encodeURIComponent(peerHost)}` : ''
+    const r = await fetch(`${base()}/api/cast/base${q}`)
+    if (!r.ok) return null
+    const j = (await r.json()) as { ok?: boolean; base?: string; token?: string }
+    if (!j.ok || !j.base) return null
+    const out: CastBase = { base: j.base, token: j.token || '' }
+    if (!peerHost) castBaseCache = out
+    return out
+  } catch {
+    return null
+  }
+}
+
+/** 弹幕地址（后端统一抓取 + 转 XML）。 */
+export function proxyDanmaku(
+  name: string,
+  episode = '1',
+  opts?: { base?: string; token?: string },
+): string {
   const params = new URLSearchParams({ name, episode })
-  return `${base()}/api/proxy/danmaku?${params.toString()}`
+  const ct = opts?.token ? `&ct=${encodeURIComponent(opts.token)}` : ''
+  return `${opts?.base || base()}/api/proxy/danmaku?${params.toString()}${ct}`
 }
 
 /** 直接指定弹幕源地址（用户在弹幕搜索里手选之后用） */

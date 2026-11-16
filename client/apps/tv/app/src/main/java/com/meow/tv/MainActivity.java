@@ -568,6 +568,8 @@ public class MainActivity extends Activity {
         // 原生能力桥：页面据此决定"这条线路用 ExoPlayer 还是留在 WebView"。
         // 名字固定 meowTv，前端按 window.meowTv 探测。
         web.addJavascriptInterface(new TvBridge(this, web), "meowTv");
+        // 首投确认要往页面里调 confirmDialog（不再用原生 AlertDialog）
+        CastReceiverBridge.attachWeb(web);
     }
 
     /**
@@ -621,9 +623,32 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** 投屏接收：从任意 Context 拉起主界面并跳到指定 hash（接收页）。 */
+    static void castOpen(android.content.Context ctx, String hash) {
+        if (hash == null || !hash.startsWith("#/")) return;
+        try {
+            Intent i = new Intent(ctx, MainActivity.class);
+            i.setAction(Intent.ACTION_VIEW);
+            i.setData(android.net.Uri.parse("http://meow.local/index.html" + hash));
+            i.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            if (!(ctx instanceof android.app.Activity)) {
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            }
+            ctx.startActivity(i);
+        } catch (Throwable ignored) {
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // 投屏接收端：主进程启动（会话与播放器桥必须同进程）
+        try {
+            CastReceiverBridge.attach(this);
+            CastReceiverBridge.install(getApplicationContext());
+        } catch (Throwable ignored) {
+            // 接收端起不来不影响主功能
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
@@ -1554,6 +1579,21 @@ public class MainActivity extends Activity {
         if (u != null && !u.isEmpty()) {
             prefs.edit().putString(K_API, u).putString(K_URL, u).apply();
             loadBuiltin();
+            return;
+        }
+        // 深链（含投屏接收页）：singleTask 下页面已加载，直接改 hash
+        final String h = hashOf(intent);
+        if (h != null) {
+            // 与冷启动路径一致：hashOf 已经解码过一次，值仍是单层编码，交给 Vue 再解
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (web != null) {
+                        web.evaluateJavascript(
+                                "location.hash=" + org.json.JSONObject.quote(h), null);
+                    }
+                }
+            });
         }
     }
 
