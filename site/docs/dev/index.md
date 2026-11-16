@@ -21,6 +21,7 @@
 | [TV 接入与 Fongmi](./tv-integration.md) | `/config.json`、加载器、签名与分发 |
 | [数据与状态](./data-state.md) | 数据目录、policy.json、跨端通道 |
 | [Docker 部署](./docker.md) | 四容器、`.env`、排障、多架构 |
+| [公网部署与访问控制](./public-deployment.md) | 端口收口、令牌分层、三端影响、验收断言 |
 | [构建与发版](./build-release.md) | units.json、tag 与链路、清单生成 |
 | [测试与验收](./testing.md) | 单测、CI、冒烟脚本、验收清单 |
 ## 说明

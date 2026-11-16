@@ -535,19 +535,24 @@ Fongmi 读 `position`（毫秒）作为起播点，读 `subs` 挂字幕轨，读
 
 ### 6.1 安全清单（以代码为准）
 
+**前提：后端不直接对公网暴露。** 本节 S2–S4 都是「内网可信」前提下的纵深防御，
+不是公网对抗；要上公网必须先补一层入口控制，见 [公网部署与访问控制](/dev/public-deployment)。
+
 | # | 项 | 现状 |
 |---|---|---|
 | S1 | **SSRF 防护** | 两档校验，见 §6.2 |
-| S2 | **写操作鉴权** | **可选** token：`MEOW_AUTH_TOKEN` 优先，其次 `policy.authToken`；未配 = 关闭。GET/HEAD 永不拦 |
+| S2 | **写操作鉴权** | **可选** token：`MEOW_AUTH_TOKEN` 优先，其次 `policy.authToken`；未配 = 关闭。GET/HEAD 永不拦（公网部署要改成白名单式，见 [公网部署](/dev/public-deployment)） |
 | S3 | **CORS** | **默认 `*`，不拦截**（用户明确要求）。`MEOW_CORS` 设为逗号分隔白名单才收紧；`none` 只放行本机与各端壳 |
-| S4 | **CSRF / 跨源写** | 所有非 GET/HEAD/OPTIONS 校验 Origin，不在允许列表就 403（与 token 是否配置无关） |
+| S4 | **CSRF / 跨源写** | 非 GET/HEAD/OPTIONS 校验 Origin；**但默认 `MEOW_CORS=*` 时 `originAllowed()` 直接放行**（`ApiServer.java:1139-1140`），即默认不生效，收紧 CORS 后才起作用 |
 | S5 | **路径遍历** | 片库只访问配置声明的根，路径由服务端拼接、只接受相对路径；`normalize + toRealPath` 白名单 |
 | S6 | **限流** | 固定窗口。`/api/parse` 默认 30 次/窗口，`/api/proxy/*` 默认 240 次，窗口默认 10s；`policy.rateLimit` 可调/可关 |
 | S7 | **DNS rebinding** | 部分：连接前校验，校验与 connect 之间仍有窗口（刻意取舍，见下） |
 
 **CORS 与鉴权的分工**：CORS 只防「浏览器里的第三方页面」；能直连端口的人本来就能用 curl 写，
-真正的访问控制是网络边界 + token。反过来，CORS 默认放开不等于写操作不设防——
-S4 与 token 无关，默认部署也生效。
+真正的访问控制是网络边界 + token。**但默认 CORS 为 `*` 时 S4 并不生效**——
+原文「S4 与 token 无关、默认部署也生效」是错的（2026-11-16 核代码更正）：
+`corsAllowList()` 返回 `null` 时 `originAllowed()` 直接 `return true`。
+局域网自用无妨；公网部署必须显式设 `MEOW_CORS`，见 [公网部署](/dev/public-deployment)。
 
 ### 6.2 SSRF：两档，不是一档
 

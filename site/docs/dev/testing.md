@@ -63,6 +63,7 @@ cd client/apps/web && npx vitest run
 | `tv_mcp_endpoints.py` | 直连设备内 9977 端口，验 TV DebugServer 的端点（服务默认关闭，没起会明说） |
 | `wsclient.py` | 上面几条共用的 CDP-over-WebSocket 模块，不是独立脚本 |
 | `meow_mcp.py` | 猫窝统一 MCP 客户端：一套接口同时驱动 PC 与 TV |
+| `skills/meow-control/SKILL.md` | 给 AI 代理用的操作手册（PC + TV、工具清单、红线）；接入方式见 [脚本与 AI 操作（MCP）](/guide/automation) |
 | `edge_session.py` | 起 headless Edge 做 CDP 测试，退出时保证收尾 |
 | `kill-test-edge.ps1` | 清理冒烟残留的测试浏览器（只匹配 `--user-data-dir` 指向仓库 `tmp/` 的实例） |
 | `kill-test-edge.cmd` | 计划任务入口：每 10 分钟调上面的 ps1 `-Kill -OlderThanMinutes 90 -RemoveProfiles` |

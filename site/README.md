@@ -31,6 +31,9 @@
 | 插件清单字段（fnpack / manifest） | `ecosystem/plugin-manifest.md`、`ecosystem/plugin-source.md` |
 | Release 资产名、系统要求 | `reference/downloads.md` |
 | 新增或移除用户可见能力 | 首页 `index.md`、`guide/what-is-meow.md` 的能力表 |
+| 支持的端 / 平台（新增或取消某端） | `reference/compatibility.md` 的「端支持」、`guide/quick-start.md` 路线表、`guide/web-docker.md`、`guide/faq.md` |
+| 鉴权范围 / 令牌语义（谁能调什么） | `dev/api-contract.md` §1.2、`dev/architecture.md` §6.1、`dev/public-deployment.md` |
+| MCP 工具、调试入口、AI skill | `guide/automation.md`、`dev/ai-assistant.md` §2.7、`dev/testing.md` |
 | 已知缺陷新增或修复 | `reference/limits.md`、`guide/faq.md` |
 | 许可条款、第三方代码 | `reference/license.md` |
 

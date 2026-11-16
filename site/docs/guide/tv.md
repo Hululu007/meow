@@ -4,6 +4,11 @@ Android TV 客户端是一个 WebView 壳 + 端上 ExoPlayer + 本地 jar 执行
 它比 Web 版多做了三件事：遥控器导航、端内网关、`DexClassLoader` 直接跑源。
 同一个 APK 也能装进**安卓手机 / 平板**（触屏操作，布局自动切竖屏），见下方「手机 / 平板」。
 
+::: tip iPhone / iPad 装不了这个 APK
+iOS 没有客户端，也不上架。用 Safari 打开 Web 版即可，
+步骤见 [Web / Docker](/guide/web-docker) 的「在 iPhone 和 iPad 上」。
+:::
+
 ## 安装
 
 | 方式 | 步骤 |

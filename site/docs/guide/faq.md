@@ -22,6 +22,17 @@ Web 端检查 `web` 容器能否连到 `apiserver`：页面能开但接口 503�
 先确认每个插件目录里 `manifest.json` 的版本号；`enabled.json` 只记录启停开关（`{id: true/false}`），不含路径。
 应用本体与插件版本是独立演进的，两者不必一致。
 
+### Mac / iPhone 能用吗
+
+能，但两者都**没有原生客户端**，走浏览器：
+
+- **Mac（含 Apple Silicon）**：本机用 Docker 起一套（镜像有 `linux/arm64`，原生跑），浏览器开
+  `http://localhost:30010`；或者直接开家里 NAS 上已有的实例，Mac 上什么都不用装。
+- **iPhone / iPad**：Safari 打开 `http://<后端 IP>:30010`，用「分享 → 添加到主屏幕」当 App 用。
+
+没有 macOS 桌面应用（`.dmg`）与 iOS App，也暂无发布计划。启动步骤见
+[Web / Docker](/guide/web-docker)，平台限制见 [已知限制](/reference/limits#在-iphone-和-ipad-上)。
+
 ## 源与配置
 
 ### 导入提示成功，但站点全是红的

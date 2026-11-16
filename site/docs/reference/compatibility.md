@@ -55,6 +55,24 @@ class jar），要么把 `spider` 直接指向 class jar。
 更早的能力没有逐版本记录，以实际界面为准。这张表只列能追溯到 CHANGELOG
 或代码里明确门槛的项。
 
+## 端支持
+
+| 端 | 形态 | 状态 |
+|---|---|---|
+| Windows 10 / 11 | 桌面端（Tauri 壳 + 插件） | ✅ 官方包（NSIS 安装版 / 免安装版） |
+| Android TV / 盒子 / 投影仪 | TV 客户端（APK，Android 8.0+） | ✅ 官方包 |
+| Android 手机 / 平板 | 同一个 APK，布局自动切竖屏 | ✅ 官方包 |
+| 飞牛 fnOS | 应用中心套件 | ✅ 官方包 |
+| NAS / 服务器 / Linux | Docker 四容器 + 浏览器 | ✅ 官方镜像（amd64 / arm64） |
+| macOS（Apple Silicon / Intel） | Docker 四容器 + 浏览器 | ⭕ 可用，无桌面应用 |
+| iPhone / iPad | Safari + 添加到主屏幕 | ⭕ 可用，无客户端 App |
+| 电视自带系统（Tizen / webOS） | — | ❌ 不支持 |
+
+⭕ = 功能完整（搜索、播放、弹幕、片库、直播、AI、转码），只是没有原生壳。
+macOS 与 iOS 不发布原生包：两者都没有官方验证条件，不发布未经验证的安装包。
+启动步骤见 [Web / Docker](/guide/web-docker)，平台限制见
+[已知限制 → 在 iPhone 和 iPad 上](/reference/limits#在-iphone-和-ipad-上)。
+
 ## 怎么判断自己能不能用
 
 1. **看版本**：设置页底部

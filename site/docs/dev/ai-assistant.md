@@ -145,6 +145,10 @@ warn/error 才有信息——两种状态的正确采样完全不同，写死哪
 
 ### 2.7 对外 MCP：10 个工具已打通
 
+> 这一节讲的是**业务工具桥**（`meow_*`，AI 助手与外部 MCP 共用同一批实现）。
+> 「怎么接进来、PC/TV 的端口与令牌、skill 怎么装」属于操作层，
+> 统一看 [脚本与 AI 操作（MCP）](/guide/automation)，不要在两处各写一份。
+
 ```
 外部 AI 客户端 → PC mcp.rs / TV DebugServer → CDP evaluate / evaluateJavascript
                                              → window.__meowTool(name, args)

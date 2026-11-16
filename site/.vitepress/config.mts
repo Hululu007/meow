@@ -76,6 +76,7 @@ const devSidebar = [
     items: [
       { text: '数据与状态', link: '/dev/data-state' },
       { text: 'Docker 部署', link: '/dev/docker' },
+      { text: '公网部署与访问控制', link: '/dev/public-deployment' },
       { text: '构建与发版', link: '/dev/build-release' },
       { text: '测试与验收', link: '/dev/testing' },
     ],
@@ -114,6 +115,7 @@ const guideSidebar = [
     items: [
       { text: '升级与迁移', link: '/guide/upgrade' },
       { text: '备份与恢复', link: '/guide/backup' },
+      { text: '脚本与 AI 操作（MCP）', link: '/guide/automation' },
       { text: '常见问题', link: '/guide/faq' },
     ],
   },

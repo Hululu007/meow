@@ -92,6 +92,38 @@ docker compose up -d web                         # 只起前端，连远端后�
 3. 设了令牌后，**浏览器端也要在「设置 → 连接 → 写操作令牌」填同一个值**——令牌只注入后端，web 容器不转发它，不填的话导入配置 / 收藏 / 保存设置都会 401
 4. 只在可信网络里这么做，公网暴露请走反向代理 + HTTPS
 
+## 在 Mac 和 Linux 上
+
+**没有 macOS / Linux 桌面应用，也不需要**：浏览器打开 Web 版就是完整功能
+（搜索、播放、弹幕、片库、直播、AI、转码），与 Windows 桌面端共用同一套后端与同一份源包。
+
+镜像同时发布 `linux/amd64` 与 `linux/arm64`，Apple Silicon（M1/M2/M3/M4）与 Intel Mac
+都按本机架构自动选，不需要 Rosetta 转译。
+
+```bash
+mkdir meow && cd meow
+curl -O https://upchr.github.io/meow/docker-compose.yml
+docker compose up -d
+# 浏览器打开 http://localhost:30010
+```
+
+如果家里 NAS / 小主机上已经跑着一套，Mac 上**什么都不用装**：浏览器直接开
+`http://<那台机器的 IP>:30010`。前端是纯静态文件，跟着后端一起由 `web` 容器发出来。
+
+## 在 iPhone 和 iPad 上
+
+iOS 没有客户端 App，也不会做。用 **Safari** 打开 Web 版，再「添加到主屏幕」当 App 用：
+
+1. Safari 打开 `http://<后端所在机器的 IP>:30010`（**不要写 `localhost`**，那指手机自己）
+2. 底部「分享」→「添加到主屏幕」→ 命名为「猫窝」
+3. 以后从主屏图标启动，进无地址栏的全屏模式
+
+Safari 是目前唯一**原生**支持 HLS（`.m3u8`）的浏览器，播放兼容性通常比安卓 WebView 更好；
+局域网 `http://` 直连也没问题——ATS 限制只作用于 App 内的 WKWebView，Safari 本身不拦。
+
+iPhone / iPad 上的全屏、后台播放与弹幕表现属平台限制，见
+[已知限制 → 在 iPhone 和 iPad 上](/reference/limits#在-iphone-和-ipad-上)。
+
 ## 从源码构建
 
 ```bash
