@@ -385,6 +385,12 @@ let dmFrozenAt = 0
  * 任何一次 pause 事件都清掉它：那说明用户主动暂停，别再抢回来。
  */
 let autoPlayPending = false
+/**
+ * 本源是否已经跑过自动起播（onLoaded 挂在 durationchange 上，
+ * 该事件在一次播放里会因清单位移反复触发，自动起播只该做一次；
+ * 换源时在 setupSource 里复位）。
+ */
+let didAutoStart = false
 /** 拖动进度条时的临时位置（秒），null = 没在拖 */
 const dragTime = ref<number | null>(null)
 /** 进度条悬停位置（秒），null = 没悬停 */
@@ -1232,6 +1238,8 @@ function setupSource(url: string) {
   // 每次换源都允许"hls 判错 → 回退原生"各一次
   nativeSrcFallbackTried = false
   endedSent = false
+  // 新源要重新自动起播（见 onLoaded 里 didAutoStart 的注释）
+  didAutoStart = false
   // 换源时缓冲冻结状态必须复位：否则上一集残留的"冻结中"会让新源起播后
   // 的自愈判据基于旧时间点，引擎要么白开一次、要么一直冻着
   dmFrozenForBuffer = false
@@ -1728,6 +1736,18 @@ function zoneOf(e: MouseEvent): Zone {
 /** 双击：触屏左右分区快进/快退，其余全屏 */
 function onStageDblClick(e: MouseEvent) {
   clearTimeout(clickTimer)
+  /*
+   * ★ 吞掉"迟到的 click"（2026-11-16 手势实测踩过）。
+   *
+   * adb/触屏双击的事件顺序不总是 click1→click2→dblclick：WebView（Chrome 110）
+   * 实测会在 dblclick 之后**再补发一个 click**，它排进 220ms 的 toggle 队列，
+   * 结果双击恢复播放后 220ms 又被暂停（栈：Ga=clickTimer 回调 → toggle → v.pause）。
+   * suppressClick 会吞掉紧随其后的那一次 click；400ms 内的"单击"本来就属于
+   * 双击的一部分，吞掉语义正确。
+   */
+  suppressNextClick()
+  // 横滑 seek 刚结束：浏览器可能把"松手 + 再点一下"判成双击，不响应
+  if (Date.now() - hseekEndedAt < 350) return
   if (isTouch.value) {
     const zone = zoneOf(e)
     if (zone === 'left') {
@@ -1766,10 +1786,11 @@ let longPressTimer: number | undefined
 let pressStart = { x: 0, y: 0 }
 
 function onStagePointerDown(e: PointerEvent) {
-  if (!isTouch.value || e.pointerType === 'mouse') return
+  // 手势起点对触屏与鼠标都记录：横滑 seek 两端共用
   pressStart = { x: e.clientX, y: e.clientY }
-  // 记下竖直手势的起点值，供 onStagePointerMove 增量应用
   swipe.reset(e.clientX)
+  hseekReset(e)
+  if (!isTouch.value || e.pointerType === 'mouse') return
   clearTimeout(longPressTimer)
   const zone = zoneOf(e)
   longPressTimer = window.setTimeout(() => {
@@ -1835,9 +1856,54 @@ function swipeRange(): number {
 }
 
 function onStagePointerMove(e: PointerEvent) {
-  if (!isTouch.value || e.pointerType === 'mouse') return
+  const isMouse = e.pointerType === 'mouse'
+  // 横滑 seek 进行中：只更新预览（鼠标拖动需保持左键按下）
+  if (hseek.active) {
+    if (isMouse && !(e.buttons & 1)) {
+      endHseek(true)
+      return
+    }
+    updateHseek(e.clientX - hseek.startX)
+    e.preventDefault()
+    return
+  }
+  // 鼠标只在按住左键时参与手势；触屏要求 touch 环境
+  if (isMouse) {
+    if (!(e.buttons & 1)) return
+  } else if (!isTouch.value) {
+    return
+  }
   const dx = e.clientX - pressStart.x
   const dyRaw = e.clientY - pressStart.y
+
+  /*
+   * 横滑判定先行（先于竖滑）：明显横向 → seek 手势。
+   * 画面任何位置都可发起（主流播放器如此），面板打开时让位。
+   */
+  if (
+    !swipe.active &&
+    Math.abs(dx) > 16 &&
+    Math.abs(dx) > Math.abs(dyRaw) * 1.2 &&
+    duration.value > 0 &&
+    !errorMsg.value &&
+    !showEpPanel.value &&
+    !showLinePanel.value &&
+    !showDmPanel.value &&
+    !showMore.value &&
+    !showDmSearch.value
+  ) {
+    hseekEngage(dx)
+    // 捕获指针：拖出画面边界仍持续更新，松手在边界外也能提交
+    try {
+      ;(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId)
+    } catch {
+      /* 老内核不支持就算了 */
+    }
+    e.preventDefault()
+    return
+  }
+
+  if (isMouse) return // 竖滑（亮度/音量）只给触屏
 
   if (!swipe.active) {
     // 判定为竖滑：竖直位移 > 16 且明显大于水平（1.2 倍），避免斜滑误判
@@ -1894,6 +1960,83 @@ function applySwipe(kind: 'volume' | 'brightness', pct: number) {
 
 /** 无系统亮度能力时的兜底变暗层（0–1，0 表示不变暗） */
 const cssDim = ref(0)
+
+/*
+ * ---------------------------------------------------------------- 横滑调进度（2026-11-16）
+ *
+ * 主流播放器的标配手势：按住画面横向拖动 → 实时预览目标时间 → 松手才真正 seek。
+ * 触屏与鼠标（按住左键拖）都支持，三端同一套。
+ *
+ * 复用既有手势框架的约定：
+ *   · 横滑判定与竖滑同款阈值（|dx|>16 且 |dx|>|dy|×1.2），横滑先行；
+ *   · 一旦锁定横滑，取消长按扫描（450ms 的 2× 快进）与竖滑——手势只属于一个；
+ *   · 松手必须 suppressNextClick：浏览器总会补发 click，否则"拖完一松手
+ *     控制栏又弹出来/视频被暂停"（长按、竖滑都踩过的同一个坑）；
+ *   · 面板（选集/线路/弹幕/更多）打开时不抢手势。
+ * 灵敏度按片长自适应：整屏宽扫完全片的 1/6（实测 300px ≈ 70s @45min 片），
+ * 长片封顶 1.2s/px（45 分钟片拖一屏 ≈ 9 分钟，跟手）。
+ */
+const hseek = {
+  active: false,
+  startX: 0,
+  /** 手势开始时的播放位置（秒），seek 语义是"从按下时的位置增量调" */
+  baseT: 0,
+  target: 0,
+}
+/** 拖动中的预览气泡数据；null = 不显示 */
+const hseekHint = ref<{ from: number; to: number; delta: number } | null>(null)
+/** 横滑刚结束的时间戳：350ms 内的双击不响应（拖完立刻再点不该触发全屏/快进） */
+let hseekEndedAt = 0
+
+function hseekSens(): number {
+  const d = duration.value || 0
+  const w = window.innerWidth || 800
+  return Math.max(0.1, Math.min(0.5, d / (w * 6)))
+}
+
+function hseekReset(e: PointerEvent) {
+  hseek.active = false
+  hseek.startX = e.clientX
+  const v = video.value
+  hseek.baseT = v?.currentTime ?? 0
+  hseek.target = hseek.baseT
+}
+
+function hseekEngage(dxRaw: number) {
+  hseek.active = true
+  hseek.startX = pressStart.x
+  hseek.target = hseek.baseT
+  // 横滑优先级最高：长按扫描/竖滑都不能再抢
+  endLongPress()
+  endSwipe()
+  suppressNextClick()
+  updateHseek(dxRaw)
+}
+
+function updateHseek(dxRaw: number) {
+  const d = duration.value || 0
+  const max = d > 0 ? d - 0.2 : Number.MAX_SAFE_INTEGER
+  let t = hseek.baseT + dxRaw * hseekSens()
+  t = Math.max(0, Math.min(max, t))
+  hseek.target = t
+  hseekHint.value = { from: hseek.baseT, to: t, delta: t - hseek.baseT }
+}
+
+/** 松手提交。commit=false 表示取消（pointercancel 等），画面不动。 */
+function endHseek(commit: boolean) {
+  if (!hseek.active) return
+  hseek.active = false
+  hseekEndedAt = Date.now()
+  hseekHint.value = null
+  if (!commit) return
+  const delta = hseek.target - hseek.baseT
+  // 长拖会超过 engage 时的 400ms 抑制窗，松手前必须再压一次 click
+  suppressNextClick()
+  if (Math.abs(delta) < 0.5) return
+  seekTo(hseek.target)
+  // 与按键 seek 同款中央提示，松手后给一次"跳到了哪"的确认
+  flashSeekHint(Math.round(delta))
+}
 
 /*
  * ---------------------------------------------------------------- 鼠标滚轮调音量（Web/PC）
@@ -1966,6 +2109,10 @@ function endLongPress() {
 }
 
 function onStagePointerUp(e: PointerEvent) {
+  if (hseek.active) {
+    endHseek(true)
+    return
+  }
   if (swipe.active) {
     endSwipe()
     return
@@ -1978,6 +2125,16 @@ function onStagePointerUp(e: PointerEvent) {
     endLongPress()
     return
   }
+  endLongPress()
+}
+
+/** 系统打断手势（pointercancel）：横滑回退预览，不提交 seek */
+function onStagePointerCancel() {
+  if (hseek.active) {
+    endHseek(false)
+    return
+  }
+  if (swipe.active) endSwipe()
   endLongPress()
 }
 
@@ -2393,7 +2550,13 @@ function onLoaded() {
   //     不动，用户看到的就是"进播放页卡在第一帧"。
   //     等到 seek 落定后再补一次 play() 即可，若用户已手动暂停则不碰
   //     （用 autoPlayPending 标志，任何 pause 事件都会把它清掉）。
-  if (props.autoPlay) {
+  //
+  //   ★ 只在**本源第一次**拿到时长时跑（didAutoStart，setupSource 复位）。
+  //     原来每次 durationchange 都重跑——而拖进度条/横滑 seek 会触发 hls
+  //     清单位移带来后续 durationchange，把用户刚暂停的视频强拉回播放
+  //     （2026-11-16 手势实测踩过：拖完单击暂停，0.5s 后自己又响了）。
+  if (props.autoPlay && !didAutoStart) {
+    didAutoStart = true
     if (v.paused) safePlay(v)
     autoPlayPending = true
     window.setTimeout(() => {
@@ -4381,6 +4544,15 @@ onMounted(() => {
   v?.addEventListener('pause', () => {
     playing.value = false
     dm.value?.pause()
+    // ★ 用户主动暂停 → 撤销"seek 后续播"的意图。seeked 事件在 hls 拉
+    //   分片时可能迟到几百毫秒，期间用户按了暂停的话，resumeAfterSeek
+    //   还挂着就会把视频强拉回播放（2026-11-16 横滑手势实测踩过：
+    //   拖完单击暂停，0.5s 后自己又响了）。
+    resumeAfterSeek = false
+    // ★ 同理清掉"起播后 800ms 补播"的欠账。注释一直说 pause 会清，
+    //   实际代码没有清——起播 800ms 内用户暂停时，定时器到点会把它
+    //   拉回播放（偶发，取决于 hls 时序）。
+    autoPlayPending = false
     // 暂停时保持控制栏可见（用户暂停多半是要选集/换线）。
     // 收起的时机交给"最后一次按键后 5 秒"的定时器 —— 见 wake()。
     // ★ 这里不能只 clearTimeout 不重排：原来就是清掉计时器后什么也不做，
@@ -4966,13 +5138,14 @@ defineExpose({ restart, seekTo, getTime, pause })
     <div
       ref="stage"
       class="absolute inset-0"
+      style="touch-action: none"
       @click="onStageClick"
       @dblclick="onStageDblClick"
       @pointerdown="onStagePointerDown"
       @pointermove="onStagePointerMove"
       @wheel="onStageWheel"
       @pointerup="onStagePointerUp"
-      @pointercancel="onStagePointerUp"
+      @pointercancel="onStagePointerCancel"
       @pointerleave="onStagePointerUp"
     >
       <video
@@ -5196,6 +5369,28 @@ defineExpose({ restart, seekTo, getTime, pause })
         横向进度条的方向和动作对不上；柱子从底部往上涨，一眼就知道
         "往上滑 = 调大"。
     -->
+    <!-- 横滑 seek 预览：按住画面左右拖时显示目标位置与增量，松手才真正跳 -->
+    <div
+      v-if="hseekHint"
+      class="pointer-events-none absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2"
+    >
+      <div
+        class="flex flex-col items-center gap-1 rounded-xl bg-black/75 px-4 py-2.5 shadow-2xl backdrop-blur"
+        role="slider"
+        :aria-valuenow="Math.round(hseekHint.to)"
+        aria-valuemin="0"
+      >
+        <span class="font-mono text-[length:var(--fs-lg)] tabular-nums text-ink">
+          {{ fmt(hseekHint.from) }} → {{ fmt(hseekHint.to) }}
+        </span>
+        <span
+          class="font-mono text-xs tabular-nums"
+          :class="hseekHint.delta > 0 ? 'text-player' : 'text-amber-300'"
+        >
+          {{ hseekHint.delta > 0 ? '快进' : '快退' }} {{ Math.abs(Math.round(hseekHint.delta)) }} 秒
+        </span>
+      </div>
+    </div>
     <div
       v-if="swipeHint"
       class="pointer-events-none absolute inset-y-0 z-20 flex w-1/3 items-center justify-center"
