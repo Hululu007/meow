@@ -1,6 +1,7 @@
 package com.meow.tv;
 
 import android.app.Activity;
+import android.os.Build;
 import android.webkit.JavascriptInterface;
 
 /**
@@ -107,6 +108,19 @@ public class TvBridge {
     }
 
     /**
+     * 首投确认框（页面里的 confirmDialog）的结果回填。
+     *
+     * <p>接收端 HTTP 线程在 {@link CastReceiverBridge#confirm} 里等这个结果；
+     * 只回答"允许/拒绝"，不写任何持久状态，但仍走 trustedOrigin：
+     * 用户把后端地址填成外部页面时，那个页面不该能替用户点"允许"。
+     */
+    @JavascriptInterface
+    public void castConfirmResult(String id, boolean allow) {
+        if (!trustedOrigin()) return;
+        CastReceiverBridge.resolveConfirm(id, allow);
+    }
+
+    /**
      * 用原生播放器打开一个地址。
      *
      * @param headers {@code k=v&k=v} 形式，值需 URL 编码
@@ -121,6 +135,25 @@ public class TvBridge {
     @JavascriptInterface
     public String platform() {
         return "tv";
+    }
+
+    /**
+     * 设备名：投屏会话里给对端显示"谁投过来的"。
+     *
+     * <p>用厂商 + 型号（如 {@code XGIMI XGIMI TV}），比固定 "TV" 更容易在
+     * 多台设备同时在线时分辨；失败退回 "TV"。
+     */
+    @JavascriptInterface
+    public String deviceName() {
+        try {
+            String m = (Build.MANUFACTURER == null ? "" : Build.MANUFACTURER).trim();
+            String model = (Build.MODEL == null ? "" : Build.MODEL).trim();
+            if (model.isEmpty()) return "TV";
+            if (m.isEmpty() || model.toLowerCase().startsWith(m.toLowerCase())) return model;
+            return m + " " + model;
+        } catch (Throwable t) {
+            return "TV";
+        }
     }
 
     /**

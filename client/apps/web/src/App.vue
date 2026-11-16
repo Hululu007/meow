@@ -17,6 +17,7 @@ import TvActionSheet from '@/components/common/TvActionSheet.vue'
 import UpdateDialog from '@/components/common/UpdateDialog.vue'
 import TrayHintDialog from '@/components/common/TrayHintDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import { confirmDialog, settleDialog } from '@/composables/useConfirm'
 import { installTvMenuBridge } from '@/stores/tvMenu'
 import {
   canUpdate,
@@ -812,7 +813,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('meow:pseudofs', onPseudoFs)
 })
 
-const isPlay = computed(() => route.name === 'play')
+const isPlay = computed(() => route.name === 'play' || route.name === 'extPlay')
 /** 直播页：与播放页同构的路由级满屏页面（顶栏不渲染、底栏不显示） */
 const isLive = computed(() => route.name === 'live')
 
@@ -834,7 +835,7 @@ watch(
  * 用户也回不到其它入口；直播自己的控制栏与频道面板用 --tabbar-clear 让位。
  * <p>只在 <640px 出现（组件内部 CSS 控制），桌面/电视不受影响。
  */
-const showTabBar = computed(() => String(route.name || '') !== 'play')
+const showTabBar = computed(() => !isPlay.value)
 
 /**
  * 是否有元素处于全屏（真全屏或伪全屏）。
@@ -887,6 +888,69 @@ const showOfflineCard = computed(() => {
 function goSettings() {
   void router.push({ name: 'settings' })
 }
+
+/*
+ * 投屏接收：别的设备投到本机时自动打开接收页。
+ *
+ * 只在用户开过投屏面板后启用（`meow.cast.receiver=1`），不默认监听；
+ * 会话/令牌都在接收端后端，这里只负责"看到 pending 会话就进页面"。
+ */
+/*
+ * 首投确认：TV 壳的接收端不再弹原生 AlertDialog，而是调用这里的全局函数，
+ * 复用应用内 confirmDialog（主题一致、遥控方向键可用）。原生只等
+ * `meowTv.castConfirmResult`；超时会调 `__meowCastCancel` 把框收掉。
+ *
+ * 注册放在 onMounted：ConfirmDialog 已经挂载，watch(open) 才会执行
+ * “焦点落在取消 + 300ms 防误触”那套逻辑。
+ */
+type CastConfirmWindow = Window & {
+  __meowCastConfirm?: (sender: string, id: string) => void
+  __meowCastCancel?: (id: string) => void
+  meowTv?: { castConfirmResult?: (id: string, allow: boolean) => void }
+}
+const castWin = window as CastConfirmWindow
+let activeCastConfirmId = ''
+
+let castPollTimer: number | undefined
+onMounted(() => {
+  castWin.__meowCastConfirm = async (sender, id) => {
+    activeCastConfirmId = id
+    const ok = await confirmDialog(`${sender || '局域网设备'} 想投到这台设备`, {
+      title: '投屏请求',
+      okText: '允许',
+      cancelText: '拒绝',
+    })
+    if (activeCastConfirmId === id) activeCastConfirmId = ''
+    castWin.meowTv?.castConfirmResult?.(id, ok)
+  }
+  castWin.__meowCastCancel = (id) => {
+    if (activeCastConfirmId !== id) return
+    activeCastConfirmId = ''
+    settleDialog(false)
+  }
+  castPollTimer = window.setInterval(async () => {
+    if (localStorage.getItem('meow.cast.receiver') !== '1') return
+    if (route.name === 'extPlay') return
+    const { receiverPending } = await import('@/api/library')
+    const p = await receiverPending()
+    if (!p?.sessionId || !p.media?.url || p.state === 'idle') return
+    void router.push({
+      name: 'extPlay',
+      query: {
+        sessionId: p.sessionId,
+        url: p.media.url,
+        title: p.media.title || '投屏播放',
+        danmakuUrl: p.media.danmakuUrl || '',
+        position: String(p.position || 0),
+      },
+    })
+  }, 4000)
+})
+onBeforeUnmount(() => {
+  if (castPollTimer) window.clearInterval(castPollTimer)
+  delete castWin.__meowCastConfirm
+  delete castWin.__meowCastCancel
+})
 </script>
 
 <template>
@@ -1063,7 +1127,12 @@ function goSettings() {
         跨路由（首页↔详情↔播放）仍然重建，这是对的 —— 那些是不同页面。
       -->
       <RouterView v-slot="{ Component }">
-        <component :is="Component" :key="route.path" />
+        <!--
+          ext-play 是个"无状态接收页"：换会话时 query 会整组换掉，key 必须带
+          fullPath 才会重建。只按 path 的话组件被复用，sessionId/url/title
+          还是上一场的，连投会一直播旧片（实测）。
+        -->
+        <component :is="Component" :key="route.name === 'extPlay' ? route.fullPath : route.path" />
       </RouterView>
     </main>
 

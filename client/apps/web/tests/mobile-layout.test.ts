@@ -151,7 +151,11 @@ describe('移动端导航：底部标签栏 + 顶栏搜索展开', () => {
   it('只有播放页不显示标签栏；直播页保留（它是一级入口），内容给底栏留出 6rem', () => {
     expect(app).toContain('has-tabbar')
     // 2026-11-12：直播成了一级入口，藏掉底栏会让这一格永远不亮也回不去
-    expect(app).toContain("const showTabBar = computed(() => String(route.name || '') !== 'play')")
+    // 2026-11-16：投屏接收页（ext-play）也是满屏播放，一并藏底栏
+    expect(app).toContain(
+      "const isPlay = computed(() => route.name === 'play' || route.name === 'extPlay')",
+    )
+    expect(app).toContain('const showTabBar = computed(() => !isPlay.value)')
     expect(tokens).toContain('--tabbar-h: calc(6rem + env(safe-area-inset-bottom))')
     // 满屏画面（直播）只让开标签栏本体，不需要 6rem
     expect(tokens).toContain('--tabbar-clear')

@@ -73,6 +73,13 @@ const props = withDefaults(defineProps<{
    *   （不是 undefined）。实测因此一直走跳过分支，play() 从不执行。
    */
   autoPlay?: boolean
+  /**
+   * 接收页专用：有声自动播放被浏览器策略拦下时，允许静音起播并提示「开启声音」。
+   *
+   * <p>普通播放页**不要开**：那里用户是主动进来的，被策略拦下时应停在
+   * 播放按钮，而不是悄悄静音播放。
+   */
+  mutedFallback?: boolean
   /** 同线路剧集列表，用于上一集/下一集/选集 */
   episodes?: Array<{ name: string; url: string }>
   /** 当前集在 episodes 里的下标，-1 表示未知 */
@@ -117,6 +124,10 @@ const props = withDefaults(defineProps<{
   canDownloadAll?: boolean
   /** 能不能投屏（片库直链/需解析器的源不行） */
   canCast?: boolean
+  /** 不能投时的原因（菜单里显示“不可投”，比直接隐藏入口更容易理解） */
+  castReason?: string
+  /** 当前是否正在投屏（右上角图标高亮用） */
+  casting?: boolean
   /** 下载进度百分比 */
   cachePercent?: number
   /**
@@ -129,7 +140,7 @@ const props = withDefaults(defineProps<{
 }>(),
   // ★ autoPlay 必须显式给 true：Boolean prop 的类型默认值是 false，
   //   不写这一行的话 `props.autoPlay !== false` 永远不成立（实测踩过）。
-  { autoPlay: true },
+  { autoPlay: true, mutedFallback: false },
 )
 
 const emit = defineEmits<{
@@ -159,8 +170,10 @@ const emit = defineEmits<{
   (e: 'download'): void
   /** 用户点了「下载整季」 */
   (e: 'download-all'): void
-  /** 用户点了「投屏」 */
-  (e: 'cast'): void
+  /** 用户点了「投屏」；anchor 是触发按钮在播放器内的左偏移（宽屏面板锚定用） */
+  (e: 'cast', anchor?: { left: number }): void
+  /** 有声自动播放被浏览器拦下，已自动改静音起播（接收页据此提示「开启声音」） */
+  (e: 'autoplay-muted'): void
 }>()
 
 /** 是否可切集（至少两集且知道当前位置） */
@@ -420,10 +433,38 @@ function restart() {
   clearResume()
 }
 
+/** 从"投屏回到本机"等处恢复播放（不重置进度）。 */
+function play() {
+  const v = video.value
+  if (v) safePlay(v)
+}
+
+/** 接收页「开启声音」：解除静音并记住偏好。 */
+function unmute() {
+  const v = video.value
+  if (!v) return
+  v.muted = false
+  muted.value = false
+  savePrefs({ muted: false, volume: v.volume }, { silent: true })
+}
+
 /** play() 的安全包装：失败静默（自动播放策略拦下来是常态） */
 function safePlay(v: HTMLVideoElement) {
   const r = v.play() as Promise<void> | undefined
-  if (r && typeof r.catch === 'function') r.catch(() => {})
+  if (!r || typeof r.catch !== 'function') return
+  r.catch((e: unknown) => {
+    /*
+     * 只有接收页（mutedFallback=true）才静音兜底：它是别的设备投过来的，
+     * 页面没有用户手势；普通播放页被策略拦下时应停在播放按钮，不能悄悄静音播。
+     */
+    const name = (e as { name?: string } | null)?.name
+    if (name !== 'NotAllowedError' || v.muted || !props.mutedFallback) return
+    v.muted = true
+    muted.value = true
+    emit('autoplay-muted')
+    const r2 = v.play() as Promise<void> | undefined
+    if (r2 && typeof r2.catch === 'function') r2.catch(() => {})
+  })
 }
 
 /** 从外部跳到指定时间（续播恢复用） */
@@ -491,6 +532,17 @@ function applySeekDialog() {
 /** 供外部读取当前进度 */
 function getTime(): number {
   return video.value?.currentTime ?? 0
+}
+
+/** 投屏接收页需要：本地是否暂停 / 总时长 */
+function isPaused(): boolean {
+  const v = video.value
+  return !v || v.paused
+}
+
+function getDuration(): number {
+  const d = video.value?.duration
+  return typeof d === 'number' && Number.isFinite(d) ? d : 0
 }
 
 /** 刷新当前集：重新加载同一地址（源站卡住时用） */
@@ -3885,6 +3937,17 @@ function toggleMore(ev?: Event) {
   togglePanel('more', ev)
 }
 
+/** 投屏面板的锚点：当前触发入口是「更多」，取它的左边缘。 */
+/** 右上角投屏图标的锚点：换算成播放器宿主的左偏移。 */
+function castButtonAnchor(ev: Event): { left: number } | undefined {
+  const wrapEl = wrap.value
+  const btn = ev.currentTarget as HTMLElement | null
+  if (!wrapEl || !btn) return undefined
+  const host = wrapEl.getBoundingClientRect()
+  const r = btn.getBoundingClientRect()
+  return { left: r.left - host.left }
+}
+
 /** 面板样式：算过位置就锚定按钮，否则回退到左侧安全位 */
 function panelStyle(target: Panel) {
   const a = anchor.value[target]
@@ -5282,7 +5345,16 @@ function pause() {
   if (v && !v.paused) v.pause()
 }
 
-defineExpose({ restart, seekTo, getTime, pause })
+defineExpose({
+  restart,
+  seekTo,
+  getTime,
+  pause,
+  play,
+  isPaused,
+  getDuration,
+  unmute,
+})
 </script>
 
 <template>
@@ -5402,6 +5474,27 @@ defineExpose({ restart, seekTo, getTime, pause })
           </template>
         </div>
       </div>
+      <!-- 投屏：右上角一级入口（与左上返回同一顶栏；不挤底栏） -->
+      <button
+        v-if="canCast || !!castReason"
+        class="relative grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 backdrop-blur transition hover:bg-white/20"
+        :class="[casting ? 'text-accent' : '', canCast ? '' : 'opacity-40']"
+        :aria-label="canCast ? '投屏' : '投屏不可用'"
+        :title="canCast ? (casting ? '正在投屏' : '投屏到电视') : castReason"
+        @click.stop="$emit('cast', castButtonAnchor($event))"
+      >
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="2" y="6" width="14" height="10" rx="1.5" />
+          <path d="M6 20h8" />
+          <path d="M10 16v4" />
+          <path d="M18 10.5a2.5 2.5 0 0 1 2.5 2.5" />
+          <path d="M18 7a6 6 0 0 1 6 6" />
+        </svg>
+        <span
+          v-if="casting"
+          class="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-accent ring-2 ring-black/50"
+        />
+      </button>
     </div>
 
 
@@ -6323,17 +6416,6 @@ defineExpose({ restart, seekTo, getTime, pause })
           <path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" />
         </svg>
         下载整季
-      </button>
-      <!-- 投屏：推到局域网里的电视/盒子 -->
-      <button v-if="canCast" class="menu-item" @click="$emit('cast'); openPanel(null)">
-        <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="2" y="6" width="14" height="10" rx="1.5" />
-          <path d="M6 20h8" />
-          <path d="M10 16v4" />
-          <path d="M18 10.5a2.5 2.5 0 0 1 2.5 2.5" />
-          <path d="M18 7a6 6 0 0 1 6 6" />
-        </svg>
-        投屏到电视
       </button>
       <div class="my-1 h-px bg-white/10" />
       <!-- 睡眠定时：睡前看片最常见的需求 -->

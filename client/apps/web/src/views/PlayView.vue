@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import VideoPlayer from '@/components/player/VideoPlayer.vue'
 import {
   apiBase,
+  castBase,
   fetchDetail,
   fetchParse,
   fetchPlay,
@@ -12,6 +13,7 @@ import {
   prefetchDanmaku,
   proxyDanmaku,
   proxyStream,
+  sanitizeCastHeader,
 } from '@/api'
 import {
   cacheIdFor,
@@ -954,28 +956,394 @@ function retryFromError() {
 /** 当前能不能投：要有可直接推的 http 地址（解析器出来的地址常带时效，不适合推） */
 const canCastCurrent = computed(() => {
   if (isLibraryPlay.value) return false
+  // 需要专用解析器的源投出去，电视端只会拿到一串加密串；组件 props 注释也是这么约定的
+  if (needsParser.value) return false
+  if (play.value && needsParse(play.value)) return false
   const raw = play.value?.url
   const u = typeof raw === 'string' ? raw : ''
   return !!u && /^https?:/i.test(u)
 })
 
-const castDevices = ref<Array<{ name: string; host: string; location: string; controlUrl: string }>>([])
+/** 投屏设备：DLNA 标准渲染器，或装了我们的设备（kind=meow）。 */
+type CastDev = {
+  name: string
+  host: string
+  location: string
+  controlUrl: string
+  connControlUrl?: string
+  udn?: string
+  type?: string
+  kind?: 'dlna' | 'meow'
+  base?: string
+  token?: string
+}
+
+const castDevices = ref<CastDev[]>([])
 const castBusy = ref(false)
 const castSearching = ref(false)
 const castMsg = ref('')
+/** 成功提示画在播放器 overlay 里（全屏也看得见），面板 900ms 后自动收起 */
+const castToast = ref('')
+let castToastTimer: number | undefined
+/** 面板打开序号：成功自动收起时避免把用户刚重开的面板关掉 */
+let castPanelSeq = 0
+function showCastToast(text: string, ms = 2200) {
+  castToast.value = text
+  window.clearTimeout(castToastTimer)
+  castToastTimer = window.setTimeout(() => (castToast.value = ''), ms)
+}
 
-/** 打开投屏面板并开始发现设备 */
-async function openCast() {
-  if (!canCastCurrent.value) {
-    flashCacheHint('这一集没有可直接投屏的地址')
+/** 不能投时给菜单一个禁用原因（不再直接把入口藏掉） */
+const castReason = computed(() => {
+  if (isLibraryPlay.value) return '片库直连播放不能投屏'
+  if (needsParser.value) return '该源需要专用解析器，投出去电视无法播放'
+  if (play.value && needsParse(play.value)) return '这条线路需要解析，不能直接投屏'
+  return '当前没有可投屏的播放地址'
+})
+
+/** 设备分组：猫窝（带弹幕/跳片头）优先，其它 DLNA 电视在后 */
+const castGroups = computed(() =>
+  [
+    { kind: 'meow', title: '猫窝设备', items: castDevices.value.filter((d) => d.kind === 'meow') },
+    { kind: 'dlna', title: 'DLNA 电视', items: castDevices.value.filter((d) => d.kind !== 'meow') },
+  ].filter((g) => g.items.length > 0),
+)
+
+/** 宽屏（非 TV 壳）把面板锚到触发按钮；手机/TV 仍居中 */
+const castAnchorLeft = ref<number | null>(null)
+const castPanelAnchored = computed(() => {
+  if (castAnchorLeft.value == null) return false
+  try {
+    if (typeof (window as unknown as { meowTv?: unknown }).meowTv !== 'undefined') return false
+  } catch {
+    return false
+  }
+  return window.innerWidth >= 768
+})
+const castPanelStyle = computed(() => {
+  if (!castPanelAnchored.value || castAnchorLeft.value == null) return {}
+  const root = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+  const width = 22 * root
+  const left = Math.max(8, Math.min(castAnchorLeft.value, window.innerWidth - width - 8))
+  // 图标在右上角：面板挂在它下面；给底栏留出 5.75rem（4.25 + 5.75 合计 10rem）
+  return { left: `${left}px`, top: '4.25rem', maxHeight: 'calc(100dvh - 10rem)' }
+})
+
+/** 已投的会话。null = 当前没在投屏。 */
+interface CastSession {
+  device: CastDev
+  title: string
+  /** B 类会话 id（DLNA 没有）。 */
+  sessionId?: string
+}
+
+const castSession = ref<CastSession | null>(null)
+const castState = ref('')
+const castPosition = ref(0)
+const castDuration = ref(0)
+/** 连续 5 次轮询失败 → 判定接收端消失 */
+const castLost = ref(false)
+/** A 类设备"回了 playing 但 position/duration 一直是 0"的看门狗（V9 这类占位 DMR） */
+const castStall = ref(false)
+const castSeekMax = computed(() => Math.max(1, Math.round(castDuration.value || 0)))
+let castPollTimer: number | undefined
+let castFailCount = 0
+let castLastFlush = 0
+let castEndedHandled = false
+let castStallCount = 0
+
+const CAST_STORE_KEY = 'meow.cast.session'
+
+/** UPnPError → 人话。不同 code 处置完全不同。 */
+const CAST_HINT: Record<string, string> = {
+  '701': '电视状态不对，稍后重试',
+  '402': '电视不接受这个地址',
+  '602': '电视不支持这个操作',
+  '710': '电视不支持这种拖动',
+  '711': '拖动位置不合法',
+}
+
+function saveCastSession() {
+  try {
+    if (castSession.value) sessionStorage.setItem(CAST_STORE_KEY, JSON.stringify(castSession.value))
+    else sessionStorage.removeItem(CAST_STORE_KEY)
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 离开播放页再回来时恢复"正在电视上播放"的状态（电视本身一直在放）。 */
+function restoreCastSession() {
+  try {
+    const raw = sessionStorage.getItem(CAST_STORE_KEY)
+    if (!raw) return
+    const s = JSON.parse(raw) as CastSession
+    if (!s?.device?.controlUrl) return
+    castSession.value = s
+    startCastPoll()
+  } catch {
+    /* 忽略 */
+  }
+}
+
+function stopCastPoll() {
+  if (castPollTimer) window.clearInterval(castPollTimer)
+  castPollTimer = undefined
+}
+
+function startCastPoll() {
+  stopCastPoll()
+  castFailCount = 0
+  castStallCount = 0
+  castLost.value = false
+  castStall.value = false
+  castPollTimer = window.setInterval(() => void pollCast(), 1500)
+  void pollCast()
+}
+
+async function pollCast() {
+  const s = castSession.value
+  if (!s) return
+  const { castStatus, castSessionStatus } = await import('@/api/library')
+  const st = s.device.kind === 'meow'
+    ? await castSessionStatus(s.device, s.sessionId || '')
+    : await castStatus(s.device)
+  if (!st.ok) {
+    castFailCount += 1
+    if (castFailCount >= 5) {
+      castLost.value = true
+      stopCastPoll()
+    }
     return
   }
+  castFailCount = 0
+  castState.value = st.state || ''
+  castPosition.value = st.position || 0
+  castDuration.value = st.duration || 0
+  /*
+   * A 类里有"只回 PLAYING、不取流"的占位 DMR（投影仪的 投屏电视V9：Set 后
+   * NrTracks=0、position/duration 永远 0）。9 秒还这样就在遥控条上明说，
+   * 别让用户以为在缓冲。B 类不参与（页面起播前几秒 duration=0 是正常的）。
+   */
+  if (
+    s.device.kind !== 'meow' &&
+    castState.value === 'playing' &&
+    castDuration.value === 0 &&
+    castPosition.value === 0
+  ) {
+    castStallCount += 1
+    if (castStallCount >= 6) castStall.value = true
+  } else {
+    castStallCount = 0
+    castStall.value = false
+  }
+  // 投屏期间历史要写"电视的位置"，否则下次续播会跳回本机停在 0 的旧点
+  const now = Date.now()
+  if (castDuration.value > 0 && now - castLastFlush > 10000) {
+    castLastFlush = now
+    flushToHistory(false, { pos: castPosition.value, dur: castDuration.value })
+  }
+  // 播完：本地 onEnded 永远不会触发，由接收端状态驱动
+  if (
+    !castEndedHandled &&
+    castDuration.value > 0 &&
+    castPosition.value >= castDuration.value - 5 &&
+    (castState.value === 'stopped' || castState.value === 'paused')
+  ) {
+    castEndedHandled = true
+    onEnded()
+  }
+}
+
+/**
+ * 把当前媒体重推到电视（切集 / 切线路 / 首次投屏共用）。
+ *
+ * 顺序：SetAVTransportURI + Play，再等设备进播放态后 Seek 到原位置
+ * （Set 会把位置重置为 0；不等就 Seek 会被 701 拒）。
+ */
+async function pushCast(mediaUrl: string, position: number, titleText?: string): Promise<boolean> {
+  const s = castSession.value
+  if (!s) return false
+  const cb = await castBase(s.device.host)
+  if (!cb) {
+    castMsg.value = '没有可用的局域网地址，无法投屏'
+    return false
+  }
+  const proxied = proxyStream(mediaUrl, sanitizeCastHeader(play.value?.header), {
+    base: cb.base,
+    token: cb.token,
+  })
+  const text = titleText || `${title}${epName.value ? ' · ' + epName.value : ''}`
+  const { castControl, castProtocols, castSessionPlay } = await import('@/api/library')
+
+  if (s.device.kind === 'meow') {
+    // B 类：推会话（带弹幕地址），接收端自己播放并汇报状态
+    const danmakuUrl = proxyDanmaku(title, epName.value || '1', {
+      base: cb.base,
+      token: cb.token,
+    })
+    const r = await castSessionPlay(
+      s.device,
+      {
+        url: proxied,
+        title: text,
+        danmakuUrl,
+        site,
+        vodId: vodId || undefined,
+        ep: epName.value || undefined,
+        position: Math.round(position),
+      },
+    )
+    if (!r.ok) {
+      castMsg.value = r.msg || '投屏失败'
+      return false
+    }
+    s.sessionId = r.sessionId || ''
+    s.title = text
+    saveCastSession()
+    castState.value = r.state || 'playing'
+    castPosition.value = position
+    castEndedHandled = false
+    castLastFlush = Date.now()
+    if (!castPollTimer) startCastPoll()
+    return true
+  }
+
+  /*
+   * A 类（DLNA）能力预判：Sink 列表里完全没有 video/* 的（典型是小爱音箱这类音频渲染器）
+   * 直接拒，别让用户等了半天只看到"设备没有响应"。
+   * 列表为空表示设备没实现 GetProtocolInfo，只能放行（很多电视确实不报）。
+   */
+  const sink = await castProtocols(s.device)
+  // `http-get:*:*:*` 是"什么都收"的通用声明（GUPnP 常见），不能当成不支持视频
+  const videoish = (p: string) =>
+    /video\//i.test(p) || /mpegurl/i.test(p) || /http-get:\*:\*:\*/i.test(p)
+  if (sink.length && !sink.some(videoish)) {
+    castMsg.value = '这台设备只支持音频，不能投视频'
+    return false
+  }
+  const r = await castControl('play', s.device, { url: proxied, title: text })
+  if (!r.ok) {
+    const hint = r.code ? CAST_HINT[r.code] || '' : ''
+    castMsg.value = `${r.msg || '投屏更新失败，电视仍在播上一集'}${hint ? '（' + hint + '）' : ''}`
+    return false
+  }
+  s.title = text
+  saveCastSession()
+  castState.value = 'playing'
+  castPosition.value = position
+  castEndedHandled = false
+  castLastFlush = Date.now()
+  if (position > 2) {
+    window.setTimeout(() => {
+      void castControl('seek', s.device, { seconds: Math.round(position) })
+    }, 1200)
+  }
+  if (!castPollTimer) startCastPoll()
+  return true
+}
+
+/** 投屏中切集/切线路：新地址到达后自动重推，本地保持暂停（否则两边同时出声）。 */
+watch(src, () => {
+  if (!castSession.value) return
+  const raw = play.value?.url
+  const u = typeof raw === 'string' ? raw : ''
+  if (!u || !/^https?:/i.test(u)) return
+  void pushCast(u, castPosition.value)
+})
+
+async function castToggle() {
+  const s = castSession.value
+  if (!s) return
+  const { castControl, castSessionCommand } = await import('@/api/library')
+  const pause = castState.value === 'playing'
+  const action = pause ? 'pause' : 'play'
+  const r = s.device.kind === 'meow'
+    ? await castSessionCommand(s.device, s.sessionId || '', action)
+    : await castControl(action, s.device)
+  if (r.ok) castState.value = pause ? 'paused' : 'playing'
+}
+
+async function onCastSeek(e: Event) {
+  const v = Number((e.target as HTMLInputElement).value)
+  if (!Number.isFinite(v)) return
+  castPosition.value = v
+  const s = castSession.value
+  if (!s) return
+  const { castControl, castSessionCommand } = await import('@/api/library')
+  if (s.device.kind === 'meow') {
+    await castSessionCommand(s.device, s.sessionId || '', 'seek', Math.round(v))
+  } else {
+    await castControl('seek', s.device, { seconds: Math.round(v) })
+  }
+}
+
+/** 停止投屏：读最后位置 → 本机从该位置续播。 */
+async function stopCast(resume = true) {
+  const s = castSession.value
+  if (!s) return
+  const { castControl, castSessionCommand } = await import('@/api/library')
+  const pos = castPosition.value
+  const dur = castDuration.value
+  if (s.device.kind === 'meow') {
+    await castSessionCommand(s.device, s.sessionId || '', 'stop')
+  } else {
+    await castControl('stop', s.device)
+  }
+  stopCastPoll()
+  castSession.value = null
+  castState.value = ''
+  castLost.value = false
+  castStall.value = false
+  castEndedHandled = false
+  saveCastSession()
+  castMsg.value = ''
+  if (pos > 1) flushToHistory(true, { pos, dur })
+  if (!resume) return
+  window.setTimeout(() => {
+    if (pos > 1) player.value?.seekTo?.(pos)
+    player.value?.play?.()
+  }, 300)
+}
+
+function fmtSec(sec: number) {
+  const s = Math.max(0, Math.floor(sec || 0))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const ss = String(s % 60).padStart(2, '0')
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
+}
+
+// 离开播放页不停止投屏（电视继续放）；只停本地轮询。
+onMounted(restoreCastSession)
+onBeforeUnmount(stopCastPoll)
+
+/** 打开投屏面板并开始发现设备。anchor 是触发按钮在播放器内的左偏移（宽屏锚定用）。 */
+async function openCast(anchor?: { left?: number }) {
+  if (!canCastCurrent.value) {
+    showCastToast(castReason.value)
+    return
+  }
+  castAnchorLeft.value = typeof anchor?.left === 'number' ? anchor.left : null
+  castPanelSeq += 1
   castSearching.value = true
   castMsg.value = ''
   castDevices.value = []
+  // 打开投屏面板 = 接受被投：同时把本机接收端开起来（只监听，不弹窗）
+  try {
+    const { setReceiver } = await import('@/api/library')
+    localStorage.setItem('meow.cast.receiver', '1')
+    void setReceiver(true)
+  } catch {
+    /* 忽略：接收端起不来不影响当发送端 */
+  }
   try {
     const { castDiscover } = await import('@/api/library')
-    castDevices.value = await castDiscover(3000)
+    const list = await castDiscover(3000)
+    // 我们的设备排前面（B 类体验更好：带弹幕/跳片头）；其他电视在后
+    castDevices.value = list.sort(
+      (a, b) => (a.kind === 'meow' ? 0 : 1) - (b.kind === 'meow' ? 0 : 1),
+    )
     if (!castDevices.value.length) {
       castMsg.value = '没找到可投屏的设备。确认电视和这台设备在同一个局域网，且电视开了投屏/DLNA。'
     }
@@ -989,24 +1357,35 @@ function closeCast() {
   castDevices.value = []
   castMsg.value = ''
   castSearching.value = false
+  castAnchorLeft.value = null
 }
 
 /** 推给选中的设备 */
-async function castTo(dev: { name: string; host: string; location: string; controlUrl: string }) {
+async function castTo(dev: CastDev) {
   const raw = play.value?.url
   const u = typeof raw === 'string' ? raw : ''
   if (!u) return
   castBusy.value = true
   try {
-    const { castControl } = await import('@/api/library')
-    // 用后端代理地址而不是源站直链：电视拿到的地址必须能从它自己的网络访问到，
-    // 而源站常有 Referer/UA 校验，直链过去多半 403。
-    const proxied = proxyStream(u, play.value?.header)
-    const r = await castControl('play', dev, { url: proxied, title: `${title}${epName.value ? ' · ' + epName.value : ''}` })
-    castMsg.value = r.ok ? `已投到「${dev.name}」` : r.msg || '投屏失败'
-    if (r.ok) {
+    const text = `${title}${epName.value ? ' · ' + epName.value : ''}`
+    // 先建会话再推：pushCast 负责取局域网旁路地址、加令牌、抓描述失败回滚
+    castSession.value = { device: dev, title: text }
+    const ok = await pushCast(u, 0, text)
+    if (ok) {
       // 投上去了本地就暂停，避免两边同时放
       player.value?.pause?.()
+      castMsg.value = ''
+      showCastToast(`已投到「${dev.name}」`)
+      // 成功后面板自动收起，别继续盖着画面；遥控条仍在左上角
+      const seq = castPanelSeq
+      window.setTimeout(() => {
+        if (seq === castPanelSeq) closeCast()
+      }, 900)
+    } else {
+      castMsg.value = castMsg.value || '投屏失败'
+      castSession.value = null
+      saveCastSession()
+      stopCastPoll()
     }
   } finally {
     castBusy.value = false
@@ -1794,6 +2173,7 @@ onBeforeUnmount(() => {
   clearTimeout(lineHintTimer)
   clearTimeout(cachePullTimer)
   clearTimeout(cacheHintTimer)
+  clearTimeout(castToastTimer)
   window.removeEventListener('pagehide', onHide)
   document.removeEventListener('keydown', onDocEscape)
   // 投屏面板若还占着返回链，卸载前必须还原，否则下一页会继承这个 handler
@@ -1944,6 +2324,7 @@ onBeforeUnmount(() => {
       v-else-if="src"
       ref="player"
       :src="src"
+      :auto-play="!castSession"
       :danmaku-url="danmakuUrl"
       :title="`${title}${epName ? ' · ' + epName : ''}`"
       :episodes="playlist"
@@ -1964,6 +2345,8 @@ onBeforeUnmount(() => {
       :can-download="canDownloadCurrent"
       :can-download-all="canDownloadAll"
       :can-cast="canCastCurrent"
+      :cast-reason="castReason"
+      :casting="!!castSession"
       :cache-state="cacheState"
       :cache-percent="cachePercent"
       @loaded="applyResume"
@@ -2003,6 +2386,51 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        <!-- 投屏中：遥控条（进度 / 暂停 / 停止）。离开播放页不停止投屏。 -->
+        <div
+          v-if="castSession"
+          class="pointer-events-auto absolute left-3 top-3 z-40 w-[min(22rem,calc(100%-1.5rem))] rounded-xl border border-white/10 bg-black/80 px-3 py-2 text-white shadow-2xl backdrop-blur-xl"
+        >
+          <div class="flex items-center gap-2 text-xs">
+            <span class="min-w-0 flex-1 truncate">
+              正在「{{ castSession.device.name }}」上播放
+            </span>
+            <span class="shrink-0 text-white/60">
+              {{ fmtSec(castPosition) }} / {{ fmtSec(castDuration) }}
+            </span>
+          </div>
+          <div class="mt-2 flex items-center gap-2">
+            <button
+              class="rounded-md bg-white/10 px-2 py-1 text-[11px] transition hover:bg-white/20"
+              @click="castToggle"
+            >
+              {{ castState === 'playing' ? '暂停' : '继续' }}
+            </button>
+            <input
+              class="h-1 min-w-0 flex-1 cursor-pointer"
+              style="accent-color: var(--color-accent)"
+              type="range"
+              min="0"
+              :max="castSeekMax"
+              :value="Math.round(castPosition)"
+              @change="onCastSeek"
+            />
+            <button
+              class="rounded-md bg-white/10 px-2 py-1 text-[11px] transition hover:bg-white/20"
+              @click="stopCast()"
+            >
+              停止
+            </button>
+          </div>
+          <p v-if="castLost" class="mt-1 text-[11px] text-hot">
+            电视已断开
+            <button class="ml-1 underline" @click="stopCast(false)">关闭</button>
+          </p>
+          <p v-else-if="castStall" class="mt-1 text-[11px] text-hot">
+            这台设备没有开始播放（可能只接受它自家 App 投屏）。换一台电视试试。
+          </p>
+        </div>
+
         <!-- 连播倒计时：播完到点自动下一集，可取消 -->
         <div
           v-if="countdown"
@@ -2026,41 +2454,66 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <!-- 投屏面板：设备列表 + 状态 -->
+        <!-- 投屏面板：设备列表 + 状态。宽屏（非 TV）锚到触发按钮，手机/TV 居中 -->
         <div
           v-if="castSearching || castDevices.length || castMsg"
           data-tv-scope
-          class="pointer-events-auto absolute left-1/2 top-1/2 w-[22rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-white/10 bg-black/92 p-4 text-ink shadow-2xl backdrop-blur-xl"
+          class="pointer-events-auto absolute z-[135] flex max-h-[calc(100dvh-2rem)] w-[22rem] max-w-[calc(100%-2rem)] flex-col rounded-xl border border-white/10 bg-black/92 p-4 text-ink shadow-2xl backdrop-blur-xl"
+          :class="castPanelAnchored ? '' : 'left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2'"
+          :style="castPanelStyle"
         >
-          <div class="mb-2 flex items-center gap-2">
+          <div class="mb-2 flex shrink-0 items-center gap-2">
             <span class="flex-1 text-sm font-medium">投屏到电视</span>
             <button class="rounded px-2 py-0.5 text-xs text-ink-3 hover:bg-white/10" @click="closeCast">
               关闭
             </button>
           </div>
-          <p v-if="castSearching" class="py-4 text-center text-xs text-ink-3">正在搜索局域网设备…</p>
-          <div v-else-if="castDevices.length" class="space-y-1">
-            <button
-              v-for="d in castDevices"
-              :key="d.controlUrl"
-              class="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition hover:bg-white/10 disabled:opacity-50"
-              :disabled="castBusy"
-              @click="castTo(d)"
-            >
-              <svg class="h-4 w-4 shrink-0 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="2" y="6" width="20" height="12" rx="2" />
-                <path d="M8 20h8" />
-              </svg>
-              <span class="min-w-0 flex-1 truncate">{{ d.name }}</span>
-              <span class="text-[11px] text-ink-3">{{ d.host }}</span>
-            </button>
+          <div class="min-h-0 flex-1 overflow-y-auto pr-1">
+            <p v-if="castSearching" class="py-4 text-center text-xs text-ink-3">正在搜索局域网设备…</p>
+            <div v-else-if="castGroups.length" class="space-y-2">
+              <div v-for="g in castGroups" :key="g.kind">
+                <p class="px-2 pb-1 text-[10px] text-ink-3">{{ g.title }}</p>
+                <div class="space-y-1">
+                  <button
+                    v-for="(d, i) in g.items"
+                    :key="d.controlUrl"
+                    class="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition hover:bg-white/10 disabled:opacity-50"
+                    :disabled="castBusy"
+                    :data-tv-first="g === castGroups[0] && i === 0 ? true : undefined"
+                    @click="castTo(d)"
+                  >
+                    <svg class="h-4 w-4 shrink-0 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="2" y="6" width="20" height="12" rx="2" />
+                      <path d="M8 20h8" />
+                    </svg>
+                    <span class="min-w-0 flex-1 truncate">{{ d.name }}</span>
+                    <span
+                      v-if="d.kind === 'meow'"
+                      class="shrink-0 rounded bg-accent/20 px-1 py-0.5 text-[10px] text-accent"
+                    >
+                      猫窝
+                    </span>
+                    <span class="text-[11px] text-ink-3">{{ d.host }}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <p v-if="castMsg" class="mt-2 text-xs" :class="castMsg.startsWith('已投') ? 'text-ok' : 'text-hot'">
+              {{ castMsg }}
+            </p>
           </div>
-          <p v-if="castMsg" class="mt-2 text-xs" :class="castMsg.startsWith('已投') ? 'text-ok' : 'text-hot'">
-            {{ castMsg }}
-          </p>
-          <p v-if="!castSearching" class="mt-2 text-[11px] leading-relaxed text-ink-3">
+          <p v-if="!castSearching" class="mt-2 shrink-0 text-[11px] leading-relaxed text-ink-3">
             电视需支持 DLNA 投屏。片源会经后端代理转发，避免电视直连源站被 Referer 校验拦掉。
+            打开这个面板后本机也会开启接收（可被别的设备投到）；Windows 首次可能弹防火墙，请允许。
           </p>
+        </div>
+
+        <!-- 投屏成功提示：画在 overlay 里，全屏也看得见；面板随后自动收起 -->
+        <div
+          v-if="castToast"
+          class="pointer-events-none absolute left-1/2 top-4 z-[140] -translate-x-1/2 rounded-full bg-black/85 px-4 py-1.5 text-xs text-ink shadow-2xl backdrop-blur"
+        >
+          {{ castToast }}
         </div>
       </template>
     </VideoPlayer>

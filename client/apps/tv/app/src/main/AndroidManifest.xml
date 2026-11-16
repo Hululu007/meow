@@ -6,6 +6,9 @@
      日志是 InstallStart: Requesting uid N needs to declare permission ... -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 投屏接收端：不拿 MulticastLock 收不到 SSDP M-SEARCH（WiFi 驱动会过滤多播） -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <!--
       片库「本地目录」要读 U 盘/内置存储里的影视文件。
       Android 11+ 读任意目录只有两条路：SAF（返回 content:// 树 URI，后端

@@ -2,6 +2,12 @@
 
 > 改造入口文档。**先读第一节的边界，再读第三节的坑**——投屏坏掉的地方几乎都在"URL 可达性"，
 > 不在协议本身。文中提到的符号名可用 grep 定位；行号会随改动漂移，不要按行号找。
+>
+> **实现状态（2026-11-16，分支 `feat/casting`）**：§12 的必做 1~7 已落地。
+> Android release APK 已构建并装到真机（Android 15 / SM-S9210）验证：
+> SSDP 发现、首投确认、allowlist 免确认、WebView 接收页（弹幕可见）、
+> 暂停 / seek 120s / 续播 / 停止 全通。
+> 未验：真 DLNA 电视的视频投屏（本机只有音频渲染器）、transfer、PC 防火墙引导。详见 §14。
 
 ## 一、三类投屏，我们只做前两类
 
@@ -93,9 +99,10 @@
 
 1. **前端**：`base()` 为空时用 `location.origin`；子路径部署时用 `new URL(base, location.origin).href`
 2. **后端**：`handleCast` 收到回环 URL 时改写成本机局域网 IP（多网卡要选"接收端同网段"的那张）
-3. **监听地址**：PC 实例实测只绑 `127.0.0.1:9979`（代码默认写的是 `0.0.0.0`，`MEOW_BIND` 可覆盖），
-   Android 侧固定 `127.0.0.1`。**PC 当发送端必须放开 bind 并提示放行防火墙**，否则电视连不上；
-   **TV 用本机网关当发送端无解**（绑死回环）；连局域网后端（NAS/Docker）时可以，但意义不大——TV 更适合当接收端。
+3. **监听地址**：PC 实例实测只绑 `127.0.0.1:9979`，Android 侧固定 `127.0.0.1`。
+   **实现没有放开主 API 的 bind**，而是加了一个**局域网旁路监听**（`core/CastLan` + `GET /api/cast/base`）：
+   只开放媒体/弹幕/转码/缓存/会话这几类路径，且要求 `ct` 一次性令牌；端口由系统分配。
+   PC 首次会弹 Windows 防火墙，需要放行。TV 本机网关仍不适合当发送端（跨端要用局域网后端）。
 
 ### 3.4 两个容易忽略的边界
 
@@ -113,7 +120,7 @@
 
 | 项 | 现状 | 备注 |
 |---|---|---|
-| 搜索目标 | `ST: urn:schemas-upnp-org:device:MediaRenderer:1` | **只搜这一个**；只实现 MediaServer（放自己片库）的设备不会出现 |
+| 搜索目标 | `MediaRenderer:1` + **`urn:meow:device:Cast:1`** | 两个 ST 各发一次；前者是标准电视，后者是我们自己的设备（走会话 API）|
 | 报文 | 单条 `M-SEARCH`，`MX: 2` | 慢设备可能错过；业界普遍发 2~3 次 |
 | 收包 | `DatagramSocket` 400ms 超时循环到 deadline | deadline 由路由钳制在 800~8000ms，默认 2500 |
 | 去重 | 按 `LOCATION` | 合理 |
@@ -177,7 +184,7 @@ DIDL-Lite 里 `<res protocolInfo="http-get:*:video/*:*">` 用的是**通配符**
 | `602` | Optional Action Not Implemented | 记入设备能力，别重复尝试 |
 | 超时 / 非 200 | — | "设备没有响应"，错误里带设备名 |
 
-改造时把 `errorCode` 透出到接口与日志，前端按上表映射成人话。
+**已透出**：`play` 失败时响应带 `code`；前端 `CAST_HINT` 按上表映射成人话。
 
 ---
 
@@ -618,6 +625,107 @@ body 为 `Content-Location / Start-Position / X-Apple-Session-ID`，随后轮询
 10. **接收端必须复用 `isSafeMediaUrl` 校验被推的 URL**——否则我们成了"让电视去访问任意地址"的跳板。
 11. **投屏期间不要让本地播放器自动开播**——`switchEpisode` / `switchLine` 现在会，改的时候必须按会话短路。
 12. **投给第三方设备的 URL 不要带 Cookie / Authorization**——见 §3.4。
+
+---
+
+## 十四、实现记录与未验项（2026-11-16，`feat/casting`）
+
+### 14.1 落地清单
+
+| 项 | 落点 |
+|---|---|
+| URL 可达性 | `core/CastLan`（局域网旁路：白名单 + `ct` 令牌 + 多网卡选地址）；`GET /api/cast/base`；前端 `castBase()` |
+| 多网卡 SSDP | `Cast.discover` 每张 IPv4 网卡各开 socket、各发两轮；描述并发抓；`dedupeMeow` 按 UDN 合并 |
+| A 类补齐 | `Cast.status/protocols`；`/api/cast` 新增 `status`/`protocols`；前端遥控条 + 轮询 |
+| 切集/切线路 | `PlayView.pushCast`（A 类重推 + 1.2s 后 Seek；B 类更新会话）；`watch(src)` 重推；`:auto-play="!castSession"` 防双播 |
+| B 类接收端 | `core/CastReceiver`（SSDP 响应 + 会话 API + 进度/遥控 + allowlist）；`CastReceiverBridge`（Android） |
+| 接收页 | `ExternalPlayView.vue` + `/ext-play` 路由；`App.vue` 轮询 pending 后进入；换会话时 `RouterView` 按 `fullPath` 重建 |
+| Android 真机 | release APK 装到 MuMu（Android 15，横/竖屏各一台）与 XGIMI 投影仪（Android 9 / armeabi-v7a）：SSDP 发现、首投确认、allowlist 免确认、WebView 接收页（弹幕可见）、暂停/seek/续播/停止、连投接管 全通 |
+| 配对 | 首投确认走应用内 `confirmDialog`（`__meowCastConfirm` → `meowTv.castConfirmResult`），不再用原生 `AlertDialog`；方向键默认落「拒绝」，`cast.allow` 记住来源 IP |
+| 来源身份 | `castSenderIdentity()` 判定 `pc/tv/web`，带设备名（TV 取 `Build.MANUFACTURER + MODEL`，Web/PC 可被 `meow.cast.senderName` 覆盖）；接收端回传 `senderKind/senderModel/senderHost`，弹框显示「PC（192.168.1.2）」 |
+| 退出投屏 | 发送端遥控条「停止」= 停会话并回本机续播；接收页「退出」/ TV 单次 BACK = 停会话回首页；接收页覆盖 `__meowTvConsumeBack`，有弹层时先关弹层 |
+| PC 接收 | `/api/cast/receiver` 开关 + pending 轮询；页面 2s 内进入 `/ext-play`；有声自动播放被拦时由 `safePlay` 自动改静音起播并显示「开启声音」 |
+| 门禁/冒烟 | `tests/casting.test.ts`（含"不再用原生弹框 / ext-play 换会话重建 / 来源身份 / BACK 退出"门禁）、`smoke/cast_smoke.py` |
+| 错误码 | `Cast.soap` 记录 `errorCode`，play 失败时回 `code` |
+
+### 14.2 实测发现的十二个真 bug（都已修）
+
+1. **SOAPACTION 带上了 XML 属性**：`actionName()` 原来取到 `GetTransportInfo xmlns:u="..."`，
+   设备回 **412 Precondition Failed**。修法：动作名停在空白/`>`。
+2. **HTTP 响应等 EOF**：GUPnP 设备忽略 `Connection: close`，等 EOF 会撞读超时并把已读内容丢掉。
+   修法：按 `Content-Length` / chunked 读（`readHttpResponse`）。
+3. **只 join 默认网卡**：多网卡机器上 SSDP 响应端只 join 了默认网卡，真实以太网那侧收不到 M-SEARCH。
+   修法：每张 IPv4 网卡都 join。
+4. **命令/回报反馈环**：遥控 seek 120s 后，WebView 页面每 2s 的进度回报把位置盖回 31s；
+   遥控 play 也会被页面回报的 paused 盖掉（真机复现）。修法：命令后 2.5~3s 的
+   "命令优先窗口"（`commandUntil` / `seekUntil`），窗口内忽略回报里的 state/position
+   （`ended` 除外）。
+5. **深链 fragment 只解一层**：嵌套 URL 的 `&` / `=` 会被拆成外层 query
+   （弹幕地址丢 `episode`）。修法：Java 侧双重编码，冷启动（`getFragment()`）与
+   热启动（`onNewIntent`）都按"单层编码"交给 Vue。
+6. **相对 controlURL 被当成非法 scheme**：XGIMI 的「投屏电视V9」描述里写的是
+   `_urn:schemas-upnp-org:service:AVTransport_control`。`_` 不是合法 scheme 首字符，
+   `URI.create(rel)` 抛异常 → `absUrl` 兜底原样返回相对地址，SOAP 打到没有 host 的
+   字符串上。修法：`./` 强制按相对路径解析，`/` 开头按 base 的 scheme+authority 拼。
+7. **A 类暂停后无法继续**：遥控条的暂停再继续发的是 `action=play`（不带 url），
+   后端只认"带 url 的重新推送"，直接 400。修法：新增 `Cast.resume()` 只发 `Play`；
+   后端 `case "play"` 按 url 是否为空分流（空=续播，非空=兼容老前端的重推）。
+8. **首投确认框超时不消失 + 原生样式不一致**：原生 `AlertDialog` 20 秒超时返回
+   "拒绝"后弹框仍压在画面上；且样式/焦点不符合应用与 TV 遥控。修法：改为页面内
+   `confirmDialog`（`__meowCastConfirm` / `__meowCastCancel`），原生只等
+   `meowTv.castConfirmResult`；超时由页面 `settleDialog(false)` 收起。方向键走
+   `ConfirmDialog` 的 `data-tv-scope` / `data-tv-first`，默认焦点在「拒绝」。
+9. **连投被旧页抢回首页**：接收页被新会话接管时，旧页轮询到 `ok:false` 就
+   `replace('/')`，会把刚写入的新 hash 盖掉；同时 `RouterView` 的 key 是
+   `route.path`，`/ext-play` 只换 query 不重建，页面继续播旧片。修法：旧页发现
+   `st.sessionId && st.media.url` 时直接 `replace` 到新会话；ext-play 的 key 改用
+   `route.fullPath`。
+10. **来源只显示"猫窝"**：所有发送端都硬编码 `sender.name='猫窝'`，接收端无法区分
+    PC/TV/Web，也拿不到设备名。修法：`castSenderIdentity()` 按运行时判定
+    `pc/tv/web`，TV 名称取 Android 型号；接收端记录 `senderKind/senderModel/senderHost`，
+    弹框和接收页显示「名称（端类型 · IP）」。
+11. **PC 静音起播 1 秒后被暂停**：浏览器拒绝有声自动播放，静音兜底刚起播；
+    页面第一条进度回报（2s）在起播前发出 `paused`，接收端把它当"遥控暂停"，
+    下一轮 poll 又把本地按停。修法：`everPlayed` 之前不回报 `paused`，也不跟随
+    接收端的 `paused`；Vue 侧由 `safePlay` 的 `NotAllowedError` 自动静音重试。
+12. **TV 单次 BACK 不退出投屏**：播放器自己的返回链先执行"暂停 + 再按退出"，
+    接收页的 `__meowTvPageBack` 轮不到；且挂载后没发 `meow:tv-pageback`，
+    App 的返回接管可能没装回。修法：接收页覆盖 `__meowTvConsumeBack`（有弹层先
+    关弹层，否则 `exitCast`），并通知 App 重判返回键归属。
+
+### 14.3 现场设备结论（2026-11-16，XGIMI 投影仪 + MuMu + PC）
+
+| 场景 | 结论 |
+|---|---|
+| XGIMI `.88` A 类 → `MJ&CHR` | ✅ 可用。它其实是**乐播投屏**的 DMR（`com.hpplay.happyplay.aw`）：直接 DLNA 推 `SetAVTransportURI` 即可，不需要打开乐播/扫码；首次播放前会插一段乐播自家广告，之后进正片。暂停/续播/seek 均正常。 |
+| XGIMI `.88` A 类 → `投屏电视V9` | ❌ 不可用。OEM 接收器（49152）描述里自称 `Microsoft / Windows Media Player`，对 `status`/`protocols`/`SetAVTransportURI` 都回 200，但 `NrTracks=0`、`position/duration` 恒 0、后端无取流；补了 DLNA `contentFeatures/transferMode` 响应头仍不取流。前端已加 9 秒看门狗提示「这台设备没有开始播放」。 |
+| XGIMI `.88` B 类（装猫窝 APK） | ✅ 可用。Android 9 / armeabi-v7a，APK 无 native lib，`minSdk 26` 直接安装；PC 投过去后 WebView 接收页出画面 + 弹幕，**完全不经乐播**。 |
+| MuMu `.77` / `.78` B 类 | ✅ 可用。竖屏/横屏都能播放、弹幕、暂停/seek/续播/停止；连续投第二次会接管到新会话（标题/地址都切到 B）。 |
+| PC `.2` 接收端 | ✅ 页面链路可用：开接收端 → 局域网会话 `pending` → 页面 2 秒内进 `/ext-play`，弹幕 1190/54536 条，停止后回首页。Chromium 拦有声自动播放时自动**静音起播**并显示「开启声音」，可信点击后 `muted=false / paused=false / 时间继续`；Tauri WebView2 的实际策略未打包验证。 |
+| A 类经我们的代理 | ✅ 投影仪能从 `/api/proxy/stream`（带 `ct`）取流并播放，不是只能直连公网。 |
+| 首投确认 | ✅ 应用内 `confirmDialog`：遥控右键移到「允许」、OK 选中；不操作 20 秒自动收起并拒绝。 |
+
+### 14.4 仍未做 / 未验
+
+- **OEM DMR（投屏电视V9）**：只验证到"收指令不起播"，没有厂商协议文档，暂不追。
+- **Tauri PC 壳**：接收页在浏览器里已验；WebView2 的 autoplay/静音策略没有打包实测。
+- **transfer**：§8.6 只定义语义，未实现。
+- **PC 防火墙**：只加了界面提示，没有自动引导。
+- **设备改名 UI**：后端有 `POST /api/cast/receiver {name}`，设置页没有入口。
+- **PC ↔ PC / 双机互投**：PC 接收端接口与轮询已通，但只做了同机发送验证，没有两台 PC 互投。
+- **其它品牌电视**：除 XGIMI 的乐播 DMR 外，没有第二台电视/盒子做 A 类验证；`protocolInfo` 兼容性仍按 §9 的保守口径。
+- **Apple TV / AirPlay**：按 §10 结论暂不做。
+
+### 14.5 投屏面板 UX（2026-11-16）
+
+| 项 | 实现 |
+|---|---|
+| 入口 | 播放器**右上角**（与左上返回同顶栏）的投屏图标；不可投时图标置灰，点击 toast 说明原因。「更多」菜单不再重复放投屏项。 |
+| 位置 | 宽屏非 TV 壳：面板锚定图标左边缘、挂在顶栏下方（`top: 4.25rem`）；手机 / TV 壳：画面居中卡片 |
+| 高度 | 面板 `max-h-[calc(100dvh-2rem)] flex-col`；设备列表 `min-h-0 flex-1 overflow-y-auto`，关闭按钮和底部说明固定 |
+| TV 方向键 | 面板 `data-tv-scope`，首个设备 `data-tv-first`；列表是 `overflow-y-auto`，tv-nav 的 `scrollIntoViewWithin` 会把焦点项滚进可视区 |
+| 设备分组 | 「猫窝设备」优先、其它「DLNA 电视」在后；猫窝带徽标 |
+| 成功反馈 | 面板 900ms 后自动收起；成功提示画在播放器 `#overlay` 的 toast（全屏可见），左上角保留遥控条 |
 
 ---
 

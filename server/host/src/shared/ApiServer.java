@@ -1166,6 +1166,50 @@ public class ApiServer {
 
     // ---------------------------------------------------------------- routing
 
+    /** 投屏局域网旁路（白名单 + ct 令牌），首次要 base 时才启动。 */
+    private static volatile HttpServer castLanServer;
+    private static volatile int castLanPort;
+
+    private static synchronized void startCastLan() throws IOException {
+        if (castLanServer != null) return;
+        HttpServer s = HttpServer.create(new InetSocketAddress("0.0.0.0", 0), 16);
+        s.start(new HttpServer.Handler() {
+            @Override
+            public void handle(HttpExchange exchange) throws IOException {
+                ApiServer.handleLan(exchange);
+            }
+        }, 8);
+        castLanServer = s;
+        castLanPort = s.getPort();
+        core.CastLan.setPort(castLanPort);
+        System.out.println("[cast] lan listener on 0.0.0.0:" + castLanPort);
+    }
+
+    /**
+     * 局域网投屏监听的入口。
+     *
+     * <p>先做路径白名单与 {@code ct} 令牌，再复用同一套 {@link #handle}
+     * （Range / EXT-X-KEY 改写 / CORS 都在里面）。
+     * 主监听仍可保持 127.0.0.1，不必为了投屏把整个 API 暴露到局域网。
+     */
+    public static void handleLan(HttpExchange ex) throws IOException {
+        String path = ex.getRequestURI().getPath();
+        if ("/api/cast/health".equals(path)) {
+            sendJson(ex, 200, "{\"ok\":true}");
+            return;
+        }
+        if (!core.CastLan.allowed(path)) {
+            sendJson(ex, 404, "{\"code\":-1,\"msg\":\"not found\"}");
+            return;
+        }
+        String ct = query(ex).get("ct");
+        if (!core.CastLan.tokenOk(ct)) {
+            sendJson(ex, 403, "{\"code\":-1,\"msg\":\"bad cast token\"}");
+            return;
+        }
+        handle(ex);
+    }
+
     private static void handle(HttpExchange ex) throws IOException {
         Headers h = ex.getResponseHeaders();
         // CORS 收紧（docs/25 S3）。默认白名单只放三类来源：
@@ -1615,6 +1659,54 @@ public class ApiServer {
                 } else {
                     sendJson(ex, 200, core.PosterStore.stats().toString());
                 }
+                return;
+            }
+            // 投屏旁路基地址：第一次调用时启动局域网监听（白名单 + ct 令牌）
+            if ("/api/cast/base".equals(path)) {
+                try {
+                    startCastLan();
+                    // peer=接收端地址：多网卡时优先选与它同 /24 的网卡
+                    String peer = trimToEmpty(query(ex).get("peer"));
+                    sendJson(ex, 200, core.CastLan.info(peer).toString());
+                } catch (Exception e) {
+                    sendJson(ex, 500, "{\"ok\":false,\"msg\":\"投屏局域网监听启动失败\"}");
+                }
+                return;
+            }
+            // 投屏接收端（B 类）：开关 / 状态 / 会话 / 遥控 / 进度
+            if ("/api/cast/receiver".equals(path)) {
+                if ("POST".equalsIgnoreCase(ex.getRequestMethod())) {
+                    String body = read(ex.getRequestBody());
+                    JSONObject in = body == null || body.trim().isEmpty() ? new JSONObject() : new JSONObject(body);
+                    if (in.has("name")) core.CastReceiver.get().setDeviceName(in.optString("name", ""));
+                    if (in.has("enabled")) {
+                        if (in.optBoolean("enabled", false)) core.CastReceiver.get().start();
+                        else core.CastReceiver.get().stop();
+                    }
+                    sendJson(ex, 200, core.CastReceiver.get().info().toString());
+                } else {
+                    sendJson(ex, 200, core.CastReceiver.get().info().toString());
+                }
+                return;
+            }
+            if ("/api/cast/receiver/pending".equals(path)) {
+                sendJson(ex, 200, core.CastReceiver.get().pending().toString());
+                return;
+            }
+            if ("/api/cast/session".equals(path)) {
+                if ("GET".equalsIgnoreCase(ex.getRequestMethod())) {
+                    core.CastReceiver.get().handleStatus(ex);
+                } else {
+                    core.CastReceiver.get().handleSession(ex);
+                }
+                return;
+            }
+            if ("/api/cast/command".equals(path)) {
+                core.CastReceiver.get().handleCommand(ex);
+                return;
+            }
+            if ("/api/cast/progress".equals(path)) {
+                core.CastReceiver.get().handleProgress(ex);
                 return;
             }
             // 投屏：DLNA 发现渲染器 + AVTransport 控制
@@ -10803,6 +10895,17 @@ public class ApiServer {
                 "Content-Length,Content-Range,Accept-Ranges,"
                         + "X-Danmaku-Source,X-Danmaku-Count,X-Danmaku-Total,X-Danmaku-Empty");
         if (ct != null) out.set("Content-Type", ct);
+        /*
+         * DLNA 严格端（实测 Windows Media Player 类 DMR）会先看这两个头再决定
+         * 要不要起播：缺 contentFeatures 时只把 URI 存下来，NrTracks 保持 0、
+         * 永远不取流。只对视频二进制加，m3u8 不走这里。
+         */
+        if (ct != null && ct.toLowerCase().startsWith("video/")) {
+            out.set("contentFeatures.dlna.org",
+                    "DLNA.ORG_OP=01;DLNA.ORG_CI=0;"
+                            + "DLNA.ORG_FLAGS=01700000000000000000000000000000");
+            out.set("transferMode.dlna.org", "Streaming");
+        }
         String cr = c.getHeaderField("Content-Range");
         if (cr != null) out.set("Content-Range", cr);
         out.set("Accept-Ranges", "bytes");
@@ -11011,12 +11114,43 @@ public class ApiServer {
             case "seek":
                 r = core.Cast.seek(d, Math.max(0, in.optInt("seconds", 0)));
                 break;
+            case "status":
+                r = core.Cast.status(d);
+                break;
+            case "protocols":
+                r = new JSONObject().put("ok", true).put("sink", core.Cast.protocols(d));
+                break;
+            case "play":
+                /*
+                 * 不带 url 的 play = 从暂停继续（前端 castToggle 的续播）；
+                 * 带 url 仍走下面的推送逻辑，兼容老前端"重推当前集"的用法。
+                 * 续播如果也 SetAVTransportURI，设备会回到 0 重新缓冲（实测乐播）。
+                 */
+                if (trimToEmpty(in.optString("url", "")).isEmpty()) {
+                    r = core.Cast.resume(d);
+                    break;
+                }
+                // fall through：带 url 的就是一次新的推送
             default: {
                 String url = trimToEmpty(in.optString("url", ""));
                 if (url.isEmpty()) {
                     sendJson(ex, 400, "{\"code\":-1,\"msg\":\"url required\"}");
                     return;
                 }
+                /*
+                 * 老客户端 / PC 本机后端会把 127.0.0.1 的代理地址直接投出去，
+                 * 而 UrlSafety 拒绝回环。这里先尝试改写成局域网旁路地址
+                 * （白名单 + ct 令牌），改不了再交给校验给出拒绝。
+                 */
+                String peer = trimToEmpty(devJson.optString("host", ""));
+                if (core.CastLan.port() <= 0) {
+                    try {
+                        startCastLan();
+                    } catch (Exception ignored) {
+                    }
+                }
+                String fixed = core.CastLan.rewriteLoopback(url, peer);
+                if (!fixed.isEmpty()) url = fixed;
                 // 只允许投我们自己的地址或局域网 http：让后端把任意 URL 推给电视，
                 // 等于给了它一个"让内网设备去访问任意地址"的能力（SSRF 的变种）。
                 if (!core.UrlSafety.isSafeMediaUrl(url)) {
