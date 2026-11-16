@@ -1,4 +1,4 @@
-# 下载并解压 dex2jar（固定版本 + SHA256），然后裁到「Dex2jarCmd 实际可达」的 13 个 jar。
+﻿# 下载并解压 dex2jar（固定版本 + SHA256），然后裁到「Dex2jarCmd 实际可达」的 13 个 jar。
 #
 #   powershell -File deploy/scripts/fetch-dex2jar.ps1
 #   powershell -File deploy/scripts/fetch-dex2jar.ps1 -Dest server/tools/dex2jar
