@@ -75,6 +75,11 @@ COPY server/host/libs ./libs
 #   放 /app/seed 而不是 /data：/data 是挂载卷，镜像里的内容会被宿主目录盖掉。
 COPY server/host/config.sites*.json ./seed/
 
+# 后端版本文件：ApiServer 运行时读 /app/VERSION（src/shared/ApiServer.java 的 resolveVersion）。
+# 版本不参与编译，源码 hash 相同即可复用镜像层缓存；不传 build-arg 时是 unknown。
+ARG MEOW_VERSION=unknown
+RUN printf '%s\n' "$MEOW_VERSION" > /app/VERSION
+
 # ★ spider jar 的 **dex 形态**：/spider-latest.jar 端点下发的就是它。
 #
 # 为什么不直接下发 libs/spider.jar：那份是 883 个 .class 的 JVM jar，

@@ -27,6 +27,12 @@ on:
       version:
         required: true
         type: string
+      # true = 只为了把 Rust 依赖/产物缓存灌到 main 上（warm-cache.yml 用）：
+      # 不下载 web-dist、不打包 NSIS、不上传产物，但照样跑一次编译。
+      warm_only:
+        required: false
+        type: boolean
+        default: false
     outputs:
       artifact:
         description: 产出的 artifact 名
@@ -58,10 +64,21 @@ jobs:
 
       # 前端 dist 由 release.yml 的 web job 统一构建（同一次 run 的 artifact）
       - name: 取前端 dist
+        if: ${{ !inputs.warm_only }}
         uses: actions/download-artifact@v4
         with:
           name: web-dist
           path: client/apps/web/dist
+
+      # warm 模式没有 web job 的 artifact：放一个占位 dist 让 tauri 的配置校验过，
+      # 编译产物（deps + 本 crate）才是我们要缓存的东西。
+      - name: 准备占位 dist（warm）
+        if: ${{ inputs.warm_only }}
+        shell: bash
+        run: |
+          mkdir -p client/apps/web/dist
+          [ -f client/apps/web/dist/index.html ] || \
+            printf '<!doctype html><meta charset="utf-8"><title>warm</title>\n' > client/apps/web/dist/index.html
 
       - name: 安装 Rust（GNU host）
         uses: dtolnay/rust-toolchain@stable
@@ -101,8 +118,13 @@ jobs:
           fi
           echo "hash=$(sha256sum "$NEW" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
-      - name: 缓存 Rust 依赖与构建产物
-        uses: actions/cache@v4
+      # ★ 恢复/保存拆开：tag 上只 restore、不 save。
+      #   缓存按 ref 作用域，tag 上 save 会**每版各存一份**（PC ~400MB + MinGW ~200MB），
+      #   既不复用又把 10GB 配额吃光（2026-11-16 实测 pc 6 条/mingw 6 条，main=0）。
+      #   保存统一由 warm-cache.yml 在 main 上做，tag 通过 restore-keys 命中 default branch。
+      - name: 恢复 Rust 依赖与构建产物
+        id: pccache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
@@ -115,8 +137,9 @@ jobs:
 
       # MinGW 是 choco 现装的（16.2.0 解压约 53s，实测 04:35:51→04:36:44）。
       # 装完落在 C:\ProgramData\mingw64（下面探测的第一个候选），整目录缓存即可。
-      - name: 缓存 MinGW
-        uses: actions/cache@v4
+      - name: 恢复 MinGW
+        id: mingwcache
+        uses: actions/cache/restore@v4
         with:
           path: C:\ProgramData\mingw64
           key: mingw-16.2.0-ucrt-posix-seh
@@ -147,6 +170,7 @@ jobs:
       # beforeBuildCommand 已被 MEOW_SKIP_WEB_BUILD 换成 no-op，dist 若被重建
       # 说明开关没生效（那时 PC 包里就不是 web job 那份前端了）。
       - name: 记录 dist 时间戳
+        if: ${{ !inputs.warm_only }}
         id: distm
         shell: bash
         run: |
@@ -157,6 +181,7 @@ jobs:
           echo "dist mtime=$(stat -c %Y "$F")"
 
       - name: 构建 PC 包
+        if: ${{ !inputs.warm_only }}
         shell: pwsh
         env:
           # 复用 web job 的 dist：跳过 tauri 的 beforeBuildCommand（省约 30s 的
@@ -168,7 +193,39 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'PC 构建失败' }
           Pop-Location
 
+      # warm 模式：只编译、不打 NSIS 包（缓存要的是 target/ 里的产物）
+      - name: 编译依赖与产物（warm，不打包）
+        if: ${{ inputs.warm_only }}
+        shell: pwsh
+        env:
+          MEOW_SKIP_WEB_BUILD: '1'
+        run: |
+          Push-Location client/apps/desktop
+          ./build-gnu.ps1 --no-bundle
+          if ($LASTEXITCODE -ne 0) { throw 'PC 预热编译失败' }
+          Pop-Location
+
+      # ★ 只有 main 上的任务负责保存缓存（见上面 restore 的注释）。
+      #   只在本次没命中时保存，避免把 restore-keys 的部分命中覆盖成"新 key"。
+      - name: 保存 Rust 依赖缓存（仅 main）
+        if: ${{ github.ref == 'refs/heads/main' && steps.pccache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            client/apps/desktop/src-tauri/target
+          key: ${{ steps.pccache.outputs.cache-primary-key }}
+
+      - name: 保存 MinGW 缓存（仅 main）
+        if: ${{ github.ref == 'refs/heads/main' && steps.mingwcache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: C:\ProgramData\mingw64
+          key: ${{ steps.mingwcache.outputs.cache-primary-key }}
+
       - name: 断言前端未被重建
+        if: ${{ !inputs.warm_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -182,6 +239,7 @@ jobs:
           echo "OK：dist 未变，PC 打包用的是 web job 的产物"
 
       - name: 收集 PC 产物
+        if: ${{ !inputs.warm_only }}
         shell: pwsh
         run: |
           $V = '${{ inputs.version }}'
@@ -201,6 +259,7 @@ jobs:
           Get-ChildItem $out | ForEach-Object { Write-Host $_.Name }
 
       - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.warm_only }}
         with:
           name: pc
           path: ${{ runner.temp }}/pc-out/*

@@ -537,8 +537,64 @@ public class ApiServer {
      * ——超过这个时间用户已经在怀疑"是不是卡住了"。
      */
     private static final int PARSE_TIMEOUT_MS = 15_000;
-    /** 后端版本；健康检查与前端能力协商用。 */
-    public static final String VERSION = "1.2.10";
+    /**
+     * 后端版本；健康检查与前端能力协商用。
+     *
+     * <p>★ 不在编译期写死版本号：它一旦参与编译，凡是"按源码 hash 做缓存键"的下游
+     * （PC 插件 zip、apiserver.jar、Docker 层）每发一版都会失效——插件链实测每版
+     * 多花 77s 并多存一份约 80MB 的缓存。真实版本由打包脚本写到 VERSION 文件里，
+     * 运行时解析（顺序见 {@link #resolveVersion()}）。
+     *
+     * <p>代价：打包必须带上 VERSION。四条路径都有断言兜底：
+     * build-fpk.sh / build-plugin.ps1 / build-plugin-linux.sh / Dockerfile.apiserver。
+     */
+    public static final String VERSION = resolveVersion();
+
+    private static String resolveVersion() {
+        String v = System.getProperty("meow.version");
+        if (v == null || v.trim().isEmpty()) v = System.getenv("MEOW_VERSION");
+        if (v == null || v.trim().isEmpty()) v = firstVersionFile();
+        return (v == null || v.trim().isEmpty()) ? "unknown" : v.trim();
+    }
+
+    private static String firstVersionFile() {
+        // 相对当前目录：Docker（WORKDIR /app）、PC 插件目录、NAS 应用目录都直接 chdir 进来
+        String[] rel = {"VERSION", "seed/apiserver/VERSION", "app/seed/apiserver/VERSION"};
+        for (String r : rel) {
+            String s = readSmallText(new File(r));
+            if (s != null) return s;
+        }
+        // 再试 jar / classes 所在目录（fpk：app/seed/apiserver/{apiserver.jar,VERSION} 同级）
+        try {
+            java.security.CodeSource cs = ApiServer.class.getProtectionDomain().getCodeSource();
+            if (cs != null) {
+                File self = new File(cs.getLocation().toURI());
+                File dir = self.isDirectory() ? self : self.getParentFile();
+                if (dir != null) {
+                    String s = readSmallText(new File(dir, "VERSION"));
+                    if (s != null) return s;
+                }
+            }
+        } catch (Throwable ignored) {
+            // 拿不到自身位置（罕见），落到 unknown
+        }
+        return null;
+    }
+
+    /** 读一个小文本文件并 trim；不存在/读失败/空白都返回 null。 */
+    private static String readSmallText(File f) {
+        if (f == null || !f.isFile()) return null;
+        try (FileInputStream in = new FileInputStream(f)) {
+            ByteArrayOutputStream buf = new ByteArrayOutputStream();
+            byte[] b = new byte[256];
+            int n;
+            while ((n = in.read(b)) > 0) buf.write(b, 0, n);
+            String s = new String(buf.toByteArray(), StandardCharsets.UTF_8).trim();
+            return s.isEmpty() ? null : s;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
     /** 进程启动时间（毫秒），用于 uptime。 */
     private static volatile long STARTED_AT = 0;
 

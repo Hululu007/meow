@@ -181,6 +181,13 @@ if (Test-Path (Join-Path $distSrc "spider.jar")) {
 }
 Copy-Item "$root\plugin-manifests\apiserver.manifest.json" "$out\manifest.json" -Force
 
+# 版本文件：ApiServer 运行时读它（src/shared/ApiServer.java 的 resolveVersion），
+# 版本不再参与编译 —— 否则插件缓存（按源码 hash 做 key）每发一版必失效。
+$apiVer = (Get-Content "$out\manifest.json" -Raw | ConvertFrom-Json).version
+if (-not $apiVer) { throw 'apiserver.manifest.json 里没有 version' }
+Set-Content -Path "$out\VERSION" -Value $apiVer -Encoding ASCII -NoNewline
+Write-Host "  VERSION: $apiVer" -ForegroundColor Green
+
 # dex2jar：JVM 导入 dex 源时在插件内完成转换，不依赖宿主安装 Java/工具。
 # 运行期 Dex2Jvm 会按 cwd 找 tools/dex2jar，不需要写 manifest env。
 if (-not $SkipDex2Jar) {

@@ -1,0 +1,44 @@
+# 把 PC 端的 Rust / MinGW 缓存「预热」到 main 上。
+#
+# ## 为什么需要单独一个 workflow
+#
+# Actions 缓存按 ref 作用域：**tag 上 save 的缓存只对那个 tag 可见**，所以每个 release
+# 的 PC job 都是冷编（2026-11-16 实测 pc 缓存 6 条全在 tag、main=0；构建 284s，同 tag
+# 重跑只要 155s）。同时每版都会重复存一份（PC ~400MB + MinGW ~200MB），把 10GB 配额
+# 吃光。这里在 main 上把缓存存好，release 的 tag job 通过 restore-keys 命中 default
+# branch 的缓存；tag 上不再 save（见 _pc_shell.yml 的 restore/save 拆分）。
+#
+# ## 触发与成本
+#
+# 只在**影响 PC 依赖的文件**变化时跑。版本 bump 会改 Cargo.toml/Cargo.lock，但 key 用的
+# 是归一化指纹（剔除本包 version），所以恢复必然命中 → 跳过编译，只花几十秒。
+# 真正加依赖时才会跑一次完整编译并保存（那正是 release 会冷编的时刻）。
+name: warm-cache
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'client/apps/desktop/src-tauri/Cargo.toml'
+      - 'client/apps/desktop/src-tauri/Cargo.lock'
+      - 'client/apps/desktop/src-tauri/tauri.conf.json'
+      - 'client/package.json'
+      - 'client/pnpm-lock.yaml'
+      - '.github/workflows/_pc_shell.yml'
+      - '.github/workflows/warm-cache.yml'
+
+permissions:
+  contents: read
+
+# 不取消进行中的任务：保存动作在末尾，取消会留下没写完的缓存
+concurrency:
+  group: warm-cache
+  cancel-in-progress: false
+
+jobs:
+  pc:
+    uses: ./.github/workflows/_pc_shell.yml
+    with:
+      version: warm
+      warm_only: true

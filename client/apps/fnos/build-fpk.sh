@@ -11,8 +11,8 @@
 # ★ apiserver.jar 默认由本脚本自己构建（server/build-plugin-linux.sh）。
 #   2026-11-06 踩过：这里直接复制 server/build/ 下 11-03 的旧 jar，
 #   结果 /api/health 报 version=1.0.5（源码已是 1.0.8），装上去能跑但版本对不上。
-#   确实要复用现成产物时用 SKIP_JAR_BUILD=1，此时强制校验 jar 内 VERSION 与源码一致，
-#   不一致直接失败——不允许"静默复制"。
+#   现在版本已运行期化（jar 不内嵌版本），复用 jar 不会再有"报旧版本"问题；
+#   SKIP_JAR_BUILD=1 时只校验产物可用性，版本由包内 VERSION 文件保证。
 set -euo pipefail
 
 SRC="${SRC:-/tmp/meow-src}"
@@ -26,36 +26,29 @@ PLATFORM="${PLATFORM:-x86}"
 VERSION="${VERSION:-}"
 
 JAR="$SRC/server/build/plugins/apiserver/apiserver.jar"
-SRC_VERSION="$(sed -n 's/.*VERSION *= *"\([0-9][0-9.]*\)".*/\1/p' \
-    "$SRC/server/host/src/shared/ApiServer.java" | head -1)"
 
-# 在 jar 的 ApiServer.class 里找**期望的**版本串。不能用 unzip 的文本模式，
-# class 常量池是二进制；grep -a 按字节扫最稳（不依赖 strings 是否装了）。
-# ★ 按字面匹配而不是正则猜版本格式：原来写死 `1\.0\.[0-9]+`，
-#   升到 1.1.0 时会一个都匹配不到、把新 jar 误报成陈旧产物。
-# ★ 不能写 `grep -q`：它命中后立刻退出，unzip 还在写 200KB 的 class 会收到
-#   SIGPIPE（exit 141），而本脚本开了 pipefail → 整个管道判失败。
-#   实测 2026-11-09 在 NAS 上重跑时必现「找不到 VERSION=x」而手工 grep 通过。
-#   去掉 -q 让 grep 读完全部输入即可。
-jar_has_version() {
-    unzip -p "$1" ApiServer.class | grep -aF "$2" >/dev/null
+# ★ 版本号不再是编译期常量（见 server/host/src/shared/ApiServer.java 的 resolveVersion）。
+#   以前这里从 ApiServer.java 里 sed 出版本、再断言 jar 的 class 常量池里有这串——
+#   那套做法的副作用是"版本参与编译"，插件/Docker 按源码 hash 的缓存每版必失效。
+#   现在版本走打包期文件：这里把 manifest 的版本落到 app/seed/apiserver/VERSION，
+#   jar 只校验"确实是可用的产物"（有 ApiServer.class、体量正常）。
+jar_looks_valid() {
+    # 不能写 `grep -q`：命中即退出会给 unzip 发 SIGPIPE（exit 141），pipefail 下整条管道判失败。
+    # 实测 2026-11-09 在 NAS 上必现，去掉 -q 让 grep 读完。
+    unzip -p "$1" ApiServer.class | grep -aF "ApiServer" >/dev/null
 }
 
 mkdir -p "$OUT"
 
-echo "[1/5] apiserver.jar (源码 VERSION=$SRC_VERSION)"
+echo "[1/5] apiserver.jar"
 if [ "${SKIP_JAR_BUILD:-0}" = "1" ]; then
-    echo "  SKIP_JAR_BUILD=1：复用 $JAR，强制校验版本"
+    echo "  SKIP_JAR_BUILD=1：复用 $JAR（版本已运行期化，复用不再有'报旧版本'风险）"
 else
     OUT="$SRC/server/build/plugins/apiserver" bash "$SRC/server/build-plugin-linux.sh"
 fi
-[ -f "$JAR" ] || { echo "缺少 $JAR" >&2; exit 1; }
-if ! jar_has_version "$JAR" "$SRC_VERSION"; then
-    echo "apiserver.jar 里找不到 VERSION=$SRC_VERSION（源码是这个版本号）。" >&2
-    echo "这是陈旧产物，拒绝打包。删掉 $JAR 后重跑（不要用 SKIP_JAR_BUILD=1）。" >&2
-    exit 1
-fi
-echo "  apiserver.jar OK (VERSION=$SRC_VERSION)"
+[ -s "$JAR" ] || { echo "缺少 $JAR" >&2; exit 1; }
+jar_looks_valid "$JAR" || { echo "$JAR 里没有 ApiServer.class，产物损坏" >&2; exit 1; }
+echo "  apiserver.jar OK ($(du -h "$JAR" | cut -f1))"
 
 echo "[1b/5] dex2jar（JVM 导入期 dex→class 转换）"
 DEX2JAR_DIR="$SRC/server/tools/dex2jar"
@@ -143,6 +136,9 @@ grep -q 'src="/app/meow/assets/' "$SRC/client/apps/web/dist/index.html" || {
 }
 cp -r "$SRC/client/apps/web/dist/." "$PKG/app/web/"
 cp "$JAR" "$PKG/app/seed/apiserver/apiserver.jar"
+# 后端版本文件：ApiServer 运行时读它（与 bin/VERSION 同一套思路），
+# 这样 jar 本身与版本无关，插件/Docker 的源码-hash 缓存才能跨版本复用。
+printf '%s\n' "$APP_VER" > "$PKG/app/seed/apiserver/VERSION"
 mkdir -p "$PKG/app/seed/apiserver/tools"
 cp -a "$DEX2JAR_DIR" "$PKG/app/seed/apiserver/tools/dex2jar"
 HAS_SPIDER=0
@@ -239,6 +235,12 @@ grep -qE "^version[[:space:]]*=[[:space:]]*$VER" "$TMPX/manifest" || { echo "man
 grep -qE "^platform[[:space:]]*=[[:space:]]*$PLATFORM" "$TMPX/manifest" || { echo "manifest platform 写错" >&2; exit 1; }
 test -f "$TMPX/app/web/index.html" || { echo "包内缺 web/index.html" >&2; exit 1; }
 test -f "$TMPX/app/seed/apiserver/apiserver.jar" || { echo "包内缺 apiserver.jar" >&2; exit 1; }
+# 后端版本文件必须存在且与 manifest 一致：ApiServer 运行时就靠它报 /api/health 的 version
+test -f "$TMPX/app/seed/apiserver/VERSION" || { echo "包内缺 seed/apiserver/VERSION（后端版本来源）" >&2; exit 1; }
+[ "$(tr -d '[:space:]' < "$TMPX/app/seed/apiserver/VERSION")" = "$VER" ] || {
+    echo "seed/apiserver/VERSION 与 manifest version 不一致：$(cat "$TMPX/app/seed/apiserver/VERSION") vs $VER" >&2
+    exit 1
+}
 test -d "$TMPX/app/seed/apiserver/tools/dex2jar/lib" || { echo "包内缺 dex2jar（JVM dex 源转换需要）" >&2; exit 1; }
 D2J_PKG_N="$(find "$TMPX/app/seed/apiserver/tools/dex2jar/lib" -maxdepth 1 -name '*.jar' | wc -l)"
 [ "$D2J_PKG_N" -eq 13 ] || { echo "包内 dex2jar 有 $D2J_PKG_N 个 jar（应为裁剪后的 13）" >&2; exit 1; }

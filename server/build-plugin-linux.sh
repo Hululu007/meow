@@ -53,4 +53,12 @@ rm -f "$TMP/classes/META-INF/"*.SF "$TMP/classes/META-INF/"*.RSA "$TMP/classes/M
     jar --create --file "$OUT/apiserver.jar" --main-class ApiServer .
 )
 
+# 版本文件：ApiServer 运行时读（src/shared/ApiServer.java 的 resolveVersion），
+# 这样 jar 与版本解耦——插件/fpk/Docker 按源码 hash 的缓存才能跨版本复用。
+VER="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$ROOT/plugin-manifests/apiserver.manifest.json" | head -1)"
+[ -n "$VER" ] || { echo "读不到 plugin-manifests/apiserver.manifest.json 的 version" >&2; exit 1; }
+printf '%s\n' "$VER" > "$OUT/VERSION"
+
 ls -lh "$OUT/apiserver.jar"
+echo "  VERSION: $VER"

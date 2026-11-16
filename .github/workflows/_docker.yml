@@ -92,7 +92,8 @@ jobs:
             Version     = '${{ inputs.version }}'
             Platforms   = 'linux/amd64,linux/arm64'
             WebFromDist = $true
-            Cache       = 'gha'
+            # registry：缓存推到 <镜像>:buildcache，不吃 GitHub 缓存配额、跨版本可复用
+            Cache       = 'registry'
           }
           if ('${{ inputs.latest }}' -eq 'false') { $p.NoLatest = $true }
           ./deploy/scripts/build-push-docker.ps1 @p

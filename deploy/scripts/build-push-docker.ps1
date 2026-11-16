@@ -45,10 +45,14 @@ param(
     # CI 里 setup-buildx-action 已建好一个并设为默认，传它的名字避免重复创建。
     [string]$Builder = 'meow-multiarch',
 
-    # 构建缓存后端。CI 里传 'gha' 用 GitHub Actions 缓存（跨运行复用
-    # 基础镜像层与 apt/pip 层，实测能把二次构建从 5m47s 压到 2-3 分钟）。
-    # 本地留空——本机有常驻的 buildkitd 缓存，不需要远端。
-    [string]$Cache = ''
+    # 构建缓存后端。CI 传 'registry'：缓存推到 <镜像>:buildcache（Docker Hub），
+    # 不吃 GitHub 10GB 缓存配额、跨 ref/跨版本都能复用；旧的 'gha' 后端同样是
+    # Actions 缓存，会被 tag 作用域和配额夹住（实测只存下 280MB）。
+    # 本地留空——本机有常驻的 buildkitd 缓存。
+    [string]$Cache = '',
+
+    # drpy 镜像已存在时强制重建（默认跳过：drpy 走独立版本线，多数发版内容不变）
+    [switch]$RebuildDrpy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -153,13 +157,23 @@ function Build-Push {
     if ($Target) { $buildArgs += @('--target', $Target) }
     if (-not $NoLatest) { $buildArgs += @('-t', "$Image`:latest") }
 
+    # 后端镜像要把版本写进 /app/VERSION（ApiServer 运行时读，见 resolveVersion）
+    if ($Label -eq 'apiserver') { $buildArgs += @('--build-arg', "MEOW_VERSION=$Version") }
+
     # 关掉 provenance/SBOM：否则多架构清单里会多出两条 unknown/unknown
     # 的 attestation 记录，看着像构建异常。
     $buildArgs += @('--provenance=false', '--sbom=false')
 
     # 缓存：gha 后端把层缓存在 Actions 的 cache 服务里，key 带 $Label，
     # 三个镜像互不干扰。mode=max 才缓存中间层（默认 min 只缓存最终层）。
-    if ($Cache -eq 'gha') {
+    # ★ gha 后端就是 Actions 缓存 → 同样受 ref 作用域 + 10GB 配额约束，实测只存下
+    #   280MB（三个多架构镜像远不止），跨版本基本用不上。CI 传 'registry' 走
+    #   Docker Hub 的 :buildcache tag：不吃 GitHub 配额、跨 ref 天然可复用。
+    if ($Cache -eq 'registry') {
+        $buildArgs += @('--cache-from', "type=registry,ref=$Image`:buildcache")
+        $buildArgs += @('--cache-to', "type=registry,ref=$Image`:buildcache,mode=max")
+    }
+    elseif ($Cache -eq 'gha') {
         $buildArgs += @('--cache-from', "type=gha,scope=$Label")
         $buildArgs += @('--cache-to', "type=gha,mode=max,scope=$Label")
     }
@@ -193,8 +207,22 @@ if (-not $SkipBuild) {
     Build-Push -Dockerfile (Join-Path $root 'deploy/docker/Dockerfile.apiserver') -Image $apiImage -Label 'apiserver'
 
     # drpy 运行时：没有它，配置里 200+ 个 .js 源在容器部署下全判不可用
+    # ★ drpy 走独立版本线（$DrpyVersion），与主版本无关 → 大多数发版它内容不变。
+    #   已存在的 tag 直接跳过：省掉 1/3 的镜像构建时间。改了 Dockerfile.drpy 或
+    #   drpy 源码时要**升 DrpyVersion**（这是本仓库既有约定），否则会被这里跳过。
     Write-Host "[4/4] drpy 镜像..." -ForegroundColor Yellow
-    Build-Push -Dockerfile (Join-Path $root 'deploy/docker/Dockerfile.drpy') -Image $drpyImage -Label 'drpy' -Tag $DrpyVersion
+    $drpyTag = "$drpyImage`:$DrpyVersion"
+    $drpyExists = $false
+    if (-not $RebuildDrpy) {
+        & docker buildx imagetools inspect $drpyTag *> $null
+        $drpyExists = ($LASTEXITCODE -eq 0)
+    }
+    if ($drpyExists) {
+        Write-Host "  $drpyTag 已存在，跳过构建（要强制重建加 -RebuildDrpy）" -ForegroundColor DarkGray
+    }
+    else {
+        Build-Push -Dockerfile (Join-Path $root 'deploy/docker/Dockerfile.drpy') -Image $drpyImage -Label 'drpy' -Tag $DrpyVersion
+    }
 }
 
 # ── 结果 ──────────────────────────────────────────────────

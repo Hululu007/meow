@@ -302,10 +302,11 @@ jobs:
 
       # ★ 自建 jar，不复制现成产物。
       #   2026-11-06 踩过：复制 server/build/ 下 11-03 的旧 jar，health 报 1.0.5。
-      #   build-fpk.sh 默认就会跑这个脚本，并且会二次校验 jar 内 VERSION。
+      #   build-fpk.sh 默认就会跑这个脚本。
       # ★ 复用已构建产物：同 commit 重跑、或两腿里后跑的那条腿直接命中。
-      #   · apiserver.jar 按源码指纹缓存。VERSION 串在 ApiServer.java 里，版本一变指纹就变，
-      #     所以缓存不可能把"旧版本的 jar"带进新包；build-fpk.sh 还会二次断言 jar 内 VERSION。
+      #   · apiserver.jar 按源码指纹缓存。版本已改为运行时读 VERSION 文件（不再进源码），
+      #     所以源码没变就能跨版本复用，且不会把"旧版本号"带进新包：版本文件由
+      #     build-fpk.sh 每次从 manifest 重新写，包内断言会校验它。
       #   · dex2jar 目录按 fetch 脚本指纹缓存：省掉每次 20MB 下载（裁剪白名单也在那个脚本里，
       #     白名单一变 key 就变，不会用到旧的全量包）。
       - name: 缓存 apiserver.jar 与 dex2jar
@@ -372,7 +373,7 @@ jobs:
           OUT: ${{ runner.temp }}/out-${{ matrix.platform }}
           PLATFORM: ${{ matrix.platform }}
           VERSION: ${{ needs.plan.outputs.version }}
-          # apiserver.jar 命中缓存时复用（build-fpk.sh 会强制校验 jar 内 VERSION）
+          # apiserver.jar 命中缓存时复用（版本在包内 VERSION 文件里，jar 与版本无关）
           SKIP_JAR_BUILD: ${{ steps.buildcache.outputs.cache-hit == 'true' && '1' || '0' }}
           # CI 直连 Docker Hub；daocloud 镜像站只在 NAS 上有意义
           RUST_IMAGE: docker.io/library/rust:1-alpine
@@ -413,17 +414,15 @@ jobs:
             test -s "$U/app/seed/apiserver/spider.jar"
           fi
 
-          # 3) jar 必须是本次源码编译出来的那一份（同一个 md5），
-          #    并独立再读一次 VERSION —— 双保险防旧产物。
+          # 3) jar 必须是本次源码编译出来的那一份（同一个 md5）；
+          #    版本改由包内 VERSION 文件承载（ApiServer 运行时读），这里断言它
+          #    与本次版本一致 —— 双保险防旧产物。
           md5sum "$U/app/seed/apiserver/apiserver.jar" \
                  server/build/plugins/apiserver/apiserver.jar | tee /dev/stderr
           test "$(md5sum "$U/app/seed/apiserver/apiserver.jar" | cut -d' ' -f1)" \
                = "$(md5sum server/build/plugins/apiserver/apiserver.jar | cut -d' ' -f1)"
-          # 字面匹配（不猜版本格式）：plan 里的 bump-version -Check 已保证
-          # ApiServer.java 的 VERSION == package.json 的版本。
-          unzip -p "$U/app/seed/apiserver/apiserver.jar" ApiServer.class \
-            > "$U/ApiServer.class"
-          grep -aqF "$VERSION" "$U/ApiServer.class"
+          test -s "$U/app/seed/apiserver/VERSION"
+          test "$(tr -d '[:space:]' < "$U/app/seed/apiserver/VERSION")" = "$VERSION"
 
           # 4) 依赖与入口：manifest 漏了 java 运行时 → 干净 NAS 上 meowd 起不来；
           #    外层缺 cmd/ → 应用中心点不亮图标（装得上但起不来）

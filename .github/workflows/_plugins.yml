@@ -74,7 +74,10 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/plugins-out
-          key: plugins-${{ runner.os }}-${{ inputs.plugins_only || 'all' }}-${{ hashFiles('deploy/units.json', 'server/build-plugin.ps1', 'server/build-plugin-danmu.ps1', 'server/build-plugin-drpy.ps1', 'server/build-plugin-ffmpeg.ps1', 'server/host/src/**', 'server/drpy/**') }}
+          # ★ 必须带上 client/package.json：apiserver 的版本已改为运行时读 VERSION 文件，
+          #   `server/host/src/**` 的 hash 不再随版本变；缓存单位是"打好包的 zip"（内含
+          #   VERSION/manifest），键里不含版本就会在下一版复用旧 zip → 发出旧版本号。
+          key: plugins-${{ runner.os }}-${{ inputs.plugins_only || 'all' }}-${{ hashFiles('client/package.json', 'deploy/units.json', 'server/build-plugin.ps1', 'server/build-plugin-danmu.ps1', 'server/build-plugin-drpy.ps1', 'server/build-plugin-ffmpeg.ps1', 'server/host/src/**', 'server/drpy/**') }}
 
       # ── 静态载荷缓存（2026-11-13 新增）────────────────────────────────
       # 有两类"与代码无关、却每版都重新下载/重建"的东西，实测占本 job 一半：

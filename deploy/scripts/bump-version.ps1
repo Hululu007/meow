@@ -10,8 +10,7 @@
 #
 #   前端 3× package.json（client / web / desktop）
 #   tauri.conf.json + Cargo.toml + Cargo.lock（仅 meow-player 条目）
-#   ApiServer.java  VERSION
-#   apiserver.manifest.json
+#   apiserver.manifest.json（ApiServer.java 不再改：版本运行时读 VERSION 文件）
 #   .env / .env.example  MEOW_VERSION（.env 不入库，存在才改）
 #   client/apps/tv/app/build.gradle  versionName + versionCode
 #   docker-compose.yml / build.yml / with-sources.yml / standalone.yml
@@ -74,7 +73,9 @@ function Build-Entries([string]$Old, [string]$New, [int]$OldCode, [int]$NewCode)
     $list += ,@('client\apps\desktop\src-tauri\Cargo.lock', {
         param($t) $t -replace "(?s)(name = `"meow-player`"\s*\r?\nversion = `")$script:Old(`")", "`${1}$script:New`${2}"
     })
-    $list += ,@('server\host\src\shared\ApiServer.java', { param($t) $t.Replace("VERSION = `"$script:Old`"", "VERSION = `"$script:New`"") })
+    # ★ ApiServer.java 不再改：后端版本已改为运行时读 VERSION 文件（见
+    #   server/host/src/shared/ApiServer.java 的 resolveVersion）。版本若留在源码里，
+    #   插件/fpk/Docker 那些按源码 hash 的缓存每版必失效。
     $list += ,@('server\plugin-manifests\apiserver.manifest.json', { param($t) $t.Replace("`"version`": `"$script:Old`"", "`"version`": `"$script:New`"") })
     $list += ,@('client\apps\tv\app\build.gradle', {
         param($t)
