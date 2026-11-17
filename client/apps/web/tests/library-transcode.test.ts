@@ -192,8 +192,9 @@ describe('F5 容器预判（不能播的内核直接转码，不白等 watchdog�
     expect(src).toContain('function cantPlayContainerDirectly(): boolean')
     const i = src.indexOf('function cantPlayContainerDirectly')
     const body = src.slice(i, i + 500)
-    expect(body).toContain('Firefox|FxiOS')
-    expect(body).toContain('/Android/')
+    // UA 判据已收口到 compat/ua（业务侧只调能力函数）
+    expect(body).toContain('isFirefox()')
+    expect(body).toContain('isAndroid()')
   })
 
   it('容器清单覆盖 mkv/avi/webm 等', () => {

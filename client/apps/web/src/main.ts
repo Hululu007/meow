@@ -2,6 +2,9 @@
 //   Object.fromEntries / flatMap / matchAll / at —— 这些是运行时 API，
 //   esbuild 的 target 只转语法不补 API。业务模块评估前必须先装好。
 import './compat/legacyPolyfills'
+// 设备档案（壳/形态/方向）→ `html[data-*]`。必须早于业务模块：
+// 首屏样式与 isTvEnv() 都依赖 data-tv / data-form 已就位。
+import './compat/deviceProfile'
 // 输入方式（触摸 / 键盘）→ 决定画不画焦点环。同样要在首帧前装好，
 // 否则手机首屏会先闪一下环再消失。
 import './compat/inputModality'

@@ -32,7 +32,9 @@ describe('① 触屏设备默认不画焦点环', () => {
     expect(mod).toContain('window.innerWidth >= window.innerHeight')
     expect(mod).toContain("if (isLandscape()) return 'key'")
     expect(mod).toContain('function portraitTouch')
-    expect(mod).toContain('navigator.maxTouchPoints')
+    // D-1：maxTouchPoints 在桌面 Chromium 报 10，不能当触屏判据；
+    // 只看主指针（coarse）
+    expect(mod).toContain("matchMedia?.('(pointer: coarse)')")
     expect(mod).toContain("apply('touch')")
     expect(mod).toContain('applyKey')
     expect(mod).toContain("portraitTouch() ? 'touch' : 'key'")
@@ -75,10 +77,22 @@ describe('① 触屏设备默认不画焦点环', () => {
     const root = document.documentElement
     const iw = Object.getOwnPropertyDescriptor(window, 'innerWidth')
     const ih = Object.getOwnPropertyDescriptor(window, 'innerHeight')
-    const mt = Object.getOwnPropertyDescriptor(navigator, 'maxTouchPoints')
+    const mm = window.matchMedia
     Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true })
     Object.defineProperty(window, 'innerHeight', { value: 844, configurable: true })
-    Object.defineProperty(navigator, 'maxTouchPoints', { value: 1, configurable: true })
+    // 主指针 = coarse（手机）；D-1 后不再读 maxTouchPoints
+    ;(window as any).matchMedia = (q: string) => ({
+      matches: q.includes('pointer: coarse'),
+      media: q,
+      addEventListener() {},
+      removeEventListener() {},
+      addListener() {},
+      removeListener() {},
+      onchange: null,
+      dispatchEvent() {
+        return false
+      },
+    })
     try {
       root.setAttribute('data-input', 'key')
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
@@ -90,7 +104,7 @@ describe('① 触屏设备默认不画焦点环', () => {
     } finally {
       if (iw) Object.defineProperty(window, 'innerWidth', iw)
       if (ih) Object.defineProperty(window, 'innerHeight', ih)
-      if (mt) Object.defineProperty(navigator, 'maxTouchPoints', mt)
+      window.matchMedia = mm
     }
   })
 
@@ -139,10 +153,13 @@ describe('② 返回键显隐按设备形态（大屏横屏且无鼠标才隐藏
       expect(isBigScreenLandscape()).toBe(false)
       set(844, 390, false) // 手机横屏（短边 < 480）
       expect(isBigScreenLandscape()).toBe(false)
+      // TV 形态还需要壳身份（iPad 横屏同尺寸但没有 TV 壳）
+      document.documentElement.dataset.shell = 'tv'
       set(960, 540, false) // TV / 投影仪
       expect(isBigScreenLandscape()).toBe(true)
       set(960, 540, true) // 接了鼠标的电视/模拟器按 PC 处理
       expect(isBigScreenLandscape()).toBe(false)
+      delete document.documentElement.dataset.shell
     } finally {
       if (iw) Object.defineProperty(window, 'innerWidth', iw)
       if (ih) Object.defineProperty(window, 'innerHeight', ih)

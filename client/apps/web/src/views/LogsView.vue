@@ -22,6 +22,7 @@ import {
   type LogsFetchState,
 } from '@/api/logs'
 import { confirmDialog } from '@/composables/useConfirm'
+import { uaText } from '@/compat/ua'
 
 const items = ref<LogItem[]>([])
 const serverStats = ref({ total: 0, errors: 0, warns: 0, capacity: 2000 })
@@ -239,7 +240,7 @@ function doExport() {
 }
 
 onMounted(() => {
-  logEvent('info', 'ui', `日志页打开 · ${navigator.userAgent.slice(0, 60)}`)
+  logEvent('info', 'ui', `日志页打开 · ${uaText().slice(0, 60)}`)
   void refresh()
 })
 

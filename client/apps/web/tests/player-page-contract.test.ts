@@ -296,7 +296,7 @@ describe('直播播放页：播放交互（缓冲/音量/亮度/调试/画中画
     expect(body, '收起态只需续期').toContain('else wake()')
     expect(body, '单击要延迟 220ms 判双击').toContain('}, 220)')
     const d = player.indexOf('function onStageDblClick')
-    const dbl = player.slice(d, d + 900)
+    const dbl = player.slice(d, d + 1600)
     expect(dbl, '中区双击要立即 toggle').toContain('toggle()')
   })
 

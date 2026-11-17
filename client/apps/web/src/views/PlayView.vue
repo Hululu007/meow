@@ -31,6 +31,8 @@ import { CAUSE_LABEL, type Diagnosis } from '@/ai/diagnose'
 import { isPlayErrorPayload, shouldTranscode, type PlayErrorPayload } from '@/components/player/playError'
 import type { PlayResult } from '@/api/types'
 import { getPrefs } from '@/stores/prefs'
+import { isTvEnv, isTvShell, isWideLayout } from '@/compat/shell'
+import { isAndroid, isFirefox } from '@/compat/ua'
 import { getLinePref, setLinePref } from '@/stores/linePref'
 import {
   clearProgress,
@@ -953,9 +955,8 @@ function absoluteApi(p: string): string {
  * 判错的最坏结果是多转一次码（慢一点但能播），不会变成播不了。
  */
 function cantPlayContainerDirectly(): boolean {
-  const ua = navigator.userAgent || ''
-  if (/Firefox|FxiOS/.test(ua)) return false
-  if (/Android/.test(ua)) return false
+  if (isFirefox()) return false
+  if (isAndroid()) return false
   return true
 }
 
@@ -1162,12 +1163,8 @@ const castGroups = computed(() =>
 const castAnchorLeft = ref<number | null>(null)
 const castPanelAnchored = computed(() => {
   if (castAnchorLeft.value == null) return false
-  try {
-    if (typeof (window as unknown as { meowTv?: unknown }).meowTv !== 'undefined') return false
-  } catch {
-    return false
-  }
-  return window.innerWidth >= 768
+  if (isTvShell()) return false
+  return isWideLayout()
 })
 const castPanelStyle = computed(() => {
   if (!castPanelAnchored.value || castAnchorLeft.value == null) return {}
@@ -2109,8 +2106,7 @@ function applyResume(ev?: { duration?: number }) {
   // TV：把焦点落到提示条上，否则遥控器够不到「从头开始」。
   // 提示条是 bottom-28 的悬浮层，不在底栏区域内，tv-nav 的几何选焦
   // 不会主动走过去；这里直接给类名 + focus，与 tv-nav 用的是同一套标记。
-  if (typeof document !== 'undefined'
-      && (document.documentElement.dataset.tv === '1' || /MeowTV/i.test(navigator.userAgent))) {
+  if (isTvEnv()) {
     window.setTimeout(() => {
       const btn = document.querySelector('[data-resume-bar] button')
       if (!btn) return

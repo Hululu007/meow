@@ -36,6 +36,7 @@ import {
   fpkLatest,
   fpkVisible,
   hydrateModuleState,
+  hasTvModule,
   isTvShell,
   lastCheckedAt,
   markChecked,
@@ -70,6 +71,8 @@ const auto = reactive({
 
 const desktop = isDesktop()
 const tv = isTvShell()
+// 运行时模块/弹幕组件是**能力**（moduleCheck），老壳没有时两行不显示。
+const tvModule = hasTvModule()
 const appFound = computed(() => !!updFound.value)
 const moduleFound = computed(() => !!moduleLatest.value)
 const pluginCount = computed(() => pluginUpdates.value.length)
@@ -124,7 +127,7 @@ const fpkLabel = computed(() => {
  * 插件和 fpk 也该有状态，实际那两行根本不显示。
  */
 const scopeLabel = computed(() =>
-  tv
+  tvModule
     ? '壳 / 运行时模块 / 弹幕组件'
     : desktop
       ? '壳 / 本机插件'
@@ -144,7 +147,7 @@ const scopeLabel = computed(() =>
 const lastParts = computed(() => {
   const parts: string[] = []
   if (updPlatform.value !== 'web' && updChecked.value) parts.push(`壳 ${lastText('app')}`)
-  if (tv && moduleUpdateChecked.value) parts.push(`模块 ${lastText('module')}`)
+  if (tvModule && moduleUpdateChecked.value) parts.push(`模块 ${lastText('module')}`)
   if (desktop && pluginChecked.value) parts.push(`插件 ${lastText('plugins')}`)
   if (!desktop && !tv && fpkVisible.value && fpkChecked.value) {
     parts.push(`fpk ${lastText('fpk')}`)
@@ -291,7 +294,7 @@ onMounted(() => {
     </div>
 
     <!-- TV 运行时模块 -->
-    <div v-if="tv" class="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2" data-update-row="module">
+    <div v-if="tvModule" class="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2" data-update-row="module">
       <span class="w-24 shrink-0 text-[11px] text-ink-2">运行时模块</span>
       <span class="font-mono text-[11px] text-ink-3">{{ moduleCurrent || '—' }}</span>
       <span class="text-[11px] text-ink-3">{{ moduleLabel }}</span>
@@ -323,7 +326,7 @@ onMounted(() => {
     </div>
 
     <!-- TV 弹幕组件（载荷）：与运行时模块分开装、分开升版本 -->
-    <div v-if="tv" class="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2" data-update-row="payload">
+    <div v-if="tvModule" class="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2" data-update-row="payload">
       <span class="w-24 shrink-0 text-[11px] text-ink-2">弹幕组件</span>
       <span class="font-mono text-[11px] text-ink-3">{{ payloadInstalled ? payloadCurrent : '—' }}</span>
       <span class="text-[11px] text-ink-3">{{ payloadLabel }}</span>
@@ -452,7 +455,7 @@ onMounted(() => {
         <input type="checkbox" :checked="auto.app" @change="toggleAuto('app', ($event.target as HTMLInputElement).checked)" />
         壳
       </label>
-      <label v-if="tv" class="flex items-center gap-1 text-ink-2">
+      <label v-if="tvModule" class="flex items-center gap-1 text-ink-2">
         <input type="checkbox" :checked="auto.module" @change="toggleAuto('module', ($event.target as HTMLInputElement).checked)" />
         模块
       </label>

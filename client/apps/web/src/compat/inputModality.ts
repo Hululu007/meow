@@ -56,8 +56,8 @@ function apply(mode: Mode): void {
  *
  * <p>规则：
  *   · 横屏 → 默认 key（遥控器/键盘形态，焦点环可见）；
- *   · 竖屏 → 有触摸点默认 touch（手机手指操作不需要环）；
- *   · 竖屏无触摸（少见的竖屏盒子）→ key。
+ *   · 竖屏 → 主指针是触摸（coarse）默认 touch（手机手指操作不需要环）；
+ *   · 竖屏无触摸（PC 窄窗口 / 少见的竖屏盒子）→ key。
  *
  * 用户真正按键或触摸后由下面的监听覆盖；TV 壳的遥控按键不产生 DOM
  * keydown，见 tv-nav.js 里的显式切换。
@@ -66,8 +66,22 @@ function isLandscape(): boolean {
   return window.innerWidth >= window.innerHeight
 }
 
+/**
+ * 主指针是不是触摸。
+ *
+ * ★ 不能用 `navigator.maxTouchPoints > 0`（2026-11-17 实测）：桌面 Chromium
+ *   即使没有触摸屏也报 **10**，于是 900×1000 的 PC 竖窗口被判成"竖屏触屏"，
+ *   `data-input` 永远是 touch，按方向键也切不回 key —— 焦点环在 PC 上永久失效。
+ *   `(pointer: coarse)` 只反映**主指针**：桌面报告 fine、手机报告 coarse、
+ *   无鼠标无触摸的电视可能是 none（按"非触摸"处理，焦点环保留）。
+ */
 function hasTouch(): boolean {
-  return (navigator.maxTouchPoints || 0) > 0
+  try {
+    return window.matchMedia?.('(pointer: coarse)').matches ?? false
+  } catch {
+    /* 老内核不支持 matchMedia：按非触摸处理，焦点行为回到改前 */
+    return false
+  }
 }
 
 /** 竖屏触屏：用户明确要求"竖屏不要聚焦"，任何按键/旋转都不能把环带出来 */

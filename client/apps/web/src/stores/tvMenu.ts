@@ -10,6 +10,7 @@
  * TvActionSheet 只负责渲染与焦点，不猜任何业务。
  */
 import { shallowRef } from 'vue'
+import { isTvShell } from '@/compat/shell'
 
 export interface TvMenuAction {
   label: string
@@ -128,14 +129,14 @@ export function closeTvMenu(): void {
 /**
  * 是否该响应这次菜单键。
  *
- * 只在 TV 环境（壳注入了 meowTv 桥）才接管：PC/Web 上菜单键应保持
- * 浏览器默认行为（右键菜单等），抢过来只会让人莫名其妙。
+ * 只在 TV 环境（壳身份）才接管：PC/Web 上菜单键应保持浏览器默认行为
+ * （右键菜单等），抢过来只会让人莫名其妙。
+ *
+ * ★ 菜单键要的是**身份**（有没有 TV 壳），不是「有没有 moduleCheck」：
+ *   老壳只有 platform 时也该响应菜单键（D-2，见 device-adaptive.md）。
+ *   实现统一在 `compat/shell.ts`，这里只做导出别名。
  */
-export function isTvShell(): boolean {
-  if (typeof window === 'undefined') return false
-  const w = window as unknown as { meowTv?: { platform?: () => string } }
-  return !!w.meowTv && typeof w.meowTv.platform === 'function'
-}
+export { isTvShell }
 
 /**
  * 把菜单键接到页面上。

@@ -53,7 +53,7 @@ describe('更新中心：状态不重复、按钮不重复', () => {
   })
 
   it('最近检查只列当前端、本次会话真的查过的渠道', () => {
-    expect(src).toContain("if (tv && moduleUpdateChecked.value)")
+    expect(src).toContain("if (tvModule && moduleUpdateChecked.value)")
     expect(src).toContain("if (desktop && pluginChecked.value)")
     expect(src).toContain('if (!desktop && !tv && fpkVisible.value && fpkChecked.value)')
     expect(src, '没有按 lastParts 条件渲染').toContain('v-if="lastParts.length"')

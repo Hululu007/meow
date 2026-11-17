@@ -121,6 +121,7 @@ import {
 // 用户真的进设置页/更新中心了再查一次（内部仍有 24h 节流）。
 import {
   checkPayload,
+  hasTvModule,
   isTvShell,
   payloadCurrent,
   payloadInstalled,
@@ -169,7 +170,7 @@ import {
   type SyncStatus,
 } from '@/stores/sync'
 import { clearSearchHistory, listSearchHistory } from '@/stores/searchHistory'
-import { platformName, tvInlineInput } from '@/api/nativeBridge'
+import { tvInlineInput } from '@/api/nativeBridge'
 import { qrSvg } from '@/utils/qr'
 import FpkUpgradePanel from '@/components/common/FpkUpgradePanel.vue'
 import UpdateCenter from '@/components/common/UpdateCenter.vue'
@@ -2985,7 +2986,10 @@ async function testLlm() {
 // 插件全部外置下载（v0.7.0 起），安装包里不带 plugins/。
 // 这里负责：列出已装/可装、下载、更新、离线导入、启停。
 /** TV 壳内（有原生桥）才有「本机执行」分区 */
-const tvMode = platformName() === 'tv'
+// 身份统一：任何 TV 壳（老壳只有 platform 也算），不用 platform() 的返回值。
+const tvMode = isTvShell()
+// 运行时模块/弹幕载荷是能力（moduleCheck）：老壳没有时不显示对应分区。
+const tvModule = hasTvModule()
 const desktop = isDesktop()
 
 // ---------------------------------------------------------------- 本机执行（TV）
@@ -3039,7 +3043,7 @@ function refreshModule() {
     /* 桥坏了就当没有 */
   }
 }
-if (tvMode) refreshModule()
+if (tvMode && tvModule) refreshModule()
 
 function modToggle() {
   const b = bridge()
@@ -3214,7 +3218,7 @@ function refreshPayload() {
     /* 桥坏了当没有 */
   }
 }
-if (tvMode) refreshPayload()
+if (tvMode && tvModule) refreshPayload()
 
 /**
  * 下载并安装载荷：检查 → 下载 zip（原生 AppUpdater，sha256 强制）→ 解压落位 → 重启 :node。
@@ -5607,7 +5611,7 @@ onBeforeUnmount(() => {
       </section>
 
     <!-- ══════════ 运行时模块（仅 TV）══════════ -->
-    <section v-if="tvMode" data-sec="runtime" data-runtime-module class="set-card shrink-0">
+    <section v-if="tvMode && tvModule" data-sec="runtime" data-runtime-module class="set-card shrink-0">
       <template v-if="visitedSec('runtime')">
       <div class="set-head">
         <h2 class="set-title">运行时模块</h2>
@@ -7485,7 +7489,7 @@ onBeforeUnmount(() => {
       <div class="set-head">
         <h2 class="set-title">更新</h2>
         <span class="set-hint">
-          {{ tvMode ? '壳 / 运行时模块' : desktop ? '壳 / 本机插件' : '壳 / fnOS 应用' }} · 源与备用源
+          {{ tvModule ? '壳 / 运行时模块' : tvMode ? '壳' : desktop ? '壳 / 本机插件' : '壳 / fnOS 应用' }} · 源与备用源
         </span>
       </div>
 

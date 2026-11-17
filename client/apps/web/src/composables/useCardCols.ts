@@ -1,5 +1,10 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { getPrefs } from '@/stores/prefs'
+import { isTvEnv } from '@/compat/shell'
+import { formOf, isShortViewport } from '@/compat/deviceProfile'
+
+// 业务侧仍从旧位置 import（VideoPlayer 等），这里只做 re-export。
+export { isTvEnv }
 
 /** 卡片横向间距，与各页面的 column-gap 保持一致 */
 export const CARD_GAP = 16
@@ -16,19 +21,6 @@ export interface CardColsOptions {
   padding?: number
   /** 页面内容区最大宽度（首页/收藏都是 1600） */
   maxWidth?: number
-}
-
-/**
- * 电视壳会在 documentElement 上打 data-tv 标记（见 client/apps/tv 的 MainActivity）。
- * 电视的 CSS 视口只有物理宽度的一半（1080p@320dpi → 960 CSS），
- * 用桌面同一套目标卡宽会永远少一半列数，所以电视单独一档。
- */
-export function isTvEnv(): boolean {
-  if (typeof document === 'undefined') return false
-  // UA 在页面加载前就已确定，比 onPageFinished 里注入的 dataset 更早可用；
-  // dataset 保留给 PC 浏览器里手动加 ?tv=1 的调试场景。
-  if (document.documentElement.dataset.tv === '1') return true
-  return /MeowTV/i.test(navigator.userAgent)
 }
 
 export function clampMaxCols(n: number): number {
@@ -49,7 +41,7 @@ export function resolveCardCols(
   usableWidth: number,
   usableHeight: number,
   max: number,
-  tv = false,
+  tvLarge = false,
 ): number {
   const limit = clampMaxCols(max)
   if (!Number.isFinite(usableWidth) || usableWidth < 200) return Math.min(limit, 3)
@@ -62,7 +54,7 @@ export function resolveCardCols(
    *   卡宽算出来是 4 列、每张只有 ~66px（用户反馈"一行 4 个是不是多了"）。
    *   所以电视卡宽加一道宽度门槛：只有真·电视视口（≥640 内容宽）才用 76。
    */
-  const tvWide = tv && usableWidth >= 640
+  const tvWide = tvLarge && usableWidth >= 640
   const target = tvWide ? 76 : usableWidth >= 1000 ? 104 : 112
   let cols = Math.round((usableWidth + CARD_GAP) / (target + CARD_GAP))
   cols = Math.max(2, Math.min(cols, limit))
@@ -87,8 +79,12 @@ export function useCardCols(opts: CardColsOptions = {}) {
       ? opts.width()
       : Math.min(vw, opts.maxWidth ?? 1600) - (opts.padding ?? 48)
     const max = opts.max ? opts.max() : getPrefs().homeCols
-    compact.value = window.innerHeight < 560
-    cols.value = resolveCardCols(usableWidth, window.innerHeight - CHROME_H, max, isTvEnv())
+    // 矮屏阈值与 CSS 的 `@media (max-height: 520px)` 同源（原 560 会留出
+    // 520–560 的缝隙：JS 只铺 2 行、CSS 行距没收紧）。
+    compact.value = isShortViewport()
+    // 第三层（TV 目标卡宽 76）由形态直接给：form='tv-large' 才算电视尺度；
+    // 电视插鼠标（form=desktop）按桌面卡宽走，与返回键判据同源。
+    cols.value = resolveCardCols(usableWidth, window.innerHeight - CHROME_H, max, formOf() === 'tv-large')
   }
 
   onMounted(() => {

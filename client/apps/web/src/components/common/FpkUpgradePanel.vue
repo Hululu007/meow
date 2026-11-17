@@ -8,14 +8,16 @@
  * 一个永远灰着的按钮。
  *
  * <p>流程与失败原因都在 `api/fpkUpgrade.ts`，这里只画状态。
+ *
+ * ★ 能力判据只读 store（E 阶段，见 device-adaptive.md D-3）：
+ *   `capability` 单点在 `stores/appUpdate`，这里不再自己 `detectFpkShell()`；
+ *   版本检查复用 `checkFpkUpdate()`（与启动弹框状态机同一条路径）。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
-  detectFpkShell,
-  fetchFpkIndexesCached,
+  checkFpkUpdate,
   fpkIndexUrl,
   humanReason,
-  pickLatestFromIndexes,
   runFpkUpgrade,
   setFpkIndexUrl,
   waitForRestart,
@@ -25,6 +27,7 @@ import {
   type InstalledApp,
 } from '@/api/fpkUpgrade'
 import { seedFpkState } from '@/stores/updateCenter'
+import { capability, probeCapability } from '@/stores/appUpdate'
 
 const visible = ref(false)
 const loading = ref(false)
@@ -81,7 +84,7 @@ function fmtDate(s?: string): string {
   return m ? `${m[1]}-${m[2]}-${m[3]}` : ''
 }
 
-/** 探测是不是 fpk 入口，并顺带查一次新版本 */
+/** 读一次能力（必要时重探），再顺带查一次新版本 */
 async function refresh(): Promise<void> {
   if (busy.value) return
   loading.value = true
@@ -91,35 +94,34 @@ async function refresh(): Promise<void> {
   restartNote.value = ''
   progress.value = null
   try {
-    const det = await detectFpkShell()
+    // 启动瞬间应用中心可能还没就绪：手动「检查更新」允许重探一次。
+    const cap = await probeCapability(capability.value === 'none')
     if (disposed) return
-    if (!det) {
+    if (cap !== 'fpk') {
+      visible.value = false
+      return
+    }
+    const res = await checkFpkUpdate()
+    if (disposed) return
+    if (!res) {
       visible.value = false
       return
     }
     visible.value = true
     indexUrl.value = fpkIndexUrl()
-    info = det.info
-    installed = det.installed
+    info = res.info
+    installed = res.installed
     // 应用中心的已安装版本更权威（升级后重启期间 meowd 报的还是旧值）。
-    current.value = det.installed?.version || det.info.version
-    const indexes = await fetchFpkIndexesCached(current.value)
-    const picked = pickLatestFromIndexes(indexes, det.info, current.value)
-    if (disposed) return
-    if (!picked) {
+    current.value = res.current
+    if (!res.latest) {
       target.value = null
       // 写回更新中心那一行：两处必须显示同一组数字（2026-11-16 用户截图）
       seedFpkState(current.value, null)
       upToDate.value = true
       return
     }
-    if ('noPackage' in picked) {
-      seedFpkState(current.value, null)
-      error.value = `新版本 v${picked.version} 没有当前架构（${det.info.arch || 'x86'}）的安装包`
-      return
-    }
-    target.value = picked.latest
-    seedFpkState(current.value, picked.latest)
+    target.value = res.latest
+    seedFpkState(current.value, res.latest)
   } catch (e) {
     error.value = humanReason(e)
   } finally {

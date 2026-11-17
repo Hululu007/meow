@@ -31,13 +31,14 @@ import {
   updatePluginSource,
 } from '@/api'
 import {
-  detectFpkShell,
-  fetchFpkIndexesCached,
-  pickLatestFromIndexes,
+  checkFpkUpdate,
   type FpkLatest,
-  type FpkShellInfo,
 } from '@/api/fpkUpgrade'
 import { getPrefs } from '@/stores/prefs'
+import { fpkInfo, fpkInstalled, probeCapability } from '@/stores/appUpdate'
+import { hasTvModule, isTvShell } from '@/compat/shell'
+
+export { hasTvModule, isTvShell }
 
 export type UpdateKind = 'app' | 'module' | 'payload' | 'plugins' | 'fpk'
 
@@ -181,24 +182,25 @@ export function autoCheckDue(kind: UpdateKind, maxAgeMs = DAY): boolean {
           : p.autoCheckFpk
   if (!enabled) return false
   // 平台不支持时不算“到期”，否则每次启动都白跑一次（且永远不会 mark）
-  if (kind === 'module' && !isTvShell()) return false
+  if (kind === 'module' && !hasTvModule()) return false
   if (kind === 'plugins' && !isDesktop()) return false
   if (kind === 'fpk' && (isDesktop() || isTvShell())) return false
   return Date.now() - (lastCheckedAt[kind] || 0) >= maxAgeMs
 }
 
-/** TV 原生桥（老壳可能没有 moduleCheck） */
+/**
+ * TV 原生桥（老壳可能没有 moduleCheck）。
+ *
+ * ★ 身份与能力分开（D-2）：`isTvShell()` 判断「是不是 TV 壳」，
+ *   `hasTvModule()` 判断「有没有 moduleCheck」。两者都由 `compat/shell.ts`
+ *   唯一定义，这里只 re-export，方便更新中心的组件按需选用。
+ */
 function tvBridge(): any {
   try {
     return (window as unknown as { meowTv?: any }).meowTv || null
   } catch {
     return null
   }
-}
-
-export function isTvShell(): boolean {
-  const b = tvBridge()
-  return !!b && typeof b.moduleCheck === 'function'
 }
 
 /**
@@ -276,7 +278,7 @@ async function callBridgeManifest(
  * 就能只显示一条准确结论：未安装，或版本号 + 未检查。
  */
 export function hydrateModuleState(): void {
-  if (!isTvShell()) return
+  if (!hasTvModule()) return
   try {
     const b = tvBridge()
     const raw = b.moduleState?.()
@@ -310,7 +312,7 @@ export async function checkApp(silent = false): Promise<boolean> {
 
 /** TV 运行时模块；未安装时只报告状态，不产生“可更新” */
 export async function checkModule(silent = false): Promise<boolean> {
-  if (!isTvShell() || checking.module) return false
+  if (!hasTvModule() || checking.module) return false
   const b = tvBridge()
   checking.module = true
   errors.module = ''
@@ -435,7 +437,7 @@ export function refreshPayloadState(): void {
 }
 
 export async function checkPayload(silent = false): Promise<boolean> {
-  if (!isTvShell() || checking.payload) return false
+  if (!hasTvModule() || checking.payload) return false
   const b = tvBridge()
   if (!b || typeof b.payloadCheckCandidates !== 'function') return false
   checking.payload = true
@@ -531,34 +533,35 @@ export async function checkPlugins(silent = false): Promise<boolean> {
   }
 }
 
-/** fnOS fpk 更新（FnDepot 优先，主仓镜像兜底） */
+/**
+ * fnOS fpk 更新（FnDepot 优先，主仓镜像兜底）。
+ *
+ * ★ 能力只认 `capability`（E 阶段）：不再自己 `detectFpkShell()` 判显隐，
+ *   版本检查复用 `checkFpkUpdate()` —— 与启动弹框状态机是同一条路径
+ *   （`api/fpkUpgrade.ts` 注释：「供弹框状态机复用，与 FpkUpgradePanel 同一路径」）。
+ */
 export async function checkFpk(silent = false): Promise<boolean> {
   if (isDesktop() || isTvShell() || checking.fpk) return false
   checking.fpk = true
   errors.fpk = ''
   fpkVisible.value = false
   try {
-    const det = await detectFpkShell()
+    const cap = await probeCapability()
     fpkChecked.value = true
-    if (!det) {
+    if (cap !== 'fpk') {
+      fpkLatest.value = null
+      return false
+    }
+    const res = await checkFpkUpdate()
+    if (!res) {
       fpkLatest.value = null
       return false
     }
     fpkVisible.value = true
-    fpkCurrent.value = det.installed?.version || det.info.version
-    const indexes = await fetchFpkIndexesCached(fpkCurrent.value)
-    const picked = pickLatestFromIndexes(indexes, det.info as FpkShellInfo, fpkCurrent.value)
-    if (!picked) {
-      fpkLatest.value = null
-      mark('fpk')
-      return false
-    }
-    if ('noPackage' in picked) {
-      throw new Error(`新版本 v${picked.version} 没有当前架构的安装包`)
-    }
-    fpkLatest.value = picked.latest
+    fpkCurrent.value = res.current
+    fpkLatest.value = res.latest
     mark('fpk')
-    return true
+    return !!res.latest
   } catch (e) {
     setError('fpk', e, silent)
     fpkLatest.value = null
@@ -573,16 +576,16 @@ export async function checkFpk(silent = false): Promise<boolean> {
  *
  * <p>目的：设置页刚打开时，「fnOS 应用」那行就有版本号，不再出现
  * 「— 未检查」和下面「当前 v1.2.7」互相打架（2026-11-16 用户截图）。
- * 探测本身要打 `/api/_shell/info` + `/app-center/v1/app/installed`，
- * 与 `checkFpk` 共用同一个 `detectFpkShell` 缓存，不额外发第二次。
+ * 探测走 `probeCapability()`（会话内缓存），与 `checkFpk` 共用结果，
+ * 不额外发第二次 `/api/_shell/info`。
  */
 export async function probeFpkCurrent(): Promise<void> {
   if (isDesktop() || isTvShell() || fpkCurrent.value) return
   try {
-    const det = await detectFpkShell()
-    if (!det) return
+    const cap = await probeCapability()
+    if (cap !== 'fpk' || !fpkInfo.value) return
     fpkVisible.value = true
-    fpkCurrent.value = det.installed?.version || det.info.version
+    fpkCurrent.value = fpkInstalled.value?.version || fpkInfo.value.version
   } catch {
     /* 探测失败保持"未检查"，不写错误 —— 用户没主动问 */
   }

@@ -225,17 +225,23 @@ describe('控制栏可见性：收起后不能留在焦点候选里', () => {
 
   it('TV 环境下不渲染左上角返回按钮', async () => {
     document.documentElement.setAttribute('data-tv', '1')
+    // 身份：返回键判据 = TV 壳 + 大屏横屏 + 无精确指针（缺一不可）
+    document.documentElement.dataset.shell = 'tv'
     window.__meowTvKeyOwner = true
-    // 真电视形态：大屏横屏 + 没有鼠标/触控（遥控器自带返回键）
-    await withDevice(960, 540, false, async () => {
-      const w = mountPlayer({ src: 'http://x/a.m3u8' })
-      fakeMedia(w)
-      await w.find('.group').trigger('mousemove')
-      await w.vm.$nextTick()
-      const back = w.findAll('button[aria-label="返回"]')
-      expect(back.length).toBe(0)
-      w.unmount()
-    })
+    try {
+      // 真电视形态：大屏横屏 + 没有鼠标/触控（遥控器自带返回键）
+      await withDevice(960, 540, false, async () => {
+        const w = mountPlayer({ src: 'http://x/a.m3u8' })
+        fakeMedia(w)
+        await w.find('.group').trigger('mousemove')
+        await w.vm.$nextTick()
+        const back = w.findAll('button[aria-label="返回"]')
+        expect(back.length).toBe(0)
+        w.unmount()
+      })
+    } finally {
+      delete document.documentElement.dataset.shell
+    }
   })
 
   it('非 TV 环境保留返回按钮', async () => {

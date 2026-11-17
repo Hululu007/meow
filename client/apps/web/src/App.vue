@@ -2,6 +2,7 @@
 import { onMounted, onBeforeUnmount, computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
+import { isTvShell } from '@/compat/shell'
 import { getPrefs } from '@/stores/prefs'
 import {
   installThemeWatcher,
@@ -777,13 +778,9 @@ function installTvBackHandler() {
  *   · 语义上它是"TV 壳的钩子"，出现在 Web 上会误导后来人；
  *   · `installTvBackHandler` 还会连带注册"两次退出"提示等 TV 专属行为。
  *
- * 判据用壳注入的 `window.meowTv`（Tauri/Web 都没有这个对象），
- * 与 `bootstrapTvLocal` / `backOwnerObserver` 用的是同一个标记。
+ * 判据统一走 `compat/shell.ts`（唯一实现），与 `bootstrapTvLocal` /
+ * `backOwnerObserver` 用的是同一个标记。
  */
-function isTvShell(): boolean {
-  const w = window as unknown as { meowTv?: unknown }
-  return !!w.meowTv
-}
 
 function shouldOwnBackKey(): boolean {
   if (!isTvShell()) return false

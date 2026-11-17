@@ -15,6 +15,8 @@ import {
 } from '@/stores/prefs'
 import { getSkipMarks, setSkipMark, type SkipMarks } from '@/stores/skipMarks'
 import { isTvEnv } from '@/composables/useCardCols'
+import { isIosPhone } from '@/compat/ua'
+import { hasFinePointer } from '@/compat/shell'
 import { cleanDmTitle, epBadgeOf } from '@/utils/dmTitle'
 import { assToVtt, srtToVtt, subtitleFormat, type MiddleSegment, type SubTrack } from '@/api/playExtras'
 import {
@@ -1752,6 +1754,17 @@ let suppressTimer: number | undefined
  */
 let pressVisible = false
 /**
+ * 最近一次 stage pointerdown 的指针类型与时间。
+ *
+ * ★ 双击语义必须按**事件来源**分流，不能按设备（2026-11-17 用户口径）：
+ *   触摸屏 PC 的 `isTouch` 恒为 true（`pointer: coarse` 或 `ontouchstart`），
+ *   但用户插着鼠标时双击应当全屏（PC 语义），不是左右分区快进。
+ *   dblclick 的 MouseEvent 本身没有 pointerType，只能沿用两次 pointerdown 里
+ *   最近的那次；超过有效期（合成事件）就回退到设备判据。
+ */
+let lastDownPointerType = ''
+let lastDownAt = 0
+/**
  * 上面快照的时间戳。
  *
  * 遥控器 tv-nav 的 `el.click()` 和脚本派发的 MouseEvent 都**没有 pointerdown**，
@@ -1871,7 +1884,17 @@ function onStageDblClick(e: MouseEvent) {
   suppressNextClick()
   // 横滑 seek 刚结束：浏览器可能把"松手 + 再点一下"判成双击，不响应
   if (Date.now() - hseekEndedAt < 350) return
-  if (isTouch.value) {
+  /*
+   * 双击语义按**事件来源**，不按设备（2026-11-17 用户确认口径）：
+   *   · 鼠标（含触摸屏 PC 插着鼠标）→ PC 语义：双击 = 全屏；
+   *   · 手指 / 触控笔 → 触屏语义：左区 -10s / 右区 +10s / 中区暂停。
+   * dblclick 没有 pointerType，沿用最近一次 pointerdown 的类型（800ms 内有效）；
+   * 合成事件没有 pointerdown 时回退到设备判据（与原行为一致）。
+   */
+  const recent = Date.now() - lastDownAt < PRESS_SNAPSHOT_MS ? lastDownPointerType : ''
+  const pointerMouse =
+    (e as PointerEvent).pointerType === 'mouse' || recent === 'mouse'
+  if (isTouch.value && !pointerMouse) {
     const zone = zoneOf(e)
     if (zone === 'left') {
       seekBy(-10)
@@ -1913,6 +1936,9 @@ function onStagePointerDown(e: PointerEvent) {
   //   pointerdown 一定早于浏览器在 pointerup 后补发的合成 mousemove（见 pressVisible）。
   pressVisible = showCtrl.value
   pressAt = Date.now()
+  // 双击按事件来源分流的依据（见 lastDownPointerType 注释）
+  lastDownPointerType = e.pointerType || ''
+  lastDownAt = pressAt
   // 手势起点对触屏与鼠标都记录：横滑 seek 两端共用
   pressStart = { x: e.clientX, y: e.clientY }
   swipe.reset(e.clientX)
@@ -2135,7 +2161,7 @@ function rememberGesture(kind: 'volume' | 'brightness', pct: number) {
 }
 
 /** iPhone/iPod 上网页音量控制被系统禁用；iPad 的桌面 UA 不在此列。 */
-const IPHONE_NO_VOLUME = /iP(hone|od)\b/.test(navigator.userAgent)
+const IPHONE_NO_VOLUME = isIosPhone()
 
 /** 无系统亮度能力时的兜底变暗层（0–1，0 表示不变暗） */
 const cssDim = ref(0)
@@ -3017,10 +3043,7 @@ const pseudoFs = ref(false)
  * <p>canHide 用 `(pointer: fine)` 而不是 `!isTouch`：带触摸屏的笔记本
  * 也可能有鼠标，`ontouchstart` 为真会让光标永远不隐藏。
  */
-const finePointer =
-  typeof window !== 'undefined' && typeof window.matchMedia === 'function'
-    ? window.matchMedia('(pointer: fine)').matches
-    : false
+const finePointer = hasFinePointer()
 const cursorIdle = createIdleCursor({
   isFullscreen: () => fullscreen.value || pseudoFs.value,
   canHide: () => finePointer,

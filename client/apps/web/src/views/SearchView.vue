@@ -26,6 +26,7 @@ import {
 import { hasNativeInput, nativeInputText, shouldUseNativeInput, beginInlineInput } from '@/api/nativeBridge'
 import { useReturnRestore } from '@/composables/useReturnRestore'
 import { isScoreRemarks } from '@/utils/remarks'
+import { isTvEnv, isWideLayout } from '@/compat/shell'
 
 // 返回上一页时恢复滚动位置与焦点（TV 上从详情返回不该跳回顶部）
 useReturnRestore('search')
@@ -193,7 +194,7 @@ function contentWidth(): number {
  */
 const { cols: groupCols } = useCardCols({
   width: () =>
-    contentWidth() - (window.innerWidth >= 768 && siteTabs.value.length > 1 ? 172 : 0),
+    contentWidth() - (isWideLayout() && siteTabs.value.length > 1 ? 172 : 0),
 })
 const { cols: listCols } = useCardCols({ width: contentWidth })
 
@@ -509,10 +510,7 @@ function submit() {
  * 而提交逻辑在页面里，所以判断也必须在页面里，用同一个公共判据保证一致。
  */
 function onSearchClick(ev: MouseEvent) {
-  const tv =
-    typeof document !== 'undefined' &&
-    (document.documentElement.dataset.tv === '1' || /MeowTV/i.test(navigator.userAgent))
-  if (!tv) return
+  if (!isTvEnv()) return
   if (!hasNativeInput()) return
   const el = ev.currentTarget as HTMLElement | null
   if (!shouldUseNativeInput(el)) {

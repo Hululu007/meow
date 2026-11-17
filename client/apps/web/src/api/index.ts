@@ -12,6 +12,7 @@ import type { HistoryItem } from '../stores/history'
 import { isLoopbackUrl } from '@/utils/loopback'
 import { getPrefs } from '../stores/prefs'
 import { enabledProxyPrefixes } from './gitAccel'
+import { isDesktopShell, isTvShell } from '@/compat/shell'
 
 export { isLoopbackUrl }
 
@@ -30,36 +31,12 @@ export { isLoopbackUrl }
  *   4. 空串（同源）
  */
 /**
- * Tauri 的页面地址在 Windows 上是 `http://tauri.localhost`，协议仍然是 http，
- * 所以不能用 protocol 判断是否桌面端。这里按运行时注入的对象判断。
- */
-function isTauri(): boolean {
-  if (typeof window === 'undefined') return false
-  const w = window as unknown as Record<string, unknown>
-  return '__TAURI_INTERNALS__' in w || '__TAURI__' in w
-}
-
-/**
  * 桌面端后端地址，由 `initBackend()` 从 Tauri 插件管理器拿。
  *
  * 之所以是模块级可变变量而不是 const：插件是**异步启动**的（JVM 要几秒），
  * 模块加载时还没 READY，拿不到端口。启动流程见 `initBackend()`。
  */
 let desktopBase = ''
-
-/**
- * TV 壳注入 `window.meowTv`。
- *
- * 旧 WebView 在没有该接口时**访问属性本身**就会抛异常（见 `nativeBridge.ts`），
- * 所以必须包 try/catch，不能只靠 `typeof`。
- */
-function isTvShell(): boolean {
-  try {
-    return typeof (window as unknown as { meowTv?: unknown }).meowTv !== 'undefined'
-  } catch {
-    return false
-  }
-}
 
 function resolveBase(): string {
   // 桌面端的地址由插件协商决定，**不能被历史遗留的手填地址劫持**。
@@ -69,7 +46,7 @@ function resolveBase(): string {
   // localStorage，导致视频流走了那个旧后端（0.3.3），而不是插件起的 9980。
   // 桌面端要手动指定地址，应走「设置 → 后端地址」，那条路径会同时写
   // localStorage 并打上 scope 标记（见 setRuntimeBase）。
-  if (isTauri()) {
+  if (isDesktopShell()) {
     const manual = readManualForDesktop()
     if (!manual) return desktopBase
     /*
@@ -129,7 +106,7 @@ function base(): string {
  *
  * ★ 这个判断不能省，否则会出现"幽灵后端"：
  *   桌面端开发模式下页面是从 `http://localhost:5173` 加载的（devUrl），
- *   `__TAURI_INTERNALS__` 已经注入 → isTauri() 为真 → 但插件还没就绪时
+ *   `__TAURI_INTERNALS__` 已经注入 → isDesktopShell() 为真 → 但插件还没就绪时
  *   desktopBase 是空串 → `fetch('' + '/api/sites')` 变成**相对地址**，
  *   于是请求打到 5173，被 Vite 的 `/api` 代理转发到 127.0.0.1:9979 …
  *   结果是：应用显示"已连接 · 39 源"，而那其实是另一个独立跑着的后端，
@@ -138,7 +115,7 @@ function base(): string {
  * 所以桌面端只要还没拿到确定地址，就必须报错，绝不退化成同源请求。
  */
 function backendUnavailable(): boolean {
-  return isTauri() && !resolveBase()
+  return isDesktopShell() && !resolveBase()
 }
 
 // ---------------------------------------------------------------- 启动引导
@@ -203,7 +180,7 @@ export async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>
 export async function initBackend(
   onProgress?: (msg: string) => void,
 ): Promise<BootInfo | null> {
-  if (!isTauri()) return null
+  if (!isDesktopShell()) return null
 
   const deadline = Date.now() + 60_000
   let last: BootInfo | null = null
@@ -268,7 +245,7 @@ export function currentBase(): string {
  * 这里只负责**取**（一次 boot_info，失败保持原值）。
  */
 export async function refreshDesktopBase(): Promise<string> {
-  if (!isTauri()) return desktopBase
+  if (!isDesktopShell()) return desktopBase
   try {
     const info = await tauriInvoke<BootInfo>('boot_info')
     const b = info?.backend_base
@@ -286,7 +263,7 @@ export async function refreshDesktopBase(): Promise<string> {
  * Web 端返回 null。
  */
 export async function bootInfo(): Promise<BootInfo | null> {
-  if (!isTauri()) return null
+  if (!isDesktopShell()) return null
   try {
     return await tauriInvoke<BootInfo>('boot_info')
   } catch {
@@ -302,7 +279,7 @@ export async function bootInfo(): Promise<BootInfo | null> {
  */
 export function readManualApi(): string {
   if (typeof localStorage === 'undefined') return ''
-  if (isTauri()) return readManualForDesktop()
+  if (isDesktopShell()) return readManualForDesktop()
   return localStorage.getItem('meow.api') || ''
 }
 
@@ -313,7 +290,7 @@ export function setRuntimeBase(url: string | null) {
     localStorage.setItem('meow.api', url.trim())
     // 打上来源标记：只有桌面端主动保存的地址才在桌面端生效，
     // 避免 Web 调试期的残留污染桌面版（见 resolveBase 的注释）
-    localStorage.setItem('meow.api.scope', isTauri() ? 'desktop' : 'web')
+    localStorage.setItem('meow.api.scope', isDesktopShell() ? 'desktop' : 'web')
   } else {
     localStorage.removeItem('meow.api')
     localStorage.removeItem('meow.api.scope')
@@ -1198,14 +1175,14 @@ export function apiBase(): string {
 
 /** 是否运行在 Tauri 桌面壳里（main.ts 判断要不要等 sidecar 就绪） */
 export function isDesktop(): boolean {
-  return isTauri()
+  return isDesktopShell()
 }
 
 // ---------------------------------------------------------------- 插件管理
 
 /** 列出本机插件状态。Web 端返回空数组。 */
 export async function listPlugins(): Promise<PluginInfo[]> {
-  if (!isTauri()) return []
+  if (!isDesktopShell()) return []
   const info = await tauriInvoke<BootInfo>('boot_info')
   return info.plugins || []
 }
@@ -1289,7 +1266,7 @@ export interface InstalledInfo {
 
 /** 当前插件源地址 */
 export async function getPluginSource(): Promise<string> {
-  if (!isTauri()) return ''
+  if (!isDesktopShell()) return ''
   return tauriInvoke<string>('plugin_source')
 }
 
@@ -1307,7 +1284,7 @@ export interface SourceList {
 }
 
 export async function fetchPluginSources(): Promise<SourceList | null> {
-  if (!isTauri()) return null
+  if (!isDesktopShell()) return null
   return tauriInvoke<SourceList>('plugin_sources')
 }
 
@@ -1353,7 +1330,7 @@ export async function fetchPluginIndex(): Promise<PluginIndex> {
 
 /** 已安装记录：{ [id]: { version, sha256, installedAt } } */
 export async function fetchInstalledPlugins(): Promise<Record<string, InstalledInfo>> {
-  if (!isTauri()) return {}
+  if (!isDesktopShell()) return {}
   return tauriInvoke<Record<string, InstalledInfo>>('plugin_installed')
 }
 
@@ -1363,7 +1340,7 @@ export async function installPlugin(id: string, appVersion: string): Promise<Ins
 }
 
 export async function fetchInstallProgress(): Promise<InstallProgress | null> {
-  if (!isTauri()) return null
+  if (!isDesktopShell()) return null
   return tauriInvoke<InstallProgress>('plugin_progress')
 }
 

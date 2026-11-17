@@ -10,6 +10,8 @@
  * 同一个源在 TV 能播、PC 播不了，就是这么来的。
  */
 
+import { isAndroid } from '@/compat/ua'
+
 /** 明确是"单个媒体文件"的扩展名（不是播放清单） */
 const DIRECT_MEDIA_EXT = /\.(mp4|mkv|flv|ts|m4s|mov|webm|avi|wmv|mp3|m4a|aac)(\?|#|$)/i
 
@@ -53,7 +55,6 @@ export function looksLikeDirectMedia(url: string): boolean {
  */
 export function hasNativeHls(v: { canPlayType?: (t: string) => string } | null): boolean {
   if (!v || typeof v.canPlayType !== 'function') return false
-  const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent || ''
-  if (!/Android/i.test(ua)) return false
+  if (!isAndroid()) return false
   return !!v.canPlayType('application/vnd.apple.mpegurl')
 }

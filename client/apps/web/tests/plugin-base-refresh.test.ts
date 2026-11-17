@@ -35,7 +35,7 @@ describe('refreshDesktopBase', () => {
 
   it('非桌面端直接返回，不报错', () => {
     const body = region(API, 'export async function refreshDesktopBase', 400)
-    expect(body).toContain('if (!isTauri()) return desktopBase')
+    expect(body).toContain('if (!isDesktopShell()) return desktopBase')
   })
 })
 

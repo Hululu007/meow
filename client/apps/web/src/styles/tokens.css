@@ -852,7 +852,7 @@ html[data-tv='1'] .tv-hide {
  * 2026-11-17 用户报：手机横屏时底栏的重播/刷新把最右侧的「更多」挤出可视区。
  * 平板横屏（≥1024）放得下，保留；TV 保持底栏直达（touch-hide 对它无效）。
  */
-@media (pointer: coarse) and (max-width: 1023px) {
+@media (pointer: coarse) and (max-width: 1024px) {
   html:not([data-tv='1']) .touch-hide {
     display: none !important;
   }
@@ -867,7 +867,7 @@ html[data-tv='1'] .tv-hide {
   display: none !important;
 }
 
-@media (pointer: coarse) and (max-width: 1023px) {
+@media (pointer: coarse) and (max-width: 1024px) {
   html:not([data-tv='1']) .menu-replay {
     display: flex !important;
   }
@@ -877,10 +877,11 @@ html[data-tv='1'] .tv-hide {
  * 顶栏导航文字：触屏窄宽度下只留图标（2026-11-17 用户报「手机横屏顶栏
  * 源分类下拉看不到」——852px 宽要塞下 logo/源下拉/5 个导航/搜索/设置，
  * 文字把源下拉挤没了）。图标化后约省 240px，源下拉完整可见。
- * 判据与 .touch-hide 同族：触屏 <900（iPad 横屏 1024 放得下，保留文字）；
+ * 判据与 .touch-hide **完全相同**：触屏 ≤1024（`device-adaptive.md` B 阶段
+ * 收口掉的 899 是第三套阈值）；iPad Air 4 横屏 1180 保留文字，竖屏 820 图标化。
  * TV 排除（TV 视口 ≥1138 且有自己的适配），PC 是 fine pointer 不命中。
  */
-@media (pointer: coarse) and (max-width: 899px) {
+@media (pointer: coarse) and (max-width: 1024px) {
   html:not([data-tv='1']) .nav-label {
     display: none !important;
   }

@@ -45,6 +45,7 @@
  * - token 只进原生的请求头，**不进 URL、不进日志**
  */
 
+import { isDesktopShell } from '@/compat/shell'
 import { getPrefs, savePrefs } from '../stores/prefs'
 import { getPluginSource } from '@/api'
 import {
@@ -173,10 +174,8 @@ function tauriInvoke(): ((cmd: string, args?: unknown) => Promise<unknown>) | nu
   }
 }
 
-/** 是否跑在 Tauri 桌面端 */
-export function isDesktopShell(): boolean {
-  return tauriInvoke() !== null
-}
+/** 是否跑在 Tauri 桌面端（唯一实现：`compat/shell.ts`） */
+export { isDesktopShell }
 
 /**
  * 当前平台。
@@ -185,8 +184,20 @@ export function isDesktopShell(): boolean {
  * 归到 armv7 会让清单永远匹配不上（装不上的包 = `INSTALL_FAILED_NO_MATCHING_ABIS`）。
  * 归到自己的档位后，清单里没写 `android-x86_64` 就明确"没有可用更新"，
  * 比下错包好。
+ *
+ * <p><b>为什么缓存</b>：桥调用是同步的，`platform` 在响应式 computed 里
+ * 会被反复读；每次读都跨 JNI 是纯浪费。壳注入在页面加载前完成，
+ * 第一次调用之后结论不会变（A 阶段收口，见 device-adaptive.md）。
  */
+let platformCache: AppPlatform | null = null
+
 export function currentPlatform(): AppPlatform {
+  if (platformCache) return platformCache
+  platformCache = detectPlatform()
+  return platformCache
+}
+
+function detectPlatform(): AppPlatform {
   if (isDesktopShell()) return 'windows-x64'
   try {
     const b = (window as unknown as { meowTv?: UpdaterBridge }).meowTv

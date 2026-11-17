@@ -211,7 +211,7 @@ describe('返回兜底判据 + TV 钩子不该挂到 Web 上', () => {
      * （typeof 是 function）。浏览器永远不调它所以无害，但语义上它是
      * TV 壳的钩子，出现在 Web 上会误导后来人。
      */
-    expect(APP, '没有 TV 环境判据').toContain('function isTvShell(')
+    expect(APP, '没有 TV 环境判据').toContain("from '@/compat/shell'")
     const body = APP.slice(APP.indexOf('function shouldOwnBackKey('), APP.indexOf('function syncTvBackOwnership('))
     // 跳过函数签名行与注释，取第一条真实语句
     const stmts = body

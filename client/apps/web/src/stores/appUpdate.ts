@@ -29,6 +29,7 @@
  */
 
 import { computed, ref } from 'vue'
+import { markShell } from '@/compat/deviceProfile'
 import {
   checkAppUpdate,
   currentPlatform,
@@ -136,8 +137,12 @@ let capabilityPromise: Promise<UpdateCapability> | null = null
  *
  * <p>探测失败不抛：普通浏览器直连 `:30010` 时 `/app-center/*` 不通，
  * 属于正常情况，返回 `none` 即可，界面不会出现永远灰着的按钮。
+ *
+ * @param force 手动「检查更新」时允许重探一次：启动瞬间应用中心可能还没就绪，
+ *              一次探测失败不能把整个会话的更新入口永久关掉。
  */
-export function probeCapability(): Promise<UpdateCapability> {
+export function probeCapability(force = false): Promise<UpdateCapability> {
+  if (force) capabilityPromise = null
   if (capabilityPromise) return capabilityPromise
   capabilityPromise = (async () => {
     if (currentPlatform() !== 'web') {
@@ -152,6 +157,8 @@ export function probeCapability(): Promise<UpdateCapability> {
         kind.value = 'fpk'
         fpkInfo.value = det.info
         fpkInstalled.value = det.installed
+        // 壳身份补写（data-shell）：fpk 是异步探测出来的，set 一次即可。
+        markShell('fpk')
         return 'fpk'
       }
     } catch {

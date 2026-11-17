@@ -17,6 +17,7 @@
  */
 
 import { isDesktop, tauriInvoke } from './index'
+import { isTvEnv } from '@/compat/shell'
 
 interface MeowTvBridge {
   nativePlayerAvailable(): boolean
@@ -148,10 +149,7 @@ export function shouldUseNativeInput(el: Element | null): boolean {
  * @returns 是否已经由 TV 分支处理
  */
 export function tvInlineInput(ev: MouseEvent): boolean {
-  const tv =
-    typeof document !== 'undefined' &&
-    (document.documentElement.dataset.tv === '1' || /MeowTV/i.test(navigator.userAgent))
-  if (!tv) return false
+  if (!isTvEnv()) return false
   if (!hasNativeInput()) return false
   beginInlineInput(ev.currentTarget as HTMLElement | null)
   // 阻止浏览器默认聚焦：那一拍会和原生 showIme() 的时序打架（见 beginInlineInput 注释）

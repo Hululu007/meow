@@ -20,6 +20,8 @@
  * 因为它们的引入版本接近，而且分批降级会让样式表更难推理）。
  */
 
+import { chromeMajor, uaText } from '@/compat/ua'
+
 let done = false
 
 export function detectLegacyCss(): void {
@@ -104,7 +106,7 @@ export function detectLegacyCss(): void {
       console.warn(
         '[meow] 老内核降级已启用，缺失特性: ' + missing.join(', ') +
           (lacksColorMix ? '（另缺 color-mix，仅颜色退化）' : '') +
-          '（UA: ' + navigator.userAgent + '）',
+          '（UA: ' + uaText() + '）',
       )
     } catch {
       /* 忽略 */
@@ -127,7 +129,7 @@ export function detectLegacyCss(): void {
         'background:rgba(0,0,0,.86);color:#0f0;font:12px/1.5 monospace;' +
         'max-width:60vw;white-space:pre-wrap;pointer-events:none'
       el.textContent =
-        'UA Chrome/' + (navigator.userAgent.match(/Chrome\/([0-9]+)/) || [])[1] + '\n' +
+        'UA Chrome/' + chromeMajor() + '\n' +
         'legacy-css = ' + (root.dataset.legacyCss || '(未启用)') + '\n' +
         'missing = ' + (root.dataset.legacyCssMissing || '无') + '\n' +
         'color-mix = ' + (lacksColorMix ? '缺失' : 'OK') + '\n' +
