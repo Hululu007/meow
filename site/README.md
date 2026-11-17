@@ -25,6 +25,7 @@
 | Docker 容器 / 端口 / `.env` 键 | `guide/web-docker.md`、`guide/quick-start.md`、`reference/downloads.md` |
 | PC 插件流程、端口回退、安装包形态 | `guide/pc.md`、`ecosystem/plugins.md` |
 | TV 安装、遥控、网关、运行时模块 | `guide/tv.md`、`ecosystem/runtime-module.md` |
+| iOS 壳 / IPA 发版（签名、资产名、端支持） | `dev/ios-integration.md`、`reference/downloads.md`、`reference/compatibility.md`、`guide/faq.md` |
 | 投屏（DLNA / 应用内会话）| `guide/playback.md`、`dev/casting.md` |
 | config 字段（`spider` / `spiderJvm` / `sites` / `parses` …） | `ecosystem/source-format.md`、`guide/source-pack.md` |
 | 导入选项（`mode` / `onConflict` / `replaceSpider`） | `guide/source-pack.md` |

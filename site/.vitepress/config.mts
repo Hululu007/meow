@@ -70,6 +70,7 @@ const devSidebar = [
     text: '端',
     items: [
       { text: 'TV 接入与 Fongmi', link: '/dev/tv-integration' },
+      { text: 'iOS 端接入（IPA）', link: '/dev/ios-integration' },
     ],
   },
   {
