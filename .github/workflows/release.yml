@@ -180,8 +180,14 @@ jobs:
 
   docker:
     name: Docker 三镜像
-    needs: [plan, web]
-    if: ${{ needs.plan.outputs.docker == 'true' }}
+    # ★ 必须等 plugins（2026-11-17 补）：apiserver 镜像要复用插件 job 上传的
+    #   `apiserver-classes`，省掉 arm64 在 QEMU 里的 javac（实测那一层 162.7s）。
+    #   原来只 needs: [plan, web] → 两者并行起跑，artifact 还不存在，
+    #   download 静默失败并回退镜像内编译 —— 优化等于没做（接线检查出来的）。
+    #   plugins 被跳过时（docker-v* 只重发镜像）用 result != 'failure' 放行，
+    #   此时退回镜像内 javac，行为与以前一致。
+    needs: [plan, web, plugins]
+    if: ${{ !cancelled() && needs.plan.outputs.docker == 'true' && needs.plugins.result != 'failure' }}
     uses: ./.github/workflows/_docker.yml
     with:
       version: ${{ needs.plan.outputs.version }}
