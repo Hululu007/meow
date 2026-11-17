@@ -4849,8 +4849,18 @@ onBeforeUnmount(() => {
     现在：`100vh - 顶栏 - 上下 padding`，padding 用 2rem 与 py-4 对齐。
     `--header-h` 会随 TV 根字号放大（4rem → 72px），那是真实占位，必须扣。
   -->
-  <div
-    class="mx-auto max-w-[1500px] px-4 py-4 max-sm:px-3 max-sm:py-3 lg:flex lg:h-[calc(100vh-var(--header-h)-2rem)] lg:flex-col lg:overflow-hidden lg:px-6"
+    <!--
+      高度 = **视口 - 顶栏**，不能再减 `2rem`：py-4 的上下 padding 已经算在
+      border-box 高度里，多减一次会让容器比 main 矮 32px，横屏手机 393 高的
+      视口底部固定空 48px（2026-11-17 用户报「设置页底部 padding 太大」）。
+
+      ★ 不能用 h-full：main 的高度是 flex-1 拉伸出来的 auto，百分比高度
+        不解析 → 容器塌成内容总高（实测 6335px，双栏变成长页）。
+      ★ dvh 覆盖 vh：移动端浏览器地址栏收起/展开时 vh 与可视高度不一致；
+        老内核（TV WebView）不认识 dvh 时整条声明失效，自动落回上面那条 vh。
+    -->
+    <div
+      class="mx-auto max-w-[1500px] px-4 py-4 max-sm:px-3 max-sm:py-3 wide:flex wide:h-[calc(100vh-var(--header-h))] wide:h-[calc(100dvh-var(--header-h))] wide:flex-col wide:overflow-hidden wide:px-6"
   >
     <!--
       窄屏：横向分区胶囊（2026-11-05 用户要求「滚动到上方时固定到顶部」）。
@@ -4866,7 +4876,7 @@ onBeforeUnmount(() => {
     -->
     <nav
       ref="chipsEl"
-      class="no-scrollbar sticky top-[var(--header-h)] z-20 -mx-4 flex gap-1.5 overflow-x-auto scroll-smooth border-b border-line/60 bg-[var(--color-strip-veil)] px-4 pb-2 pt-1 backdrop-blur-xl backdrop-saturate-[180%] max-sm:-mx-3 max-sm:gap-2 max-sm:px-3 lg:hidden"
+      class="no-scrollbar sticky top-[var(--header-h)] z-20 -mx-4 flex gap-1.5 overflow-x-auto scroll-smooth border-b border-line/60 bg-[var(--color-strip-veil)] px-4 pb-2 pt-1 backdrop-blur-xl backdrop-saturate-[180%] max-sm:-mx-3 max-sm:gap-2 max-sm:px-3 wide:hidden"
       aria-label="设置分区"
     >
       <button
@@ -4887,11 +4897,11 @@ onBeforeUnmount(() => {
     </nav>
 
     <div
-      class="flex flex-col gap-4 max-sm:mt-3 lg:grid lg:min-h-0 lg:flex-1 lg:grid-cols-[200px_minmax(0,1fr)] lg:gap-6"
+      class="flex flex-col gap-4 max-sm:mt-3 wide:grid wide:min-h-0 wide:flex-1 wide:grid-cols-[200px_minmax(0,1fr)] wide:gap-6"
     >
       <!-- ── 左侧导航（宽屏时定高不滚） ── -->
       <aside
-        class="lg:h-full lg:min-h-0 lg:overflow-y-auto"
+        class="wide:h-full wide:min-h-0 wide:overflow-y-auto"
         aria-label="设置分区导航"
       >
 
@@ -4904,7 +4914,7 @@ onBeforeUnmount(() => {
         -->
         <nav
           data-tv-settings-nav
-          class="hidden flex-col rounded-xl border border-line bg-card-sunken p-2 lg:flex"
+          class="hidden flex-col rounded-xl border border-line bg-card-sunken p-2 wide:flex"
           aria-label="设置分区"
         >
           <div class="mb-1.5 flex items-center justify-between px-2">
@@ -4975,7 +4985,7 @@ onBeforeUnmount(() => {
       <div
         ref="contentRef"
         :data-tv-left="'#set-nav-' + lastNavSec"
-        class="flex min-w-0 flex-col gap-3 lg:-ml-1 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:px-1"
+        class="flex min-w-0 flex-col gap-3 wide:-ml-1 wide:h-full wide:min-h-0 wide:overflow-y-auto wide:px-1"
       >
     <!-- ══════════ 连接 ══════════ -->
     <section data-sec="conn" class="set-card shrink-0">

@@ -35,6 +35,18 @@ PLATFORM=arm SRC=/tmp/meow-src OUT=/tmp/meow-out-arm bash client/apps/fnos/build
    而 fpk 的 Java 在 30011 → Bili/Hxq 的 play 返回 `http://127.0.0.1:-1/proxy?...`。
    `Jars.pinProxyPort(port)` 在 jar 加载后反射写私有静态字段 `a`；启动和导入后各调一次。
 
+## 硬件转码要 root 开设备权限（RK 设备，如 OEC）
+
+片库转码在 Rockchip 上走 MPP/RGA 硬解硬编（详见
+[site/docs/dev/library-cache.md §1.9.1](../../../site/docs/dev/library-cache.md)），
+需要 `/dev/mpp_service`、`/dev/dri/card0|renderD128`、`/dev/rga`。
+fnOS 上这些节点是 `root:root 0600` / `root:video|render 0660`，而本 fpk 的 java 以
+`meow` 用户运行——**生命周期脚本也是 meow，改不了权限**，所以只能在设备上由 root
+一次性处理（加组 + udev 规则，命令见上面那份文档）。
+
+没做这一步不会崩，只是硬解报 `Generic error in an external library` 并自动回退软解：
+4K HEVC 首片会从 ~15 秒变成 ~100 秒，且持续速率只有 0.025x（播不流畅）。
+
 ## 进程管理：pid/log 必须落在 `$TRIM_PKGVAR`
 
 `meowd` 的 `pkg_var` = `$TRIM_PKGVAR`，`run/`、`logs/` 都在它下面；`cmd/main` 的

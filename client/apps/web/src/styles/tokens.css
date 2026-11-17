@@ -1,6 +1,17 @@
 @import 'tailwindcss';
 
 /*
+ * 自定义变体 wide：**「值得用双栏布局」的环境** —— 横屏，或指针精确（PC）。
+ *
+ * 用途：设置页的「左导航 + 右内容」布局原来只认宽度断点 lg(1024)，手机横屏
+ * （iPhone CSS 视口 852）落不到，只能用竖屏手机的横向胶囊条（2026-11-17
+ * 用户报）。判据按用户口径重写：「分类胶囊只有移动端竖屏才这样」→
+ *   竖屏触屏（手机/平板竖着拿）= 胶囊；横屏或 PC = 双栏。
+ * TV 是横屏，自然命中，行为不变。
+ */
+@custom-variant wide (@media (orientation: landscape), (pointer: fine));
+
+/*
  * 设计 token —— 取自 影视仓 6.1.0 APK（aapt2 实测）
  * 见 meow/docs/22-web-pc-plan-v1.md
  */
@@ -833,6 +844,46 @@ html[data-tv='1'] {
  */
 html[data-tv='1'] .tv-hide {
   display: none !important;
+}
+
+/*
+ * 触屏小屏（手机竖屏/横屏）隐藏低频按钮 —— 这些入口都在「更多」菜单里。
+ *
+ * 2026-11-17 用户报：手机横屏时底栏的重播/刷新把最右侧的「更多」挤出可视区。
+ * 平板横屏（≥1024）放得下，保留；TV 保持底栏直达（touch-hide 对它无效）。
+ */
+@media (pointer: coarse) and (max-width: 1023px) {
+  html:not([data-tv='1']) .touch-hide {
+    display: none !important;
+  }
+}
+
+/*
+ * 「更多」菜单里的重播/刷新：与 .touch-hide **正好互补** ——
+ * 只在底栏那对按钮被收走的环境（触屏小屏）显示，TV/PC 底栏常驻时
+ * 不重复（菜单与底栏重复是实测过的负面体验）。菜单项本身是 flex。
+ */
+.menu-replay {
+  display: none !important;
+}
+
+@media (pointer: coarse) and (max-width: 1023px) {
+  html:not([data-tv='1']) .menu-replay {
+    display: flex !important;
+  }
+}
+
+/*
+ * 顶栏导航文字：触屏窄宽度下只留图标（2026-11-17 用户报「手机横屏顶栏
+ * 源分类下拉看不到」——852px 宽要塞下 logo/源下拉/5 个导航/搜索/设置，
+ * 文字把源下拉挤没了）。图标化后约省 240px，源下拉完整可见。
+ * 判据与 .touch-hide 同族：触屏 <900（iPad 横屏 1024 放得下，保留文字）；
+ * TV 排除（TV 视口 ≥1138 且有自己的适配），PC 是 fine pointer 不命中。
+ */
+@media (pointer: coarse) and (max-width: 899px) {
+  html:not([data-tv='1']) .nav-label {
+    display: none !important;
+  }
 }
 
 /*

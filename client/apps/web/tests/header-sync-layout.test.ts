@@ -24,10 +24,12 @@ describe('顶栏同步徽标', () => {
 })
 
 describe('中间档（640–1023）不再挤压搜索框', () => {
-  it('顶栏「设置」从 md 起才显示', () => {
-    expect(header).toContain(
-      'class="hidden rounded-md px-3 py-1.5 text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink md:block"',
-    )
+  it('顶栏「设置」从 md 起才显示，且带齿轮图标（横屏触屏只留图标）', () => {
+    // 2026-11-17：md:block → md:flex（加齿轮图标），横屏触屏由 .nav-label 收掉文字。
+    // 「更多」菜单里也有一个 to="/settings"，用 class 组合锁定主按钮。
+    expect(header).toMatch(/to="\/settings"[\s\S]{0,200}?md:flex/)
+    // logo + 直播/片库/收藏/历史/AI/设置 = 7 处
+    expect((header.match(/nav-label/g) || []).length).toBeGreaterThanOrEqual(6)
   })
 
   it('「更多」菜单在 640–767 提供设置入口（<640 交给底部标签栏）', () => {

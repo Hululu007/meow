@@ -458,11 +458,14 @@ export function seasonTitle(base: string, season: number): string {
 export interface TranscodeResult {
   ok: boolean
   id?: string
-  state?: 'idle' | 'running' | 'ready' | 'failed' | 'canceled'
+  /** 后端实际值是 cancelled（双 l）；canceled 兼容旧值 */
+  state?: 'idle' | 'running' | 'ready' | 'failed' | 'cancelled' | 'canceled'
   error?: string
   segments?: number
   /** 已转出多少秒（增量产出，可边看边转） */
   readySeconds?: number
+  /** 源真实总时长（秒）。转码未完成时 video.duration 只是已转出时长，靠它显示对的进度条 */
+  duration?: number
   playlist?: string
 }
 
@@ -482,7 +485,18 @@ export interface TranscodeResult {
 export async function startLibraryTranscode(lib: string, path: string): Promise<TranscodeResult> {
   const q = new URLSearchParams({ lib, path })
   const r = await fetch(`${apiBase()}/api/transcode?${q}`)
-  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  if (!r.ok) {
+    // 后端 stage 前的预检（ffmpeg 缺失等）返回 502 + 人话 msg——
+    // 直接丢成 "HTTP 502" 用户什么都看不懂（2026-11-17 OECT 场景）。
+    let msg = `HTTP ${r.status}`
+    try {
+      const j = (await r.json()) as { msg?: string }
+      if (j?.msg) msg = j.msg
+    } catch {
+      /* 响应不是 JSON 就保持状态码 */
+    }
+    throw new Error(msg)
+  }
   return (await r.json()) as TranscodeResult
 }
 
@@ -491,12 +505,24 @@ export async function waitLibraryTranscode(
   lib: string,
   path: string,
   onProgress?: (seconds: number) => void,
-  timeoutMs = 180_000,
+  /*
+   * 600 秒（2026-11-17 从 180s 放宽）：4K HEVC 10bit 在弱设备（如 OEC/RK3566）
+   * 上软解只有 ~0.9 fps，首片（2 秒内容）也要一两分钟，180s 会把"能转出来"的
+   * 情况误判成失败。前端现在会显示"已就绪 X 秒"，用户能看到在进展。
+   */
+  timeoutMs = 600_000,
 ): Promise<TranscodeResult> {
   const deadline = Date.now() + timeoutMs
   let last = await startLibraryTranscode(lib, path)
   while (Date.now() < deadline) {
     if (last.state === 'failed') return last
+    /*
+     * 被别的任务「串行化」取消了（一次只跑一个重转码）：立刻返回失败，
+     * 否则前端会一直轮询到 600 秒超时，用户看到的是"永远在转码"。
+     */
+    if (last.state === 'cancelled' || last.state === 'canceled') {
+      return { ok: false, state: 'failed', error: '这个文件的转码被新任务打断了，请再点一次播放' }
+    }
     if (last.playlist) return last
     if (last.readySeconds && onProgress) onProgress(last.readySeconds)
     await new Promise((r) => setTimeout(r, 2000))
@@ -535,6 +561,13 @@ export async function waitTranscode(
   let last = await startTranscode(src)
   while (Date.now() < deadline) {
     if (last.state === 'failed') return last
+    /*
+     * 被别的任务「串行化」取消了（一次只跑一个重转码）：立刻返回失败，
+     * 否则前端会一直轮询到 600 秒超时，用户看到的是"永远在转码"。
+     */
+    if (last.state === 'cancelled' || last.state === 'canceled') {
+      return { ok: false, state: 'failed', error: '这个文件的转码被新任务打断了，请再点一次播放' }
+    }
     if (last.playlist) return last
     if (last.readySeconds && onProgress) onProgress(last.readySeconds)
     await new Promise((r) => setTimeout(r, 2000))

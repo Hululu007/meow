@@ -335,7 +335,7 @@ public final class LibraryRoutes {
             // 否则 sendResponseHeaders 会因为长度不符把连接挂住。
             ex.sendResponseHeaders(code, len > 0 ? len : 0);
             OutputStream os = ex.getResponseBody();
-            byte[] buf = new byte[65536];
+            byte[] buf = new byte[1 << 20];
             int n;
             while ((n = in.read(buf)) != -1) os.write(buf, 0, n);
             os.close();
@@ -423,7 +423,7 @@ public final class LibraryRoutes {
             OutputStream os = ex.getResponseBody();
             try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file.toFile(), "r")) {
                 raf.seek(start);
-                byte[] buf = new byte[65536];
+                byte[] buf = new byte[1 << 20];
                 long left = len;
                 while (left > 0) {
                     int n = raf.read(buf, 0, (int) Math.min(buf.length, left));
@@ -443,95 +443,211 @@ public final class LibraryRoutes {
      * <p>smbj 的 `File.read(buffer, offset)` 支持随机读，直接按 Range 跳过去，
      * 不需要把整个文件读进内存。
      */
+    // ------------------------------------------------------------ SMB 连接池（F4，2026-11-17）
+
+    /**
+     * 复用的 SMB 连接（client + conn + session + share）。
+     *
+     * <p><b>为什么要池化</b>：每个 Range 请求原来都要重新协商 + 认证 + 树连接
+     * （局域网 10~30ms，WiFi 更高）。播放器一次起播会发好几个 Range（moov、
+     * 首段、seek），转码后的 ffmpeg 更是持续发请求——握手开销直接摊在起播
+     * 延迟与拖动响应上。池化后只在失效/空闲超时时重建。
+     */
+    private static final class SmbConn {
+        com.hierynomus.smbj.SMBClient client;
+        com.hierynomus.smbj.connection.Connection conn;
+        com.hierynomus.smbj.session.Session session;
+        com.hierynomus.smbj.share.DiskShare share;
+        volatile long lastUsed;
+
+        boolean alive() {
+            try {
+                return conn != null && conn.isConnected() && share != null && share.isConnected();
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        void close() {
+            try {
+                if (share != null) share.close();
+            } catch (Exception ignored) {
+            }
+            try {
+                if (session != null) session.close();
+            } catch (Exception ignored) {
+            }
+            try {
+                if (conn != null) conn.close();
+            } catch (Exception ignored) {
+            }
+            try {
+                if (client != null) client.close();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** 池：libId@host → 连接。空闲 5 分钟回收（别在 NAS 上长期占会话）。 */
+    private static final java.util.concurrent.ConcurrentHashMap<String, SmbConn> SMB_POOL =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long SMB_IDLE_MS = 5 * 60_000L;
+
+    private static String smbPoolKey(JSONObject lib) {
+        return lib.optString("id", "") + "@" + core.Library.smbHostOf(lib);
+    }
+
+    /** 取一条可用连接（失效/过期就重建）。 */
+    private static SmbConn smbConn(JSONObject lib) throws IOException {
+        String k = smbPoolKey(lib);
+        long now = System.currentTimeMillis();
+        SmbConn c = SMB_POOL.get(k);
+        if (c != null && c.alive() && now - c.lastUsed <= SMB_IDLE_MS) {
+            c.lastUsed = now;
+            return c;
+        }
+        if (c != null) {
+            c.close();
+            SMB_POOL.remove(k);
+        }
+        try {
+            SmbConn n = new SmbConn();
+            n.client = new com.hierynomus.smbj.SMBClient();
+            n.conn = n.client.connect(core.Library.smbHostOf(lib));
+            n.session = core.Library.authenticateSmb(n.conn, lib);
+            n.share = (com.hierynomus.smbj.share.DiskShare)
+                    n.session.connectShare(core.Library.smbShareOf(lib));
+            n.lastUsed = now;
+            SMB_POOL.put(k, n);
+            return n;
+        } catch (Exception e) {
+            throw e instanceof IOException ? (IOException) e : new IOException(e);
+        }
+    }
+
+    /** 打开共享文件（连接失效时重建一次再试）。 */
+    private static com.hierynomus.smbj.share.File smbOpenFile(JSONObject lib, String path)
+            throws IOException {
+        java.util.EnumSet<com.hierynomus.msdtyp.AccessMask> access =
+                java.util.EnumSet.of(com.hierynomus.msdtyp.AccessMask.GENERIC_READ);
+        java.util.EnumSet<com.hierynomus.mssmb2.SMB2ShareAccess> sharing =
+                java.util.EnumSet.of(com.hierynomus.mssmb2.SMB2ShareAccess.FILE_SHARE_READ);
+        SmbConn c = smbConn(lib);
+        try {
+            // smbj 0.13 只有一个 openFile 重载，六个参数都得给：只读 + 允许别人同时读
+            return c.share.openFile(path, access, null, sharing,
+                    com.hierynomus.mssmb2.SMB2CreateDisposition.FILE_OPEN, null);
+        } catch (Exception first) {
+            /*
+             * 连接可能已被 NAS 侧断开（smbj 的 isConnected 有时滞后）：
+             * 强制重建一次再试，避免一次抖动就让播放报 502。
+             */
+            String k = smbPoolKey(lib);
+            SMB_POOL.remove(k);
+            c.close();
+            SmbConn n = smbConn(lib);
+            try {
+                return n.share.openFile(path, access, null, sharing,
+                        com.hierynomus.mssmb2.SMB2CreateDisposition.FILE_OPEN, null);
+            } catch (Exception second) {
+                throw second instanceof IOException ? (IOException) second : new IOException(second);
+            }
+        }
+    }
+
     public static void sendSmbLibraryFile(HttpExchange ex, JSONObject lib, String rel)
             throws IOException {
-        com.hierynomus.smbj.SMBClient client = new com.hierynomus.smbj.SMBClient();
-        com.hierynomus.smbj.connection.Connection conn = null;
+        String path = core.Library.smbSubPathOf(lib, rel);
+        com.hierynomus.smbj.share.File f = null;
+        /*
+         * S3（2026-11-17）：记录响应头是否已发出。
+         *
+         * 原来读流中途失败时 catch 里还会再 sendJson(502) —— 头已发时这行必然
+         * 抛 "headers already sent"，把真实的 SMB 断连/超时异常盖掉，日志里
+         * 只剩误导性的二次错误（OECT 上排障多花的时间就耗在这）。
+         */
+        boolean headersSent = false;
         try {
-            conn = client.connect(core.Library.smbHostOf(lib));
-            com.hierynomus.smbj.session.Session session = core.Library.authenticateSmb(conn, lib);
-            com.hierynomus.smbj.share.DiskShare disk = (com.hierynomus.smbj.share.DiskShare)
-                    session.connectShare(core.Library.smbShareOf(lib));
-            String path = core.Library.smbSubPathOf(lib, rel);
-            // smbj 0.13 只有一个 openFile 重载，六个参数都得给：只读 + 允许别人同时读
-            com.hierynomus.smbj.share.File f = disk.openFile(path,
-                    java.util.EnumSet.of(com.hierynomus.msdtyp.AccessMask.GENERIC_READ),
-                    null,
-                    java.util.EnumSet.of(com.hierynomus.mssmb2.SMB2ShareAccess.FILE_SHARE_READ),
-                    com.hierynomus.mssmb2.SMB2CreateDisposition.FILE_OPEN,
-                    null);
-            try {
-                long total = f.getFileInformation().getStandardInformation().getEndOfFile();
-                Headers out = ex.getResponseHeaders();
-                Api.cors(ex);
-                out.set("Accept-Ranges", "bytes");
-                out.set("Content-Type", core.Library.contentTypeOf(path));
+            f = smbOpenFile(lib, path);
+            long total = f.getFileInformation().getStandardInformation().getEndOfFile();
+            Headers out = ex.getResponseHeaders();
+            Api.cors(ex);
+            out.set("Accept-Ranges", "bytes");
+            out.set("Content-Type", core.Library.contentTypeOf(path));
 
-                long start = 0;
-                long end = total - 1;
-                String range = ex.getRequestHeaders().getFirst("Range");
-                boolean partial = false;
-                if (range != null && range.startsWith("bytes=")) {
-                    String spec = range.substring(6).split(",")[0].trim();
-                    int dash = spec.indexOf('-');
-                    if (dash >= 0) {
-                        try {
-                            String a = spec.substring(0, dash).trim();
-                            String b = spec.substring(dash + 1).trim();
-                            if (a.isEmpty()) {
-                                start = Math.max(0, total - Long.parseLong(b));
-                            } else {
-                                start = Long.parseLong(a);
-                                if (!b.isEmpty()) end = Math.min(Long.parseLong(b), total - 1);
-                            }
-                            if (start > end || start >= total) {
-                                out.set("Content-Range", "bytes */" + total);
-                                ex.sendResponseHeaders(416, -1);
-                                ex.close();
-                                return;
-                            }
-                            partial = true;
-                        } catch (NumberFormatException ignored) {
-                            start = 0;
-                            end = total - 1;
-                            partial = false;
+            long start = 0;
+            long end = total - 1;
+            String range = ex.getRequestHeaders().getFirst("Range");
+            boolean partial = false;
+            if (range != null && range.startsWith("bytes=")) {
+                String spec = range.substring(6).split(",")[0].trim();
+                int dash = spec.indexOf('-');
+                if (dash >= 0) {
+                    try {
+                        String a = spec.substring(0, dash).trim();
+                        String b = spec.substring(dash + 1).trim();
+                        if (a.isEmpty()) {
+                            start = Math.max(0, total - Long.parseLong(b));
+                        } else {
+                            start = Long.parseLong(a);
+                            if (!b.isEmpty()) end = Math.min(Long.parseLong(b), total - 1);
                         }
+                        if (start > end || start >= total) {
+                            out.set("Content-Range", "bytes */" + total);
+                            ex.sendResponseHeaders(416, -1);
+                            ex.close();
+                            return;
+                        }
+                        partial = true;
+                    } catch (NumberFormatException ignored) {
+                        start = 0;
+                        end = total - 1;
+                        partial = false;
                     }
                 }
-                long len = end - start + 1;
-                if (partial) out.set("Content-Range", "bytes " + start + "-" + end + "/" + total);
-                ex.sendResponseHeaders(partial ? 206 : 200, len);
-                OutputStream os = ex.getResponseBody();
-                byte[] buf = new byte[65536];
-                long pos = start;
-                long left = len;
-                while (left > 0) {
-                    int want = (int) Math.min(buf.length, left);
-                    int n = f.read(buf, pos, 0, want);
-                    if (n <= 0) break;
-                    os.write(buf, 0, n);
-                    pos += n;
-                    left -= n;
+            }
+            long len = end - start + 1;
+            if (partial) out.set("Content-Range", "bytes " + start + "-" + end + "/" + total);
+            ex.sendResponseHeaders(partial ? 206 : 200, len);
+            headersSent = true;
+            OutputStream os = ex.getResponseBody();
+            /*
+             * F3（2026-11-17）：读缓冲 64KB → 1MB。
+             * 实测 OECT 直连吞吐只有 ~11-12MB/s，而 SMB2 单次 read 上限远大于
+             * 64KB —— 小包往返是主要开销。16 个并发线程 × 1MB 约 16MB 内存。
+             */
+            byte[] buf = new byte[1 << 20];
+            long pos = start;
+            long left = len;
+            while (left > 0) {
+                int want = (int) Math.min(buf.length, left);
+                int n = f.read(buf, pos, 0, want);
+                if (n <= 0) break;
+                os.write(buf, 0, n);
+                pos += n;
+                left -= n;
+            }
+            os.close();
+        } catch (Exception e) {
+            if (headersSent) {
+                // 头已发：只能断连（客户端会按 Range 重试），但日志里必须是真实异常
+                System.err.println("[library] smb stream aborted (headers sent): " + e
+                        + " | lib=" + lib.optString("id", "") + " path=" + rel);
+                try {
+                    ex.close();
+                } catch (Exception ignored) {
                 }
-                os.close();
-            } finally {
+            } else {
+                System.err.println("[library] smb open failed: " + e
+                        + " | lib=" + lib.optString("id", "") + " path=" + rel);
+                Api.sendJson(ex, 502, "{\"code\":-1,\"msg\":" + JSONObject.quote(String.valueOf(e)) + "}");
+            }
+        } finally {
+            if (f != null) {
                 try {
                     f.close();
                 } catch (Exception ignored) {
                 }
-            }
-        } catch (Exception e) {
-            Api.sendJson(ex, 502, "{\"code\":-1,\"msg\":" + JSONObject.quote(String.valueOf(e)) + "}");
-        } finally {
-            if (conn != null) {
-                try {
-                    conn.close();
-                } catch (Exception ignored) {
-                }
-            }
-            try {
-                client.close();
-            } catch (Exception ignored) {
             }
         }
     }
@@ -561,6 +677,33 @@ public final class LibraryRoutes {
             Api.sendJson(ex, 404, "{\"code\":-1,\"msg\":\"unknown library\"}");
             return;
         }
+        // 幂等键用 lib|path 而不是临时文件路径：临时文件会被清，键要稳定
+        String key = "lib|" + libId + "|" + libPath;
+        /*
+         * ★ status 轮询必须排在「取源」之前（S1，2026-11-17 复查发现）。
+         *
+         * 原来它排在 stage 分支后面：前端每 2 秒轮询一次状态，每次都会再走
+         * 一遍 stageSmbSource —— 首次拷贝期间多个轮询**并发写同一个 .part**，
+         * 把源文件写坏（比"客户端超时后重试"更常见，几乎是必现）。
+         * 现在轮询只读内存状态，完全不碰源。
+         */
+        if ("status".equalsIgnoreCase(q.getOrDefault("mode", ""))) {
+            core.Transcode.Job j = core.Transcode.status(core.Transcode.idFor(key));
+            Api.sendJson(ex, 200, j == null
+                    ? new JSONObject().put("ok", true).put("state", "idle").toString()
+                    : core.Transcode.toJson(j).toString());
+            return;
+        }
+        /*
+         * 先确认 ffmpeg 可用再取源（2026-11-17 OECT 实测）：SMB 分支原来要把
+         * 整个文件拷到临时目录才轮到 ffmpeg —— 2.3GB 白拷两分钟，最后才报
+         * 「找不到 ffmpeg」。探测失败直接 502，让前端立刻拿到可读的原因。
+         */
+        if (core.Transcode.ffmpegPath().isEmpty()) {
+            Api.sendJson(ex, 502,
+                    "{\"code\":-1,\"msg\":\"找不到 ffmpeg（policy.json 或 PATH 均未配置），无法转码播放\"}");
+            return;
+        }
         String type = lib.optString("type", "webdav");
         String source;
         if ("local".equals(type)) {
@@ -571,29 +714,44 @@ public final class LibraryRoutes {
                 return;
             }
         } else if ("smb".equals(type)) {
-            try {
-                source = core.Transcode.stageSmbSource(libId, libPath, lib);
-            } catch (Exception e) {
-                Api.sendJson(ex, 502, "{\"code\":-1,\"msg\":" + JSONObject.quote(String.valueOf(e)) + "}");
-                return;
+            /*
+             * ★ F2（2026-11-17）：不再把整个文件拷到临时目录，直接把**内部回环流
+             * 地址**交给 ffmpeg。stream 端点支持 Range，ffmpeg 能按需 seek
+             * （mp4 的 moov 在尾部也会先跳过去读）。
+             *
+             * OECT 实测：4K MKV 2.39GB 原来先拷 ~2 分钟才开始转，首片要等 2 分钟+；
+             * 现在首片只受转码速度限制（目标 20~60 秒）。
+             *
+             * 拿不到端口（异常环境）时回退旧的 stage 拷贝，保证可用性。
+             */
+            int p = core.Transcode.apiPort;
+            if (p > 0) {
+                source = "http://127.0.0.1:" + p + "/api/library/stream?lib="
+                        + urlEnc(libId) + "&path=" + urlEnc(libPath);
+            } else {
+                try {
+                    source = core.Transcode.stageSmbSource(libId, libPath, lib);
+                } catch (Exception e) {
+                    Api.sendJson(ex, 502, "{\"code\":-1,\"msg\":" + JSONObject.quote(String.valueOf(e)) + "}");
+                    return;
+                }
             }
         } else {
             Api.sendJson(ex, 400,
                     "{\"code\":-1,\"msg\":\"WebDAV 片库请直接用 src 传流地址\"}");
             return;
         }
-        // 幂等键用 lib|path 而不是临时文件路径：临时文件会被清，键要稳定
-        String key = "lib|" + libId + "|" + libPath;
-        boolean statusOnly = "status".equalsIgnoreCase(q.getOrDefault("mode", ""));
-        if (statusOnly) {
-            core.Transcode.Job j = core.Transcode.status(core.Transcode.idFor(key));
-            Api.sendJson(ex, 200, j == null
-                    ? new JSONObject().put("ok", true).put("state", "idle").toString()
-                    : core.Transcode.toJson(j).toString());
-            return;
-        }
         core.Transcode.Job j = core.Transcode.ensureLocal(source, key);
         Api.sendJson(ex, 200, core.Transcode.toJson(j).toString());
+    }
+
+    /** URL query 编码（空格必须 %20，URLEncoder 默认给的是 +）。 */
+    private static String urlEnc(String s) {
+        try {
+            return java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20");
+        } catch (Exception e) {
+            return s;
+        }
     }
 
     /**

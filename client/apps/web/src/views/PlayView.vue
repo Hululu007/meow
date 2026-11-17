@@ -273,12 +273,87 @@ let progressArmed = false
  */
 /** 这一集是从本地缓存播的（顶栏/提示条据此显示「离线播放」） */
 const offlinePlay = ref(false)
+/**
+ * 片库播放已经放弃直连（预判容器不支持，或直连真的报错了）。
+ * 为真时 playableSrc 取 play.value.url（转码产物），不再回落到 query.direct。
+ */
+const libraryNoDirect = ref(false)
+/**
+ * 这个片库文件当前内核根本解不了（MKV/AVI…）：**从一开始**就别把直连地址交给
+ * `<video>`。
+ *
+ * <p>2026-11-17 实测：只在 tryLibraryTranscode 里把 libraryNoDirect 置真还是晚了一步——
+ * 组件首次渲染时 src 已经是直连地址，`<video>` 挂上 3 秒就报错，错误页盖住整页，
+ * 转码就算正常也永远看不到画面（用户看到的就是"播几秒就卡/直接失败"）。
+ */
+const libraryNeedsTranscode = computed(
+  () =>
+    isLibraryPlay.value &&
+    cantPlayContainerDirectly() &&
+    !!libraryLib.value &&
+    !!libraryFile.value &&
+    unsupportedContainer(libraryFile.value),
+)
+/**
+ * 片库转码「已经转出多少秒」。续播位置超过它就只能从已转好的地方开始。
+ *
+ * <p>不夹的话：历史里存着 11:30，而清单里只有 74 秒 → hls.js 去等一个
+ * 永远不会来的分片，用户看到的就是「播几秒就卡死」（2026-11-17 实测）。
+ */
+const libraryReadyCap = ref(0)
+/**
+ * 片库转码的「真实总时长」与「已转出秒数」，直接交给播放器：
+ * 转码没转完时 hls 清单只有已转出的分片，`video.duration` 会从 12 秒一路涨到
+ * 整集时长（用户看到进度条总长自己在变），有了这两个数就能一次显示对。
+ */
+const libraryTotalDuration = ref(0)
+const libraryAhead = ref(0)
+/** 转码未完成时每 5 秒刷新一次「已转出」，进度条与可拖动上界跟着走 */
+let libraryPollTimer: number | undefined
+
+function stopLibraryPoll() {
+  if (libraryPollTimer) {
+    window.clearInterval(libraryPollTimer)
+    libraryPollTimer = undefined
+  }
+}
+
+function pollTranscodeProgress(params: Record<string, string>) {
+  stopLibraryPoll()
+  libraryPollTimer = window.setInterval(async () => {
+    try {
+      const q = new URLSearchParams({ ...params, mode: 'status' })
+      const r = await fetch(`${apiBase()}/api/transcode?${q}`)
+      if (!r.ok) return
+      const j = (await r.json()) as { state?: string; readySeconds?: number; duration?: number }
+      if (j.readySeconds) {
+        libraryAhead.value = j.readySeconds
+        libraryReadyCap.value = j.readySeconds
+      }
+      if (j.duration) libraryTotalDuration.value = j.duration
+      if (j.state === 'ready' || j.state === 'failed' || j.state === 'cancelled') stopLibraryPoll()
+    } catch {
+      /* 单次失败继续 */
+    }
+  }, 5000)
+}
 
 const playableSrc = computed(() => {
   // 片库直链：后端已给成本地可播地址，**不再包代理**。
   // 转码产物可能是相对路径 /api/transcode/...（TV 走同源代理时 apiBase() 为空），
   // 相对地址交给 <video> 会按当前页面域名解析，正好命中代理，不需要也不该加前缀。
-  if (libraryDirect.value) return libraryDirect.value
+  //
+  // ★ 直连只是首选，不是唯一（2026-11-17 实测踩过）：一旦决定转码
+  //   （预判命中或直连报错），就必须让位给转码产物。原来这里无条件返回
+  //   libraryDirect → <video> 永远挂在直连地址上，转码把 289 个分片全转完了
+  //   页面还停在「播放失败」，等于 4K MKV 永远播不出来。
+  if (libraryDirect.value) {
+    if (libraryNeedsTranscode.value || libraryNoDirect.value) {
+      const u = play.value?.url
+      return typeof u === 'string' ? u : ''
+    }
+    return libraryDirect.value
+  }
   // 离线缓存：playlist.m3u8 是自家相对地址，直接交给播放器。
   // 走 proxyStream 会被当成"外部 URL"再包一层（实测变成
   // /api/proxy/stream?url=%2Fapi%2Fcache%2F... → 403），而分片是相对本目录的，
@@ -482,6 +557,28 @@ async function load() {
   // 片库直链：没有 spider 的 play 可调，地址已经在 query 里。
   // 直接构造一个只有 url 的 PlayResult 交给播放器（它有 hls.js + 原生两条路）。
   if (isLibraryPlay.value) {
+    /*
+     * F5（2026-11-17）：不吃 MKV/AVI 等容器的内核（Safari 全平台、桌面
+     * Chrome/Edge）直连必然失败，却要先白等播放器 25 秒 watchdog 才进转码兜底。
+     * 带 lib+file 坐标的片库播放直接走转码；不带（外部拼的直链）只能试直连。
+     */
+    if (
+      cantPlayContainerDirectly() &&
+      /*
+       * 判定容器要看**文件相对路径**（query.file），不能看 libraryDirect：
+       * 后者是 `/api/library/stream?lib=…&path=…` 形态，扩展名在 query 里，
+       * 取 URL 后缀永远拿不到 .mkv（2026-11-17 实测踩过，预判形同虚设）。
+       */
+      unsupportedContainer(libraryFile.value) &&
+      libraryLib.value &&
+      libraryFile.value
+    ) {
+      // 保持 loading 遮罩（还没有 src，遮罩就是唯一反馈）；成功/失败由
+      // tryLibraryTranscode 内部收尾
+      loadingText.value = '这个格式当前浏览器不支持，正在转码（可边转边看，4K 首次可能几分钟）…'
+      void tryLibraryTranscode(libraryLib.value, libraryFile.value)
+      return
+    }
     play.value = { url: libraryDirect.value } as PlayResult
     loading.value = false
     return
@@ -817,6 +914,12 @@ async function tryTranscode(src: string) {
       loadingText.value = ''
       return
     }
+    libraryReadyCap.value = r.readySeconds || 0
+    libraryAhead.value = r.readySeconds || 0
+    libraryTotalDuration.value = r.duration || 0
+    if (r.duration && r.readySeconds && r.readySeconds < r.duration - 5) {
+      pollTranscodeProgress({ src })
+    }
     transcodeHint.value = '已转码播放（源文件未改动）'
     clearTimeout(lineHintTimer)
     lineHintTimer = window.setTimeout(() => (transcodeHint.value = ''), 8000)
@@ -837,6 +940,38 @@ function absoluteApi(p: string): string {
 }
 
 /**
+ * 这个内核能不能播 MKV/AVI 这类容器（不能就直接转码，别先白等 25 秒 watchdog）。
+ *
+ * <p>2026-11-17 实测的边界：
+ * <ul>
+ *   <li>**桌面 Chrome / Edge / Chromium、全平台 Safari**：不支持 Matroska 容器
+ *       → 直连必失败（Chrome 上还会先黑等 25 秒）→ 直接转码；</li>
+ *   <li>**Android WebView / Android Chrome**：带 Matroska demuxer，能播大多数
+ *       MKV/H265（TV 就靠它）→ 保持先直连；</li>
+ *   <li>**Firefox**：自带 ffmpeg 后端，能解 mkv → 保持先直连。</li>
+ * </ul>
+ * 判错的最坏结果是多转一次码（慢一点但能播），不会变成播不了。
+ */
+function cantPlayContainerDirectly(): boolean {
+  const ua = navigator.userAgent || ''
+  if (/Firefox|FxiOS/.test(ua)) return false
+  if (/Android/.test(ua)) return false
+  return true
+}
+
+/**
+ * 当前内核肯定播不了的容器（F5 预判，2026-11-17）。
+ *
+ * <p>只列"确定不行"的：这些内核从不支持 Matroska/AVI/WebM/FLV 等容器，
+ * 裸 .ts 文件也播不了（HLS 分片是另一条链路，不经过这里）。
+ * 误判的最坏结果是多转一次码（慢一点但能播），不会变成播不了。
+ */
+function unsupportedContainer(url: string): boolean {
+  const p = (url.split('?')[0].split('#')[0] || '').toLowerCase()
+  return /\.(?:mkv|avi|webm|flv|rmvb|rm|wmv|m2ts|ts|vob)$/.test(p)
+}
+
+/**
  * 片库文件直连失败后的转码兜底。
  *
  * <p><b>为什么必须用 lib + path 而不是流地址</b>：片库流是后端自己按
@@ -851,6 +986,9 @@ function absoluteApi(p: string): string {
  */
 async function tryLibraryTranscode(lib: string, file: string) {
   errorSource.value = 'play'
+  // 从这一刻起不再把 query.direct 交给播放器（否则 <video> 会一直重试直连，
+  // 转码好了也播不到；见 playableSrc 里的注释）
+  libraryNoDirect.value = true
   loadingText.value = '直连播不了，正在启动转码（可边转边看）…'
   error.value = ''
   try {
@@ -864,14 +1002,25 @@ async function tryLibraryTranscode(lib: string, file: string) {
       error.value = /ffmpeg/i.test(why)
         ? `${why}\n\n这台设备上的后端没有 ffmpeg：可以在设置里改用 PC / OECT 后端播放，或点下面「用原生播放器打开」试试 ExoPlayer。`
         : why
+      // 收掉整页加载遮罩：否则 error 分支会被「loading && !src」遮住，
+      // 用户只看到一直转圈（F5 预判路径进这里时 loading 还是 true）
+      loading.value = false
       return
+    }
+    libraryReadyCap.value = r.readySeconds || 0
+    libraryAhead.value = r.readySeconds || 0
+    libraryTotalDuration.value = r.duration || 0
+    if (r.duration && r.readySeconds && r.readySeconds < r.duration - 5) {
+      pollTranscodeProgress({ lib, path: file })
     }
     transcodeHint.value = '已转码播放（源文件未改动）'
     clearTimeout(lineHintTimer)
     lineHintTimer = window.setTimeout(() => (transcodeHint.value = ''), 8000)
     play.value = { url: absoluteApi(r.playlist) } as PlayResult
+    loading.value = false
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
+    loading.value = false
   }
 }
 
@@ -1945,6 +2094,15 @@ function applyResume(ev?: { duration?: number }) {
     label = '开始播放'
   }
   if (target <= 0) return
+  /*
+   * 片库转码还没转完时，续播位置可能落在"还没转出来"的地方 —— 直接跳过去
+   * 就是干等一个不存在的分片（表现为起播即卡）。夹到已转出范围的安全边界。
+   */
+  if (libraryReadyCap.value > 0 && target > libraryReadyCap.value - 2) {
+    target = Math.max(0, libraryReadyCap.value - 3)
+    label = '转码进度还没到上次位置'
+  }
+  if (target <= 0) return
   player.value?.seekTo(target)
   resumeTip.value = { at: target, label }
   window.setTimeout(() => (resumeTip.value = null), 8000)
@@ -2104,6 +2262,12 @@ watch(
     cacheState.value = ''
     cachePercent.value = 0
     offlinePlay.value = false
+    // 换集/换片要重新允许直连：上一集可能因为容器不支持走了转码
+    libraryNoDirect.value = false
+    libraryReadyCap.value = 0
+    libraryTotalDuration.value = 0
+    libraryAhead.value = 0
+    stopLibraryPoll()
     // 必须**先**把线路表加载出来，再取播放地址：
     // load() 里失败时要靠 lines 找下一条候选线路，lines 还空着就只能停在错误页。
     // 实测 AppGet（首线路空 url）、Jianpian（首线路 SSL 失败）都因此卡死。
@@ -2324,6 +2488,8 @@ onBeforeUnmount(() => {
       v-else-if="src"
       ref="player"
       :src="src"
+      :total-duration="libraryTotalDuration"
+      :ahead-seconds="libraryAhead"
       :auto-play="!castSession"
       :danmaku-url="danmakuUrl"
       :title="`${title}${epName ? ' · ' + epName : ''}`"

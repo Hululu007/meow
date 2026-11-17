@@ -12,6 +12,7 @@ import { useReturnRestore } from '@/composables/useReturnRestore'
 import { confirmDialog } from '@/composables/useConfirm'
 import { isScoreRemarks } from '@/utils/remarks'
 import { groupByDay } from '@/utils/historyGroup'
+import { colsStyle, useCardCols } from '@/composables/useCardCols'
 
 /**
  * `embedded`：被「我的」页当成一个分区渲染（2026-11-12）。
@@ -25,6 +26,17 @@ useReturnRestore(props.embedded ? 'me-history' : 'history')
 
 const router = useRouter()
 const items = ref<HistoryItem[]>(listHistory())
+
+/*
+ * 海报列数与首页/收藏/片库走同一套算法（2026-11-17 用户报「移动端横屏
+ * 历史/收藏的卡片比首页大一圈」）。
+ *
+ * 原来这张网格写死断点 `sm:3 md:4 lg:6`：手机横屏 852 落在 md 档只有 4 列，
+ * 而首页按「目标卡宽 + 矮屏加列」算到 6 列 —— 同一屏里历史卡宽 188px、
+ * 首页 137px，观感差一截。改成 useCardCols 后跟随视口连续变化
+ * （矮屏还会自动加列，避免 4:3 卡把首屏裁掉）。
+ */
+const { cols } = useCardCols()
 
 const isEmpty = computed(() => items.value.length === 0)
 
@@ -475,7 +487,7 @@ onBeforeUnmount(() => {
           <span class="text-[15px] font-semibold text-ink">{{ g.label }}</span>
           <span class="text-[11px] text-ink-3">{{ g.items.length }} 部</span>
         </h2>
-        <ul class="mt-3 grid grid-cols-3 gap-x-4 gap-y-6 max-sm:mt-2.5 max-sm:gap-x-2.5 max-sm:gap-y-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+        <ul class="poster-grid mt-3 max-sm:mt-2.5" :style="colsStyle(cols)">
       <li
         v-for="it in g.items"
         :key="`${it.site}|${it.vod_id}`"

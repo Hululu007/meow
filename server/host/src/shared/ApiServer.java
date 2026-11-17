@@ -52,7 +52,18 @@ import java.util.concurrent.TimeUnit;
  */
 public class ApiServer {
 
-    private static int port = 9979;
+    private static volatile int port = 9979;
+
+    /**
+     * 当前实际监听端口。
+     *
+     * <p>片库 SMB 转码（F2，2026-11-17）不再预拷整份文件，而是把
+     * {@code http://127.0.0.1:<port>/api/library/stream?...} 交给 ffmpeg 自己拉，
+     * 所以运行期必须能读到真实端口（PC 会顺延、TV 网关是 9978、fpk 是 30011）。
+     */
+    public static int currentPort() {
+        return port;
+    }
 
     /** 站点 key -> 显示名。按 config 的 29 个唯一 api 注册。 */
     private static final Map<String, String> SITES = new LinkedHashMap<>();
@@ -822,6 +833,12 @@ public class ApiServer {
         platform.HttpServer server = platform.HttpServer.create(
                 new InetSocketAddress(bind, port), 0);
         server.start(ApiServer::handle, threads);
+        // 回写实际端口：片库 SMB 转码要拼内部回环流地址（F2，2026-11-17），
+        // TV 网关/PC 顺延端口时也必须跟着变。
+        ApiServer.port = port;
+        core.Transcode.apiPort = port;
+        // 上次进程可能把转码 ffmpeg 留成孤儿（继续占 VDEC/RGA、永远不写 .done）
+        core.Transcode.killStaleTranscodes();
         return server;
     }
 
@@ -11336,6 +11353,11 @@ public class ApiServer {
             sendJson(ex, 404, "{\"code\":-1,\"msg\":\"not ready\"}");
             return;
         }
+        /*
+         * 记一次"正在播"（S4，2026-11-17）：转码产物的生命周期清理靠这个判断
+         * ——读分片不更新文件 mtime，没有这个刷新，正在看的那集会被当空闲删掉。
+         */
+        core.Transcode.touch(id);
         byte[] data = java.nio.file.Files.readAllBytes(p);
         Headers out = ex.getResponseHeaders();
         applyCors(ex);

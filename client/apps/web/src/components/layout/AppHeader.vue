@@ -11,7 +11,6 @@ import { getSyncStatus, onSyncStatus, type SyncStatus } from '@/stores/sync'
 const store = useAppStore()
 const router = useRouter()
 const route = useRoute()
-const keyword = ref('')
 const showSites = ref(false)
 /** 窄屏「更多」菜单；宽屏被 sm:hidden 藏起来，状态留着无害 */
 const showMore = ref(false)
@@ -28,14 +27,15 @@ function refreshHome() {
 }
 
 /**
- * 手机顶栏的「搜索框」。
+ * 顶栏的「搜索框」（所有端）。
  *
- * <p>形态上是一个占满剩余宽度的输入框样式，但**不是真 input**：
- * 点它就是直接去搜索页（那里有输入框、范围切换、最近搜索和聚合进度）。
- * 用 `<button>` 而不是只读 input 的原因：input 会先聚焦、弹一次键盘，
+ * <p>形态上是一个输入框样式的按钮，但**不是真 input**：点它就是直接去搜索页
+ * （那里有输入框、范围切换、最近搜索和聚合进度）。2026-11-17 用户要求
+ * 「顶栏不应该在这里输入」——原来 ≥640 是真 input（回车提交），手机横屏
+ * 也落进那档变成在顶栏打字；现在统一成跳转。
+ *
+ * <p>用 `<button>` 而不是只读 input 的原因：input 会先聚焦、弹一次键盘，
  * 然后才跳页 —— 用户看到的是"键盘闪一下又换页面"。
- *
- * <p>桌面（≥640）不渲染这个，走原来的内联 input + 回车。
  */
 function goSearch() {
   if (route.name === 'search') return
@@ -211,35 +211,6 @@ function onOpenSites() {
   showSites.value = true
 }
 
-function submit() {
-  const wd = keyword.value.trim()
-  if (!wd) return
-  router.push({ name: 'search', query: { wd } })
-}
-
-/**
- * TV：遥控器 ok / 点击落在顶栏搜索框上时，直接进搜索页（2026-11-04 用户要求）。
- *
- * <p>为什么不在顶栏就地输入（原来的做法）：
- *   · 遥控器没有字母键，顶栏这个窄输入框本来也打不了几个字；
- *   · 用户真正想要的是"进搜索页"，那里有输入框、搜索范围、**最近搜索回看**
- *     和语音/扫码兜底 —— 顶栏只是入口，不该自己扛输入。
- *
- * <p>为什么跳转不带 query：用户要求"便于根据历史回顾"，空关键词进页面
- * 才能看到「最近搜索」胶囊；如果带了词就直接开搜了，历史反而看不见。
- *
- * <p>PC/Web 不受影响：那里 input 的 click 就是正常聚焦，回车才提交。
- */
-function onSearchClick() {
-  const tv =
-    typeof document !== 'undefined' &&
-    (document.documentElement.dataset.tv === '1' || /MeowTV/i.test(navigator.userAgent))
-  if (!tv) return
-  // 已经在搜索页就不再重复 push（会压一条无意义的历史）
-  if (route.name === 'search') return
-  router.push({ name: 'search' })
-}
-
 function pickSite(key: string) {
   store.setCurrent(key)
   showSites.value = false
@@ -258,8 +229,9 @@ function pickSite(key: string) {
         alt="猫窝"
         class="h-8 w-8 rounded-[9px] object-cover transition group-hover:brightness-110 max-sm:h-7 max-sm:w-7 max-sm:rounded-lg"
       />
-      <!-- 窄屏只留图标：文字块占 44px，390px 视口上这点宽度要留给搜索框和站点名 -->
-      <span class="hidden flex-col leading-none sm:flex">
+      <!-- 窄屏只留图标：文字块占 44px，390px 视口上这点宽度要留给搜索框和站点名；
+           横屏触屏（<900）由 .nav-label 再收掉文字，把宽度还给源下拉 -->
+      <span class="nav-label hidden flex-col leading-none sm:flex">
         <span class="text-[15px] font-semibold tracking-[0.02em] text-ink">猫窝</span>
         <span class="mt-[3px] text-[9px] font-medium uppercase tracking-[0.2em] text-ink-3">
           Meow
@@ -327,7 +299,7 @@ function pickSite(key: string) {
         <rect x="2" y="7" width="20" height="13" rx="2" />
         <path d="M8 3l4 4 4-4" />
       </svg>
-      <span>直播</span>
+      <span class="nav-label">直播</span>
     </RouterLink>
 
     <!-- 本地片库：与点播并列。片库不是"一个在线源"，放源下拉里会被埋掉 -->
@@ -341,7 +313,7 @@ function pickSite(key: string) {
         <path d="M3 7l9 4 9-4" />
         <path d="M12 11v10" />
       </svg>
-      <span>片库</span>
+      <span class="nav-label">片库</span>
     </RouterLink>
 
     <!-- 收藏 -->
@@ -353,7 +325,7 @@ function pickSite(key: string) {
       <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.7l5.9-.9z" />
       </svg>
-      <span>收藏</span>
+      <span class="nav-label">收藏</span>
       <!-- 有新集数：红点。不占位（absolute）→ 不推动其它导航项的排版 -->
       <span
         v-if="favoriteUpdates"
@@ -379,7 +351,7 @@ function pickSite(key: string) {
         <path d="M3 4v4h4" />
         <path d="M12 7v5l3 2" />
       </svg>
-      <span>历史</span>
+      <span class="nav-label">历史</span>
       <span
         v-if="historyCount"
         class="rounded-full bg-card-hover px-1.5 text-[10px] leading-4 text-ink-2"
@@ -402,7 +374,7 @@ function pickSite(key: string) {
         <path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15.5l-1.9-4.6L5.5 9l4.6-1.4z" />
         <path d="M18 15l.9 2.1 2.1.9-2.1.9L18 21l-.9-2.1-2.1-.9 2.1-.9z" />
       </svg>
-      <span>AI</span>
+      <span class="nav-label">AI</span>
     </RouterLink>
 
     <!-- 同步状态：只在启用 WebDAV 且非空闲时出现；点它去看详情（TV 没有 hover） -->
@@ -436,64 +408,35 @@ function pickSite(key: string) {
     </span>
 
     <!--
-      搜索框：靠右浮动，不撑满中间。
+      搜索入口：**所有端都是跳搜索页的假输入框**（2026-11-17 用户要求「顶栏
+      不应该在这里输入搜索」）。
 
-      ★ 不能 shrink-0（2026-11-05 实测）：640–1023 这一档用的是桌面顶栏，
-        固定 304px 的搜索框会让整条顶栏超出视口（811 宽溢出 166px、960 宽 43px）。
-        允许它收缩后，窄视口自动压窄输入框；≥1024 宽度富裕、表现不变。
+      原来分两套：<640 是跳转按钮，≥640 是真 input（回车提交）——手机横屏
+      （iPhone CSS 视口 852）落进 ≥640，变成在顶栏打字。现在统一成一个按钮：
+      顶栏只是入口，输入、范围切换、最近搜索都在搜索页。外形仍是输入框
+      （rounded-full + 放大镜 + 占位文案），只是点了就走。
 
-      用户要求「顶栏的搜索框、设置按钮 要在右侧浮动」。
-      原来是 `flex-1 md:max-w-md` —— 在宽屏上它会一路撑到 448px，
-      起点紧挨着左侧导航项，看起来像"占据了中间大半条"，
-      而不是"浮在右侧"。改成固定宽度 + `ml-auto` 推开：
-      左侧导航保持左对齐、中间留白，搜索框和设置按钮成组贴在右边缘。
+      TV：tv-nav 对按钮的 OK 会触发 click → goSearch()，与原 onSearchClick
+      行为一致（那个函数随真 input 一起删了）。
+
+      ★ 不能 shrink-0（2026-11-05 实测）：窄视口上固定宽的搜索框会把顶栏挤出
+        视口；允许收缩后窄屏自动压窄。用户要求「搜索框、设置按钮在右侧浮动」：
+        左侧导航保持左对齐，这颗按钮 + 设置成组贴在右边缘（ml-auto）。
     -->
-      <!--
-        手机「搜索框」：输入框外形 + 占满剩余宽度，点一下直达搜索页。
-        不是真 input（避免先弹键盘再跳页），也不是小图标（用户要求"变宽"）。
-      -->
-      <button
-        v-if="!isSearchPage"
-        type="button"
-        class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-full border border-line bg-card px-3 text-left text-[13px] text-ink-3 sm:hidden"
-        title="搜索"
-        aria-label="搜索"
-        @click="goSearch()"
-      >
-        <svg class="h-4 w-4 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="11" cy="11" r="7" />
-          <path d="m20 20-3.5-3.5" />
-        </svg>
-        <span class="truncate">搜索影片…</span>
-      </button>
-
-    <form
+    <button
       v-if="!isSearchPage"
-      class="ml-auto flex w-full min-w-0 max-w-[15rem] items-center max-sm:hidden sm:max-w-[17rem] md:max-w-[19rem]"
-      @submit.prevent="submit"
+      type="button"
+      class="ml-auto flex h-9 w-full min-w-0 max-w-[15rem] shrink items-center gap-2 rounded-full border border-line bg-card px-3 text-left text-[13px] text-ink-3 transition hover:border-accent/40 max-sm:flex-1 sm:max-w-[17rem] md:max-w-[19rem]"
+      title="搜索"
+      aria-label="搜索"
+      @click="goSearch()"
     >
-      <div class="relative flex-1">
-        <svg
-          class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-3"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-        >
-          <circle cx="11" cy="11" r="7" />
-          <path d="m20 20-3.5-3.5" />
-        </svg>
-        <input
-          v-model="keyword"
-          type="search"
-          placeholder="搜索影片…"
-          data-tv-input-owner
-          class="h-9 w-full rounded-full border border-line bg-card pl-9 pr-3 text-sm text-ink outline-none transition placeholder:text-ink-3 focus:border-accent/50 focus:bg-card"
-          @keyup.enter="submit"
-          @click="onSearchClick"
-        />
-      </div>
-    </form>
+      <svg class="h-4 w-4 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="7" />
+        <path d="m20 20-3.5-3.5" />
+      </svg>
+      <span class="truncate">搜索影片…</span>
+    </button>
 
     <!-- 右侧 -->
     <!--
@@ -504,11 +447,18 @@ function pickSite(key: string) {
       class="flex shrink-0 items-center gap-1 max-sm:ml-auto"
       :class="isSearchPage ? 'ml-auto' : ''"
     >
+      <!-- 设置：md+ 显示（<768 由底部标签栏和「更多」菜单承担）。
+           横屏触屏（<900）由 .nav-label 只留齿轮图标，给源下拉让宽度。 -->
       <RouterLink
         to="/settings"
-        class="hidden rounded-md px-3 py-1.5 text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink md:block"
+        class="hidden shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink md:flex"
+        title="设置"
       >
-        设置
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+        <span class="nav-label">设置</span>
       </RouterLink>
 
       <!--

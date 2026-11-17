@@ -51,8 +51,17 @@ describe('移动端布局：历史页', () => {
   const history = read('views/HistoryView.vue')
 
   it('手机是 3 列（与首页密度一致），不是 2 列大卡', () => {
-    expect(history).toContain('grid-cols-3')
+    /*
+     * 2026-11-17：从写死断点（sm:3 md:4 lg:6）改成与首页/收藏同一套
+     * useCardCols —— 原来手机横屏落 md 档只有 4 列，卡比首页大一圈。
+     * 现在列数由「目标卡宽 + 矮屏加列」算：手机竖屏实测 3 列、横屏 6 列。
+     */
+    expect(history).toContain('useCardCols')
+    expect(history).toContain('colsStyle(cols)')
+    expect(history).toContain('class="poster-grid')
     expect(history).not.toContain('grid grid-cols-2 gap-x-4')
+    // 不能再出现写死列数的历史写法（会与首页脱钩）
+    expect(history).not.toContain('md:grid-cols-4 lg:grid-cols-6')
   })
 
   it('「详情 / 移除」在触屏上常显 —— 没有 hover 也必须点得到', () => {

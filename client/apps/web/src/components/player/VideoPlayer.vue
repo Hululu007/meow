@@ -19,6 +19,7 @@ import { cleanDmTitle, epBadgeOf } from '@/utils/dmTitle'
 import { assToVtt, srtToVtt, subtitleFormat, type MiddleSegment, type SubTrack } from '@/api/playExtras'
 import {
   hasSystemSleep,
+  hasSystemVolume,
   systemSleep,
   systemBrightness,
   systemVolume,
@@ -59,6 +60,15 @@ const rateOptions = [
 
 const props = withDefaults(defineProps<{
   src: string
+  /**
+   * 真实总时长（秒）。只在「片库转码还没转完」时传：
+   * 此时 HLS 清单只有已转出的分片，`video.duration` 只等于已转出时长
+   * （12 秒），进度条总长会随转码一点点变长。传了它，进度条一次显示对的。
+   * 0/不传 = 用 video.duration。
+   */
+  totalDuration?: number
+  /** 已转出的秒数（可拖动上界）。0/不传 = 不限制。 */
+  aheadSeconds?: number
   poster?: string
   danmakuUrl?: string
   title?: string
@@ -342,6 +352,16 @@ watch(playing, (now) => {
 
 const currentTime = ref(0)
 const duration = ref(0)
+/**
+ * 进度条/时间显示该用的总长。
+ *
+ * <p>片库转码还没转完时 `video.duration` 只是"已转出多少"（用户看到 0:03 / 0:12，
+ * 而整集 22 分钟）。有 totalDuration 且明显大于当前清单时长就用它。
+ */
+const shownDur = computed(() => {
+  const t = props.totalDuration || 0
+  return t > 0 && t > duration.value + 3 ? t : duration.value
+})
 const buffered = ref(0)
 const volume = ref(getPrefs().volume ?? 1)
 const muted = ref(getPrefs().muted ?? false)
@@ -471,8 +491,14 @@ function safePlay(v: HTMLVideoElement) {
 function seekTo(sec: number) {
   const v = video.value
   if (!v || !Number.isFinite(sec)) return
+  /*
+   * 片库转码中：只能跳到已经转出来的地方。跳过头会让 hls.js 等一个
+   * 还不存在的分片，表现就是"卡住不动"（2026-11-17 实测）。
+   */
+  const ahead = props.aheadSeconds || 0
+  let target = ahead > 0 ? Math.min(sec, ahead - 2) : sec
   const d = v.duration
-  const target = Number.isFinite(d) && d > 0 ? Math.min(sec, d - 1) : sec
+  if (Number.isFinite(d) && d > 0) target = Math.min(target, d - 1)
   v.currentTime = Math.max(0, target)
   syncDm()
 }
@@ -1947,7 +1973,7 @@ const swipe = {
 }
 
 /** 竖滑浮层（0–100）。null = 不显示 */
-const swipeHint = ref<{ kind: 'volume' | 'brightness'; pct: number; system: boolean } | null>(null)
+const swipeHint = ref<{ kind: 'volume' | 'brightness'; pct: number; system: boolean; note?: string } | null>(null)
 let swipeHintTimer: number | undefined
 
 /** 手势灵敏度：滑动多少像素走完 0–100%（半屏高度比较跟手） */
@@ -2018,10 +2044,23 @@ function onStagePointerMove(e: PointerEvent) {
     endLongPress()
     swipe.active = true
     swipe.startY = pressStart.y
+    /*
+     * 起点 = 系统值 → 上次手势值 → 兜底（2026-11-17 用户报「每次都从 50% 左右
+     * 重新开始」）。浏览器读不到系统亮度（iOS 连系统音量也禁网页控制），
+     * 原来亮度分支裸 fallback 50 → 每次手势都从 50 起步。手势值跨手势/
+     * 跨集记忆在 localStorage，松手时写回（见 rememberGesture）。
+     *
+     * ★ 音量的记忆值只给 iPhone 用（那里 video.volume 被系统忽略，不可信）：
+     *   PC/安卓浏览器上 video.volume 是**当前真实值**（滚轮/滑条都写它），
+     *   若被记忆值压过，滚轮调到 30% 后一上手势会跳回旧记忆值——那等于
+     *   修好手机却弄坏 PC 的连续性。
+     */
     swipe.baseValue =
       swipe.kind === 'volume'
-        ? (systemVolume() ?? Math.round((video.value?.volume ?? 1) * 100))
-        : (systemBrightness() ?? 50)
+        ? (systemVolume() ??
+          (IPHONE_NO_VOLUME ? gestureMemo('volume') : null) ??
+          Math.round((video.value?.volume ?? 1) * 100))
+        : (systemBrightness() ?? gestureMemo('brightness') ?? 50)
     // 这一下之后浏览器可能补发 click，不能当成"暂停"
     suppressNextClick()
   }
@@ -2036,6 +2075,16 @@ function onStagePointerMove(e: PointerEvent) {
 
 /** 把当前手势值写进系统（拿不到系统接口时退回元素音量 / 只提示） */
 function applySwipe(kind: 'volume' | 'brightness', pct: number) {
+  if (kind === 'volume' && !hasSystemVolume() && IPHONE_NO_VOLUME) {
+    /*
+     * iPhone/iPod 上系统禁止网页控制音量（video.volume 赋值被静默忽略，
+     * 系统音量纹丝不动）——手势进度是假的，直接说明真实操作方式。
+     * TV/安卓壳有系统桥，不受影响。
+     */
+    swipeHint.value = { kind, pct, system: false, note: '请用手机侧键' }
+    rememberGesture(kind, pct)
+    return
+  }
   if (kind === 'volume') {
     const ok = setSystemVolume(pct)
     if (!ok) {
@@ -2055,9 +2104,38 @@ function applySwipe(kind: 'volume' | 'brightness', pct: number) {
     cssDim.value = ok ? 0 : Math.max(0, (50 - pct) / 50)
     swipeHint.value = { kind, pct, system: ok }
   }
+  rememberGesture(kind, pct)
   if (swipeHintTimer) window.clearTimeout(swipeHintTimer)
   swipeHintTimer = window.setTimeout(() => (swipeHint.value = null), 900)
 }
+
+/**
+ * 上次竖滑手势的落点（localStorage，0–100）。
+ *
+ * 为什么按 kind 分 key：亮度与音量互不相关，且系统桥可用的端（TV）以系统
+ * 值为准，这里只是浏览器端「读不到系统值」时的记忆起点。
+ */
+const GESTURE_KEY = 'meow.gesture.' as const
+
+function gestureMemo(kind: 'volume' | 'brightness'): number | null {
+  try {
+    const v = Number(localStorage.getItem(GESTURE_KEY + kind))
+    return Number.isFinite(v) && v >= 0 && v <= 100 ? Math.round(v) : null
+  } catch {
+    return null
+  }
+}
+
+function rememberGesture(kind: 'volume' | 'brightness', pct: number) {
+  try {
+    localStorage.setItem(GESTURE_KEY + kind, String(Math.round(pct)))
+  } catch {
+    /* 隐私模式写不进就算了 */
+  }
+}
+
+/** iPhone/iPod 上网页音量控制被系统禁用；iPad 的桌面 UA 不在此列。 */
+const IPHONE_NO_VOLUME = /iP(hone|od)\b/.test(navigator.userAgent)
 
 /** 无系统亮度能力时的兜底变暗层（0–1，0 表示不变暗） */
 const cssDim = ref(0)
@@ -2692,23 +2770,23 @@ function onLoaded() {
 const shownTime = computed(() => (dragTime.value ?? currentTime.value))
 
 const shownPct = computed(() =>
-  duration.value > 0 ? (shownTime.value / duration.value) * 100 : 0,
+  shownDur.value > 0 ? (shownTime.value / shownDur.value) * 100 : 0,
 )
 
 /** 悬停/拖动时显示的时间提示 */
 const tipTime = computed(() => dragTime.value ?? hoverTime.value)
 const tipLeft = computed(() => {
-  if (tipTime.value == null || !duration.value) return 0
-  const pct = Math.max(0, Math.min(100, (tipTime.value / duration.value) * 100))
+  if (tipTime.value == null || !shownDur.value) return 0
+  const pct = Math.max(0, Math.min(100, (tipTime.value / shownDur.value) * 100))
   return pct
 })
 
 function timeFromEvent(e: PointerEvent | MouseEvent): number | null {
   const el = e.currentTarget as HTMLElement
   const r = el.getBoundingClientRect()
-  if (!r.width || !duration.value) return null
+  if (!r.width || !shownDur.value) return null
   const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
-  return pct * duration.value
+  return pct * shownDur.value
 }
 
 function onBarMove(e: PointerEvent) {
@@ -4328,7 +4406,10 @@ function onKey(e: KeyboardEvent) {
       stopKeyScan()
       {
         const step = takeSeekStep()
-        v.currentTime = Math.min(duration.value, v.currentTime + step)
+        const cap = props.aheadSeconds && props.aheadSeconds > 0
+          ? Math.min(shownDur.value || Infinity, props.aheadSeconds - 2)
+          : shownDur.value
+        v.currentTime = Math.max(0, Math.min(cap || duration.value, v.currentTime + step))
         currentTime.value = v.currentTime
         flashSeekHint(step)
       }
@@ -5773,7 +5854,7 @@ defineExpose({
           （2026-11-03 实测：音量分支也跟着显示"仅画面"，读起来像笔误）。
         -->
         <span v-if="!swipeHint.system" class="text-xs leading-none text-ink-3">
-          {{ swipeHint.kind === 'brightness' ? '仅画面' : '仅播放器' }}
+          {{ swipeHint.note || (swipeHint.kind === 'brightness' ? '仅画面' : '仅播放器') }}
         </span>
       </div>
     </div>
@@ -6049,7 +6130,7 @@ defineExpose({
           aria-label="跳到指定时间"
           @click="openSeekDialog"
         >
-          {{ fmt(shownTime) }} / {{ fmt(duration) }}
+          {{ fmt(shownTime) }} / {{ fmt(shownDur) }}
         </button>
 
         <!-- 音量：手机有实体音量键，竖屏底栏让位给全屏/更多 -->
@@ -6227,7 +6308,32 @@ defineExpose({
           @update:model-value="setRate(Number($event))"
         />
 
-        <!-- 全屏 -->
+        <!-- 重播 / 刷新：TV 上要能从底栏直接够到（原来只在「更多」里）。
+             TV 视口没有 hover，藏进更多等于多按两次；这两项又是排障最常用的。
+             触屏手机（竖屏/横屏）空间不够，会把「更多」挤出可视区（2026-11-17
+             用户报），所以小屏触屏隐藏、收进「更多」——菜单里这两项一直都在。 -->
+        <button
+          class="touch-hide hit-44 grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10"
+          title="重播"
+          @click="restart()"
+        >
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 12a9 9 0 1 0 3-6.7" />
+            <path d="M3 4v5h5" />
+          </svg>
+        </button>
+        <button
+          class="touch-hide hit-44 grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10"
+          title="刷新"
+          @click="reloadSrc()"
+        >
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12a9 9 0 1 1-3-6.7" />
+            <path d="M21 4v5h-5" />
+          </svg>
+        </button>
+
+        <!-- 全屏放在「更多」左侧：底部右侧的锚是更多，全屏是最常用的高频项，紧挨着它 -->
         <button class="hit-44 grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10 tv-hide" title="全屏" @click="toggleFullscreen">
           <svg v-if="!fullscreen" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
@@ -6238,29 +6344,6 @@ defineExpose({
         </button>
 
         <!-- 更多：低频项收进二级菜单 -->
-        <!-- 重播 / 刷新：TV 上要能从底栏直接够到（原来只在「更多」里）。
-             TV 视口没有 hover，藏进更多等于多按两次；这两项又是排障最常用的。 -->
-        <button
-          class="hit-44 grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10"
-          title="重播"
-          @click="restart()"
-        >
-          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M3 12a9 9 0 1 0 3-6.7" />
-            <path d="M3 4v5h5" />
-          </svg>
-        </button>
-        <button
-          class="hit-44 grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10"
-          title="刷新"
-          @click="reloadSrc()"
-        >
-          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 12a9 9 0 1 1-3-6.7" />
-            <path d="M21 4v5h-5" />
-          </svg>
-        </button>
-
         <div class="relative shrink-0">
           <button
             class="grid h-9 w-9 place-items-center rounded-full transition hover:bg-white/10"
@@ -6431,7 +6514,25 @@ defineExpose({
         </svg>
         字幕{{ activeTrack >= 0 ? '：' + (textTracks.find((t) => t.index === activeTrack)?.label || '开') : '：关' }}
       </button>
-      <!-- 刷新已提到控制栏，这里不重复 -->
+      <!--
+        重播 / 刷新：只在底栏被 touch-hide 收走的环境（触屏小屏）显示。
+        TV/PC 底栏这两项常驻，菜单里再放一遍会重复（见 .menu-replay 的
+        媒体查询：与 .touch-hide 正好互补）。
+      -->
+      <button class="menu-item menu-replay" @click="restart()">
+        <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 12a9 9 0 1 0 3-6.7" />
+          <path d="M3 4v5h5" />
+        </svg>
+        重播
+      </button>
+      <button class="menu-item menu-replay" @click="reloadSrc()">
+        <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12a9 9 0 1 1-3-6.7" />
+          <path d="M21 4v5h-5" />
+        </svg>
+        刷新
+      </button>
       <button class="menu-item" @click="toggleDmPanel($event)">
         <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M4 6h16M4 12h10M4 18h7" />

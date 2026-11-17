@@ -178,18 +178,56 @@ WebDAV 靠"只接受相对路径"防穿越；本地目录天生是绝对路径�
 
 浏览器放不了 MKV/HEVC，片库因此有一条独立转码路：
 
-- 产物是 HLS，写在 `cache/transcode/<id>/`，分片 4 秒（`Transcode.java:37-39`）。
-  选 HLS 不选 mp4 是因为 mp4 要等 moov 写完才能播，HLS 前两片出来就能起播（`Transcode.java:20-27`）。
-- **必须重编码，不能用 `-c copy` 换容器**：HEVC 在 Chromium/WebView2 里没有解码器
-  （`Transcode.java:28-33`）。
+- 产物是 HLS，写在 `cache/transcode/<id>/`，分片 **2 秒**。选 HLS 不选 mp4 是因为
+  mp4 要等 moov 写完才能播，HLS 前两片出来就能起播。
+- **必须重编码，不能用 `-c copy` 换容器**：HEVC 在 Chromium/WebView2 里没有解码器。
+  例外是 F1 智能 remux：源本来就是 `h264 && ≤1080p`（音频 `aac && ≤2ch`）才 copy，
+  其余一律真转。
+- **首片必须靠 `-force_key_frames` 压到 2 秒**：`-hls_time` 只是下限，切点看源关键帧；
+  这批 4K mkv 的 GOP 是 7.5s，不加就是 7.46 秒内容一片（4K 软解要 200 秒，必超时）。
 - 片库转码传 `lib + path` 给后端，而不是把 URL 交给 ffmpeg：本地目录的流地址是
-  127.0.0.1（被 SSRF 防线拒），SMB 的 `smb://` ffmpeg 读不了（`LibraryRoutes.java:538-550`）。
-  本地直接给绝对路径（零拷贝），SMB 先落临时文件 `<id>.src`；WebDAV 片库不走这条
-  （返回 400 让前端用 `src` 传流地址，`LibraryRoutes.java:580-583`）。
-- 幂等键是 `lib|path`（不是临时文件路径），`mode=status` 只查状态
-  （`LibraryRoutes.java:585-596`）。
+  127.0.0.1（被 SSRF 防线拒），SMB 的 `smb://` ffmpeg 读不了。SMB 由后端拼
+  **回环流地址**（`/api/library/stream?...`，带 Range）喂 ffmpeg，不再先拷整份；
+  本地直接给绝对路径（零拷贝）。
+- 幂等键是 `lib|path`；`mode=status` 只查状态，且 **`playlist` 只按磁盘上真有
+  `index.m3u8` 才回**——内存里的 Job 会残留 `ready/289 片`，删掉目录后若照旧返回，
+  前端会拉到 404。
 - **不能拿首次响应判成败**：首次只是把任务排上，`state=running` 且 `playlist` 为空。
-  前端必须轮询，库转码超时 180s、在线转码 90s（`library.ts:439-500`）。
+  前端必须轮询；库转码超时 **600s**（4K 首片可能一两分钟）、在线转码 90s。
+- 播放地址：`playableSrc` 里 `query.direct` 只是**首选**。预判/直连失败后要把
+  `libraryNoDirect` 置真、改用 `play.value.url`（转码清单），否则 `<video>` 会一直
+  挂在直连地址上，转码转完也播不到。
+
+#### 1.9.1 硬件转码（Rockchip：OEC / RK3566 实测）
+
+链式：`-hwaccel rkmpp -hwaccel_output_format drm_prime` + `scale_rkrga`（RGA 硬件
+缩放）+ `h264_rkmpp` VBR。三条硬约束：
+
+1. **必须降到 ≤1080p**：RK3566 的硬编只有 1080p 级吞吐（4K 硬编 0.28x，1080p 1.28x）。
+2. **缩放只能用 `scale_rkrga`**：普通 `-vf scale` 要 hwdownload 硬件帧，实测 -22。
+3. 只有探测到对应 `*_rkmpp` 解码器 + `h264_rkmpp` 编码器才走硬解，失败自动回退软解
+   （`transcodeHwDecode: false` 可强制软解）。
+
+OEC 实测 4K HEVC Main10 → 1080p：首片 **13~17 秒**（纯软解 100 秒），持续 **2.0x 实时**。
+
+**★ 设备权限（最容易踩的一脚）**：MPP/RGA 需要 `/dev/mpp_service`、`/dev/dri/card0|
+renderD128`、`/dev/rga`。fnOS 上前两者是 `root:root 0600` / `root:video 0660`、
+`/dev/rga` 是 `root:root 0600`，而 fpk 的 java 以 `meow` 用户跑 → ffmpeg 打不开设备，
+报的是 `Error while opening decoder: Generic error in an external library`
+（看着像硬件坏了，其实是权限；`/dev/rga` 没权限更直接 **Segmentation fault**）。
+fpk 的生命周期脚本也以 `meow` 运行，改不了设备权限，需要 root 一次性处理：
+
+```bash
+usermod -aG video,render meow
+cat > /etc/udev/rules.d/99-meow-rockchip.rules <<'EOF'
+KERNEL=="mpp_service", GROUP="video", MODE="0660"
+KERNEL=="rga", GROUP="video", MODE="0660"
+EOF
+udevadm control --reload && udevadm trigger /dev/mpp_service /dev/rga
+```
+
+不想等组生效（或只想临时试）时用 ACL 立刻放行：
+`setfacl -m u:meow:rw /dev/mpp_service /dev/dri/card0 /dev/dri/renderD128 /dev/rga`。
 
 ---
 

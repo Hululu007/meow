@@ -49,6 +49,7 @@ const devSidebar = [
     text: '客户端',
     items: [
       { text: '前端手册', link: '/dev/frontend' },
+      { text: '端与尺寸适配', link: '/dev/device-adaptive' },
       { text: '播放与转码', link: '/dev/playback' },
       { text: '投屏', link: '/dev/casting' },
       { text: '弹幕', link: '/dev/danmaku' },
