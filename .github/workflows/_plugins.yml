@@ -186,3 +186,16 @@ jobs:
           name: plugins
           path: ${{ runner.temp }}/plugins-out/**
           if-no-files-found: error
+
+      # 预编译 class 给 Docker 用（见 _docker.yml）：.class 与 CPU 架构无关，
+      # 复用它可以省掉 apiserver 镜像里 arm64 的 javac（QEMU 下实测 162.7s）。
+      # build-plugin.ps1 的中间产物就在这个目录；只在真的编过（缓存未命中）时存在，
+      # 没有就 warn —— Docker 那边有"为空则就地编译"的回退。
+      - name: 上传预编译 classes（Docker 镜像复用）
+        if: ${{ steps.pcache.outputs.cache-hit != 'true' && (inputs.plugins_only == '' || contains(inputs.plugins_only, 'apiserver')) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: apiserver-classes
+          path: server/build/.tmp/plugin-build/classes/**
+          if-no-files-found: warn
+          retention-days: 3

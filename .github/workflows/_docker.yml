@@ -70,6 +70,15 @@ jobs:
       #   仓库里已常驻 `server/build/dist/.gitkeep`，但 git 的目录忽略规则很容易
       #   在某次改 .gitignore 时把它一起吞掉。这里再兜一层：目录不在就建出来，
       #   让构建不依赖"那个占位文件有没有被正确跟踪"。
+      # 预编译 class（来自同一次 run 的插件 job）。没有也能构建：Dockerfile 里
+      # prebuilt 目录为空时会回退镜像内 javac，只是 arm64 那层会慢 ~160s。
+      - name: 取预编译 classes（可选）
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: apiserver-classes
+          path: deploy/docker/prebuilt-classes
+
       - name: 确保 server/build/dist 存在（Dockerfile COPY 的硬要求）
         shell: bash
         run: |

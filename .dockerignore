@@ -41,6 +41,10 @@ server/build/*
 server/build/dist/*
 !server/build/dist/.gitkeep
 !server/build/dist/*.jar
+# 预编译 class（CI 从插件 job 传进来，Docker 复用 → 省 arm64 QEMU 里的 javac）。
+# 本地没有产物时只有 .gitkeep，镜像内照常编译。
+!deploy/docker/prebuilt-classes/
+!deploy/docker/prebuilt-classes/**
 # Tauri 生成的 schema（dev 产物，镜像不需要）
 client/apps/desktop/src-tauri/gen/
 

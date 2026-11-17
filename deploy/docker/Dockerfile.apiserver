@@ -11,10 +11,21 @@ FROM eclipse-temurin:17-jdk AS build
 WORKDIR /build
 COPY server/host/src ./src
 COPY server/host/libs ./libs
+# CI 会把插件 job 编好的 class 目录塞进这里（deploy/docker/prebuilt-classes）。
+# .class 与 CPU 架构无关，复用它就省掉 **arm64 在 QEMU 里再跑一遍 javac** ——
+# 2026-11-17 实测那一层 162.7 秒（amd64 40.8 秒），是整条 Docker 构建的最大头。
+# 目录为空（本地构建 / 单独 dispatch）时回退镜像内编译，行为与以前一致。
+COPY deploy/docker/prebuilt-classes ./prebuilt
 
-RUN find src -name '*.java' > sources.txt \
- && mkdir -p classes \
- && javac -encoding UTF-8 -cp "libs/*" -d classes @sources.txt
+RUN if [ -n "$(find prebuilt -name '*.class' -print -quit 2>/dev/null)" ]; then \
+      mkdir -p classes && cp -a prebuilt/. classes/ \
+      && echo "使用预编译 class：$(find classes -name '*.class' | wc -l) 个"; \
+    else \
+      echo "prebuilt-classes 为空：就地编译"; \
+      find src -name '*.java' > sources.txt \
+      && mkdir -p classes \
+      && javac -encoding UTF-8 -cp "libs/*" -d classes @sources.txt; \
+    fi
 
 # ---------- dex2jar（只作为构建阶段，最终镜像仍是一个 apiserver） ----------
 FROM eclipse-temurin:17-jdk AS dex2jar
