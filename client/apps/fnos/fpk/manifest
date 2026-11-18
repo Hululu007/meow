@@ -1,11 +1,11 @@
 appname=meow
 version=1.2.16
 display_name=猫窝 Meow
-desc=影视聚合播放：站点聚合、搜索、在线播放、弹幕与插件扩展。
+desc=跨端影视客户端：手机、电脑、电视、NAS 同源同进度，支持弹幕、直播与自家片库。内容源需自行导入。
 source=thirdparty
 platform=x86
 maintainer=meow
-maintainer_url=https://github.com/meow-player/meow
+maintainer_url=https://github.com/upchr/meow
 os_min_version=1.2.0
 install_dep_apps=java-21-openjdk:nodejs_v22
 micro_app=true
