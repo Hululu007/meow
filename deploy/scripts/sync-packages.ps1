@@ -1011,12 +1011,17 @@ if (-not $DryRun -and -not $SkipUpload) {
 #
 # 开源后客户端在 API 失败/限流时可拉：
 #   https://raw.githubusercontent.com/<repo>/updates/packages.json
+#   https://raw.githubusercontent.com/<repo>/updates/history.json
 # 单文件、force push；不碰 main，也不在源码历史里留发版提交。
+#
+# history.json 是「设置 → 关于 → 版本历史」的数据源：packages.json 每个包只有最新
+# 一条 desc，历史版本没人存，所以由 gen-history.ps1 从 CHANGELOG.md 生成。
 if (-not $DryRun) {
-    # 用临时 index 生成一个只含 packages.json 的 orphan 提交，再 force push
+    # 用临时 index 生成一个只含 packages.json + history.json 的 orphan 提交，再 force push
     # 到 updates 分支。不建 worktree（Windows 上会撞 locked: initializing），
     # 也不把 mktree 文本经 PowerShell 管道（会带 BOM，实测 input format error）。
     $idx = Join-Path ([IO.Path]::GetTempPath()) ("meow-index-" + [guid]::NewGuid().ToString('N'))
+    $histFile = Join-Path ([IO.Path]::GetTempPath()) ("meow-history-" + [guid]::NewGuid().ToString('N') + '.json')
     $oldIndex = $env:GIT_INDEX_FILE
     $env:GIT_INDEX_FILE = $idx
     try {
@@ -1027,9 +1032,21 @@ if (-not $DryRun) {
         if ($LASTEXITCODE -ne 0 -or -not $blob) { throw "hash-object 失败" }
         & git -C $repoRoot update-index --add --cacheinfo "100644,$blob,packages.json" 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "update-index 失败" }
+        # 版本历史：失败不阻塞（没有它也只是一次"版本历史拉不到"）
+        try {
+            & (Join-Path $PSScriptRoot 'gen-history.ps1') -RepoRoot $repoRoot -OutFile $histFile | Out-Null
+            $histBlob = (& git -C $repoRoot hash-object -w $histFile).Trim()
+            if ($LASTEXITCODE -eq 0 -and $histBlob) {
+                & git -C $repoRoot update-index --add --cacheinfo "100644,$histBlob,history.json" 2>&1 | Out-Null
+            } else {
+                Write-Host "  ! history.json 生成失败，本次只发 packages.json" -ForegroundColor DarkYellow
+            }
+        } catch {
+            Write-Host "  ! history.json 生成失败（$($_.Exception.Message)），本次只发 packages.json" -ForegroundColor DarkYellow
+        }
         $tree = (& git -C $repoRoot write-tree).Trim()
         if ($LASTEXITCODE -ne 0 -or -not $tree) { throw "write-tree 失败" }
-        $commit = (& git -C $repoRoot -c user.email="actions@github.com" -c user.name="github-actions" commit-tree $tree -m "chore(updates): packages.json for $tag").Trim()
+        $commit = (& git -C $repoRoot -c user.email="actions@github.com" -c user.name="github-actions" commit-tree $tree -m "chore(updates): packages.json + history.json for $tag").Trim()
         if ($LASTEXITCODE -ne 0 -or -not $commit) { throw "commit-tree 失败" }
         # PowerShell 会把 git 的 "To https://..." 当作 NativeCommandError；
         # 这里临时放宽 ErrorAction，真正结果只看 $LASTEXITCODE。
@@ -1044,6 +1061,7 @@ if (-not $DryRun) {
         Write-Host "  ! 静态清单推送失败（不影响本次 Release）：$($_.Exception.Message)" -ForegroundColor DarkYellow
     } finally {
         Remove-Item -LiteralPath $idx -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $histFile -Force -ErrorAction SilentlyContinue
         if ($null -eq $oldIndex) { Remove-Item Env:GIT_INDEX_FILE -ErrorAction SilentlyContinue }
         else { $env:GIT_INDEX_FILE = $oldIndex }
     }

@@ -71,6 +71,10 @@ CI 建 draft Release → 人工 Publish → release:published
   → index-after-publish（fpk）写 FnDepot fnpack.json + 合并写 fpk-updates 分支
 ```
 
+- **updates 分支有两个文件**：`packages.json`（更新检查）和 `history.json`
+  （设置 → 关于 → 版本历史，由 `deploy/scripts/gen-history.ps1` 从 `CHANGELOG.md`
+  生成）。两者在同一个 orphan 提交里 force-push；`history.json` 生成失败只告警、
+  不阻塞发版。
 - **draft 不产生任何用户可见清单**，必须点 Publish：`sync-packages` 与 fpk 的
   `index-after-publish` 都只在 `release: published` 跑（前者跳过 `fpk-v*`）。
   四条链同构——tag → 构建 → draft → Publish → 写索引，**草稿阶段删掉不会留下索引**。
