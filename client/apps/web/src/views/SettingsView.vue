@@ -3336,19 +3336,35 @@ const dbg = reactive({
   hint: '',
   /** PC 端的探测区间，客户端按它找端口 */
   portRange: '' as string,
+  /** 空闲自动关闭：总时长与剩余分钟（TV 才有） */
+  idleMin: 0,
+  expiresMin: 0,
   busy: false,
 })
+
+function readDebugState(s: {
+  enabled?: boolean
+  running?: boolean
+  token?: string
+  url?: string
+  hint?: string
+  idleTimeoutMs?: number
+  expiresInMs?: number
+}) {
+  dbg.enabled = !!s.enabled
+  dbg.running = !!s.running
+  dbg.token = s.token || ''
+  dbg.url = s.url || ''
+  dbg.hint = s.hint || ''
+  dbg.idleMin = s.idleTimeoutMs ? Math.round(s.idleTimeoutMs / 60000) : 0
+  dbg.expiresMin = s.expiresInMs ? Math.ceil(s.expiresInMs / 60000) : 0
+}
 
 function refreshTvDebug() {
   const b = bridge()
   if (!b || typeof b.debugState !== 'function') return
   try {
-    const s = JSON.parse(b.debugState())
-    dbg.enabled = !!s.enabled
-    dbg.running = !!s.running
-    dbg.token = s.token || ''
-    dbg.url = s.url || ''
-    dbg.hint = s.hint || ''
+    readDebugState(JSON.parse(b.debugState()))
   } catch {
     /* 桥坏了就当没有 */
   }
@@ -3380,6 +3396,8 @@ function refreshDebug() {
   else if (debugPlatform.value === 'pc') void refreshPcDebug()
 }
 refreshDebug()
+/** 远程调试剩余时间每分钟刷新一次（只有 TV 有意义） */
+let dbgTimer: number | undefined
 
 function toggleTvDebug() {
   const b = bridge()
@@ -3388,12 +3406,7 @@ function toggleTvDebug() {
     return
   }
   try {
-    const s = JSON.parse(b.setDebugEnabled(!dbg.enabled))
-    dbg.enabled = !!s.enabled
-    dbg.running = !!s.running
-    dbg.token = s.token || ''
-    dbg.url = s.url || ''
-    dbg.hint = s.hint || ''
+    readDebugState(JSON.parse(b.setDebugEnabled(!dbg.enabled)))
   } catch (e) {
     dbg.hint = '切换失败：' + String(e)
   }
@@ -4792,6 +4805,11 @@ onMounted(() => {
    */
   window.dispatchEvent(new Event('meow:tv-pageback'))
 
+  // 远程调试的"剩余时间"每分钟刷新一次；离开设置页就停
+  if (debugPlatform.value === 'tv') {
+    dbgTimer = window.setInterval(refreshTvDebug, 60000)
+  }
+
   // 容器滚动与整页滚动都直接挂在各自元素上：
   // 只挂 window 时，容器内滚动不会冒泡到 window（scroll 不冒泡），
   // 用 capture 虽然能收到，但事件 target 判断容易出错，直接挂更稳。
@@ -4814,6 +4832,10 @@ onBeforeUnmount(() => {
   if (w.__meowTvMenuHook === handleTvMenuHere) w.__meowTvMenuHook = undefined
   // 检查计时器：离页后不能再跳秒（否则回到设置页显示一个假的"检查中 999s"）
   if (updSecTimer) window.clearInterval(updSecTimer)
+  if (dbgTimer) {
+    window.clearInterval(dbgTimer)
+    dbgTimer = undefined
+  }
 
   window.removeEventListener('meow:tv-focus', onTvFocus)
   window.removeEventListener('meow:prefs', onPrefsChanged)
@@ -7705,12 +7727,18 @@ onBeforeUnmount(() => {
           </p>
         </div>
 
-        <!-- 令牌要能被抄写：投影仪上没有 adb，验收方只能看屏幕 -->
+        <!-- 令牌要能被抄写：投影仪上没有 adb，验收方只能看屏幕。
+             分隔符只是排版，服务端会去掉再比对（2026-11-18 起）。 -->
         <div v-if="debugPlatform === 'tv' && dbg.enabled && dbg.token" class="mt-2">
-          <span class="mb-1 block text-[11px] text-ink-3">令牌（PC 侧放 X-Meow-Token 头）</span>
+          <span class="mb-1 block text-[11px] text-ink-3">
+            令牌（PC 侧放 X-Meow-Token 头；分隔符可省略）
+          </span>
           <code class="select-all rounded bg-field px-2 py-1 text-xs tracking-wider text-accent">
             {{ groupToken(dbg.token) }}
           </code>
+          <p v-if="dbg.running && dbg.expiresMin > 0" class="mt-1 text-[11px] text-ink-3">
+            空闲 {{ dbg.idleMin }} 分钟自动关闭（剩约 {{ dbg.expiresMin }} 分）
+          </p>
         </div>
         <p v-if="dbg.hint" class="mt-2 text-[11px] text-accent">{{ dbg.hint }}</p>
         <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">

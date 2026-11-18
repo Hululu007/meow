@@ -490,7 +490,7 @@ TV 内嵌网关跑的就是共享的 `ApiServer`，搜索行为与 [架构](./ar
 |---|---|---|
 | `SetupActivity` | 连接设置：局域网扫描 / 扫码推送 / 校验 / 远程调试 | 远程调试默认关 |
 | `LanScan` / `PushServer` | 找局域网里跑着的猫窝后端 / 手机扫码填设置推给电视 | 电视上没有好用的输入法 |
-| `DebugServer` | 局域网远程调试（只读状态 / 任意 JS / 截图 / 遥控按键） | 给"没有 adb 开关"的投影仪验收用 |
+| `DebugServer` | 局域网远程调试（状态 / 任意 JS / 截图 / 遥控按键 / 媒体状态 / localStorage / 合成指针 / 设焦点） | 给"没有 adb 开关"的投影仪验收用；空闲 30 分钟自动关 |
 | `NativePlayerActivity` | ExoPlayer 原生播放页 | WebView 的 MediaCodec 受盒子固件限制，硬解失败类问题走这里 |
 | `SniffActivity` | 不可见 WebView 打开播放页拦请求找媒体地址 | 播放地址是 JS 现算的源，服务端抓 HTML 拿不到 |
 | `MetaMirror` | 片库元数据与海报的本地只读副本 | NAS 重启 / 断网那几分钟界面不空白 |

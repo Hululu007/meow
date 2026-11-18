@@ -416,6 +416,8 @@ public class TvBridge {
                 .append(",\"token\":").append(q(tok))
                 .append(",\"port\":").append(running ? DebugServer.port() : 0)
                 .append(",\"url\":").append(q(running ? DebugServer.url() : ""))
+                .append(",\"idleTimeoutMs\":").append(DebugServer.IDLE_TIMEOUT_MS)
+                .append(",\"expiresInMs\":").append(running ? DebugServer.idleRemainingMs() : 0)
                 .append(",\"appVersion\":").append(q(BuildConfig.VERSION_NAME));
         if (!on) {
             // 未开启时给地址提示：用户要知道该把什么地址填进 PC 侧

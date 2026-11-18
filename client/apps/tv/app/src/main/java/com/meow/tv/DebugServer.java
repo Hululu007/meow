@@ -104,6 +104,16 @@ final class DebugServer {
     private static int port;
     private static String lanIp = "";
     private static volatile boolean running;
+    /**
+     * 调试口空闲超时：30 分钟无任何请求就自动关闭并清掉开关。
+     *
+     * <p>它绑 0.0.0.0，开着就一直在局域网上。令牌是唯一门槛，但"忘了关"
+     * 是真实存在的事故来源（验证完没关 = 一台可被 eval 任意 JS 的电视）。
+     * 自动关比文档提醒可靠。
+     */
+    static final long IDLE_TIMEOUT_MS = 30L * 60L * 1000L;
+    /** 最近一次**通过鉴权**的请求时刻；空闲判据用它。 */
+    private static volatile long lastSeenAt;
     private static long startedAt;
     private static volatile Host host;
     private static volatile String token = "";
@@ -185,8 +195,10 @@ final class DebugServer {
             // 枚举网卡放在绑定之后：它是纯展示信息，不该拖慢"端口已经通了"这件事
             lanIp = findLanIp();
             startedAt = System.currentTimeMillis();
+            lastSeenAt = startedAt;
             running = true;
             pool = Executors.newFixedThreadPool(4);
+            startIdleWatchdog();
             thread = new Thread(() -> {
                 while (running) {
                     try {
@@ -215,6 +227,48 @@ final class DebugServer {
             Log.w(TAG, "start failed", e);
             return false;
         }
+    }
+
+    /** 空闲看门狗：超过 IDLE_TIMEOUT_MS 没有任何鉴权请求就自动关闭并清开关。 */
+    private static void startIdleWatchdog() {
+        Thread w = new Thread(() -> {
+            while (running) {
+                try {
+                    Thread.sleep(15000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                if (!running) return;
+                if (System.currentTimeMillis() - lastSeenAt > IDLE_TIMEOUT_MS) {
+                    Log.i(TAG, "idle timeout, stopping debug server");
+                    clearEnabledPref();
+                    stop();
+                    return;
+                }
+            }
+        }, "meow-debug-idle");
+        w.setDaemon(true);
+        w.start();
+    }
+
+    /** 空闲自动关闭时把开关也关掉，否则下次 onResume 又会自己起来。 */
+    private static void clearEnabledPref() {
+        if (appCtx == null) return;
+        try {
+            android.content.SharedPreferences sp = appCtx.getSharedPreferences(
+                    MainActivity.PREF, Context.MODE_PRIVATE);
+            sp.edit().putBoolean(MainActivity.K_DEBUG, false)
+                    .remove(MainActivity.K_DEBUG_TOKEN).apply();
+        } catch (Throwable t) {
+            Log.w(TAG, "clear debug pref failed", t);
+        }
+    }
+
+    /** 距离空闲自动关闭还剩多少毫秒（未运行为 0）。 */
+    static long idleRemainingMs() {
+        if (!running) return 0;
+        long rem = IDLE_TIMEOUT_MS - (System.currentTimeMillis() - lastSeenAt);
+        return Math.max(0, rem);
     }
 
     static synchronized void stop() {
@@ -301,6 +355,8 @@ final class DebugServer {
                         "{\"ok\":false,\"error\":\"forbidden\",\"hint\":\"missing or wrong X-Meow-Token\"}");
                 return;
             }
+            // 只有通过鉴权的请求才算"有人在用"，错误令牌不能给调试口续命
+            lastSeenAt = System.currentTimeMillis();
             if ("OPTIONS".equals(method)) {
                 send(sock, 204, "text/plain", new byte[0]);
                 return;
@@ -499,15 +555,118 @@ final class DebugServer {
                         + ",\"n\":" + times + ",\"handled\":" + handled + extra + "}");
                 return;
             }
-            // 焦点现状：当前哪个元素带 meow-tv-focus + 它是不是还在视口里。
-            // 电视上"不知道选到哪里"只能靠这个断言，截图看不出来。
+            // 焦点：GET 读现状；POST {"selector":"..."} 直接把焦点设过去。
+            // 电视上"不知道选到哪里"只能靠读；"跳过十几下方向键"只能靠设。
             if ("/focus".equals(path)) {
+                if ("GET".equals(method)) {
+                    send(sock, 200, "application/json; charset=utf-8",
+                            unwrap(safeEval(h, FOCUS_JS)).getBytes(StandardCharsets.UTF_8));
+                    return;
+                }
+                if ("POST".equals(method)) {
+                    String selector = "";
+                    try {
+                        selector = new JSONObject(new String(body, StandardCharsets.UTF_8))
+                                .optString("selector", "");
+                    } catch (Exception ignored) {
+                    }
+                    if (selector.isEmpty()) {
+                        sendJson(sock, 400,
+                                "{\"ok\":false,\"error\":\"body must be {\\\"selector\\\":\\\"...\\\"}\"}");
+                        return;
+                    }
+                    send(sock, 200, "application/json; charset=utf-8",
+                            unwrap(safeEval(h, focusSetJs(selector)))
+                                    .getBytes(StandardCharsets.UTF_8));
+                    return;
+                }
+                sendJson(sock, 405, "{\"ok\":false,\"error\":\"use GET or POST\"}");
+                return;
+            }
+
+            // /media：播放器媒体状态（续播、转码、卡顿排查）。
+            if ("/media".equals(path)) {
                 if (!"GET".equals(method)) {
                     sendJson(sock, 405, "{\"ok\":false,\"error\":\"use GET\"}");
                     return;
                 }
                 send(sock, 200, "application/json; charset=utf-8",
-                        utf8(safeEval(h, FOCUS_JS)));
+                        unwrap(safeEval(h, MEDIA_JS)).getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+
+            // /storage：localStorage 读/写（只允许 meow.* 键，避免误改别的域）。
+            if ("/storage".equals(path)) {
+                if ("GET".equals(method)) {
+                    boolean all = "1".equals(query.get("keys"));
+                    String key = query.getOrDefault("key", "");
+                    if (!all && !isAppStorageKey(key)) {
+                        sendJson(sock, 400,
+                                "{\"ok\":false,\"error\":\"key must start with meow.\"}");
+                        return;
+                    }
+                    send(sock, 200, "application/json; charset=utf-8",
+                            unwrap(safeEval(h, all ? STORAGE_KEYS_JS : storageGetJs(key)))
+                                    .getBytes(StandardCharsets.UTF_8));
+                    return;
+                }
+                if ("POST".equals(method)) {
+                    String key = "";
+                    String value = null;
+                    boolean remove = false;
+                    try {
+                        JSONObject jb = new JSONObject(new String(body, StandardCharsets.UTF_8));
+                        key = jb.optString("key", "");
+                        remove = jb.optBoolean("delete", false);
+                        value = jb.has("value") && !jb.isNull("value")
+                                ? jb.optString("value", "") : null;
+                    } catch (Exception ignored) {
+                    }
+                    if (!isAppStorageKey(key)) {
+                        sendJson(sock, 400,
+                                "{\"ok\":false,\"error\":\"key must start with meow.\"}");
+                        return;
+                    }
+                    if (!remove && value == null) {
+                        sendJson(sock, 400,
+                                "{\"ok\":false,\"error\":\"value or delete required\"}");
+                        return;
+                    }
+                    send(sock, 200, "application/json; charset=utf-8",
+                            unwrap(safeEval(h, storageSetJs(key, value, remove)))
+                                    .getBytes(StandardCharsets.UTF_8));
+                    return;
+                }
+                sendJson(sock, 405, "{\"ok\":false,\"error\":\"use GET or POST\"}");
+                return;
+            }
+
+            // /pointer：合成指针事件（move/down/up/click）。
+            // 没有它，"TV 必须真见过 pointer"这类判据在设备上无法验证。
+            if ("/pointer".equals(path)) {
+                if (!"POST".equals(method)) {
+                    sendJson(sock, 405, "{\"ok\":false,\"error\":\"use POST\"}");
+                    return;
+                }
+                String type = "";
+                int px = 0, py = 0, btn = 0;
+                try {
+                    JSONObject jb = new JSONObject(new String(body, StandardCharsets.UTF_8));
+                    type = jb.optString("type", "click");
+                    px = jb.optInt("x", 0);
+                    py = jb.optInt("y", 0);
+                    btn = jb.optInt("button", 0);
+                } catch (Exception ignored) {
+                }
+                if (!"move".equals(type) && !"down".equals(type) && !"up".equals(type)
+                        && !"click".equals(type)) {
+                    sendJson(sock, 400,
+                            "{\"ok\":false,\"error\":\"type must be move/down/up/click\"}");
+                    return;
+                }
+                send(sock, 200, "application/json; charset=utf-8",
+                        unwrap(safeEval(h, pointerJs(type, px, py, btn)))
+                                .getBytes(StandardCharsets.UTF_8));
                 return;
             }
             // ────────────────────────────────────────────────────────────
@@ -905,6 +1064,29 @@ final class DebugServer {
         tools.put(tool("tv_gateway",
                 "TV 本地网关（端上执行层）状态与本地站点数。对应 PC 的 pc_plugins。",
                 obj()));
+        tools.put(tool("tv_media",
+                "播放器媒体状态：currentTime/duration/paused/readyState/buffered/src。"
+                        + "验证续播、转码进度、卡顿时看它。",
+                obj()));
+        tools.put(tool("tv_storage",
+                "读写 localStorage（只允许 meow.* 键）。"
+                        + "action=list 列键、get 取值、set 写入（value 传字符串）、delete 删除。",
+                objOf(
+                        prop("action", "string", "list / get / set / delete，默认 get"),
+                        prop("key", "string", "键名，必须以 meow. 开头（list 时可省略）"),
+                        prop("value", "string", "set 时的值（字符串）"))));
+        tools.put(tool("tv_pointer",
+                "合成鼠标指针事件（move/down/up/click）到视口坐标 (x,y)。"
+                        + "用于验证 hover、pointer 判据与点击；合成事件不触发原生 :hover。",
+                objOf(
+                        prop("type", "string", "move / down / up / click，默认 click"),
+                        prop("x", "integer", "视口 CSS 坐标 x"),
+                        prop("y", "integer", "视口 CSS 坐标 y"),
+                        prop("button", "integer", "0 左键 / 2 右键"))));
+        tools.put(tool("tv_focus",
+                "把焦点设到指定选择器（走 tv-nav，会画框并钉住）。",
+                obj(new String[]{"selector"}, new String[]{"string"},
+                        new String[]{"CSS 选择器，如 button[title=\"搜索\"]"}, null)));
 
         // ---- 语义工具（docs/47 §1.8 方案 A）----
         //
@@ -1197,6 +1379,40 @@ final class DebugServer {
                         + ",\"localSites\":" + locals
                         + ",\"lastError\":" + jsonStr(LocalSpiderHost.lastError()) + "}";
             }
+            case "tv_media":
+                return unwrap(safeEval(h, MEDIA_JS));
+            case "tv_storage": {
+                String action = a.optString("action", "get");
+                if ("list".equals(action)) return unwrap(safeEval(h, STORAGE_KEYS_JS));
+                String key = a.optString("key", "");
+                if (!isAppStorageKey(key)) {
+                    return "{\"ok\":false,\"error\":\"key must start with meow.\"}";
+                }
+                if ("delete".equals(action)) {
+                    return unwrap(safeEval(h, storageSetJs(key, null, true)));
+                }
+                if ("set".equals(action)) {
+                    if (!a.has("value")) {
+                        return "{\"ok\":false,\"error\":\"value required for set\"}";
+                    }
+                    return unwrap(safeEval(h, storageSetJs(key, a.optString("value", ""), false)));
+                }
+                return unwrap(safeEval(h, storageGetJs(key)));
+            }
+            case "tv_pointer": {
+                String type = a.optString("type", "click");
+                if (!"move".equals(type) && !"down".equals(type) && !"up".equals(type)
+                        && !"click".equals(type)) {
+                    return "{\"ok\":false,\"error\":\"type must be move/down/up/click\"}";
+                }
+                return unwrap(safeEval(h, pointerJs(type,
+                        a.optInt("x", 0), a.optInt("y", 0), a.optInt("button", 0))));
+            }
+            case "tv_focus": {
+                String sel = a.optString("selector", "");
+                if (sel.isEmpty()) return "{\"ok\":false,\"error\":\"selector required\"}";
+                return unwrap(safeEval(h, focusSetJs(sel)));
+            }
             default:
                 // meow_* 语义工具：转发到页面里的 window.__meowTool（src/ai/bridge.ts）
                 if (name.startsWith("meow_")) return callMeowTool(name, a, h);
@@ -1321,6 +1537,89 @@ final class DebugServer {
             + "resources:res.length,slowest:slow});"
             + "}catch(e){return JSON.stringify({ok:false,error:e.message})}})()";
 
+    /** 播放器媒体状态：续播/转码/卡顿排查。 */
+    private static final String MEDIA_JS = "(function(){try{"
+            + "var v=document.querySelector('video');"
+            + "if(!v) return JSON.stringify({ok:true,hasVideo:false});"
+            + "var b=[];try{for(var i=0;i<v.buffered.length;i++)"
+            + "b.push([Math.round(v.buffered.start(i)*10)/10,Math.round(v.buffered.end(i)*10)/10]);}"
+            + "catch(e){}"
+            + "return JSON.stringify({ok:true,hasVideo:true,"
+            + "currentTime:Math.round(v.currentTime*100)/100,"
+            + "duration:isFinite(v.duration)?Math.round(v.duration*100)/100:null,"
+            + "paused:v.paused,ended:v.ended,readyState:v.readyState,"
+            + "networkState:v.networkState,playbackRate:v.playbackRate,"
+            + "muted:v.muted,volume:Math.round(v.volume*100)/100,buffered:b,"
+            + "src:String(v.currentSrc||v.src||''),error:v.error?v.error.code:0});"
+            + "}catch(e){return JSON.stringify({ok:false,error:e.message})}})()";
+
+    /** localStorage 全部键。 */
+    private static final String STORAGE_KEYS_JS = "(function(){try{"
+            + "var a=[];for(var i=0;i<localStorage.length;i++)a.push(localStorage.key(i));"
+            + "return JSON.stringify({ok:true,keys:a});"
+            + "}catch(e){return JSON.stringify({ok:false,error:e.message})}})()";
+
+    /** 只允许应用自己的键：调试工具不该有权限改别的域的数据。 */
+    private static boolean isAppStorageKey(String key) {
+        return key != null && key.startsWith("meow.");
+    }
+
+    private static String storageGetJs(String key) {
+        return "(function(){try{var k=" + jsonStr(key)
+                + ";return JSON.stringify({ok:true,key:k,value:localStorage.getItem(k)});"
+                + "}catch(e){return JSON.stringify({ok:false,error:e.message})}})()";
+    }
+
+    private static String storageSetJs(String key, String value, boolean remove) {
+        return "(function(){try{var k=" + jsonStr(key) + ";"
+                + (remove
+                    ? "localStorage.removeItem(k);"
+                    : "localStorage.setItem(k," + jsonStr(value == null ? "" : value) + ");")
+                + "var v=localStorage.getItem(k);"
+                + "return JSON.stringify({ok:true,key:k,bytes:(v||'').length});"
+                + "}catch(e){return JSON.stringify({ok:false,error:e.message})}})()";
+    }
+
+    /** 设置焦点：优先走 tv-nav（会加框并钉住），没有 tv-nav 就原生 focus。 */
+    private static String focusSetJs(String selector) {
+        return "(function(){try{var el=document.querySelector(" + jsonStr(selector) + ");"
+                + "if(!el) return JSON.stringify({ok:false,error:'selector not found'});"
+                + "if(window.__meowTvFocus){var r=window.__meowTvFocus(el,true);"
+                + "return JSON.stringify(r?{ok:true,text:(el.textContent||'').trim().slice(0,40)}"
+                + ":{ok:false,error:'element not visible or not focusable'});}"
+                + "el.focus();"
+                + "return JSON.stringify({ok:true,text:(el.textContent||'').trim().slice(0,40)});"
+                + "}catch(e){return JSON.stringify({ok:false,error:e.message})}})()";
+    }
+
+    /**
+     * 合成一次指针事件。
+     *
+     * <p>注意：这是**合成事件**（isTrusted=false），能驱动 JS 判据与 click 回调，
+     * 但不触发浏览器原生 :hover；需要真实鼠标行为时仍要用物理鼠标。
+     */
+    private static String pointerJs(String type, int x, int y, int button) {
+        return "(function(){try{"
+                + "var el=document.elementFromPoint(" + x + "," + y + ");"
+                + "if(!el) return JSON.stringify({ok:false,error:'no element at point'});"
+                + "var base={bubbles:true,cancelable:true,composed:true,clientX:" + x
+                + ",clientY:" + y + ",view:window};"
+                + "function fire(t,btn,buttons){"
+                + "el.dispatchEvent(new PointerEvent(t,Object.assign({},base,{pointerId:1,"
+                + "pointerType:'mouse',isPrimary:true,button:btn,buttons:buttons})));"
+                + "el.dispatchEvent(new MouseEvent(t.replace('pointer','mouse'),"
+                + "Object.assign({},base,{button:btn,buttons:buttons})));}"
+                + "var t=" + jsonStr(type) + ",b=" + button + ";"
+                + "if(t==='move')fire('pointermove',-1,0);"
+                + "else if(t==='down')fire('pointerdown',b,1);"
+                + "else if(t==='up')fire('pointerup',b,0);"
+                + "else{fire('pointerdown',b,1);fire('pointerup',b,0);"
+                + "el.dispatchEvent(new MouseEvent('click',Object.assign({},base,{button:b})));}"
+                + "return JSON.stringify({ok:true,tag:el.tagName,"
+                + "text:(el.textContent||'').trim().slice(0,40)});"
+                + "}catch(e){return JSON.stringify({ok:false,error:e.message})}})()";
+    }
+
     private static final String STATE_JS = "(function(){try{"
             + "var imgs=document.images||[];"
             + "var loaded=0;"
@@ -1420,11 +1719,30 @@ final class DebugServer {
     }
 
     private static boolean tokenOk(String got, String expected) {
-        if (expected == null || expected.isEmpty()) return false;
-        if (got == null) return false;
+        String e = normToken(expected);
+        if (e.isEmpty()) return false;
+        String g = normToken(got);
+        if (g.isEmpty()) return false;
         // 定长比较，避免按字节提前返回泄漏前缀
-        return MessageDigest.isEqual(got.trim().getBytes(StandardCharsets.UTF_8),
-                expected.getBytes(StandardCharsets.UTF_8));
+        return MessageDigest.isEqual(g.getBytes(StandardCharsets.UTF_8),
+                e.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * 令牌归一化：去掉分隔符并转小写。
+     *
+     * <p>设置页为了屏幕可读性按 4 位分组显示（{@code a3f1-ffc7-2d7e-0eae}），
+     * 而真实令牌是 16 位连写。过去按原样比较，照着屏幕输入必然 403
+     * （2026-11-18 实测卡了三次）。这里两边都归一化，带不带连字符/空格都能用。
+     */
+    private static String normToken(String s) {
+        if (s == null) return "";
+        StringBuilder b = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (Character.isLetterOrDigit(c)) b.append(Character.toLowerCase(c));
+        }
+        return b.toString();
     }
 
     /** 遥控按键名 → KeyEvent。0 表示不认识的键名。 */
