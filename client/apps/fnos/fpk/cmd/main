@@ -14,6 +14,48 @@ PORT="${wizard_port:-${MEOW_SHELL_PORT:-${TRIM_SERVICE_PORT:-30010}}}"
 API_PORT="${wizard_api_port:-${MEOW_API_PORT:-30011}}"
 BIND="${MEOW_SHELL_BIND:-0.0.0.0}"
 
+# ── 日志：用户可见的那份 + 启动前裁剪 ─────────────────────────────────────
+# 用户看得到的那份在 @appshare/<app>/logs（目录由 cmd/log_share_setup 以 root 建，
+# 因为 @appshare/<app> 本身是 root 000，package 账号写不进去）。这里只做**硬链**：
+# 同卷不占双份空间，应用挂了也只是"用户那边看不见"，不影响自己写日志。
+LOG_MAX_MB="${MEOW_LOG_MAX_MB:-4}"
+LOG_KEEP_LINES="${MEOW_LOG_KEEP_LINES:-2000}"
+
+share_logs_dir() {
+    vol="${TRIM_APPDEST_VOL:-}"
+    if [ -z "$vol" ] && [ -n "${TRIM_APPDEST:-}" ]; then
+        vol="$(printf '%s' "$TRIM_APPDEST" | sed -n 's#^\(/vol[0-9][0-9]*\)/.*#\1#p')"
+    fi
+    [ -n "$vol" ] || return 1
+    d="$vol/@appshare/${TRIM_APPNAME:-meow}/logs"
+    [ -d "$d" ] && [ -w "$d" ] || return 1
+    printf '%s' "$d"
+}
+
+# 启动前裁一次。★ 必须在 meowd（及其拉起的 Java）打开文件之前跑：
+# sed -i 会换 inode，运行中裁等于把这期间写进旧 inode 的日志全丢掉。
+trim_logs() {
+    [ -d "$TRIM_PKGVAR/logs" ] || return 0
+    max=$((LOG_MAX_MB * 1048576))
+    keep_next=$((LOG_KEEP_LINES + 1))
+    for f in "$TRIM_PKGVAR/logs"/*.log; do
+        [ -f "$f" ] || continue
+        sz="$(stat -c%s "$f" 2>/dev/null || echo 0)"
+        [ "$sz" -gt "$max" ] || continue
+        sed -i -e :a -e "\$q;N;${keep_next},\$D;ba" "$f" 2>/dev/null
+    done
+}
+
+# 硬链到分享目录并放开读权限；api.log 要等 meowd 起来才有，所以放在启动之后调
+link_logs() {
+    d="$(share_logs_dir)" || return 0
+    for f in "$TRIM_PKGVAR/logs"/*.log; do
+        [ -f "$f" ] || continue
+        ln -f "$f" "$d/$(basename "$f")" 2>/dev/null
+        chmod 0644 "$f" 2>/dev/null
+    done
+}
+
 running() {
     [ -f "$PIDFILE" ] || return 1
     p="$(cat "$PIDFILE" 2>/dev/null)"
@@ -111,6 +153,7 @@ case "${1:-}" in
 start)
     mkdir -p "$TRIM_PKGVAR/run" "$TRIM_PKGVAR/logs" "$TRIM_PKGVAR/data" 2>/dev/null
     if running; then
+        link_logs
         exit 0
     fi
 
@@ -124,6 +167,7 @@ start)
             want="$(expected_version)"
             if [ -z "$want" ] || [ "$v" = "$want" ]; then
                 printf '%s' "$p" > "$PIDFILE"
+                link_logs
                 exit 0
             fi
             kill -TERM "$p" 2>/dev/null
@@ -137,6 +181,10 @@ start)
             stop_leftover_api
         fi
     fi
+
+    # ★ 裁剪只能放在这里：上面所有"已停"的分支都走完了，此刻 meowd 与它拉起的 Java
+    #   都没打开日志文件；sed -i 换 inode 才不会把正在写的内容丢掉。
+    trim_logs
 
     rm -f "$PIDFILE"
 
@@ -156,9 +204,12 @@ start)
         i=$((i + 1))
     done
 
+    # 这时 api.log 已由 meowd 建好，一并链进分享目录
+    link_logs
+
     # 起不来也不返回 1：应用中心会把非 0 当成安装/启动失败，掩盖真实原因
     if ! running; then
-        echo "猫窝 Meow 未能启动，请查看应用目录下 var/logs/meowd.log（端口 $PORT）。" \
+        echo "猫窝 Meow 未能启动，请查看共享目录 @appshare/${TRIM_APPNAME:-meow}/logs/（或应用目录下 var/logs/），端口 $PORT。" \
             > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null
     fi
     exit 0
