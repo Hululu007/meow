@@ -79,10 +79,10 @@ on:
         type: boolean
         default: false
       keep:
-        description: 'FnDepot 保留最近几个版本（默认 3；清理发生在写索引之后）'
+        description: 'FnDepot 保留最近几个版本（默认 5；清理发生在写索引之后）'
         required: false
         type: string
-        default: '3'
+        default: '5'
   # ★ 索引只在「Release 被 Publish」之后写（2026-11-13 与 sync-packages 对齐）。
   #   全量 release-v<ver> 与单链 fpk-v<ver> 都走这一条；draft 阶段不产生任何
   #   用户可见的索引，Publish 之前随时可以删掉草稿。
@@ -104,7 +104,7 @@ on:
         required: false
         type: string
       keep:
-        description: 'FnDepot 保留最近几个版本（默认 3）'
+        description: 'FnDepot 保留最近几个版本（默认 5）'
         required: false
         type: string
     secrets:
@@ -974,11 +974,12 @@ jobs:
           done
           ls -l "$REPO/meow"
 
-      # 只保留最近 keep 版（默认 3）：索引条目与包体文件一起删。
+      # 只保留最近 keep 版（默认 5）：索引条目与包体文件一起删。
       #
-      # 为什么 3：客户端只取"大于当前版本的最大值"，中间版本没有功能作用；3 版覆盖
-      # os_min_version 兜底（老系统可能需要低版本）和商店旧索引缓存窗口。1 版没有兜底，
-      # 5 版只是多留 150MB。★ 若以后上调 os_min_version，记得临时把 keep 调大或手工留一版。
+      # 为什么 5：客户端只取"大于当前版本的最大值"，中间版本没有功能作用；保留的多是
+      # 兜底——os_min_version 上调后老系统要能回退到低版本，以及商店旧索引缓存窗口。
+      # 每版两 arch 合计 ≈ 42MB（x86 21.0 / arm 20.9，1.2.16 实测），多留 2 版 ≈ +84MB。
+      # ★ 若以后大幅上调 os_min_version，记得临时把 keep 调大或手工留一版。
       #
       # ★ 删文件用 `git update-index --index-info`，不能用 `git rm`：sparse + blob:none
       #   的克隆里旧包 blob 不在本地，`git rm`/`--force-remove` 会去读对象并报
@@ -989,13 +990,13 @@ jobs:
         shell: bash
         env:
           REPO: ${{ steps.depot.outputs.repo }}
-          KEEP: ${{ inputs.keep || '3' }}
+          KEEP: ${{ inputs.keep || '5' }}
         run: |
           set -euo pipefail
           fail() { echo "::error::索引未更新：$*"; exit 1; }
           cd "$REPO"
           IDX=fnpack.json
-          KEEP="${KEEP:-3}"
+          KEEP="${KEEP:-5}"
           case "$KEEP" in ''|*[!0-9]*) fail "keep 必须是正整数：$KEEP" ;; esac
           [ "$KEEP" -ge 1 ] || fail "keep 至少为 1"
 
