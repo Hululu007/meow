@@ -80,7 +80,7 @@ onBeforeUnmount(() => {
     >
       <!-- data-tv-scope：把遥控方向键收窄到弹框内（tv-nav 的几何选焦是全文档竞争） -->
       <div
-        class="flex max-h-[calc(100dvh-4rem)] w-full max-w-[24rem] flex-col rounded-xl border border-line bg-elevated p-5 shadow-2xl"
+        class="max-h-dialog glass-panel flex w-full max-w-[24rem] flex-col rounded-modal p-5"
         role="dialog"
         aria-modal="true"
         data-tv-scope
@@ -117,7 +117,7 @@ onBeforeUnmount(() => {
             :class="
               dialogState.danger
                 ? 'bg-hot text-on-hot hover:bg-hot/85'
-                : 'bg-accent text-on-accent hover:bg-accent-dim'
+                : 'btn-primary-gradient text-on-accent'
             "
             :data-tv-first="dialogState.kind === 'alert' ? true : undefined"
             @click="ok"

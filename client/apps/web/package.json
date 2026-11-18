@@ -9,7 +9,8 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
-    "legacy-css": "node scripts/gen-legacy-css.mjs"
+    "legacy-css": "node scripts/gen-legacy-css.mjs",
+    "size-check": "node scripts/check-bundle-size.mjs"
   },
   "dependencies": {
     "artplayer": "^5.2.3",

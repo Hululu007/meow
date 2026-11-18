@@ -167,6 +167,18 @@ fn desktop_set_close_to_tray(app: tauri::AppHandle, enabled: bool) -> Result<(),
     tray::set_close_to_tray(&app, enabled)
 }
 
+/// B7：读取调试端口开关（默认开）。
+#[tauri::command]
+fn desktop_debug_port(app: tauri::AppHandle) -> bool {
+    tray::debug_port(&app)
+}
+
+/// B7：写入调试端口开关。**重启后生效**（WebView2 只读一次参数）。
+#[tauri::command]
+fn desktop_set_debug_port(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    tray::set_debug_port(&app, enabled)
+}
+
 /// 首次关闭提示里的「隐藏到托盘」按钮。
 #[tauri::command]
 fn desktop_hide_to_tray(app: tauri::AppHandle) -> Result<(), String> {
@@ -219,6 +231,128 @@ fn desktop_set_fullscreen(app: tauri::AppHandle, enabled: bool) -> Result<(), St
         .ok_or_else(|| "找不到主窗口".to_string())?;
     w.set_fullscreen(enabled)
         .map_err(|e| format!("切换全屏失败: {e}"))
+}
+
+// ---------------------------------------------------------------- 自绘标题栏（B4）
+//
+// Windows 上 Tauri 的 titleBarStyle 不生效（那是 macOS 配置），
+// 要画左上角红黄绿只能 decorations:false 后全部自己接管。
+// 下面这组命令就是网页侧窗口按钮/拖拽/缩放/全屏的入口。
+
+/// 最小化（红黄绿里的黄）。
+#[tauri::command]
+fn desktop_window_minimize(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let w = app
+        .get_webview_window("main")
+        .ok_or_else(|| "找不到主窗口".to_string())?;
+    w.minimize().map_err(|e| format!("最小化失败: {e}"))
+}
+
+/// 最大化/还原，返回切换后的状态（绿点图标要跟着变）。
+#[tauri::command]
+fn desktop_window_toggle_maximize(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri::Manager;
+    let w = app
+        .get_webview_window("main")
+        .ok_or_else(|| "找不到主窗口".to_string())?;
+    let maximized = w.is_maximized().map_err(|e| format!("读取最大化状态失败: {e}"))?;
+    if maximized {
+        w.unmaximize().map_err(|e| format!("还原窗口失败: {e}"))?;
+    } else {
+        w.maximize().map_err(|e| format!("最大化失败: {e}"))?;
+    }
+    Ok(!maximized)
+}
+
+/// 关闭（红点）。走 `close()` 才会触发既有的 CloseRequested
+/// → 关闭到托盘 / 退出，不要在这里直接 hide/exit。
+#[tauri::command]
+fn desktop_window_close(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let w = app
+        .get_webview_window("main")
+        .ok_or_else(|| "找不到主窗口".to_string())?;
+    w.close().map_err(|e| format!("关闭窗口失败: {e}"))
+}
+
+/// 开始拖拽窗口（`data-tauri-drag-region` 的替代，供自定义拖拽条用）。
+#[tauri::command]
+fn desktop_window_start_drag(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let w = app
+        .get_webview_window("main")
+        .ok_or_else(|| "找不到主窗口".to_string())?;
+    w.start_dragging().map_err(|e| format!("拖拽窗口失败: {e}"))
+}
+
+/// 8 向缩放。direction 取 n/s/e/w/ne/nw/se/sw。
+///
+/// ★ 无边框窗口没有原生边框，必须由网页在边缘放热区调这个。
+/// ★ 不用 `Window::start_resize_dragging`：它要 `tauri::Manager::get_window`，
+///   而 get_window 在 stable 上是 `unstable` feature 才有的。这里直接发
+///   Win32 的 `WM_NCLBUTTONDOWN`（经典做法，也和原生标题栏行为一致）。
+#[tauri::command]
+fn desktop_window_start_resize(app: tauri::AppHandle, direction: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use tauri::Manager;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SendMessageW, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP,
+            HTTOPLEFT, HTTOPRIGHT, WM_NCLBUTTONDOWN,
+        };
+
+        // HT* 命中码：交给系统自己做缩放拖拽
+        let hit = match direction.as_str() {
+            "n" => HTTOP,
+            "s" => HTBOTTOM,
+            "e" => HTRIGHT,
+            "w" => HTLEFT,
+            "ne" => HTTOPRIGHT,
+            "nw" => HTTOPLEFT,
+            "se" => HTBOTTOMRIGHT,
+            "sw" => HTBOTTOMLEFT,
+            other => return Err(format!("未知的缩放方向: {other}")),
+        };
+        let w = app
+            .get_webview_window("main")
+            .ok_or_else(|| "找不到主窗口".to_string())?;
+        let hwnd = w.hwnd().map_err(|e| format!("取窗口句柄失败: {e}"))?.0;
+        unsafe {
+            ReleaseCapture();
+            SendMessageW(hwnd, WM_NCLBUTTONDOWN, hit as usize, 0);
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, direction);
+        Err("仅支持 Windows".to_string())
+    }
+}
+
+/// F11：切换窗口全屏，返回切换后的状态。
+#[tauri::command]
+fn desktop_window_toggle_fullscreen(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri::Manager;
+    let w = app
+        .get_webview_window("main")
+        .ok_or_else(|| "找不到主窗口".to_string())?;
+    let full = w.is_fullscreen().map_err(|e| format!("读取全屏状态失败: {e}"))?;
+    w.set_fullscreen(!full)
+        .map_err(|e| format!("切换全屏失败: {e}"))?;
+    Ok(!full)
+}
+
+/// Ctrl+0：WebView2 缩放复位（用户 Ctrl+滚轮放大过头时的逃生口）。
+#[tauri::command]
+fn desktop_window_reset_zoom(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let w = app
+        .get_webview_window("main")
+        .ok_or_else(|| "找不到主窗口".to_string())?;
+    w.set_zoom(1.0).map_err(|e| format!("重置缩放失败: {e}"))
 }
 
 /// 把 Web 当前主题底色同步到原生窗口。
@@ -798,12 +932,123 @@ async fn plugin_uninstall(
     .map_err(|e| format!("卸载任务失败：{e}"))?
 }
 
+/// B4：无边框窗口的 Win11 圆角 + DWM 阴影。
+///
+/// tao 的 `decorations=false` 会同时去掉 `WS_CAPTION` 和 `WS_THICKFRAME`
+/// （`window_state.rs` 实测），窗口既没有原生圆角也没有阴影。这里补两件：
+/// 1) `DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND`（Win11）
+/// 2) `DwmExtendFrameIntoClientArea` 1px —— 让 DWM 继续画投影
+///
+/// 只在 main 窗口创建后调用。Win10 上这两个调用都会失败，忽略即可
+/// （Win10 没有圆角，也不会多出 1px 边框）。
+#[cfg(windows)]
+fn apply_undecorated_frame(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE,
+    };
+    use windows_sys::Win32::UI::Controls::MARGINS;
+
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(hwnd) = w.hwnd() else {
+        return;
+    };
+    // tauri 用 windows crate 的 HWND（newtype），windows-sys 是裸指针，同一个值。
+    let hwnd = hwnd.0;
+
+    unsafe {
+        // DWMWCP_ROUND = 2
+        let pref: i32 = 2;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            &pref as *const i32 as *const core::ffi::c_void,
+            std::mem::size_of::<i32>() as u32,
+        );
+        let margins = MARGINS {
+            cxLeftWidth: 1,
+            cxRightWidth: 1,
+            cyTopHeight: 1,
+            cyBottomHeight: 1,
+        };
+        let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+    }
+}
+
+/// B7：在 WebView2 创建前决定是否开放 CDP 调试端口。
+///
+/// 优先级：
+///   1. env `MEOW_DEBUG_PORT=0/off/false` → 关闭；`1/on/true` → 开启
+///   2. `desktop-prefs.json` 的 `debugPort`（默认开）
+///   3. env `MEOW_CDP_PORT` 指定端口（测试用），否则 9455
+///
+/// ★ 必须在 `Builder::build()` 之前设置 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`：
+///   WebView2 只在浏览器环境创建时读一次，晚一步就不生效。
+#[cfg(windows)]
+fn configure_webview2_debug_port() {
+    let forced = std::env::var("MEOW_DEBUG_PORT").ok();
+    let enabled = match forced.as_deref() {
+        Some("0") | Some("off") | Some("false") => false,
+        Some("1") | Some("on") | Some("true") => true,
+        _ => {
+            // 这里还没有 AppHandle，按 Tauri 的 Windows 约定手拼数据目录：
+            // %APPDATA%\<identifier>（identifier = com.meow.player）
+            let enabled_by_file = std::env::var_os("APPDATA")
+                .map(std::path::PathBuf::from)
+                .map(|p| p.join("com.meow.player").join("desktop-prefs.json"))
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .and_then(|v| v.get("debugPort").and_then(|b| b.as_bool()))
+                .unwrap_or(true);
+            enabled_by_file
+        }
+    };
+    if !enabled {
+        return;
+    }
+    let port = std::env::var("MEOW_CDP_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(9455);
+    // 外部（冒烟脚本）已经注入时不覆盖
+    if std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_none() {
+        std::env::set_var(
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            format!("--remote-debugging-port={port}"),
+        );
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // B7：调试端口开关（默认开）。必须在 Builder 之前。
+    #[cfg(windows)]
+    configure_webview2_debug_port();
+
     tauri::Builder::default()
         // 文件选择器（导入插件包选 zip）。前端调 plugin:dialog|open，
         // 未注册时前端会退回 window.prompt 手打路径（2026-11-12 补）。
         .plugin(tauri_plugin_dialog::init())
+        /*
+         * 窗口状态（B3）：只存尺寸/位置/最大化。
+         *
+         * ★ 不能直接 .build()：默认 StateFlags::all() 含 VISIBLE。
+         *   本应用「关闭 = 隐藏到托盘」（CloseRequested 里 hide），退出时窗口
+         *   是 hidden，下次启动会恢复成 hidden —— 用户看不到窗口。
+         * ★ 也不存 FULLSCREEN / DECORATIONS：播放器会切窗口全屏，
+         *   存下来会让下次启动直接全屏；装饰由 B4 自己接管。
+         */
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .build(),
+        )
         .setup(|app| {
             use tauri::Manager;
 
@@ -816,6 +1061,11 @@ pub fn run() {
             }
 
             let handle = app.handle().clone();
+
+            // B4：无边框窗口的 Win11 圆角 + DWM 阴影。
+            // 必须在这里做：窗口已由配置创建，但还没显示首帧。
+            #[cfg(windows)]
+            apply_undecorated_frame(&handle);
             let app_data = resolve_app_data(&handle);
             let root = resolve_plugins_root(&app_data);
             println!("[plugin] root = {}", root.display());
@@ -903,6 +1153,8 @@ pub fn run() {
             backend_base,
             // 桌面端行为（托盘 / 关闭 / 重启后端）
             desktop_set_close_to_tray,
+            desktop_debug_port,
+            desktop_set_debug_port,
             desktop_hide_to_tray,
             desktop_quit,
             desktop_set_window_bg,
@@ -910,6 +1162,14 @@ pub fn run() {
             desktop_tray_hint_shown,
             desktop_reset_tray_hint,
             desktop_set_fullscreen,
+            // 自绘标题栏（B4）：窗口按钮 / 拖拽 / 8 向缩放 / F11 / Ctrl+0
+            desktop_window_minimize,
+            desktop_window_toggle_maximize,
+            desktop_window_close,
+            desktop_window_start_drag,
+            desktop_window_start_resize,
+            desktop_window_toggle_fullscreen,
+            desktop_window_reset_zoom,
             desktop_restart_backend,
             boot_info,
             mcp_status,

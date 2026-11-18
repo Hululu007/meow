@@ -42,6 +42,10 @@ sha2 = "0.10"
 # 原生文件选择器：插件「导入本地包」用。没有它前端只能退回 window.prompt
 # 让用户手打完整路径（2026-11-12 用户截图指出）。
 tauri-plugin-dialog = "2"
+# 窗口尺寸/位置/最大化持久化（B3）。
+# ★ 必须显式限定 StateFlags：默认 all() 含 VISIBLE，关闭到托盘时窗口是
+#   hidden，下次启动会按 visible=false 恢复 —— 表现为"应用起了但没窗口"。
+tauri-plugin-window-state = "2"
 
 # Windows 专用：Job Object，保证 sidecar 随主进程一起结束。
 #
@@ -59,4 +63,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     # 枚举进程（按可执行文件路径清理孤儿 sidecar，见 plugins.rs kill_orphans_in）
     "Win32_System_Diagnostics_ToolHelp",
+    # B4 无边框窗口：DWM 圆角 + 阴影（DwmSetWindowAttribute / ExtendFrame）
+    "Win32_Graphics_Dwm",
+    "Win32_UI_Controls",
+    # B4 8 向缩放：ReleaseCapture + WM_NCLBUTTONDOWN
+    "Win32_UI_Input_KeyboardAndMouse",
 ] }

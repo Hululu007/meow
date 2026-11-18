@@ -87,6 +87,27 @@
   --radius-md: 10px;
   --radius-lg: 14px;
   --radius-xl: 20px;
+  /*
+   * 2026-11-18 视觉升级：新增两级。
+   *
+   * ★ 不覆盖 --radius-2xl/3xl：播放器里唯一一处 rounded-2xl
+   *   （VideoPlayer.vue 的浮层）属于只读区，改默认值会牵动它。
+   */
+  --radius-panel: 18px;
+  --radius-modal: 22px;
+
+  /*
+   * 层次三档。
+   *
+   * 颜色走 --shadow-rgb（按 data-mode 切换）：深色用纯黑，
+   * 浅色用偏蓝深灰；写死纯黑在浅色底上会发脏。
+   */
+  --shadow-1: 0 1px 2px rgb(var(--shadow-rgb) / 0.12);
+  --shadow-2: 0 4px 16px rgb(var(--shadow-rgb) / 0.18);
+  --shadow-3: 0 12px 32px rgb(var(--shadow-rgb) / 0.28);
+
+  /* 弹簧曲线：只用于 transform / opacity（低端 GPU 也能过） */
+  --ease-spring: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 
@@ -146,10 +167,34 @@
   --fs-base: 0.875rem;   /* 14px：正文 */
   --fs-md: 0.9375rem;    /* 15px：强调正文 */
   --fs-lg: 1rem;         /* 16px：分区标题 */
+
+  /*
+   * 2026-11-18 视觉升级：两档大字。
+   *
+   * ★ 用 rem 而不是 px —— TV 的根字号会按视口阶梯放大（16→24px），
+   *   px 不参与这套缩放，同一套字号在电视上会显得更小。
+   * ★ 不迁移模板里 629 处 text-[Npx]：那批与 TV 字号下限规则
+   *   （按字面类名匹配）冲突，迁移会造成双缩放。新档只用于
+   *   详情页片名、分区标题、空状态。
+   */
+  --fs-title: 1.25rem;   /* 20px：分区标题 */
+  --fs-display: 1.75rem; /* 28px：详情页片名 */
+
+  /* 动效时长：新代码只允许 transform / opacity 使用 */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 240ms;
+
+  /*
+   * accent 的 RGB 三元组兜底。
+   * 正常由 18 个主题块覆盖；这里保证 data-style 尚未写入首帧时
+   * `rgb(var(--color-accent-rgb) / a)` 不会整条失效。
+   */
+  --color-accent-rgb: 3 218 197;
 }
 
 /* ══════════════════════════════════════════════════════════════
-   主题覆盖（8 套风格 × 浅/深）
+   主题覆盖（9 套风格 × 浅/深）
    ──────────────────────────────────────────────────────────────
    ★ 为什么用选择器而不是 JS 行内变量：
      实测 Chromium 在只改根元素行内变量时，已渲染元素的 background-color
@@ -666,6 +711,79 @@ html[data-style="everforest"][data-mode="light"] {
   --radius-xl: 16px;
 }
 
+/* ── Graphite（macOS 中性灰 + 系统蓝，2026-11-18） ──
+ *
+ * 用户要的「mac 风」：底色走 macOS 窗口灰（#1c1c1e / #2c2c2e 一族），
+ * 强调色换成系统蓝。**只新增这一套，不改品牌青** —— 换默认色板会把
+ * 「猫窝青」的识别度洗掉，也会波及另外 18 个主题块的对比度。
+ *
+ * 对比度按 theme-tokens.test.ts 的门槛算过：
+ *   dark  ink/base 17.0 · ink-2 6.6 · ink-3 5.2 · on-accent/accent 4.7
+ *   light ink/base 15.1 · ink-2 8.2 · ink-3 4.5 · on-accent/accent 5.6
+ * 改值前先跑那条测试，别凭眼睛调。
+ */
+html[data-style="graphite"][data-mode="dark"] {
+  --color-base: #1c1c1e;
+  --color-header-veil: rgb(28 28 30 / 0.76);
+  --color-strip-veil: rgb(28 28 30 / 0.82);
+  --color-surface: #242426;
+  --color-elevated: #2c2c2e;
+  --color-panel: #3a3a3c;
+  --color-accent: #0a84ff;
+  --color-accent-dim: #0060df;
+  --color-ink: #ffffff;
+  --color-ink-2: #a1a1a6;
+  --color-ink-3: #8e8e93;
+  --color-player: #4da3ff;
+  --color-hot: #ff453a;
+  --color-warn: #ff9f0a;
+  --color-ok: #32d74b;
+  --color-on-accent: #1c1c1e;
+  --color-on-warn: #1c1c1e;
+  --color-on-hot: #1c1c1e;
+  --color-card: rgb(255 255 255 / 0.06);
+  --color-card-hover: rgb(255 255 255 / 0.09);
+  --color-card-sunken: rgb(255 255 255 / 0.03);
+  --color-line: rgb(255 255 255 / 0.08);
+  --color-line-hover: rgb(255 255 255 / 0.14);
+  --color-field: rgb(0 0 0 / 0.25);
+  --color-wp-tint: 28 28 30;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}
+
+html[data-style="graphite"][data-mode="light"] {
+  --color-base: #f2f2f4;
+  --color-header-veil: rgb(242 242 244 / 0.76);
+  --color-strip-veil: rgb(242 242 244 / 0.82);
+  --color-surface: #ffffff;
+  --color-elevated: #ececef;
+  --color-panel: #e3e3e8;
+  --color-accent: #0066cc;
+  --color-accent-dim: #0052a3;
+  --color-ink: #1d1d1f;
+  --color-ink-2: #48484a;
+  --color-ink-3: #6e6e73;
+  --color-player: #0066cc;
+  --color-hot: #d70015;
+  --color-warn: #b25000;
+  --color-ok: #248a3d;
+  --color-on-accent: #ffffff;
+  --color-on-warn: #ffffff;
+  --color-on-hot: #ffffff;
+  --color-card: rgb(0 0 0 / 0.04);
+  --color-card-hover: rgb(0 0 0 / 0.07);
+  --color-card-sunken: #ffffff;
+  --color-line: #d8d8dc;
+  --color-line-hover: #c2c2c8;
+  --color-field: #ececef;
+  --color-wp-tint: 255 255 255;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}
+
 /* ── color-scheme 跟随明暗模式 ──────────────────────────────────
  *
  * 原生控件（<select> 弹层、滚动条、数字输入框箭头、日期选择器）
@@ -687,6 +805,8 @@ html[data-style="everforest"][data-mode="light"] {
 }
 html[data-mode='light'] {
   color-scheme: light;
+  /* 阴影色：浅色底上用偏蓝深灰，纯黑会发脏 */
+  --shadow-rgb: 20 26 40;
   /* 浅色底上的分类色：同一色相压深，避免在白底上发飘 */
   --chart-1: #2563eb;
   --chart-2: #7c3aed;
@@ -698,6 +818,7 @@ html[data-mode='light'] {
 }
 html[data-mode='dark'] {
   color-scheme: dark;
+  --shadow-rgb: 0 0 0;
 }
 
 
@@ -791,22 +912,20 @@ html[data-wallpaper='1'][data-mode='dark'][data-wp='3'] {
   /* 这里只给底色，模糊交给模板上的 backdrop-blur-xl ——
      手写 backdrop-filter 会被 minifier 与 -webkit- 前缀合并成一条，
      产物里只剩前缀版本。 */
-  .app-header {
-    background: var(--color-base);
-  }
   /*
-   * 有壁纸时顶栏半透明，让图透出来一点。
-   *
-   * ★ 2026-10-31：这里原来写 `color-mix(in oklab, var(--color-base) 76%, transparent)`，
-   *   在"深色→浅色"切主题时**算出了旧值**：实测 data-mode=light、
-   *   --color-base=#f4f6fa，但顶栏 computed 仍是 rgba(18,20,29,0.76)
-   *   （深色底色 76%），于是浅色主题下顶栏是深灰底 + 深色文字 = 选项看不清。
-   *   改成两个按主题分别给的 token：不经过 color-mix 的变量内联，
-   *   属性值直接随 data-mode 变化，不存在"算过一次就缓存"的问题。
-   *   （与 theme.ts 顶部那段"不要用 JS 写行内 CSS 变量换肤"是同一个根因家族。）
+   * 2026-11-18：没壁纸时也走半透明纱。
+   * 原来是不透明 --color-base，滚动时海报到顶栏就被一条实心横杠硬切开；
+   * mac 的工具栏是内容从下面滚过去、玻璃把内容糊掉。
+   * 纱和底色同色：滚到顶部背后就是页面底色，看起来仍是纯色；
+   * 一旦有内容经过才露出模糊 —— 这正是要的效果。
    */
-  html[data-wallpaper='1'] .app-header {
+  .app-header {
     background: var(--color-header-veil);
+  }
+  /* 老内核（Chromium 66 投影仪/电视盒子）没有 backdrop-filter：
+     0.76 的纱背后直接是海报，文字会压在海报上，这些端退回实底色。 */
+  html[data-legacy-css='1'] .app-header {
+    background: var(--color-base);
   }
 }
 
@@ -899,10 +1018,13 @@ html[data-tv='1'] .app-header [data-site-menu] {
 }
 
 /* 窄视口（≤1024）：导航项只留图标，给右浮的搜索/设置和源下拉让宽度。
- * 不限 TV：PC 窄窗（800–1024、精确指针）同样会被浮动搜索压住文字
- * （2026-11-18 几何实测 800/900 命中）；>1024 恢复文字。 */
+ * ★ 必须排除 TV：电视/投影的 CSS 视口常是 960×540，但顶栏的搜索/设置
+ *   是 absolute 浮在右侧、源下拉已 flex-shrink:0，文字放得下。
+ *   不排除的话投影仪会把「直播/片库/收藏/历史/AI」全变成图标
+ *   （2026-11-18 用户实测：MuMu 1138 有字、投影仪 960 没字）。
+ *   PC 窄窗（800–1024、精确指针）仍按这里收掉文字。 */
 @media (max-width: 1024px) {
-  .app-header .nav-label {
+  html:not([data-tv='1']) .app-header .nav-label {
     display: none !important;
   }
 }
@@ -954,6 +1076,34 @@ html[data-tv='1'] .app-header {
 /* 顶栏变高，占满剩余视口的页面要跟着减 */
 html[data-tv='1'] {
   --header-h: 4.5rem;
+}
+
+/*
+ * 投影仪（960×540 一类）专用压缩档（2026-11-18 用户口径）：
+ * 目标是「有续播卡时第一行海报**连同片名**完整可见」。
+ * 540 高、6 列（卡高 307）时原来底边到 591，片名被切；这里省 4 处：
+ *   顶栏 72→56（-16）· 分类条 py 12→6（-12）· hero 下边距 20→12（-8）
+ *   · 卡片年份行隐藏（-20）
+ * 省出来的 56px 刚好够片名（标题 20 + 上边距 8）。
+ */
+@media (max-height: 600px) {
+  html[data-tv='1'] .app-header {
+    height: 3.5rem;
+  }
+  html[data-tv='1'] {
+    --header-h: 3.5rem;
+  }
+  html[data-tv='1'] .cat-chips {
+    padding-top: 0.375rem;
+    padding-bottom: 0.375rem;
+  }
+  html[data-tv='1'] .hero-card {
+    margin-bottom: 0.75rem;
+  }
+  /* 年份是次要信息，540 高时优先保片名 */
+  html[data-tv='1'] .poster-meta {
+    display: none;
+  }
 }
 html[data-tv='1'] .app-header .text-sm {
   font-size: 1.0625rem; /* 17px：电视上正文字号的下限 */
@@ -1152,12 +1302,28 @@ body,
   height: 100%;
 }
 
+/**
+ * Inter 的本地优先声明（A8，2026-11-18）。
+ *
+ * ★ 原来字体栈第一项写了 'Inter'，但仓库里从来没有 @font-face，
+ *   public/ 下也没有 woff2 —— 等于声明了一个永远不存在的字体，
+ *   实际渲染一直是 Segoe UI / 雅黑。
+ * ★ 这里用 local() 优先：装了 Inter 的机器用 Inter，没装的直接落到
+ *   系统字体（零字节、零 404）。要真正随包分发，把 Inter 的 latin
+ *   子集（约 50KB）放到 public/fonts/ 再补一条 url() 即可。
+ */
+@font-face {
+  font-family: 'InterLocal';
+  src: local('Inter'), local('Inter Variable'), local('InterVariable');
+  font-display: swap;
+}
+
 body {
   margin: 0;
   background: var(--color-base);
   color: var(--color-ink);
   font-family:
-    'Inter', 'PingFang SC', 'Microsoft YaHei', 'Source Han Sans SC', system-ui,
+    'InterLocal', 'PingFang SC', 'Microsoft YaHei', 'Source Han Sans SC', system-ui,
     -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -1213,6 +1379,39 @@ html[data-tv='1'] .cat-chips .meow-tv-focus {
 }
 
 /*
+ * 分类胶囊的横向渐隐（2026-11-18）。
+ *
+ * 桌面/平板上这一类横条会被硬切在容器边缘，看不出"右边还有分类"。
+ * 用 mask 做 28px 渐隐，data-fade 只虚真的有内容那一侧（滚到最右就不虚）。
+ * 手机端不虚：那一条是贴顶的玻璃横带（sticky + veil），虚边会把蒙层切断。
+ */
+.cat-chips[data-fade='right'] {
+  --chips-mask: linear-gradient(to right, #000 0, #000 calc(100% - 1.75rem), transparent 100%);
+}
+.cat-chips[data-fade='left'] {
+  --chips-mask: linear-gradient(to right, transparent 0, #000 1.75rem, #000 100%);
+}
+.cat-chips[data-fade='both'] {
+  --chips-mask: linear-gradient(
+    to right,
+    transparent 0,
+    #000 1.75rem,
+    #000 calc(100% - 1.75rem),
+    transparent 100%
+  );
+}
+.cat-chips[data-fade] {
+  -webkit-mask-image: var(--chips-mask);
+  mask-image: var(--chips-mask);
+}
+@media (max-width: 639px) {
+  .cat-chips[data-fade] {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+
+/*
  * 分段控件（设置页「追加/替换」「保留/覆盖」这类）。
  *
  * ★ 2026-11-13 用户口径：这里的焦点环要和「确认导入」那种普通按钮**一致**
@@ -1243,10 +1442,12 @@ html[data-tv='1'] .cat-chips .meow-tv-focus {
   will-change: transform;
 }
 .poster-card:hover {
-  transform: translateY(-6px) scale(1.03);
+  /* 2026-11-18：-6px/1.03 + 强调色描边偏「游戏启动器」手感，
+     收到 3px/1.015，阴影也退一档；保留一点上浮，不然网格像静态图。 */
+  transform: translateY(-3px) scale(1.015);
   box-shadow:
-    0 18px 40px -12px rgb(0 0 0 / 0.7),
-    0 0 0 1px color-mix(in oklab, var(--color-accent) 35%, transparent);
+    0 14px 30px -14px rgb(0 0 0 / 0.62),
+    0 0 0 1px rgb(var(--color-accent-rgb) / 0.22);
 }
 
 /* 骨架屏微光 */
@@ -1284,6 +1485,28 @@ html[data-tv='1'] .cat-chips .meow-tv-focus {
   animation: fade-up 0.35s ease both;
 }
 
+/*
+ * 列表错峰（A7）：相邻三列各差 35ms。
+ *
+ * 只做 3 档而不是逐项递增：60 张卡逐项递增会让最后一张等 1 秒，
+ * 反而像卡住。legacy / reduced-motion 下动画时长已被压到 0.01ms，
+ * 这 35–70ms 的延迟只剩观感上的错峰，不会真的等。
+ */
+.poster-grid > .fade-up:nth-child(3n + 2) {
+  animation-delay: 35ms;
+}
+.poster-grid > .fade-up:nth-child(3n + 3) {
+  animation-delay: 70ms;
+}
+
+/* 按下反馈：只动 transform，低端 GPU 也安全。
+   2026-11-18：原来 -2px/1.01 与 hover 几乎同幅，按下去像"弹回"；
+   改成轻微下沉，手感更像按在实物上。 */
+.poster-card:active {
+  transform: translateY(0) scale(0.985);
+  transition-duration: 90ms;
+}
+
 /* ══════════════════════════════════════════════════════════════
    磁贴（tile）—— 全站唯一定义
    ──────────────────────────────────────────────────────────────
@@ -1319,8 +1542,8 @@ html[data-tv='1'] .cat-chips .meow-tv-focus {
   }
   .tile:hover {
     background: var(--color-card-hover);
-    border-color: color-mix(in oklab, var(--color-accent) 35%, transparent);
-    box-shadow: 0 6px 18px -8px color-mix(in oklab, var(--color-accent) 28%, transparent);
+    border-color: rgb(var(--color-accent-rgb) / 0.35);
+    box-shadow: 0 6px 18px -8px rgb(var(--color-accent-rgb) / 0.28);
     transform: translateY(-1px);
   }
   .tile:active {
@@ -1332,7 +1555,7 @@ html[data-tv='1'] .cat-chips .meow-tv-focus {
      看起来像"选中了某个东西"（用户截图反馈过）。
      电视没有别的输入方式，焦点框是唯一的"现在选到哪"提示，必须留。 */
   html[data-tv='1'] .tile:focus-visible {
-    outline: 2px solid color-mix(in oklab, var(--color-accent) 65%, transparent);
+    outline: 2px solid rgb(var(--color-accent-rgb) / 0.65);
     outline-offset: 2px;
   }
   .tile:disabled,
@@ -1414,7 +1637,8 @@ html[data-tv='1'] .cat-chips .meow-tv-focus {
   .poster-grid {
     display: grid;
     column-gap: 1rem;
-    row-gap: 1.75rem;
+    /* 2026-11-18：28 → 32px。标题+年份两行压在 28px 里太挤，加大一档 */
+    row-gap: 2rem;
   }
   @media (max-height: 520px) {
     .poster-grid {
@@ -1749,7 +1973,7 @@ html[data-input='touch'] [data-tv-scroll].meow-tv-focus {
  * ── 表单控件跟随主题（2026-11-12 用户报「复选框还是系统蓝」）──────────────
  *
  * 原生勾选框/单选/滑块的颜色由 `accent-color` 决定，不给就落到浏览器默认蓝，
- * 和八套主题完全无关。`--color-accent` 每套都有对比度足够的 on-accent，
+ * 和九套主题完全无关。`--color-accent` 每套都有对比度足够的 on-accent，
  * 所以勾选态用实心 accent + on-accent 勾是安全的。
  */
 input[type='checkbox'],
@@ -1974,3 +2198,311 @@ html[data-style='oled'][data-mode='dark'] { --color-accent-rgb: 255 179 0; }
 html[data-style='oled'][data-mode='light'] { --color-accent-rgb: 163 74 0; }
 html[data-style='everforest'][data-mode='dark'] { --color-accent-rgb: 167 192 128; }
 html[data-style='everforest'][data-mode='light'] { --color-accent-rgb: 102 122 0; }
+html[data-style='graphite'][data-mode='dark'] { --color-accent-rgb: 10 132 255; }
+html[data-style='graphite'][data-mode='light'] { --color-accent-rgb: 0 102 204; }
+
+/* ══════════════════════════════════════════════════════════════
+   2026-11-18 视觉升级：表面 / 视口上限 / 动效兜底
+   ──────────────────────────────────────────────────────────────
+   这一节刻意放在所有 @layer 之外：它要压过 Tailwind utilities，
+   且不参与 @layer components 的优先级竞争。
+   ══════════════════════════════════════════════════════════════ */
+
+/*
+ * L1 内容块：实底 + 1px 描边 + 一档阴影。
+ *
+ * ★ 只给卡片容器用。按钮 / chip / 移动底栏继续走 --color-card：
+ *   那个 token 同时驱动 169 个 bg-card 和控件，改它会外溢。
+ */
+.surface-1 {
+  background: var(--color-elevated);
+  border: 1px solid var(--color-line);
+  box-shadow: var(--shadow-1);
+}
+
+/*
+ * L2 浮层玻璃。
+ *
+ * 底色用 --color-strip-veil（每个主题都给常量，0.82 不透明），
+ * 下面再垫 backdrop-filter 做真实模糊。Chromium 66 没有 backdrop-filter，
+ * 但 0.82 的底色本身就够遮住内容 —— 降级只丢"模糊感"，不会糊。
+ *
+ * ★ 玻璃层只允许 opacity 动效：祖先一旦有 transform，
+ *   backdrop-filter 的采样根会被破坏（见 A7 约束）。
+ */
+.glass-panel {
+  background: var(--color-strip-veil);
+  border: 1px solid var(--color-line-hover);
+  box-shadow: var(--shadow-2);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+}
+
+/* 老内核：没有 backdrop-filter，底色再压实一档 */
+html[data-legacy-css='1'] .glass-panel {
+  background: var(--color-elevated);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+/*
+ * 主按钮渐变。
+ *
+ * ★ 不要用 Tailwind 的 bg-gradient-to-r：v4 会生成
+ *   `linear-gradient(in oklab, ...)`，Chromium 66 不认这个插值语法，
+ *   整条 background-image 失效。这里写最普通的 135deg 线性渐变。
+ * ★ 先给 background-color 兜底：万一渐变不可用，仍是实心 accent。
+ */
+.btn-primary-gradient {
+  background-color: var(--color-accent);
+  background-image: linear-gradient(135deg, var(--color-accent), var(--color-accent-dim));
+}
+.btn-primary-gradient:hover {
+  filter: brightness(1.06);
+}
+
+/*
+ * 详情页片名。
+ *
+ * 用 rem 档（--fs-display），随 TV 根字号一起放大；
+ * 430px 以下收到 1.375rem，避免长片名换三行。
+ */
+.detail-title {
+  font-size: var(--fs-display);
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+@media (max-width: 430px) {
+  .detail-title {
+    font-size: 1.375rem;
+  }
+}
+
+/* TV 上大字档收一档：根字号已经是 18–24px，再乘 1.75rem 会过大 */
+html[data-tv='1'] {
+  --fs-display: 1.5rem;
+  --fs-title: 1.25rem;
+}
+
+/*
+ * 首页 hero（A6）。
+ *
+ * 数据侧只有竖版海报（2:3），所以 hero 不再把海报硬拉成 21:9：
+ * 左边放完整的竖版海报，右边放文字，背景用同一张图模糊放大做氛围。
+ * 这样既不裁掉主体，也不会把 17KB 的小图放大到糊。
+ */
+
+/*
+ * hero 是「压在图上」的一块内容，不能用普通 ink 变量：
+ * 深色主题白字 + 压暗纱；浅色主题必须翻成深字 + 亮纱，
+ * 否则浅色页面中间会杵着一块黑砖（2026-11-18 用户截图）。
+ * 这些值不进 28 变量门禁（不是主题块），按 data-mode 覆盖即可。
+ */
+:root {
+  --hero-ink: #ffffff;
+  --hero-ink-2: rgb(255 255 255 / 0.78);
+  --hero-ink-3: rgb(255 255 255 / 0.55);
+  --hero-line: rgb(255 255 255 / 0.12);
+  --hero-chip: rgb(255 255 255 / 0.1);
+  --hero-track: rgb(255 255 255 / 0.2);
+  --hero-star: #fcd34d;
+  --hero-scrim: linear-gradient(
+    to right,
+    rgb(0 0 0 / 0.7),
+    rgb(0 0 0 / 0.35) 55%,
+    rgb(0 0 0 / 0.6)
+  );
+}
+html[data-mode='light'] {
+  --hero-ink: #1d1d1f;
+  --hero-ink-2: rgb(29 29 31 / 0.78);
+  --hero-ink-3: rgb(29 29 31 / 0.55);
+  --hero-line: rgb(0 0 0 / 0.12);
+  --hero-chip: rgb(0 0 0 / 0.06);
+  --hero-track: rgb(0 0 0 / 0.12);
+  --hero-star: #b45309;
+  /* 亮纱要够实：底下是任意海报的模糊版，0.84 才压得住深字对比度 */
+  --hero-scrim: linear-gradient(
+    to right,
+    rgb(255 255 255 / 0.95),
+    rgb(255 255 255 / 0.84) 55%,
+    rgb(255 255 255 / 0.93)
+  );
+}
+
+/* hero 内部文字/分隔/胶囊。用类名而不是一长串 text-[color:var(...)]：
+   老内核与 minifier 都更稳。 */
+.hero-ink {
+  color: var(--hero-ink);
+}
+.hero-ink-2 {
+  color: var(--hero-ink-2);
+}
+.hero-ink-3 {
+  color: var(--hero-ink-3);
+}
+.hero-chip {
+  background: var(--hero-chip);
+  color: var(--hero-ink-2);
+}
+.hero-track {
+  background: var(--hero-track);
+}
+.hero-divider {
+  border-color: var(--hero-line);
+}
+.hero-star {
+  color: var(--hero-star);
+}
+
+.hero-bg {
+  background-size: cover;
+  background-position: center;
+  opacity: 0.72;
+  /* 28 → 20：顶栏也开了 backdrop-blur，两层 24/28 叠在一起滚动时会发灰 */
+  filter: blur(20px) saturate(1.15);
+  transform: scale(1.12);
+  transition: opacity 0.3s ease;
+}
+.hero-card:hover .hero-bg {
+  opacity: 0.85;
+}
+/* 浅色主题下亮纱已经压住背景，图只做淡淡一层底 */
+html[data-mode='light'] .hero-bg {
+  opacity: 0.5;
+}
+html[data-mode='light'] .hero-card:hover .hero-bg {
+  opacity: 0.62;
+}
+.hero-poster {
+  box-shadow: var(--shadow-2);
+}
+
+/* 老内核：关掉大面模糊（Chromium 66 上单张大图也偏贵），只留压暗的背景图 */
+html[data-legacy-css='1'] .hero-bg {
+  filter: none;
+  transform: none;
+  opacity: 0.3;
+}
+
+/*
+ * hero 的遮罩层。
+ * Tailwind 的 bg-gradient-to-r 在 v4 里是 `linear-gradient(in oklab, ...)`，
+ * Chromium 66 不认 oklab → 整条失效，文字会直接压在图上。
+ * 现在统一由 --hero-scrim 给普通 rgb 渐变，老内核同样能解析。
+ */
+.hero-scrim {
+  background: var(--hero-scrim);
+}
+
+/*
+ * TV / 投影仪：hero 让位给首行海报（2026-11-18 用户口径）。
+ *
+ * 10-foot UI 的首屏必须先保证「第一行海报完整可见」：
+ * MuMu(1138×640) 原 hero 274px，第一张卡底部到 752 —— 被切掉 112px。
+ * TV 上把右栏简介压到 2 行、去掉导演/主演、收小海报与内边距；
+ * 投影仪(960×540) 再降一档：只留标题 + 进度条 + 按钮。
+ * 数值是量出来的，不是拍脑袋：见 docs 的 §13.6。
+ */
+html[data-tv='1'] .hero-body {
+  padding: 0.75rem 1rem;
+  gap: 1rem;
+}
+html[data-tv='1'] .hero-poster {
+  width: 6rem;
+}
+html[data-tv='1'] .hero-intro {
+  -webkit-line-clamp: 2;
+}
+html[data-tv='1'] .hero-staff {
+  display: none;
+}
+html[data-tv='1'] .hero-actions {
+  margin-top: 0.5rem;
+}
+/* 片名本身是焦点位：环要留白，否则贴在字上 */
+html[data-tv='1'] .hero-title-btn {
+  padding: 0.15rem 0.45rem;
+  margin-left: -0.45rem;
+  border-radius: 0.5rem;
+}
+@media (max-height: 600px) {
+  html[data-tv='1'] .hero-side,
+  html[data-tv='1'] .hero-progress-text {
+    display: none;
+  }
+  html[data-tv='1'] .hero-body {
+    /* 12 → 9：960×540 下 hero 正好卡在 161px 时海报底边贴到屏幕
+       （540/540），留 8px 呼吸位 */
+    padding: 0.375rem 0.75rem;
+  }
+  html[data-tv='1'] .hero-poster {
+    width: 4.5rem;
+  }
+}
+
+/* TV/老内核不给卡片阴影：一屏 60 张卡的 box-shadow 在低端 GPU 上掉帧 */
+html[data-tv='1'] .surface-1,
+html[data-legacy-css='1'] .surface-1 {
+  box-shadow: none;
+}
+
+/*
+ * 对话框的视口上限。
+ *
+ * ★ 先写 vh 再写 dvh：Chrome 108+ 取 dvh（跟地址栏收缩），
+ *   Chromium 66 整条丢弃 dvh、退回上面的 vh。
+ *   不要写成 Tailwind 的 max-h-[calc(100dvh-…)] —— 老内核没有兜底。
+ */
+.max-h-dialog {
+  max-height: calc(100vh - 4rem);
+  max-height: calc(100dvh - 4rem);
+}
+.max-h-dialog-lg {
+  max-height: calc(100vh - 3rem);
+  max-height: calc(100dvh - 3rem);
+}
+
+/* 老内核：卡片不加阴影（60 张卡的 box-shadow 在 Chromium 66 上掉帧） */
+html[data-legacy-css='1'] .surface-1 {
+  box-shadow: none;
+}
+
+/*
+ * 动效守卫。
+ *
+ * ★ 只关装饰性过渡/动画，保留加载转圈与骨架微光：
+ *   全关会让加载中的界面看起来"卡死"（Q1）。
+ * ★ 用 0.01ms 而不是 animation:none：仍会触发 animationend，
+ *   不会卡住等事件回调的逻辑。
+ */
+@media (prefers-reduced-motion: reduce) {
+  html * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  html .animate-spin,
+  html .skeleton {
+    animation-duration: 900ms !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+html[data-legacy-css='1'] * {
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+}
+html[data-legacy-css='1'] .animate-spin {
+  animation-duration: 900ms !important;
+  animation-iteration-count: infinite !important;
+}
+
+/* 高对比度：阴影与半透明描边会消失，给实边框兜底 */
+@media (forced-colors: active) {
+  .surface-1 {
+    border: 1px solid CanvasText;
+  }
+}

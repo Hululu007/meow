@@ -18,10 +18,11 @@
         "minWidth": 1024,
         "minHeight": 640,
         "resizable": true,
+        "decorations": false,
+        "shadow": false,
         "fullscreen": false,
         "theme": "Dark",
-        "backgroundColor": "#12141d",
-        "additionalBrowserArgs": "--remote-debugging-port=9455"
+        "backgroundColor": "#12141d"
       }
     ],
     "security": {

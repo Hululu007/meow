@@ -414,7 +414,7 @@ onBeforeUnmount(() => {
         data-tv-scope
         role="dialog"
         aria-modal="true"
-        class="flex max-h-[calc(100dvh-3rem)] w-full max-w-[34rem] flex-col overflow-hidden rounded-xl border border-line bg-elevated shadow-2xl"
+        class="max-h-dialog-lg glass-panel flex w-full max-w-[34rem] flex-col overflow-hidden rounded-panel"
       >
       <div class="flex shrink-0 items-center gap-2 border-b border-line px-4 py-3">
         <h2 class="text-sm font-medium text-ink">{{ isEdit ? '编辑片库' : '添加片库' }}</h2>

@@ -1,5 +1,5 @@
 /**
- * 主题：风格（8 套）× 明暗（浅/深）× 偏好（浅/深/跟随系统）。
+ * 主题：风格（9 套）× 明暗（浅/深）× 偏好（浅/深/跟随系统）。
  *
  * ## 三层结构（与参考项目一致）
  *
@@ -7,7 +7,7 @@
  * themeMode   'light' | 'dark' | 'system'   ← 用户的选择
  *      ↓ resolve()
  * resolved    'light' | 'dark'              ← 实际生效的明暗
- * themeStyle  'meow' | 'claude' | 'material' | 'nord' | 'tokyo' | 'catppuccin' | 'oled' | 'everforest'
+ * themeStyle  'meow' | 'claude' | 'material' | 'nord' | 'tokyo' | 'catppuccin' | 'oled' | 'everforest' | 'graphite'
  *      ↓
  * THEMES[style][resolved]  → base / accent 两个运行时需要的值
  * ```
@@ -23,7 +23,7 @@
  * 所以现象很迷惑。
  *
  * 最终改成切两个 data 属性 + CSS 选择器：选择器匹配变化会正规触发样式失效，
- * 八套风格 × 浅深立刻全部正确。变量表在 tokens.css。
+ * 九套风格 × 浅深立刻全部正确。变量表在 tokens.css。
  *
  * ## 防闪烁
  *
@@ -48,6 +48,8 @@ export const THEME_STYLES: Array<{
   { value: 'catppuccin', label: 'Catppuccin', hint: '柔紫 · 奶油', swatch: ['#cba6f7', '#181825', '#eff1f5'] },
   { value: 'oled', label: 'OLED', hint: '纯黑 · 高对比', swatch: ['#ffb300', '#000000', '#ffffff'] },
   { value: 'everforest', label: 'Everforest', hint: '绿灰 · 护眼', swatch: ['#a7c080', '#2b3339', '#fdf6e3'] },
+  /* mac 风：中性灰窗口底 + 系统蓝。品牌青不动，只作为第 9 套可选 */
+  { value: 'graphite', label: 'Graphite', hint: '中性灰 · 系统蓝', swatch: ['#0a84ff', '#1c1c1e', '#f2f2f4'] },
 ]
 
 export const THEME_MODES: Array<{ value: ThemeMode; label: string; hint: string }> = [
@@ -107,6 +109,10 @@ const THEMES: Record<ThemeStyle, { light: Vars; dark: Vars }> = {
     dark: { base: '#2b3339', accent: '#a7c080' },
     light: { base: '#fdf6e3', accent: '#667a00' },
   },
+  graphite: {
+    dark: { base: '#1c1c1e', accent: '#0a84ff' },
+    light: { base: '#f2f2f4', accent: '#0066cc' },
+  },
 }
 
 /**
@@ -137,7 +143,7 @@ export function resolveMode(mode: ThemeMode): 'light' | 'dark' {
  *   不会重算** —— 变量读出来是新值，但元素背景仍是旧色；同一父节点下新建的
  *   克隆元素却是对的。这是增量样式失效的缺陷。
  *   改成切 data 属性 + CSS 选择器后，选择器匹配变化会正规触发样式失效，
- *   八套主题 × 浅深所有元素立刻正确。
+ *   九套主题 × 浅深所有元素立刻正确。
  *
  * 变量表因此挪到了 tokens.css（`html[data-style][data-mode]`），
  * 那份是唯一的运行时来源；本文件的 THEMES 只保留 base/accent。
@@ -279,6 +285,12 @@ export const WALLPAPERS: Wallpaper[] = [
     label: '青色光带',
     src: `${WP}aura.webp`,
     thumb: `${WP}aura-thumb.webp`,
+  },
+  {
+    value: 'aurora',
+    label: '极光',
+    src: `${WP}aurora.svg`,
+    thumb: `${WP}aurora.svg`,
   },
   {
     value: 'cat',

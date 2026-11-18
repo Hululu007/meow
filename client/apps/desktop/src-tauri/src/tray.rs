@@ -27,29 +27,60 @@ struct DesktopPrefs {
     /// 关闭窗口时隐藏到托盘（默认开）。
     #[serde(rename = "closeToTray", default = "default_true")]
     close_to_tray: bool,
+    /// 是否开放 WebView2 CDP 调试端口（B7，默认开）。
+    /// 关闭后 `pc_*` 自动化与冒烟会失能，改后需要重启应用。
+    #[serde(rename = "debugPort", default = "default_true")]
+    debug_port: bool,
 }
 
 fn default_true() -> bool {
     true
 }
 
+/// 读整份偏好；文件缺失/损坏都按默认值处理。
+fn read_prefs(app: &tauri::AppHandle) -> DesktopPrefs {
+    let path = resolve_app_data(app).join(PREFS_FILE);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<DesktopPrefs>(&text).ok())
+        .unwrap_or(DesktopPrefs {
+            close_to_tray: true,
+            debug_port: true,
+        })
+}
+
 /// 读「关闭窗口时隐藏到托盘」。文件缺失/损坏都按默认开处理。
 pub fn close_to_tray(app: &tauri::AppHandle) -> bool {
-    let path = resolve_app_data(app).join(PREFS_FILE);
-    match std::fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str::<DesktopPrefs>(&text)
-            .map(|p| p.close_to_tray)
-            .unwrap_or(true),
-        Err(_) => true,
-    }
+    read_prefs(app).close_to_tray
+}
+
+/// B7：调试端口是否开放。
+pub fn debug_port(app: &tauri::AppHandle) -> bool {
+    read_prefs(app).debug_port
 }
 
 /// 前端 IPC 写入偏好（`desktop_set_close_to_tray` 命令调用）。
 pub fn set_close_to_tray(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let dir = resolve_app_data(app);
     std::fs::create_dir_all(&dir).map_err(|e| format!("建应用数据目录失败: {e}"))?;
+    let prev = read_prefs(app);
     let text = serde_json::to_string_pretty(&DesktopPrefs {
         close_to_tray: enabled,
+        // ★ 必须保留另一个字段：整结构重写会把 debugPort 悄悄改回默认值
+        debug_port: prev.debug_port,
+    })
+    .map_err(|e| format!("序列化桌面偏好失败: {e}"))?;
+    std::fs::write(dir.join(PREFS_FILE), text).map_err(|e| format!("写桌面偏好失败: {e}"))
+}
+
+/// B7：写入调试端口偏好（重启后生效）。
+pub fn set_debug_port(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let dir = resolve_app_data(app);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("建应用数据目录失败: {e}"))?;
+    let prev = read_prefs(app);
+    let text = serde_json::to_string_pretty(&DesktopPrefs {
+        close_to_tray: prev.close_to_tray,
+        debug_port: enabled,
     })
     .map_err(|e| format!("序列化桌面偏好失败: {e}"))?;
     std::fs::write(dir.join(PREFS_FILE), text).map_err(|e| format!("写桌面偏好失败: {e}"))

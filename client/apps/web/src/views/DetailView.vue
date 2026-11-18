@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { fetchDetail, fetchPlay, parsePlayLines, prefetchDanmaku } from '@/api'
+import { fetchDetail, fetchPlay, parsePlayLines, prefetchDanmaku, proxyImage } from '@/api'
 import { startBatchCache } from '@/api/library'
 import type { VodItem } from '@/api/types'
 import { isFavorite, toggleFavorite } from '@/stores/favorites'
@@ -15,6 +15,7 @@ import { episodeNumber, findHistoryByTitle, getProgress, listHistory, pushHistor
 import { getLinePref } from '@/stores/linePref'
 import { useAppStore } from '@/stores/app'
 import PosterImage from '@/components/common/PosterImage.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
 import { cleanIntro, cleanLine } from '@/utils/introText'
 
 const route = useRoute()
@@ -30,6 +31,97 @@ const loading = ref(true)
 const error = ref('')
 /** 拿不到详情时，用入口带来的片名转去搜索页（见 load()） */
 const fallbackTitle = ref('')
+
+/**
+ * 详情页的“海报氛围色”（A5a/A5b，2026-11-18）。
+ *
+ * 做法：把海报缩到 16×16 取平均色，铺一层低透明度径向渐变在内容后面。
+ * 为什么不让它压过文字：alpha 固定在 .34 并向下淡出，文字仍在底色上。
+ *
+ * ★ 必须走 proxyImage 的**同一个 URL** 并设 crossOrigin：
+ *   源站图片没有 CORS 头，直连会让 canvas 被污染，getImageData 抛
+ *   SecurityError；后端代理对 tauri.localhost 放行并下发 ACAO。
+ * ★ TV / 老内核不启用：大面模糊与 canvas 采样在投影仪上没有收益。
+ * ★ 任一环节失败都静默 —— 氛围色只是装饰，不能影响详情页可用性。
+ */
+const ambientRgb = ref<[number, number, number] | null>(null)
+
+function ambientAllowed(): boolean {
+  if (typeof document === 'undefined') return false
+  const d = document.documentElement.dataset
+  return d.tv !== '1' && d.legacyCss !== '1'
+}
+
+async function sampleAmbient(url: string) {
+  if (!ambientAllowed()) return
+  const key = `meow.ambient:${url}`
+  try {
+    const cached = localStorage.getItem(key)
+    if (cached) {
+      const rgb = JSON.parse(cached)
+      if (Array.isArray(rgb) && rgb.length === 3) {
+        ambientRgb.value = rgb as [number, number, number]
+        return
+      }
+    }
+  } catch {
+    /* localStorage 不可用时继续采样 */
+  }
+  try {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve()
+      img.onerror = () => reject(new Error('poster load failed'))
+      img.src = proxyImage(url)
+    })
+    const canvas = document.createElement('canvas')
+    canvas.width = 16
+    canvas.height = 16
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return
+    ctx.drawImage(img, 0, 0, 16, 16)
+    const data = ctx.getImageData(0, 0, 16, 16).data
+    let r = 0
+    let g = 0
+    let b = 0
+    let n = 0
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] < 128) continue
+      r += data[i]
+      g += data[i + 1]
+      b += data[i + 2]
+      n++
+    }
+    if (!n) return
+    const rgb: [number, number, number] = [Math.round(r / n), Math.round(g / n), Math.round(b / n)]
+    ambientRgb.value = rgb
+    try {
+      localStorage.setItem(key, JSON.stringify(rgb))
+    } catch {
+      /* 配额满不影响显示 */
+    }
+  } catch {
+    /* 采样失败：不显示氛围层 */
+  }
+}
+
+watch(
+  () => item.value?.vod_pic,
+  (pic) => {
+    ambientRgb.value = null
+    if (pic) void sampleAmbient(pic)
+  },
+  { immediate: true },
+)
+
+const ambientStyle = computed(() => {
+  const c = ambientRgb.value
+  if (!c) return null
+  return {
+    background: `radial-gradient(120% 90% at 50% 0%, rgba(${c[0]},${c[1]},${c[2]},0.34), rgba(0,0,0,0) 72%)`,
+  }
+})
 
 /**
  * 这个条目来自哪个源（显示名，如「金牌」）。
@@ -480,6 +572,13 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="mx-auto max-w-6xl px-6 py-6 max-sm:px-3 max-sm:py-4">
+    <!-- 海报氛围层：只在 PC/Web 生效（TV 与老内核由 ambientAllowed 挡掉） -->
+    <div
+      v-if="ambientStyle"
+      class="pointer-events-none fixed inset-x-0 top-0 -z-10 h-[42vh]"
+      :style="ambientStyle"
+      aria-hidden="true"
+    />
     <button
       class="mb-5 flex items-center gap-1.5 text-sm text-ink-2 transition hover:text-accent max-sm:mb-3 max-sm:text-[13px]"
       @click="router.back()"
@@ -499,9 +598,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-else-if="error && !item" class="py-20 text-center text-ink-2">
-      {{ error }}
-    </div>
+    <EmptyState v-else-if="error && !item" icon="🎬" :title="error" hint="可以返回重试，或换个站点再搜" />
 
     <template v-else-if="item">
       <!--
@@ -537,7 +634,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="min-w-0 flex-1">
-          <h1 class="text-3xl font-semibold leading-tight tracking-tight max-sm:text-[22px] lg:text-2xl">{{ item.vod_name }}</h1>
+          <h1 class="detail-title font-semibold">{{ item.vod_name }}</h1>
 
           <!--
             自上次看的新增集数（2026-11-06 用户点单"详情页标新"）。
@@ -552,7 +649,7 @@ onBeforeUnmount(() => {
             自上次看新增 {{ newEps.count }} 集
           </div>
 
-          <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-ink-3 max-sm:mt-2 max-sm:gap-x-2 max-sm:gap-y-1 max-sm:text-[13px]">
+          <div class="surface-1 mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-panel px-3 py-2 text-sm text-ink-3 max-sm:mt-2 max-sm:gap-x-2 max-sm:gap-y-1 max-sm:text-[13px]">
             <span v-if="item.vod_year">{{ item.vod_year }}</span>
             <span v-if="item.vod_area">{{ item.vod_area }}</span>
             <span v-if="item.vod_remarks" class="rounded bg-accent/15 px-1.5 py-0.5 text-accent">
@@ -691,7 +788,7 @@ onBeforeUnmount(() => {
       <!-- 右栏：播放源 + 剧集 -->
       <div data-tv-col="right" class="min-w-0 flex-1 max-sm:mt-0.5">
         <!-- 播放源 -->
-        <section v-if="lines.length">
+        <section v-if="lines.length" class="surface-1 rounded-panel p-4 max-sm:p-3">
           <h2 class="text-sm font-medium text-ink-2">播放源</h2>
           <div class="mt-3 flex flex-wrap gap-2">
             <button

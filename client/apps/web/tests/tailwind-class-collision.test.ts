@@ -16,7 +16,7 @@ import { join } from 'node:path'
  *
  * 只有 `base` 撞（Tailwind 的 md/lg/sm/xs 没被定义成颜色名），
  * 但以后加了 `--color-sm` 之类就会同样中招，所以这里按"字号档位关键字"
- * 统一锁：src 里出现这些字面量就报错，逼你用 `text-[length:var(--fs-*)]`
+ * 统一锁：src 里出现这些字面量就报错，逼你用 `text-[length:var(--fs-lg)]`
  * 或 `text-lg` 这类不冲突的写法。
  */
 const ROOT = join(__dirname, '..', 'src')

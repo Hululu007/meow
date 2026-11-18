@@ -307,9 +307,9 @@ if (!v.paused && !v.seeking && watchedTickAt) {
    表现为 `playState=running` 但 `currentTime` 恒为 0。需要闪烁反馈时用 JS 定时切 class。
    另外 `color-mix(..., transparent)` 用在 `outline-color` 上实测解析成 alpha=0，直接给不透明色。
 
-结构：8 套风格 × 浅/深 = **16 个变量块，每块 27 个变量**；壁纸再叠
+结构：9 套风格 × 浅/深 = **18 个变量块，每块 28 个变量**；壁纸再叠
 `data-wallpaper` + `data-wp` 四档覆盖。新增主题只改 `tokens.css`（运行时唯一真源）+
-`prefs.ts` 的联合类型 + `index.html` 首帧白名单；`theme.ts` 的 `THEMES` 只留
+`prefs.ts` 的联合类型与白名单 + `index.html` 首帧白名单；`theme.ts` 的 `THEMES` 只留
 `base`/`accent`。门禁 `tests/theme-tokens.test.ts`。
 
 ### 3.5 TV 焦点、返回键与控制栏

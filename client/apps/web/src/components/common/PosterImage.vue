@@ -51,6 +51,21 @@ function onError() {
   // 留着旧地址会闪一下浏览器的裂图图标。
   url.value = ''
 }
+
+/**
+ * 失败后点击重试（B2，缩范围：只处理海报，不碰播放器）。
+ *
+ * 带 _r 破坏缓存：源站 404 会被浏览器缓存，原样重设同一 URL
+ * 会立刻再失败一次，看起来像"点了没反应"。
+ */
+function retry(e: Event) {
+  e.stopPropagation()
+  e.preventDefault()
+  failed.value = false
+  loaded.value = false
+  const base = resolve(props.src)
+  url.value = base ? `${base}${base.includes('?') ? '&' : '?'}_r=${Date.now()}` : ''
+}
 </script>
 
 <template>
@@ -70,22 +85,32 @@ function onError() {
     <!-- 占位：无图 / 加载中 / 加载失败都用它，避免浏览器裂图 -->
     <div
       v-if="!url || failed || !loaded"
-      class="pointer-events-none absolute inset-0 grid place-items-center"
-      :class="url && !failed ? 'opacity-40' : 'opacity-60'"
+      class="absolute inset-0 flex flex-col items-center justify-center"
+      :class="
+        failed
+          ? 'pointer-events-auto cursor-pointer'
+          : 'pointer-events-none'
+      "
+      :role="failed ? 'button' : undefined"
+      :aria-label="failed ? '重新加载海报' : undefined"
+      @click="failed ? retry($event) : undefined"
     >
-      <svg
-        class="h-8 w-8 text-ink-3/40"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.6"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      >
-        <!-- 胶片图标 -->
-        <rect x="2.5" y="4.5" width="19" height="15" rx="2" />
-        <path d="M7 4.5v15M17 4.5v15M2.5 9.5h4.5M2.5 14.5h4.5M17 9.5h4.5M17 14.5h4.5" />
-      </svg>
+      <div :class="url && !failed ? 'opacity-40' : 'opacity-60'">
+        <svg
+          class="h-8 w-8 text-ink-3/40"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <!-- 胶片图标 -->
+          <rect x="2.5" y="4.5" width="19" height="15" rx="2" />
+          <path d="M7 4.5v15M17 4.5v15M2.5 9.5h4.5M2.5 14.5h4.5M17 9.5h4.5M17 14.5h4.5" />
+        </svg>
+      </div>
+      <span v-if="failed" class="mt-1 text-[length:var(--fs-tiny)] text-ink-3">点击重试</span>
     </div>
   </div>
 </template>

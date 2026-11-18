@@ -140,7 +140,12 @@
     if (window.__meowTvDispose) window.__meowTvDispose()
   } catch (e) {}
 
-  var FOCUSABLE = 'a[href],button,input,select,textarea,[tabindex]:not([tabindex="-1"])'
+    /*
+   * data-tv-skip：页面明确声明"这一块不参与遥控器移焦"。
+   * 首页续播卡里海报和片名都是点击区，但遥控器只需要停在
+   * 「继续播放 / 详情」两个按钮上 —— 否则 ↑↓ 在卡片里空转（2026-11-18）。
+   */
+  var FOCUSABLE = 'a[href]:not([data-tv-skip]),button:not([data-tv-skip]),input:not([data-tv-skip]),select:not([data-tv-skip]),textarea:not([data-tv-skip]),[tabindex]:not([tabindex="-1"]):not([data-tv-skip])'
   var current = -1
   /**
    * 最近一次真正加过焦点框的元素。

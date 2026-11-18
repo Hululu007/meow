@@ -17,7 +17,7 @@ cd client/apps/web && npx vitest run
 | `playbackPolicy.ts` | ABR 档位、欠载判定、倍速恢复的边界（1.25x、带宽卡线、缓冲 1.5s） |
 | `liveMerge.ts` | 台名归一化、跨源合并、线路池 |
 | `danmaku` 调度 | 同步容差、缓冲暂停、密度 |
-| `theme-tokens` | 8 套主题风格 × 每块 27 个变量是否齐全（少一个就有元素拿 `:root`） |
+| `theme-tokens` | 9 套主题风格 × 每块 28 个变量是否齐全（少一个就有元素拿 `:root`） |
 
 ::: tip 抽纯函数的判据
 「在组件里只能靠真机 + 慢源才能验证」的逻辑，就抽成纯函数进单测。

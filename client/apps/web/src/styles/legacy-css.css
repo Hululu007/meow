@@ -293,3 +293,18 @@ html[data-legacy-css='1'] .mtb-item > * + * {
     margin-top: 0.125rem;
   }
 }
+
+/* ── 10. 移动底栏的玻璃兜底 ─────────────────────────────────────
+ *
+ * MobileTabBar 直接写 backdrop-filter（不在 .backdrop-blur 类上），
+ * §7 的类选择器匹配不到。老内核上它只剩 --color-card（5.5% 白），
+ * 底下的海报会直接透上来，字看不清。
+ *
+ * 用 --color-elevated 实色：比页面亮一档，正好承担"毛玻璃没了、
+ * 内容要盖住"的角色（与 §7 同一口径）。
+ */
+html[data-legacy-css='1'] .mobile-tabbar {
+  background: var(--color-elevated);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}

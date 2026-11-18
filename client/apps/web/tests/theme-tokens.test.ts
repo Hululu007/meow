@@ -135,3 +135,91 @@ describe('主题对比度', () => {
     })
   }
 })
+
+/**
+ * 表面上的文字对比度（T1，2026-11-18）。
+ *
+ * 现有门禁只测「文字 vs base」。视觉升级把卡片改成实底
+ * （--color-elevated）后，文字实际落在更亮的表面上，必须单独测。
+ *
+ * ★ 为什么 ink-3 的门槛是 3.5 而不是 4.5：
+ *   实测 18 个主题里最差的是 meow-dark 在 elevated 上 3.73。
+ *   本轮不改 ink-3 的色值（那会波及 16 个主题的全部三级文字），
+ *   因此按 3.5 兜底并记录为已知限制；ink-2 仍按 4.5 严管。
+ * ★ ink 在表面上也用 5.5：everforest-dark 的 ink/elevated 是 5.83，
+ *   拿不到 base 上的 7。表面比 base 亮，这是必然的代价。
+ */
+function parseRgb(v: string): [number, number, number, number] {
+  if (v.startsWith('#')) {
+    const h = v.slice(1)
+    return [
+      parseInt(h.slice(0, 2), 16),
+      parseInt(h.slice(2, 4), 16),
+      parseInt(h.slice(4, 6), 16),
+      1,
+    ]
+  }
+  const m = /rgb\(([^)]+)\)/.exec(v)
+  if (!m) throw new Error(`无法解析颜色：${v}`)
+  const [channels, alpha] = m[1].split('/').map((s) => s.trim())
+  const [r, g, b] = channels.split(/\s+/).map(Number)
+  return [r, g, b, alpha ? parseFloat(alpha) : 1]
+}
+
+/** fg（可带 alpha）合成到 bg 上 */
+function over(fg: [number, number, number, number], bg: [number, number, number, number]) {
+  const a = fg[3]
+  return [
+    fg[0] * a + bg[0] * (1 - a),
+    fg[1] * a + bg[1] * (1 - a),
+    fg[2] * a + bg[2] * (1 - a),
+    1,
+  ] as [number, number, number, number]
+}
+
+function contrastRgb(a: [number, number, number, number], b: [number, number, number, number]) {
+  const rel = (c: [number, number, number, number]) =>
+    0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+  const lin = (v: number) => {
+    const x = v / 255
+    return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4)
+  }
+  const x = rel(a)
+  const y = rel(b)
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05)
+}
+
+describe('表面文字对比度（卡片/浮层）', () => {
+  it('ink-2 在卡片与浮层上 ≥4.5:1', () => {
+    for (const [name, vars] of blocks) {
+      const base = parseRgb(vars['color-base'])
+      const card = over(parseRgb(vars['color-card']), base)
+      const elevated = parseRgb(vars['color-elevated'])
+      const ink2 = parseRgb(vars['color-ink-2'])
+      expect(contrastRgb(ink2, card), `${name} ink-2/card`).toBeGreaterThanOrEqual(4.5)
+      expect(contrastRgb(ink2, elevated), `${name} ink-2/elevated`).toBeGreaterThanOrEqual(4.5)
+    }
+  })
+
+  it('ink 在卡片与浮层上 ≥5.5:1', () => {
+    for (const [name, vars] of blocks) {
+      const base = parseRgb(vars['color-base'])
+      const card = over(parseRgb(vars['color-card']), base)
+      const elevated = parseRgb(vars['color-elevated'])
+      const ink = parseRgb(vars['color-ink'])
+      expect(contrastRgb(ink, card), `${name} ink/card`).toBeGreaterThanOrEqual(5.5)
+      expect(contrastRgb(ink, elevated), `${name} ink/elevated`).toBeGreaterThanOrEqual(5.5)
+    }
+  })
+
+  it('ink-3 在卡片与浮层上 ≥3.5:1（已知限制，见块注释）', () => {
+    for (const [name, vars] of blocks) {
+      const base = parseRgb(vars['color-base'])
+      const card = over(parseRgb(vars['color-card']), base)
+      const elevated = parseRgb(vars['color-elevated'])
+      const ink3 = parseRgb(vars['color-ink-3'])
+      expect(contrastRgb(ink3, card), `${name} ink-3/card`).toBeGreaterThanOrEqual(3.5)
+      expect(contrastRgb(ink3, elevated), `${name} ink-3/elevated`).toBeGreaterThanOrEqual(3.5)
+    }
+  })
+})

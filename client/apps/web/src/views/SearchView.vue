@@ -13,6 +13,7 @@ import { rankGroups } from '@/api/searchRank'
 import { siteAffinity } from '@/api/searchAffinity'
 import { networkErrorText, nextRetryDelay } from '@/api/networkRetry'
 import PosterCard from '@/components/common/PosterCard.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
 import PosterImage from '@/components/common/PosterImage.vue'
 import { colsStyle, useCardCols } from '@/composables/useCardCols'
 import { useAppStore } from '@/stores/app'
@@ -772,27 +773,28 @@ onBeforeUnmount(() => {
       </span>
     </div>
 
-    <div v-else-if="error && !list.length && !groups.length" class="mt-16 text-center">
-      <div class="text-3xl opacity-40">🔍</div>
-      <p class="mt-3 text-sm text-ink-2">{{ error }}</p>
-      <!-- 错误态没有按钮 = 死路：搜索失败/无结果都要能就地再试一次 -->
-      <div class="mt-5 flex flex-wrap items-center justify-center gap-2">
-        <button
-          type="button"
-          class="rounded-md bg-card px-4 py-2.5 text-sm hover:bg-card-hover"
-          @click="run()"
-        >
-          重新搜索
-        </button>
-        <button
-          type="button"
-          class="rounded-md bg-accent px-4 py-2.5 text-sm font-medium text-on-accent hover:bg-accent-dim"
-          @click="scope = scope === 'current' ? 'all' : 'current'; run()"
-        >
-          {{ scope === 'current' ? '搜全部站点' : '只搜当前站点' }}
-        </button>
-      </div>
-    </div>
+    <EmptyState
+      v-else-if="error && !list.length && !groups.length"
+      class="mt-16"
+      icon="🔍"
+      :title="error"
+      hint="换个关键词，或扩大搜索范围再试"
+    >
+      <button
+        type="button"
+        class="rounded-md bg-card px-4 py-2.5 text-sm hover:bg-card-hover"
+        @click="run()"
+      >
+        重新搜索
+      </button>
+      <button
+        type="button"
+        class="btn-primary-gradient rounded-md px-4 py-2.5 text-sm font-medium text-on-accent"
+        @click="scope = scope === 'current' ? 'all' : 'current'; run()"
+      >
+        {{ scope === 'current' ? '搜全部站点' : '只搜当前站点' }}
+      </button>
+    </EmptyState>
 
     <!-- 聚合结果：每个源一张卡片 -->
     <div

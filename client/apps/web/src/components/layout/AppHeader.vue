@@ -7,6 +7,12 @@ import { listFavorites } from '@/stores/favorites'
 import { pendingUpdateCount } from '@/stores/favUpdates'
 import { getWebdav } from '@/stores/prefs'
 import { getSyncStatus, onSyncStatus, type SyncStatus } from '@/stores/sync'
+import { beginWindowDrag, toggleMaximizeOnDblClick } from '@/composables/useWindowDrag'
+import { isDesktopShell } from '@/compat/shell'
+import WindowControls from './WindowControls.vue'
+
+/** 红黄绿只在 Tauri 壳渲染 */
+const desktopShell = isDesktopShell()
 
 const store = useAppStore()
 const router = useRouter()
@@ -221,7 +227,12 @@ function pickSite(key: string) {
 <template>
   <header
     class="app-header sticky top-0 z-30 flex h-16 items-center gap-2 border-b border-line px-3 backdrop-blur-xl max-sm:gap-1.5 sm:gap-3 sm:px-6"
+    @pointerdown="beginWindowDrag"
+    @dblclick="toggleMaximizeOnDblClick"
   >
+    <!-- 左上角红黄绿（B4）：只在 Tauri 壳渲染；Web/TV/fpk 不显示 -->
+    <WindowControls v-if="desktopShell" class="mr-1 shrink-0" />
+
     <!-- Logo -->
     <!-- 圆角必须在 <a> 上：tv-nav 的焦点框是 box-shadow，半径跟元素自身走。
          只给 img 加圆角的话，框会画成直角（2026-11-18 用户报「logo 聚焦是方形的」）。 -->
@@ -270,7 +281,7 @@ function pickSite(key: string) {
       <div
         v-if="showSites"
         data-tv-scope
-        class="absolute left-0 top-full mt-2 max-h-[70vh] w-64 overflow-y-auto rounded-lg border border-line bg-elevated p-1.5 shadow-2xl max-sm:max-h-[60vh] max-sm:w-[15rem] max-sm:p-2"
+        class="glass-panel absolute left-0 top-full mt-2 max-h-[70vh] w-64 overflow-y-auto rounded-panel p-1.5 max-sm:max-h-[60vh] max-sm:w-[15rem] max-sm:p-2"
         @mouseleave="showSites = false"
       >
         <button
@@ -429,7 +440,7 @@ function pickSite(key: string) {
     <button
       v-if="!isSearchPage"
       type="button"
-      data-tv-search class="ml-auto flex h-9 w-full min-w-0 max-w-[15rem] shrink items-center gap-2 rounded-full border border-line bg-card px-3 text-left text-[13px] text-ink-3 transition hover:border-accent/40 max-sm:flex-1 sm:max-w-[8.5rem] md:w-[8.5rem] md:max-w-[8.5rem]"
+      data-tv-search class="ml-auto flex h-9 w-full min-w-0 max-w-[15rem] shrink items-center gap-2 rounded-full border border-line bg-card px-3 text-left text-[13px] text-ink-3 transition hover:border-accent/40 max-sm:flex-1 sm:max-w-[8.5rem] md:w-[8.5rem] md:max-w-[8.5rem] lg:w-[12rem] lg:max-w-[12rem]"
       title="搜索"
       aria-label="搜索"
       @click="goSearch()"
@@ -439,6 +450,13 @@ function pickSite(key: string) {
         <path d="m20 20-3.5-3.5" />
       </svg>
       <span class="truncate">搜索影片…</span>
+      <!-- PC 专属快捷键提示（Ctrl+F 只在 Tauri 壳生效，见 App.vue） -->
+      <kbd
+        v-if="desktopShell"
+        class="ml-auto hidden shrink-0 rounded border border-line px-1.5 py-0.5 text-[10px] leading-none text-ink-3 lg:inline-block"
+      >
+        Ctrl F
+      </kbd>
     </button>
 
     <!-- 右侧 -->

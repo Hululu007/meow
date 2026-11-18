@@ -20,6 +20,7 @@ import { apiBase } from '@/api'
 import CachePanel from '@/components/library/CachePanel.vue'
 import LibraryAddDialog from '@/components/library/LibraryAddDialog.vue'
 import PosterImage from '@/components/common/PosterImage.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
 import MeTabs from '@/components/common/MeTabs.vue'
 import { colsStyle, useCardCols } from '@/composables/useCardCols'
 import {
@@ -1231,16 +1232,15 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 错误态要给下一步：只显示一句话，用户只能猜是回去还是重进 -->
-      <div v-else-if="error" class="mt-16 text-center">
-        <p class="text-sm text-ink-3">{{ error }}</p>
+      <EmptyState v-else-if="error" class="mt-16" icon="📁" :title="error">
         <button
           type="button"
-          class="mt-5 rounded-md bg-card px-4 py-2.5 text-sm text-ink-2 hover:bg-card-hover"
+          class="rounded-md bg-card px-4 py-2.5 text-sm text-ink-2 hover:bg-card-hover"
           @click="loadRoot"
         >
           重新加载片库
         </button>
-      </div>
+      </EmptyState>
 
       <!-- ────────── 影片层：对齐详情页（海报 + 信息 + 选集）────────── -->
       <template v-else-if="activeGroup">

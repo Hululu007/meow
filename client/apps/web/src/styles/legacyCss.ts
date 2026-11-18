@@ -30,7 +30,17 @@ export function detectLegacyCss(): void {
 
   const root = document.documentElement
   // 有人显式指定就尊重（便于调试：?legacycss=0 / 1）
-  const forced = new URLSearchParams(location.search).get('legacycss')
+  const params = new URLSearchParams(location.search)
+  const forced = params.get('legacycss')
+  /*
+   * ?nocolormix=1：强制按"内核没有 color-mix"处理。
+   *
+   * 用途：现代浏览器无法真的丢掉 color-mix，C2 的退化效果
+   * （半透明 accent 变实色/透明）在 PC 上没法肉眼验证。这个开关
+   * 只挂 data 属性，不启用整套 legacy 层 —— 两件事是独立的。
+   */
+  const forcedNoColorMix = params.get('nocolormix') === '1'
+  if (forcedNoColorMix) root.dataset.noColorMix = '1'
   if (forced === '0') return
   if (forced === '1') {
     root.dataset.legacyCss = '1'

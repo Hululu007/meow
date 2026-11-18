@@ -13,6 +13,8 @@ export const WALLPAPER_IDS = [
   '',
   'cinema',
   'aura',
+  // 2026-11-18 视觉升级：极光（SVG，暗色组）
+  'aurora',
   'cat',
   // 2026-10-30 新增：意境系列（暗调低对比，见 theme.ts 的注释）
   'nightcity',

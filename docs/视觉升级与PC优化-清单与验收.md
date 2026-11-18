@@ -337,3 +337,79 @@ Mica、粗野主义、全仓换圆角、全局动态换肤、首页完整版 her
 | 2026-11-18 | v2 | H1–H3、D1–D8、E9–E13、并发与测试基线 |
 | 2026-11-18 | v3 | 删 B1；修 `pc_perf` 归因；A1b 收窄；radius 新命名；C3 全局覆盖；E14/X9；A5 约束 |
 | 2026-11-18 | v4 | **执行定稿**：默认决策表、Q1–Q10 回归防护、A1b 改 `.surface-1`、A4 不迁移、B2 缩范围、B4 默认 2b、B6 不做、D13 壁纸勘误、总工时 20 天 |
+| 2026-11-18 | v4.1 | 全部条目已实现（见 §13）；新增实现偏差与待真机验证清单 |
+| 2026-11-18 | v4.2 | 补充三端本地打包验证（§13.5）、设备身份/尺寸矩阵实测、并发实例红线 |
+| 2026-11-18 | v4.3 | 补 MuMu .76 release 原地升级与实机验证（首页/焦点/详情） |
+| 2026-11-18 | v4.4 | 标题栏改为 28px 独立条 + 右上检查更新；修复拖拽（不用 `data-tauri-drag-region`，改调自有命令）；圆点字形加大加粗 |
+| 2026-11-18 | v4.5 | 标题栏对齐参考图：36px，左后退/前进，右更新日志/意见反馈/检查更新/logo/红黄绿，中间去掉应用名；外链改走 `desktop_open_url` |
+| 2026-11-18 | **v4.6（最终）** | **推翻 v4.4/v4.5 的独立标题条**：恢复单行顶栏（红黄绿 → logo → 站点下拉 → 直播/片库/收藏/历史/AI → 弹性空白 → 搜索 → 设置），删除 `DesktopTitleBar` 与其全部按钮、`--titlebar-h`、Rust `desktop_open_url`；保留拖拽/双击最大化；**头像入口按用户要求移除**（PC 顶栏不再有「我的」） |
+| 2026-11-18 | **v4.7** | **首页 hero 改为「续播卡」**：用户指出原 hero 与用户无关（不显示历史/收藏/片库）且布局难看；改为只在有续播时出现，无续播时整块不渲染、网格不再 `slice(1)` |
+| 2026-11-18 | **v4.8** | 续播卡右栏改成**剧情简介 + 元数据**（用户否掉「接下来」两条备选）；右栏不再 `ml-auto`、紧跟左栏；元数据由 dl 表格改为胶囊 + 两行文字（用户反馈「元数据显示不好看」）；验证空历史时 hero 完全不渲染 |
+| 2026-11-18 | **v4.9** | 续播卡左栏右上角加**评分**（detail → 当前列表同 id → 同站同名，缺省不占位）；设置页「外观」加 **`homeHero` 开关**（默认开，`meow:prefs` 即时生效）；实测关掉后 `.hero-card` 消失、网格顶到 y=144 |
+| 2026-11-18 | **v5.0** | 按 mac 风复盘采纳两条：① 顶栏常态半透明（`--color-header-veil` + 既有 `backdrop-blur-xl`，`?legacycss=1`/Chromium 66 退回实底）② 卡片 hover `-6px/1.03` → `-3px/1.015`、阴影与描边退一档。新增第 9 套主题 **Graphite**（中性灰 + 系统蓝，dark/light 各 28 变量，对比度全过 `theme-tokens`）；同步 `index.html` 首帧白名单、`prefs.ts` 枚举白名单、手机推送页主题下拉（顺带移除已删除的 miuix） |
+| 2026-11-18 | **v5.1** | **续播卡再修三处**：① 只认 24 小时内的观看（`ep_at` 窗口），久远进度不再占首屏；② 后端进度通道只带 id 时，用 detail 补片名/封面并写回历史（修「首页显示一串数字 + 破图」）；③ TV 侧只让「继续播放/详情」可聚焦（海报/片名 `data-tv-skip`，tv-nav 支持该属性），hero 高度按 MuMu 1138×640 / 投影仪 960×540 两档量测压缩，列数固定 6 列、不再为塞两行加列 |
+| 2026-11-18 | **v5.2** | 投影仪（960×540）两处回修：① 顶栏导航文字被 `@media (max-width:1024px) .nav-label{display:none}` 一并命中（该规则本是给 PC 窄窗的）→ 加 `html:not([data-tv='1'])` 排除 TV；② hero 的「集名/站点 + 年份/地区/状态」从右栏移到左栏同一行（`hero-facts`），短屏（≤600 高）不再整块丢元数据；③ 新增投影仪压缩档：顶栏 72→56、分类条 padding 12→6、hero 下边距 20→12、卡片年份行隐藏，使 960×540 下首行海报**连片名**完整可见（grid 293 / 海报底 500 / 卡底 530） |
+
+---
+
+## 13. 实现记录（2026-11-18）
+
+### 13.1 已完成
+
+| 波次 | 条目 | 落点 |
+|---|---|---|
+| Wave 0 | B0 / E10 / E14 / C1 / C2 / C3 / A1 | `scripts/capture-visual.mjs`、`legacyCss.ts`、`ConfirmDialog`/`LibraryAddDialog` 的 `max-h-dialog*`、`tokens.css` 令牌与全局动效守卫 |
+| Wave 1 | A1b / T1 / E1 / A3 / A2 / E12 / X9 | `.surface-1`、`EmptyState.vue`、`glass-panel`、`btn-primary-gradient`、`legacy-css.css §10`、对比度门禁扩到表面 |
+| Wave 2 | A4 / A5a / A5b / A7 | `detail-title`、详情页氛围层 + canvas 取色、hero/图片/按压缩放 |
+| Wave 3 | B3 / B2 / B5 | `tauri-plugin-window-state`（SIZE+POSITION+MAXIMIZED）、海报失败重试、Ctrl+F/F11/Ctrl+0/Esc |
+| Wave 4 | A6 / A8 / A10 | 首页 hero、`InterLocal`（`local()`）、`aurora.svg` + 壁纸注册 |
+| Wave 5 | A3b / A9 / B7 / B8 / E13 | 片库弹框玻璃、详情页 surface 卡片、调试端口开关、Shift+滚轮、`check-bundle-size.mjs` |
+| Wave 6 | B4 | `decorations:false` + DWM 圆角/阴影 + 窗口命令 + 红黄绿/拖拽/8 向缩放 |
+
+### 13.2 实现偏差（与 v4 不同之处）
+
+| 项 | 说明 |
+|---|---|
+| A8 Inter | 本机无法访问字体 CDN（jsDelivr/unpkg 均超时），改为 `@font-face { src: local('Inter') }` + 字体栈 `InterLocal`；没有新增 50KB 字体文件。要真随包分发需补 `public/fonts/*.woff2` |
+| B7 | 后端开关与 `desktop-prefs.json` 字段已实现（env `MEOW_DEBUG_PORT` 可强制），**没有设置页 UI**：`SettingsView.vue` 有并行会话改动，避免冲突 |
+| A9 | 轻量版：详情页信息条与“播放源”区改为 `.surface-1` 面板，不做整体 Bento 重排（设置页 8214 行不动） |
+| A6 | **v4.9 定稿「续播卡 + 简介栏 + 评分」**：原先取列表第一条做大图，既与网格第一张重复、又与用户无关。现在只渲染**续播**——`listHistory()` 里 `pos > 30s` 且离结尾还有 `>60s` 的最近一条做主卡（l_ 大图 + 模糊背景 + 进度条 + 剩余时长 + 继续播放/详情）；右栏紧跟左栏（**不用 `ml-auto`**，左栏 lg 上限 `26rem`）显示**剧情简介 + 元数据**：简介 3 行截断（`cleanIntro`），年份/地区/状态胶囊，导演/主演各一行；元数据来自一次 `fetchDetail`（按 `site|vod_id` 缓存）。**评分放左栏右上角**（用户指定位置，★ + 数字），取值 detail → 当前列表同 id → 同站同名，都没有就不占位。**设置页「外观 → 首页续播卡」开关**（`prefs.homeHero`，默认开）控制整块显隐，监听 `meow:prefs` 即时生效。**没有续播或开关关闭时整块不渲染**，网格不再 `slice(1)` ；**v5.1**：窗口 24h、占位历史用 detail 补名/补图并写回、TV 只暴露两个按钮且 hero 压到 182px（MuMu）/130px（投影仪）、TV 列数固定 6、无 hero 时尽可能多露第二行 |
+| B4 | 8 向缩放改用 Win32 `WM_NCLBUTTONDOWN`：Tauri 的 `start_resize_dragging` 需要 `unstable` feature 才能拿到 `Window` |
+| 换行 | 本工作区源码由 CRLF 归一为 LF：契约测试按 `\n` 断言，CRLF 下会假红（与 CI Linux 一致） |
+
+### 13.3 验证结果
+
+| 项 | 结果 |
+|---|---|
+| `vue-tsc --noEmit` | exit 0 |
+| `vitest run` | **140 文件 / 1860 passed / 3 skipped**，全绿 |
+| `cargo +gnu check` | Finished，无 warning |
+| `vite build` | 成功 |
+| `legacy-gen` + 二次 build | `legacy-compat.test.ts` 28 passed |
+| 包体 | assets **2.41 MiB**（基线 2.50，阈值 2.75） |
+| 浏览器截图 | 24 组（4 宽 × 6 路由）已产出到 `tmp/2026-11-18-visual-audit/shots-after` |
+
+### 13.4 仍需真机验证（本环境无法完成）
+
+1. **PC 无边框窗口**：拖拽、双击最大化、8 向缩放、Win11 圆角/阴影、贴靠布局（需打包运行 Tauri）
+2. **播放/直播页**：右上角悬停红黄绿的避让是否挡住播放器控件
+3. **TV / 投影仪 Chromium 66**：`surface-1` 与 `glass-panel` 降级、hero 在老内核的 padding-top 兜底
+4. **iPhone Safari**：详情页取色与玻璃浮层的性能
+5. **A8**：若补字体文件，需复验顶栏截断与本机字体度量
+
+### 13.5 本地打包验证（2026-11-18）
+
+| 端 | 结果 |
+|---|---|
+| **Web** | `vite build` 成功；用本地静态服务（dist + `/api` 反代 9979）验证。身份矩阵：390×844 → `shell=web / form=phone / orient=portrait`；768×1024 → `tablet/portrait`；844×390 → `tablet/landscape`；1440×900 / 1920×1080 → `desktop/landscape`；`?tv=1` → `data-tv=1`；`?legacycss=1` → `data-legacy-css=1`；`?nocolormix=1` → `data-no-color-mix=1`。`.surface-1` 20 处、hero 正常、无控制台异常 |
+| **PC**（v4.6 定稿） | GNU release exe **25.9 MB**（`target/x86_64-pc-windows-gnu/release/meow-player.exe`，需同目录 `WebView2Loader.dll`）；运行时 `shell=tauri / form=desktop`；**单行顶栏 64px 贴顶**（x=0,y=0）：红黄绿 3 点 → 猫窝 logo → 站点下拉 → 直播/片库/收藏/历史/AI → 弹性空白 → 搜索 → 设置；**无独立标题条、无更新/反馈按钮、无「我的」头像**（CDP：`dots=3 / avatar=false / links=[#/, #/live, #/library, #/favorites, #/history, #/ai, #/settings]`）。拖拽走 `desktop_window_start_drag`，真实鼠标实测窗口 **(928,541) → (786,573)、尺寸 2025×1253 不变**（确认是拖动不是缩放）；双击顶栏最大化仍可用；窗口状态重启恢复；关闭到托盘后再退出，重启窗口 **visible=true**（VISIBLE 排除生效）。最小化用 `IsIconic` 判定不明确（句柄取的是主窗口，可能取错） |
+| **TV** | debug APK **22.7 MB**（sha256 `37153f40…`），`package=com.meow.tv / versionName=1.2.16 / versionCode=1216 / minSdk=26`；APK 内 `assets/assets/HomeView-3fxv4EMd.js`（8.2KB）与本次构建一致。**未安装到设备**：本机无 keystore，debug 签名无法覆盖已装 release；卸载重装会清掉用户配置，故只做包体与资源校验 |
+| **TV 布局** | 960×540 / 1280×720 + `?tv=1`（含 `?legacycss=1`）截图通过：顶栏图标化、hero 与卡片不溢出、legacy 下 hero 遮罩有实色兜底 |
+| **MuMu .76** | 用主工作区的 release keystore 构建 **release 包 20.5 MB**（sha256 `31ef288c…`，证书 `add72e8d…` 与已装一致），`adb install -r` 原地升级成功、配置保留（收藏 1 / 历史 30）。实机验证：首页 hero+卡片、焦点环、DPAD 进入详情页、详情信息卡与显示字号正常 |
+
+> ★★ **并发实例红线（本次踩到两次）**：绕过单实例锁起第二实例后，
+> `PluginManager` 的孤儿进程清理会杀掉**已运行实例的 Java 后端**
+> （本次均通过 `plugin_stop/plugin_start` 恢复，40 源正常）。
+> **覆盖 `APPDATA` 并不能隔离**：Tauri 的 `appDataDir` 走 Windows KnownFolder API，
+> 不读该环境变量；二进制替换 identifier 也只改了单实例名，没改编译进配置的 identifier。
+> 安全做法只有：**先退出用户实例**，或用 `--config` 正式构建一个不同 identifier 的测试包。

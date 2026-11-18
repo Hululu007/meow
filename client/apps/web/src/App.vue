@@ -11,6 +11,8 @@ import {
   type Wallpaper,
 } from '@/stores/theme'
 import AppHeader from '@/components/layout/AppHeader.vue'
+import DesktopTopChrome from '@/components/layout/DesktopTopChrome.vue'
+import ResizeHandles from '@/components/layout/ResizeHandles.vue'
 import MobileTabBar from '@/components/layout/MobileTabBar.vue'
 import AiPanel from '@/components/ai/AiPanel.vue'
 import { isLightWallpaper } from '@/stores/wallpapers'
@@ -30,7 +32,7 @@ import {
   runCheck as runUpdateCheck,
 } from '@/stores/appUpdate'
 import { fpkMarkPrompted, fpkPromptDue } from '@/api/fpkUpgrade'
-import { isDesktop, listPlugins } from '@/api'
+import { isDesktop, listPlugins, tauriInvoke } from '@/api'
 import { markChecked, runBackgroundChecks } from '@/stores/updateCenter'
 
 const store = useAppStore()
@@ -978,6 +980,55 @@ onBeforeUnmount(() => {
   delete castWin.__meowCastConfirm
   delete castWin.__meowCastCancel
 })
+
+/**
+ * PC 快捷键（B5，2026-11-18）。
+ *
+ * - Ctrl/Cmd+F：去搜索页。**只在 Tauri 壳生效** —— Web/Docker 上这是
+ *   浏览器的「页内查找」，拦截会破坏原生功能。
+ * - F11：窗口全屏（自绘标题栏后没有系统菜单入口）。
+ * - Ctrl/Cmd+0：WebView2 缩放复位。
+ * - Esc：返回上一页。输入框内、有 dialog、播放/直播页、首页都不处理。
+ */
+let stopDesktopShortcuts: (() => void) | undefined
+onMounted(() => {
+  if (!desktop) return
+  const onKey = (e: KeyboardEvent) => {
+    const t = e.target as HTMLElement | null
+    const inField =
+      !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
+    const mod = e.ctrlKey || e.metaKey
+
+    if (mod && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+      if (inField) return
+      e.preventDefault()
+      if (route.name !== 'search') void router.push({ name: 'search' })
+      return
+    }
+    if (mod && !e.shiftKey && !e.altKey && e.key === '0') {
+      e.preventDefault()
+      tauriInvoke('desktop_window_reset_zoom').catch(() => {})
+      return
+    }
+    if (e.key === 'F11') {
+      e.preventDefault()
+      tauriInvoke('desktop_window_toggle_fullscreen').catch(() => {})
+      return
+    }
+    if (e.key === 'Escape' && !mod && !e.altKey) {
+      if (inField) return
+      // 弹框自己处理 Esc；这里再关一次会连页面一起退掉
+      if (document.querySelector('[role="dialog"]')) return
+      if (isPlay.value || isLive.value) return
+      if (route.name === 'home') return
+      e.preventDefault()
+      router.back()
+    }
+  }
+  window.addEventListener('keydown', onKey)
+  stopDesktopShortcuts = () => window.removeEventListener('keydown', onKey)
+})
+onBeforeUnmount(() => stopDesktopShortcuts?.())
 </script>
 
 <template>
@@ -1012,6 +1063,11 @@ onBeforeUnmount(() => {
         （toggleAttribute 是 Chrome 69+ API）。现在直播页本身就像 /play 一样
         生下来就是满屏播放器，不存在"切全屏后顶栏还在"这个问题。
     -->
+    <!-- B4：无边框窗口的缩放热区（仅 Tauri 壳） -->
+    <ResizeHandles v-if="desktop" />
+    <!-- 播放/直播页没有 AppHeader：给一个隐形拖拽条 + 悬停红黄绿 -->
+    <DesktopTopChrome v-if="desktop && (isPlay || isLive)" />
+
     <AppHeader v-if="!isPlay && !isLive" class="relative z-20" />
 
     <!--

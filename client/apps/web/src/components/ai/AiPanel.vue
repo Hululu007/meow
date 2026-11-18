@@ -1001,7 +1001,7 @@ onBeforeUnmount(() => {
       :class="
         props.inline
           ? 'ai-inline flex h-full w-full flex-col overflow-hidden rounded-xl border border-line bg-elevated'
-          : 'ai-panel fixed bottom-6 right-6 z-[60] flex flex-col overflow-hidden rounded-xl border border-line bg-elevated shadow-2xl'
+          : 'ai-panel glass-panel fixed bottom-6 right-6 z-[60] flex flex-col overflow-hidden rounded-panel'
       "
       :role="props.inline ? 'region' : 'dialog'"
       :data-tv-scope="props.inline ? undefined : ''"

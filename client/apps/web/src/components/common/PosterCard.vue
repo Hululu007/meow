@@ -35,7 +35,7 @@ function open() {
     历史页那套（外层就带 rounded-lg）才是对的。
   -->
   <button class="poster-card group block w-full rounded-lg text-left" @click="open">
-    <div class="relative aspect-[2/3] overflow-hidden rounded-lg bg-elevated">
+    <div class="surface-1 relative aspect-[2/3] overflow-hidden rounded-lg bg-elevated">
       <PosterImage
         :src="item.vod_pic"
         :alt="item.vod_name"
@@ -72,7 +72,8 @@ function open() {
       <div class="poster-title truncate font-medium text-ink group-hover:text-accent">
         {{ item.vod_name }}
       </div>
-      <div class="mt-0.5 truncate text-[11px] text-ink-3">
+      <!-- 2026-11-18：标题与年份之间 2px → 4px，两行字不再糊成一块 -->
+      <div class="poster-meta mt-1 truncate text-[11px] text-ink-3">
         {{ [item.vod_year, item.vod_area].filter(Boolean).join(' · ') || '　' }}
       </div>
     </div>

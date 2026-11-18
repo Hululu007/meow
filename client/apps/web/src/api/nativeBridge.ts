@@ -45,7 +45,7 @@ interface MeowTvBridge {
  *
  * 读的是 `getComputedStyle(document.documentElement)`——它拿到的是**当前
  * 生效值**（主题切换靠 html 上的 data-style/data-mode 选择器，变量值会随之
- * 变化），不是 tokens.css 里那份默认值。八套主题（meow/claude/… × dark/light）
+ * 变化），不是 tokens.css 里那份默认值。九套主题（meow/claude/… × dark/light）
  * 全都自动跟随，不用在 Java 里再抄一份色板。
  */
 function themePayload(): string {

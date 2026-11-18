@@ -248,7 +248,7 @@ watch(phase, (v) => {
     <!-- data-tv-scope：tv-nav 据此把焦点收窄到弹框内 -->
     <div
       data-tv-scope
-      class="w-full max-w-[30rem] overflow-hidden rounded-xl border border-line bg-elevated shadow-2xl"
+      class="glass-panel w-full max-w-[30rem] overflow-hidden rounded-modal"
       role="dialog"
       aria-modal="true"
       aria-labelledby="upd-title"

@@ -62,6 +62,13 @@ export interface Prefs {
   gitAccel: GitAccelPrefs
   /** 首页每行列数 */
   homeCols: number
+  /**
+   * 首页顶部是否显示「续播卡」。
+   *
+   * 默认开：没有续播时这块本来就不渲染；关掉是给"只想看片墙"的用户
+   * 一个干净首屏（少一张 200+px 高的大卡，首屏多出两行卡片）。
+   */
+  homeHero: boolean
   /** 弹幕开关 */
   danmaku: boolean
   /**
@@ -161,7 +168,7 @@ export interface Prefs {
 
   // ---------------- 外观 ----------------
 
-  /** 主题风格（八套，每套有浅/深两档，见 stores/theme.ts） */
+  /** 主题风格（九套，每套有浅/深两档，见 stores/theme.ts） */
   themeStyle: ThemeStyle
   /** 明暗偏好：浅色 / 深色 / 跟随系统 */
   themeMode: ThemeMode
@@ -213,7 +220,7 @@ export interface Prefs {
 }
 
 /**
- * 八套深色风格。放成联合类型而不是 string，是为了让
+ * 九套风格。放成联合类型而不是 string，是为了让
  * ThemeStyle 在别处（theme.ts / 设置页选项）能被类型检查约束。
  *
  * `miuix` 已移除（和 Claude 同为暖橙强调、且按钮对比度不达标）。
@@ -229,6 +236,7 @@ export type ThemeStyle =
   | 'catppuccin'
   | 'oled'
   | 'everforest'
+  | 'graphite'
 
 /** 明暗偏好；system = 跟随操作系统 */
 export type ThemeMode = 'light' | 'dark' | 'system'
@@ -244,6 +252,7 @@ export const DEFAULTS: Prefs = {
   pluginUseAppSource: true,
   gitAccel: DEFAULT_GIT_ACCEL,
   homeCols: 6,
+  homeHero: true,
   danmaku: true,
   danmakuDensity: 'standard',
   danmakuOpacity: 0.9,
@@ -405,6 +414,10 @@ export function getPrefs(): Prefs {
   //   它和 Claude 同为暖橙强调，且深色按钮白字只有 2.60:1。
   //   直接让白名单把它打成 meow 会让用户以为主题被重置。
   //   cast 是必须的：ThemeStyle 已经没有 miuix，但老数据里可能还有。
+  //
+  // ★ 加新风格要**同时**改 THEME_STYLES（theme.ts）和下面这个数组。
+  //   两处没有编译期关联：theme.ts 反向依赖本文件，不能 import 它的
+  //   isThemeStyle，否则成环。漏改的表现是"选了新主题，刷新又变回猫窝青"。
   if ((out.themeStyle as string) === 'miuix') out.themeStyle = 'claude'
   if (
     ![
@@ -416,6 +429,7 @@ export function getPrefs(): Prefs {
       'catppuccin',
       'oled',
       'everforest',
+      'graphite',
     ].includes(out.themeStyle)
   ) {
     out.themeStyle = 'meow'
