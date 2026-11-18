@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { useReducedMotion } from '@/composables/useReducedMotion'
 import { useAppStore } from '@/stores/app'
 import { listHistory } from '@/stores/history'
 import { listFavorites } from '@/stores/favorites'
@@ -21,13 +22,12 @@ const showMore = ref(false)
  * <p>动图是 `public/logo-anim.webp`（64×64、35 帧、6.66s 一轮，与 fpk 图标同一套
  * 观感，生成器 `client/apps/fnos/tools/gen-icon-anim.py`）。用 WebP 而不是 CSS
  * 扫光，是为了和飞牛桌面/应用中心那个图标**看起来是同一样东西**；代价是动图不受
- * CSS 的 reduced-motion 规则约束，所以这里显式换源。
+ * CSS 的 reduced-motion 规则约束，所以这里显式换源（见 `useReducedMotion`）。
  *
  * <p>URL 必须走 BASE_URL：fpk 挂在 `/app/meow/` 下，写死 `/xxx` 会打到站点根。
  */
 const baseUrl = import.meta.env.BASE_URL
-const reduceMotion = ref(false)
-let mql: MediaQueryList | null = null
+const reduceMotion = useReducedMotion()
 const logoSrc = computed(() => `${baseUrl}${reduceMotion.value ? 'icon-192.png' : 'logo-anim.webp'}`)
 
 /**
@@ -210,12 +210,6 @@ onMounted(() => {
   document.addEventListener('keydown', onDocKey)
   document.addEventListener('click', onDocClick)
   document.addEventListener('scroll', onDocScroll, { capture: true, passive: true })
-  // 系统里随时可能切「减少动态效果」，跟着换 logo 源（动图 WebP 不听 CSS 的）
-  if (typeof window.matchMedia === 'function') {
-    mql = window.matchMedia('(prefers-reduced-motion: reduce)')
-    reduceMotion.value = mql.matches
-    mql.addEventListener('change', onReduceMotionChange)
-  }
 })
 onBeforeUnmount(() => {
   offSync?.()
@@ -225,13 +219,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onDocKey)
   document.removeEventListener('click', onDocClick)
   document.removeEventListener('scroll', onDocScroll, { capture: true } as EventListenerOptions)
-  mql?.removeEventListener('change', onReduceMotionChange)
-  mql = null
 })
-
-function onReduceMotionChange(e: MediaQueryListEvent) {
-  reduceMotion.value = e.matches
-}
 
 function onOpenSites() {
   showMore.value = false
