@@ -230,7 +230,10 @@ fn desktop_set_fullscreen(app: tauri::AppHandle, enabled: bool) -> Result<(), St
         .get_webview_window("main")
         .ok_or_else(|| "找不到主窗口".to_string())?;
     w.set_fullscreen(enabled)
-        .map_err(|e| format!("切换全屏失败: {e}"))
+        .map_err(|e| format!("切换全屏失败: {e}"))?;
+    #[cfg(windows)]
+    set_dwm_frame_mode(&app, enabled);
+    Ok(())
 }
 
 // ---------------------------------------------------------------- 自绘标题栏（B4）
@@ -342,6 +345,8 @@ fn desktop_window_toggle_fullscreen(app: tauri::AppHandle) -> Result<bool, Strin
     let full = w.is_fullscreen().map_err(|e| format!("读取全屏状态失败: {e}"))?;
     w.set_fullscreen(!full)
         .map_err(|e| format!("切换全屏失败: {e}"))?;
+    #[cfg(windows)]
+    set_dwm_frame_mode(&app, !full);
     Ok(!full)
 }
 
@@ -959,6 +964,16 @@ fn apply_undecorated_frame(app: &tauri::AppHandle) {
     let hwnd = hwnd.0;
 
     unsafe {
+        // 去掉 Win11 的 1px 窗口边框（2026-11-18「全屏四边漏光」的真凶）。
+        // DWMWA_BORDER_COLOR=34，DWMWA_COLOR_NONE=0xFFFFFFFE。
+        // 不影响圆角与投影；不设的话视频全屏时四条边各有一条浅色细线。
+        let none: u32 = 0xFFFF_FFFE;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            34,
+            &none as *const u32 as *const core::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
         // DWMWCP_ROUND = 2
         let pref: i32 = 2;
         let _ = DwmSetWindowAttribute(
@@ -975,6 +990,92 @@ fn apply_undecorated_frame(app: &tauri::AppHandle) {
         };
         let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
     }
+}
+
+/// 全屏时去掉 DWM 的 1px 边框（2026-11-18 用户报「播放页全屏四边漏光」）。
+///
+/// 根因：`apply_undecorated_frame` 为了拿 Win11 的圆角与投影，调了
+/// `DwmExtendFrameIntoClientArea(1,1,1,1)` —— 代价是 DWM 会在窗口四周画
+/// **1px 边框**。普通页面看不出来，全屏放视频时就是四条浅色细线。
+///
+/// 全屏期间把 margins 归零、圆角关掉（DONOTROUND）；退出全屏再按原样恢复，
+/// 圆角与投影都还在。Win10 上这两个调用失败，忽略即可。
+#[cfg(windows)]
+fn set_dwm_frame_mode(app: &tauri::AppHandle, fullscreen: bool) {
+    use tauri::Manager;
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE,
+    };
+    use windows_sys::Win32::UI::Controls::MARGINS;
+
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(hwnd) = w.hwnd() else {
+        return;
+    };
+    let hwnd = hwnd.0;
+    unsafe {
+        // 边框色始终 NONE：全屏/窗口态都不要那 1px 浅线
+        let none: u32 = 0xFFFF_FFFE;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            34,
+            &none as *const u32 as *const core::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
+        // DWMWCP_DONOTROUND = 1 / DWMWCP_ROUND = 2
+        let pref: i32 = if fullscreen { 1 } else { 2 };
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            &pref as *const i32 as *const core::ffi::c_void,
+            std::mem::size_of::<i32>() as u32,
+        );
+        let edge = if fullscreen { 0 } else { 1 };
+        let margins = MARGINS {
+            cxLeftWidth: edge,
+            cxRightWidth: edge,
+            cyTopHeight: edge,
+            cyBottomHeight: edge,
+        };
+        let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+    }
+}
+
+/// 监听窗口全屏状态（HTML 全屏、F11、窗口级命令三条路都覆盖）。
+///
+/// ★ 只改命令里的 DWM margins 不够：PC 点播走的是容器 `requestFullscreen()`，
+///   由 Tauri 运行时把窗口切全屏，**不经过** `desktop_set_fullscreen`。
+///   这里统一监听窗口事件，`is_fullscreen()` 变了就同步边框模式。
+#[cfg(windows)]
+fn install_frame_mode_watcher(app: &tauri::AppHandle) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tauri::Manager;
+
+    static LAST: AtomicBool = AtomicBool::new(false);
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
+    let handle = app.clone();
+    w.on_window_event(move |event| {
+        if !matches!(
+            event,
+            tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+        ) {
+            return;
+        }
+        let Some(win) = handle.get_webview_window("main") else {
+            return;
+        };
+        let Ok(full) = win.is_fullscreen() else {
+            return;
+        };
+        // 普通拖动缩放也会触发 Resized：只在真的跨过全屏边界时动 DWM
+        if LAST.swap(full, Ordering::Relaxed) != full {
+            set_dwm_frame_mode(&handle, full);
+        }
+    });
 }
 
 /// B7：在 WebView2 创建前决定是否开放 CDP 调试端口。
@@ -1066,6 +1167,8 @@ pub fn run() {
             // 必须在这里做：窗口已由配置创建，但还没显示首帧。
             #[cfg(windows)]
             apply_undecorated_frame(&handle);
+            #[cfg(windows)]
+            install_frame_mode_watcher(&handle);
             let app_data = resolve_app_data(&handle);
             let root = resolve_plugins_root(&app_data);
             println!("[plugin] root = {}", root.display());
