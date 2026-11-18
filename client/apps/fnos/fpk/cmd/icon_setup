@@ -1,0 +1,45 @@
+#!/bin/bash
+# 把载荷里的「扫光动图」覆盖到飞牛真正读取图标的 4 个位置（安装/升级后各跑一次）。
+#
+# 为什么要覆盖，而不是包里直接放动图：
+#   fnOS 的图标是静态文件直出，只有**动图内容**才有扫光。浏览器对 <img> 按字节嗅探
+#   格式（不看后缀），所以 .PNG 文件名装 WebP 内容照样播 —— 米恋泥 fndesk
+#   1.2.1010.1 就是这么做的（其 install_callback 把 static/icon.png 这个 35 帧
+#   动画 WebP cp 成 ICON.PNG，2026-11-18 解包确认）。
+#   但包根仍保留真 PNG：应用中心列表、未安装状态、以及任何按扩展名解码的原生端
+#   都还要静态图兜底，动图放包里会让那些地方变成白框。
+#
+# 非致命：任何一步失败都不影响安装/启动（图标退化回静态图而已）。
+set -u
+
+[ -n "${TRIM_APPDEST:-}" ] || exit 0
+SRC="$TRIM_APPDEST/ui/images/icon_anim.webp"
+[ -s "$SRC" ] || exit 0
+
+APPNAME="${TRIM_APPNAME:-meow}"
+
+# 根图标落点：官方布局是 /var/apps/<app>/ICON.PNG（target 是指向 TRIM_APPDEST 的软链）。
+# 不写死路径，用「ICON.PNG 在不在」判定 —— 老布局里 TRIM_APPDEST 本身就是元数据目录。
+META=""
+for cand in "/var/apps/$APPNAME" "${TRIM_APPDEST%/target}" "$TRIM_APPDEST"; do
+    if [ -f "$cand/ICON.PNG" ]; then
+        META="$cand"
+        break
+    fi
+done
+
+DSTS=("$TRIM_APPDEST/ui/images/icon_256.png" "$TRIM_APPDEST/ui/images/icon_64.png")
+if [ -n "$META" ]; then
+    DSTS+=("$META/ICON.PNG" "$META/ICON_256.PNG")
+fi
+
+for d in "${DSTS[@]}"; do
+    cp -f "$SRC" "$d" 2>/dev/null && chmod 644 "$d" 2>/dev/null
+done
+
+# 只在装/升级时打一行日志，方便日后核对"图标到底换没换成动图"
+{
+    echo "[icon_setup] $(date '+%F %T') src=$(wc -c <"$SRC")B meta=${META:-<none>}"
+} >> "${TRIM_PKGVAR:-/dev/null}/logs/install.log" 2>/dev/null
+
+exit 0

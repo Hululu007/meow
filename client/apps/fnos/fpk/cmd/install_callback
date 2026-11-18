@@ -4,6 +4,8 @@ set -u
 mkdir -p "$TRIM_PKGVAR/logs" 2>/dev/null
 # 载荷已展开，这次才能真正建链接（install_init 时目录可能还不存在）
 "$(dirname "$0")/plugins_setup" >/dev/null 2>&1
+# 扫光图标：包根 ICON*.PNG 是静态图，这里换成载荷里的动画 WebP（失败不影响安装）
+"$(dirname "$0")/icon_setup" >/dev/null 2>&1
 {
     echo "[install_callback] $(date '+%F %T') ver=$TRIM_APPVER"
     echo "  APPDEST=$TRIM_APPDEST"

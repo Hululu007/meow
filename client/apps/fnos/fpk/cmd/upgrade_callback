@@ -4,5 +4,8 @@ set -u
 mkdir -p "$TRIM_PKGVAR/data" "$TRIM_PKGVAR/plugins" "$TRIM_PKGVAR/logs" "$TRIM_PKGVAR/run" 2>/dev/null
 # 新载荷的 config/ 是真实目录，先换回符号链接再启动，否则插件会往 APPDEST 里写
 "$(dirname "$0")/plugins_setup" >/dev/null 2>&1
+# 升级会把载荷整目录换掉、根图标也可能被包里的静态图重置 → 再换回动画图标
+# （fndesk 就是漏了这一步：它 upgrade_callback 只有 exit 0，升级后扫光会消失）
+"$(dirname "$0")/icon_setup" >/dev/null 2>&1
 "$(dirname "$0")/main" start >/dev/null 2>&1
 exit 0
