@@ -1042,9 +1042,11 @@ onBeforeUnmount(() => {
         >
           全屏
         </RouterLink>
+        <!-- ?sec=ai：设置页 onMounted/watch 会滚到对应分区并闪一下。
+             用户口径：点设置就该直接看到 AI 配置，不是停在「连接」顶部。 -->
         <RouterLink
           v-else
-          to="/settings"
+          :to="{ path: '/settings', query: { sec: 'ai' } }"
           class="rounded px-1.5 py-0.5 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink"
           title="AI 相关设置"
         >

@@ -90,7 +90,7 @@ cd client/apps/web && npx vitest run tests/device-profile.test.ts
 | **1024** | 触屏小屏隐藏底栏重播/刷新 + 顶栏导航文字图标化（**同一判据**，原 899/1023 已删除） | `tokens.css`（`max-width: 1024px` + `pointer: coarse`） |
 | **1280**（`xl`） | 顶栏同步徽标文字 | `AppHeader.vue` |
 | **520** | 海报行距收紧 / `compact`（CSS `max-height` 与 JS `isShortViewport()` **同源**，原 560 已删除） | `tokens.css` / `compat/deviceProfile.ts` |
-| `orientation: landscape` 或 `pointer: fine` | 自定义变体 `wide`（设置页双栏） | `tokens.css` `@custom-variant` |
+| **≥1024** 或 **(`pointer: coarse` + 横屏)** | 自定义变体 `wide`（设置页双栏）；960–1023 无鼠标电视 → 单列胶囊 | `tokens.css` `@custom-variant` |
 | 卡宽 76 / 104 / 112 + 矮屏加列 | 海报列数算法（76 仍只在 TV 视口 ≥640 时生效） | `resolveCardCols()` |
 | `prefs.homeCols` | 列数上限（用户设置） | 设置页「外观」 |
 | `--header-h` 三档 | 默认 4rem / TV 4.5rem / 手机 `3.5rem + safe-area` | `tokens.css` |
@@ -149,12 +149,12 @@ cd client/apps/web && npx vitest run tests/device-profile.test.ts
 
 | 功能 | Web/PC 浏览器 | 手机竖屏 | 手机横屏 | TV 壳 | PC 壳（Tauri） | fnOS（fpk） |
 |---|---|---|---|---|---|---|
-| 顶栏导航文字 | 显示 | 多数不渲染（<640） | **图标化**（<900） | 显示（A2 排除） | 显示 | 同 Web |
+| 顶栏导航文字 | **≤1024 图标化**，>1024 显示 | 多数不渲染（<640） | **图标化**（≤1024） | **≤1024 图标化，>1024 显示** | 同 Web | 同 Web |
 | 底部 tabbar | `max-width:639px` 时显示 | 显示 | 不显示 | TV 竖屏（MuMu 360）会显示 | 不显示 | 不显示 |
-| 设置页布局 | `wide` → 双栏 | 竖屏胶囊 | **双栏** | 双栏 | 双栏 | 双栏 |
-| 海报列数 | 卡宽算法 + `homeCols` | 3 列 | **6 列**（矮屏加列） | 目标卡宽 76（内容宽≥640） | 同 Web | 同 Web |
+| 设置页布局 | ≥1024 双栏，<1024 胶囊 | 竖屏胶囊 | **双栏**（coarse+横屏） | **≥1024 双栏，≤1023 单列胶囊** | 同 Web | 同 Web |
+| 海报列数 | 卡宽算法 + `homeCols` | 3 列 | **6 列**（矮屏加列） | **`form=tv-large` → 目标卡宽 76；TV 插鼠标（form=desktop）按 104/112** | 同 Web | 同 Web |
 | 播放页返回键 | 显示 | 显示 | 显示 | **大屏横屏隐藏**（A9） | 显示 | 显示 |
-| 焦点环 | 横屏 `key` / 竖屏 `touch` | touch | key | `data-input` | key | 同 Web |
+| 焦点环 | 横屏 `key` / 竖屏触屏 `touch` / **PC 竖窗 `key`** | touch | key | `data-input` | key | 同 Web |
 | 直播页 | 视口方向引导 | 同 | 同 | 方向键归属 `__meowTvKeyOwner` + 锁横屏 + 大屏隐藏引导 | 同 | 同 |
 | 双击画面 | 全屏 | 分左/中/右区 | 分区 | 分区 | 全屏 | 全屏 |
 | 竖滑亮度/音量 | 无（鼠标） | 有 | 有 | 有（**系统桥**真调） | 无 | 无 |
@@ -220,7 +220,7 @@ cd client/apps/web && npx vitest run tests/device-profile.test.ts
 | 系统音量/亮度 | `get/setVolume`、`get/setBrightness` | TV 壳 | nativeBridge |
 | 伪全屏事件 | `window` 自定义事件 `meow:pseudofs`（detail=boolean） | 全端（iOS 触发） | VideoPlayer → App.vue |
 | 托盘/关闭行为 | `tauriInvoke` 命令（`desktop_*`）；关窗提示由 Rust `window.__meowTrayHint?.()` 触发 `TrayHintDialog` | PC 壳 | `api/index.ts`、`App.vue`、`TrayHintDialog.vue` |
-| 目录选择 | PC：Tauri dialog；TV：`MANAGE_EXTERNAL_STORAGE` + 内置浏览器；Web：目录选择器 | 三端不同 | `LibraryAddView` / `api/library.ts` |
+| 目录选择 | PC：Tauri dialog；TV：`MANAGE_EXTERNAL_STORAGE` + 内置浏览器；Web：目录选择器 | 三端不同 | `components/library/LibraryAddDialog.vue` / `api/library.ts` |
 | 局域网后端扫描 | `scanLanBackends()`（HTTP 探测 30010/9979） | 全端同一实现 | `utils/lanScanWeb.ts` |
 | 键盘弹起 | `visualViewport` 差值 >120 → 隐藏 tabbar | 移动端 | `MobileTabBar.vue` |
 | 投屏接收页 | `/ext-play`（`mutedFallback` 静音起播兜底） | 全端（接收端） | `views/ExternalPlayView.vue` |
@@ -658,6 +658,49 @@ Playwright 断言矩阵（五项视口 × 第 2 节行）见 §9.1 的实测脚�
 - 未覆盖：真投影仪遥控焦点、真实触摸屏的鼠标/手指双击（D-5 已有组件级事件测试）、
   fnOS 的 fpk **安装/升级动作**（只验证了能力探测与面板展示）。
 
+### 9.3 2026-11-18 回归复核（1.2.11 → 1.2.15 用户反馈）
+
+两个用户报的 bug + 复核中又抓到的两处缝隙，均已修复并在投影仪/`MuMu .76` 真机验证：
+
+| # | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| 1 | TV 顶栏源下拉折叠成「… ▾」（投影仪 1280 CSS / 960 电视） | 搜索按钮在 flex 里抢宽 + `[data-site-menu]` 的 `min-w-0` 被压；960 下更严重 | 搜索/设置包进同一个 `md:absolute` **浮动组**（不参与顶栏 flex 挤压）；搜索框 7rem；TV 源下拉 `flex-shrink:0`；≤1024 导航项图标化 |
+| 2 | TV 设置页方向键无法滚动（投影仪 Android 9 / Chromium 66） | `wide:grid` 的隐式行高 = 内容高（8818px），父容器 `overflow-hidden` 裁掉后右栏 **没有可滚空间**；新内核恰好看不出来 | grid 容器加 `wide:grid-rows-[minmax(0,1fr)]`；右栏恢复 603px 高、真实 8215px 滚动 |
+| 3 | （复核发现）PC 窄窗 800–1024 浮动搜索压住导航文字 | 图标化只对 `pointer: coarse` 生效，PC 精确指针不命中 | 导航图标化条件改为**宽度 ≤1024**（不限指针） |
+| 4 | （复核发现）640–767 竖屏搜索页卡片被多扣 172px | `isWideLayout()` 用 `form !== 'phone'` 推导，和 CSS `md:`(768) 缝隙 | `isWideLayout()` 回到内宽 ≥768 |
+| 5 | 修复后搜索框与设置**不在顶栏同一行** | 搜索按钮自身 `md:absolute` + `md:-translate-y-1/2`、设置在 `nav` 另一层各自定位；且 Tailwind v4 把这个 translate 编译成 `translate:` 属性，Chromium 66 不认 → 纵向下沉半行 | 改成一个浮动 wrapper 统一 `md:flex md:items-center` 纵向居中，子元素不再各自 absolute / translate |
+| 6 | 投影仪播放页「搜索弹幕」按钮放大镜偏左（其他端正常） | 按钮是 `hidden … sm:grid`；旧 Blink 对 `button` 的 `place-items:center` 只对纵向生效，而兜底选择器 `[class~='grid']` 匹配不到 `sm:grid` 这个完整类名 | `legacy-css.css` 补 `sm:grid` / `max-sm:grid` 两条变体兜底（各包自己的断点），`md:-translate-*` 同样补变体兜底 |
+
+验证矩阵（真实后端数据，1.2.11 / 1.2.13 / 修复后三份 bundle）：
+
+- 首页海报列数/卡宽/顶栏：960×540、1138×640、1280×720 **三版本一致**（6 列 / 139–189px）。
+- 搜索页源栏与列数、直播页、设置页滚动容器：三版本一致；设置页仅高度 +32px（去掉旧 `-2rem`）。
+- 顶栏几何：390/800/852/820/900/960/1024/1138/1280/1920 全部无溢出、无重叠；搜索/设置**同一行**（`sameLine:true`），源下拉宽 68px 可见。
+- 老内核变体兜底：投影仪顶栏搜索/设置同一行（截图 `tmp/2026-11-18-tv-regression/hdr-fixed.jpg`）；播放页弹幕按钮 `display:flex`、图标相对按钮 `dx=0 dy=0`。
+- 门禁：`tests/legacy-compat.test.ts` 新增两条（`md:-translate-*` 变体、`sm:grid`/`max-sm:grid` 变体），全量 **1855 passed**，`vue-tsc` exit 0。
+- 真机：投影仪（1280×720、Chromium 66）设置页 `shell=603 / rightSpan=8215`，真实 ↓ 滚动 `0→116→171→342…`；MuMu .76（1138×640）`0→78→359…`。
+
+### 9.4 2026-11-18 用户四项反馈（发布后第二轮）
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 顶栏搜索框太窄，「搜索影片…」被截成「搜索影…」 | 7rem（112px）减去图标/间距/内边距后正文只有约 62px；占位文字 72–90px（随字号阶梯） | 8.5rem（实测 134/151/168px，五档视口全部 `fits:true`、顶栏无溢出） |
+| 2 | 顶栏 logo 聚焦框是方形的 | tv-nav 焦点框用 `box-shadow`（自动跟随元素圆角），但 `<a>` 本身没有圆角——圆角只在 `<img>` 上 | 圆角加到 RouterLink（`rounded-[9px] max-sm:rounded-lg`），与图标一致 |
+| 3 | AI 面板右上「设置」停在设置页顶部 | 链接只写了 `/settings`，没用已有的 `?sec=` 深链接 | `:to="{ path:'/settings', query:{ sec:'ai' } }"` → 落在「11 AI」并闪一下 |
+| 4 | 添加片库像"跳页面"，关掉后片库闪刷新；打开时第一项只闪一下焦点 | 添加/编辑是独立路由（`/library/add`），返回时 LibraryView 卸载重建（`loading=true` → 骨架）；且页面用原生 `focus()`，与 tv-nav 的 class 焦点框并存 | 改成片库页内原位弹框 `LibraryAddDialog`（`Teleport to="body"` + `data-tv-scope`，不占路由，保存后只换 `overview` 不动 `loading`）；TV 初始焦点交给 tv-nav（`data-tv-first`，无原生 focus）；关闭时显式 `__meowTvFocus(打开按钮, true)` 归还焦点。★ Teleport 是必须的：`main` 的层叠上下文会让顶栏压在遮罩上（不暗、可穿透点击） |
+
+验证（`tmp/2026-11-18-tv-polish/verify.py`，真实后端 + tv-nav 注入）：
+搜索五档 `fits:true`；logo `<a>` 半径 9px、103×36（图标 36×36）；
+AI → `#/settings?sec=ai`、AI 分区 top=96、左导航 `aria-current` = 「11 AI」；
+片库弹框 `hash` 保持 `#/library`、打开即 `meow-tv-focus` 在 Webdav、↓ 一次到 SMB 且 Webdav 无原生 focus、
+Escape 关闭后承载节点仍在（未重挂载）、焦点回到「添加片库」。
+
+真机（MuMu .76 + 投影仪 Chromium 66，release 1.2.15 装回）：顶栏「搜索影片…」完整显示；
+logo 聚焦为**圆角**双环；AI→设置直接落在「11 AI」；弹框在原页打开（背后海报不动）、
+开框即 Webdav 有框、↓ 到 SMB、BACK 关闭后仍停在片库且焦点回到「添加片库」。
+截图在 `tmp/2026-11-18-tv-polish/`（`76-logo.png` `xg-logo.png` `76-dialog-open.png` `xg-dialog.png` `76-close-restore.png` `xg-ai-sec.png`）。
+门禁全量 **1855 passed**，`vue-tsc` exit 0。
+
 **验收优先级**：PC 为主用端 → **先验 PC**（D-1 焦点环、身份合并、更新能力），
 再验 iPad Air 4（820/1180 两档），iPhone 第三，TV/投影最后（真机最慢）。
 
@@ -675,6 +718,27 @@ Playwright 断言矩阵（五项视口 × 第 2 节行）见 §9.1 的实测脚�
 **混合输入设备的结论（与 8.2 对照）**：本机组合（触摸屏 PC + 插键鼠的 TV + 纯触屏 iPhone
 + 触屏 iPad）正好覆盖三类"设备级判据会误判"的场景 → **判据必须按事件来源或按能力，
 不能按设备**。这一条已写进 D-5 与 5.3。
+
+### 9.5 2026-11-18 补充：返回键与刷新语义
+
+| # | 口径 | 修法 |
+|---|---|---|
+| 1 | 投影仪左上角又出现返回按钮（之前已去除） | 统一判据用了 `(any-pointer: fine)`，而这台投影仪（Android 9 / Chromium 66）**没接鼠标也报 fine** → 被算成 desktop。改为：TV 壳 + 大屏横屏 + **没真的产生过 pointer 事件** → 不显示；真接鼠标/触摸仍显示（R6 保留） |
+| 2 | 竖屏 TV 要显示返回按钮 | 竖屏没有遥控器横向选焦问题、页面也没有顶栏可退 → `!isLargeLandscapeViewport()` 时一律给 |
+| 3 | 播放页 ⟳ 刷新应从原位置续播 | `reloadSrc()` 记下 `v.currentTime`，`onLoaded` 里 seek 回去（父组件 `applyResume` 有一次性守卫，第二次 loaded 不会 seek）；⟺ 重播仍 `currentTime=0` 并清掉挂起位置 |
+
+验证矩阵（本地 Chromium + dist，真实后端片库流）：
+
+| 场景 | 返回键 |
+|---|---|
+| TV 横屏 1280×720（投影仪） | 0（隐藏） |
+| TV 横屏 1138×640（MuMu 横向、无鼠标） | 0（隐藏） |
+| TV 竖屏 390×844 | 1（显示） |
+| 手机 Web 390×844 | 1 |
+| PC Web 1366×720 | 1 |
+
+刷新续播实测：`currentTime` 30s → 点 ⟳ → 重新 loaded 后 34s（继续播放，不是 0）。
+投影仪真机：返回键 DOM 数量 0、弹幕按钮图标 `dx=dy=0`、弹框打开即 Webdav 有框。
 
 ## 10. 相关文档
 

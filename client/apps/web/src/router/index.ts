@@ -38,8 +38,9 @@ const router = createRouter({
     // 本地/NAS 片库：与「直播」同级，不混进源列表——首页只渲染当前一个源，
     // 做成源等于把片库藏进顶栏下拉里
     { path: '/library', name: 'library', component: () => import('@/views/LibraryView.vue') },
-    // 添加片库单独成页：TV 只有 BACK 键，内联表单打开后没有退路
-    { path: '/library/add', name: 'libraryAdd', component: () => import('@/views/LibraryAddView.vue') },
+    // 添加片库已改成片库页内的原位弹框（2026-11-18）：跳路由会让返回时
+    // 整页重建、看起来像刷新。旧地址保留重定向，别让老书签落进空白。
+    { path: '/library/add', redirect: '/library' },
     // 离线缓存：已下到本机的剧集。断网时这是唯一能直接点开看的地方，
     // 所以必须是独立路由——设置页那份列表只能看和删，进不去播放
     { path: '/offline', name: 'offline', component: () => import('@/views/OfflineView.vue') },

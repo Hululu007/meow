@@ -164,6 +164,19 @@ html[data-legacy-css='1'] .backdrop-blur-2xl {
  * ★ 为什么不用 @supports
  *   同 §开头：CSS.supports 与实现不一致（gap 就是反例），这里统一按 JS 探测走。
  */
+/* 变体前缀的同类（md:-translate-y-1/2）：类名整体带前缀，
+ * 上面的 [class~=…] 匹配不到（2026-11-18 顶栏浮动按钮踩过）。 */
+@media (min-width: 768px) {
+  html[data-legacy-css='1'] [class~='md:-translate-y-1/2'] {
+    -webkit-transform: translateY(-50%);
+    transform: translateY(-50%);
+  }
+  html[data-legacy-css='1'] [class~='md:-translate-x-1/2'] {
+    -webkit-transform: translateX(-50%);
+    transform: translateX(-50%);
+  }
+}
+
 html[data-legacy-css='1'] [class~='-translate-y-1/2'] {
   -webkit-transform: translateY(-50%);
   transform: translateY(-50%);
@@ -219,6 +232,24 @@ html[data-legacy-css='1'] button[class~='grid'][class~='place-items-center'] {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* 只在一端出现的变体写法：类名是 `sm:grid` / `max-sm:grid`，
+ * 上面的 [class~='grid'] 匹配不到（2026-11-18 弹幕搜索按钮踩过：
+ * 投影仪上放大镜偏左，其他端正常）。按各自断点补成 flex 居中。 */
+@media (min-width: 640px) {
+  html[data-legacy-css='1'] button[class~='sm:grid'][class~='place-items-center'] {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+@media (max-width: 639px) {
+  html[data-legacy-css='1'] button[class~='max-sm:grid'][class~='max-sm:place-items-center'] {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════

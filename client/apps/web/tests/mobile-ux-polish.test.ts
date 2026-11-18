@@ -166,6 +166,38 @@ describe('② 返回键显隐按设备形态（大屏横屏且无鼠标才隐藏
       window.matchMedia = mm
     }
   })
+
+  it('TV 壳没真见过鼠标/触摸就不显示返回键（投影仪 any-pointer:fine 误报）', async () => {
+    // 实测（2026-11-18 投影仪 Android 9 / Chromium 66）：没接鼠标也报
+    // (any-pointer: fine) → isBigScreenLandscape()=false → 返回键冒出来。
+    // 判据必须再要求"真的产生过 pointer 事件"。
+    const { showPlayerBackButton } = await import('../src/compat/deviceForm')
+    const iw = Object.getOwnPropertyDescriptor(window, 'innerWidth')
+    const ih = Object.getOwnPropertyDescriptor(window, 'innerHeight')
+    const set = (w: number, h: number) => {
+      Object.defineProperty(window, 'innerWidth', { value: w, configurable: true })
+      Object.defineProperty(window, 'innerHeight', { value: h, configurable: true })
+    }
+    try {
+      // TV 壳 + 没见过指针 + 大屏横屏（投影仪/电视）：不给
+      set(960, 540)
+      expect(showPlayerBackButton(true, false, false)).toBe(false)
+      expect(showPlayerBackButton(true, false, true)).toBe(false)
+      // TV 壳 + 真动过鼠标/触摸：按原规则（大屏隐藏、手机形态显示）
+      expect(showPlayerBackButton(true, true, false)).toBe(true)
+      expect(showPlayerBackButton(true, true, true)).toBe(false)
+      // ★ 竖屏 TV（模拟器竖屏 / 竖放的电视）：必须有返回键（用户口径 2026-11-18）
+      set(390, 844)
+      expect(showPlayerBackButton(true, false, false)).toBe(true)
+      // 非 TV（PC/手机/平板）：与以前完全一致
+      set(1366, 720)
+      expect(showPlayerBackButton(false, false, false)).toBe(true)
+      expect(showPlayerBackButton(false, false, true)).toBe(false)
+    } finally {
+      if (iw) Object.defineProperty(window, 'innerWidth', iw)
+      if (ih) Object.defineProperty(window, 'innerHeight', ih)
+    }
+  })
 })
 
 describe('② 播放器返回键跟随底部控制栏', () => {

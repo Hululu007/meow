@@ -10,7 +10,7 @@
 | 缓存核心 | `server/host/src/shared/core/VideoCache.java` | 分片落盘、清单本地化、配额淘汰、批次、弹幕缓存 |
 | 缓存路由 | `server/host/src/shared/routes/CacheRoutes.java` | `/api/cache/*`、导出与合并 |
 | 前端契约 | `client/apps/web/src/api/library.ts` | 片库/缓存/转码/刮削的全部前端调用与文件名解析 |
-| 前端页面 | `views/LibraryView.vue`、`views/LibraryAddView.vue`、`views/PlayView.vue` | 片库浏览、添加/编辑、直链播放分流 |
+| 前端页面 | `views/LibraryView.vue`、`components/library/LibraryAddDialog.vue`、`views/PlayView.vue` | 片库浏览、添加/编辑（页内弹框）、直链播放分流 |
 
 两条贯穿全文的边界：
 
@@ -22,7 +22,7 @@
 ## 零、结论先行
 
 1. **片库支持三种类型**：`webdav`、`smb`、`local`（`Library.java:178-185`，前端类型表见
-   `LibraryAddView.vue:22-35`）。添加页另列了一个**置灰的「Alist网页」选项**作提示：
+   `components/library/LibraryAddDialog.vue` 的 `TYPES`）。弹框另列了一个**置灰的「Alist网页」选项**作提示：
    没有独立的 AList 协议实现，AList 自带 WebDAV，按 `webdav` 填 `http://主机:5244/dav` 即可。
 2. **片库不注册进 `SITES`**，因此不参与搜索/直播的全量扇出，也不进健康降级；
    代价是详情与播放走片库自己的端点，不复用 `/api/{site}/detail`（`ApiServer.java:1455-1468`）。
@@ -288,11 +288,12 @@ udevadm control --reload && udevadm trigger /dev/mpp_service /dev/rga
 
 1. **BACK 先问页面**。壳的 `onBackPressed` 会先调页面的 `window.__meowTvConsumeBack()`，
    页面返回 true 表示已消费，否则才 `goBack()`（`MainActivity.java:1396-1416`）。
-   添加/编辑页因此注册了 `__meowTvPageBack`：它有两步（选类型 / 填地址），
-   路由历史里没有这一层，不接管会跳过类型选择（`LibraryAddView.vue:157-180`）。
+   添加/编辑是片库页内的**原位弹框**（2026-11-18 起），不用路由：BACK 由 App 派发
+   Escape 到最上层 `[data-tv-scope]`，弹框按「目录浏览器 → 表单 → 关闭」逐级退出
+   （`components/library/LibraryAddDialog.vue`）。
 2. **`TileSelect` 在 TV 上不可用**。它的关闭路径是 `mousedown` 与 `Escape`
-   （`TileSelect.vue:69-101`），而遥控器只发 D-pad 与确认键。类型选择因此必须是
-   独立页面/路由，不能复用这个下拉。
+   （`TileSelect.vue:69-101`），而遥控器只发 D-pad 与确认键。类型选择因此做成
+   自带 `data-tv-scope` 的竖排按钮弹框（不是下拉，也不是独立路由）。
 
 ### 3.3 为什么不做成 source
 

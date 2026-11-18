@@ -86,8 +86,7 @@ src/
 | `/search` | `SearchView` | 聚合结果 + 按源筛选 + 最近搜索 |
 | `/history` | `HistoryView` | 历史 + 观看统计 |
 | `/live` | `LiveView` | 直播（分组 + 频道格 + hls.js） |
-| `/library` | `LibraryView` | 本地 / NAS 片库（根层级带「我的缓存」） |
-| `/library/add` | `LibraryAddView` | 添加片库；编辑复用同一页（`?edit=id`） |
+| `/library` | `LibraryView` | 本地 / NAS 片库（根层级带「我的缓存」）；添加/编辑是页内弹框 `LibraryAddDialog`，不占路由 |
 | `/offline` | `OfflineView` | 22 行薄壳，只渲染 `CachePanel`，兼容旧深链 |
 | `/favorites` | `FavoritesView` | 收藏 |
 | `/settings` | `SettingsView` | 16 个导航项，按平台过滤 |

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { isBigScreenLandscape } from '@/compat/deviceForm'
+import { isBigScreenLandscape, showPlayerBackButton } from '@/compat/deviceForm'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Hls from 'hls.js'
@@ -16,7 +16,7 @@ import {
 import { getSkipMarks, setSkipMark, type SkipMarks } from '@/stores/skipMarks'
 import { isTvEnv } from '@/composables/useCardCols'
 import { isIosPhone } from '@/compat/ua'
-import { hasFinePointer } from '@/compat/shell'
+import { hasFinePointer, isTvShell } from '@/compat/shell'
 import { cleanDmTitle, epBadgeOf } from '@/utils/dmTitle'
 import { assToVtt, srtToVtt, subtitleFormat, type MiddleSegment, type SubTrack } from '@/api/playExtras'
 import {
@@ -440,6 +440,14 @@ let autoPlayPending = false
  * 换源时在 setupSource 里复位）。
  */
 let didAutoStart = false
+/**
+ * 「刷新/重试」后要回到的位置（秒），0 = 不回跳。
+ *
+ * <p>用户口径（2026-11-18）：⟳ 刷新应当**续播**，不是从头。父组件的
+ * `applyResume` 有 `resumeApplied` 一次性守卫（只在首次 loaded 生效），
+ * 刷新触发的第二次 loaded 不会再去 seek —— 所以这里自己记住位置。
+ */
+let resumeAfterReload = 0
 /** 拖动进度条时的临时位置（秒），null = 没在拖 */
 const dragTime = ref<number | null>(null)
 /** 进度条悬停位置（秒），null = 没悬停 */
@@ -449,6 +457,8 @@ const hoverTime = ref<number | null>(null)
 function restart() {
   const v = video.value
   if (!v) return
+  // 重播是明确的"从头"：别让上一次刷新挂起的续播位置捣乱
+  resumeAfterReload = 0
   v.currentTime = 0
   // play() 在部分环境（jsdom / 旧浏览器）不返回 Promise，直接 .catch 会炸
   safePlay(v)
@@ -577,6 +587,9 @@ function getDuration(): number {
 function reloadSrc() {
   const v = video.value
   if (!v || !props.src) return
+  // 刷新/重试都续播到当前位置（用户口径 2026-11-18）；从头请用「重播」
+  const at = Number.isFinite(v.currentTime) ? v.currentTime : 0
+  resumeAfterReload = at > 1 ? at : 0
   loadingSrc.value = true
   setupSource(props.src)
   v.load()
@@ -2734,6 +2747,17 @@ function onLoaded() {
   v.muted = muted.value
   // 通知父组件可以安全 seek 了（续播恢复挂在这里）
   emit('loaded', { duration: duration.value })
+  /*
+   * 刷新/重试的续播（用户口径 2026-11-18：⟳ 应该续播）。
+   * 父组件 applyResume 有一次性守卫（resumeApplied），第二次 loaded 不会 seek，
+   * 所以这里自己回到刷新前的位置；cap 到 duration-1，避免落在片尾触发自动下一集。
+   */
+  if (resumeAfterReload > 0) {
+    const at = resumeAfterReload
+    resumeAfterReload = 0
+    const cap = duration.value > 1 ? duration.value - 1 : at
+    if (at <= cap) v.currentTime = at
+  }
   // ★ 自动起播。
   //
   //   原来完全没有这一步：<video> 上没写 autoplay，也没人调 play()，
@@ -3087,8 +3111,18 @@ function syncCompactViewport() {
  * 会被最先命中、按 OK 就退出整集（见顶部标题栏的注释）。
  * <p>手机形态（含 TV 壳跑在手机模拟器上）**给**：手机可能没有物理返回键，
  * 播放页又是整页铺满、没有顶栏可退。
+ *
+ * ★ TV 壳里必须有"真的产生过 pointer 事件"才给（2026-11-18）：
+ *   投影仪 WebView 没鼠标也报 `(any-pointer: fine)`，只看媒体查询会误显示。
  */
-const showBackButton = computed(() => !isBigScreenLandscape())
+const pointerSeen = ref(false)
+function notePointer(e: PointerEvent) {
+  const t = e.pointerType
+  if (t === 'mouse' || t === 'pen' || t === 'touch') pointerSeen.value = true
+}
+const showBackButton = computed(() =>
+  showPlayerBackButton(isTvShell(), pointerSeen.value, isBigScreenLandscape()),
+)
 
 const route = useRoute()
 const router = useRouter()
@@ -5230,6 +5264,9 @@ onMounted(() => {
     // 锁横屏成功后方向已变，再确认一次提示状态
     window.setTimeout(checkOrientation, 600)
   })
+  // 返回键判据：真的动过鼠标/触摸才在 TV 壳里显示（见 showPlayerBackButton）
+  window.addEventListener('pointerdown', notePointer, { capture: true, passive: true })
+  window.addEventListener('pointermove', notePointer, { capture: true, passive: true })
   wake()
 })
 
@@ -5343,6 +5380,8 @@ onBeforeUnmount(() => {
   clearTimeout(dmHintTimer)
   for (const t of dmUpgradeTimers) clearTimeout(t)
   dmUpgradeTimers = []
+  window.removeEventListener('pointerdown', notePointer, { capture: true } as EventListenerOptions)
+  window.removeEventListener('pointermove', notePointer, { capture: true } as EventListenerOptions)
 })
 
 function onPageHide() {

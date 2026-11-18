@@ -420,7 +420,7 @@ watch(
 /*
  * 模态层开合 → 重新判定返回键归属。
  *
- * 用 MutationObserver 而不是在各组件里手动通知：弹层有 8 种（CenterDialog /
+ * 用 MutationObserver 而不是在各组件里手动通知：弹层有 8 种（LibraryAddDialog /
  * TileSelect / AiPanel / UpdateDialog / TvActionSheet / 播放页面板 …），
  * 让每个都记得"我打开时要告诉 App 接管返回键"必然会漏一个。
  * 观测 [data-tv-scope] 属性的增删 + 子树变化就够了。
@@ -558,7 +558,7 @@ function onTvBack(): boolean {
    * 判据用 [data-tv-scope]（页面/组件声明"这是模态"）+ role="dialog"
    * （原生语义），与 tv-nav 的 activeScope() 同一组标记，不引入第二套约定。
    *
-   * 关闭方式：派发一次 Escape。CenterDialog / TileSelect / AiPanel 都已经
+   * 关闭方式：派发一次 Escape。LibraryAddDialog / TileSelect / AiPanel 都已经
    * 监听 keydown 的 Escape（浏览器里实测有效），只是壳的 BACK 键既不派发
    * Escape 也不走 dispatchKeyEvent，所以那些分支在电视上永远触发不到。
    * 这里补上这一环，组件不用各自改。

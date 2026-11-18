@@ -9,7 +9,8 @@
  *   竖屏触屏（手机/平板竖着拿）= 胶囊；横屏或 PC = 双栏。
  * TV 是横屏，自然命中，行为不变。
  */
-@custom-variant wide (@media (orientation: landscape), (pointer: fine));
+@custom-variant wide (@media (min-width: 1024px),
+  @media (pointer: coarse) and (orientation: landscape));
 
 /*
  * 设计 token —— 取自 影视仓 6.1.0 APK（aapt2 实测）
@@ -887,6 +888,24 @@ html[data-tv='1'] .tv-hide {
   }
 }
 
+/*
+ * TV 顶栏（2026-11-18，投影仪 960×540 报「源下拉框折叠了」）：
+ * 真电视/投影的 CSS 视口常是 960×540，顶栏放不下时 `[data-site-menu]`
+ * 的 min-w-0 会被压到只剩省略号。TV 上源下拉是最重要的入口，禁止收缩；
+ * 搜索/设置按钮已浮动到右侧（AppHeader md:absolute），不参与 flex 挤压。
+ */
+html[data-tv='1'] .app-header [data-site-menu] {
+  flex-shrink: 0 !important;
+}
+
+/* 窄视口（≤1024）：导航项只留图标，给右浮的搜索/设置和源下拉让宽度。
+ * 不限 TV：PC 窄窗（800–1024、精确指针）同样会被浮动搜索压住文字
+ * （2026-11-18 几何实测 800/900 命中）；>1024 恢复文字。 */
+@media (max-width: 1024px) {
+  .app-header .nav-label {
+    display: none !important;
+  }
+}
 /*
  * TV 上取消吸附（2026-11-04，修「搜索页左右键进不去左侧源列表」）。
  *

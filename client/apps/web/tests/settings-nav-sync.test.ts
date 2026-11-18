@@ -136,7 +136,9 @@ describe('设置页不再重复提供片库管理', () => {
 
 describe('片库页自己带增删改入口', () => {
   const LIB_VIEW = readFileSync(join(SRC, 'views', 'LibraryView.vue'), 'utf8')
-  const LIB_ADD = readFileSync(join(SRC, 'views', 'LibraryAddView.vue'), 'utf8')
+  const LIB_ADD = readFileSync(
+    join(SRC, 'components', 'library', 'LibraryAddDialog.vue'), 'utf8'
+  )
 
   it('片库页有添加 / 编辑 / 删除', () => {
     expect(LIB_VIEW).toContain('添加片库')
@@ -145,11 +147,11 @@ describe('片库页自己带增删改入口', () => {
     expect(LIB_VIEW).toMatch(/saveLibrary/)
   })
 
-  it('编辑复用添加页（?edit=id），不另起一套表单', () => {
-    // 2026-11-05 起 query 里还带 backLib/backPath（取消后回到原目录），
-    // 这里只锁"edit=id 是其中之一"，不再要求字面完全相等。
-    expect(LIB_VIEW).toMatch(/query: \{ edit: id,/)
-    expect(LIB_ADD).toContain("route.query.edit")
+  it('编辑复用同一个弹框（edit-id），不另起一套表单', () => {
+    // 2026-11-18 起添加/编辑改成片库页原位弹框，不再走 /library/add 路由
+    expect(LIB_VIEW).toContain('addEditId.value = id')
+    expect(LIB_VIEW).toContain(':edit-id="addEditId"')
+    expect(LIB_ADD).toContain('editId?: string')
     // 编辑时必须保留原 id：换 id 等于新增，旧条目还留在配置里
     expect(LIB_ADD).toMatch(/const id = editId\.value \|\|/)
   })

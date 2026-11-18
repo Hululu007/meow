@@ -18,13 +18,15 @@ TV 端已经有完整的一套「壳」：`client/apps/tv` 是 Android WebView �
 
 1. **能对齐的**：同一份 Web 前端、同一个后端、同一个「壳 + JS 桥 + 设置页」形态，
    以及同一条 `tag → 构建 → draft Release → Publish → 清单` 发版节奏。
-2. **对不齐的**：TV 的端内网关、dex jar 执行、Node 运行时模块在 iOS 上**没有对应物**
-   —— 没有 JVM、没有 JIT、禁止动态加载可执行代码。iOS 壳只能连后端，不能端内跑源。
+2. **对不齐的**：TV 的端内网关与 dex jar 执行在 iOS 上**没有对应物**——没有 JVM、
+   禁止动态加载可执行代码，iOS 壳只能连后端、不能端内跑源。TV 的 Node 模块是
+   Android APK，不能直接搬；iOS 用 nodejs-mobile **进程内嵌 libnode** 跑
+   `danmu_api`（见 §3.7），这是唯一可行的「内置 Node」形态。
 3. **真正的分水岭是签名**：没有 $99 账号，CI 只能产出**未签名 IPA**，用户必须用
    自己的 Apple ID 在电脑上签（AltStore / Sideloadly，7 天有效）。
    所以 IPA **不是自更新通道**，`packages.json` 也不该收它。
-4. **建议的定位**：iOS 壳是「局域网 / 公网后端的触屏客户端」，比 PWA 多的只有
-   本地网络发现、原生壳观感、可选的系统集成；**不是 TV 的等价物**。
+4. **定位（2026-11-17 用户定）**：iOS 作为独立应用，**弹幕在包内跑 `danmu_api`**；
+   源站与播放仍连后端（iOS 没有本地 ApiServer，见上一条）。
 
 ### 1.1 形态对齐的五个维度
 
@@ -36,6 +38,18 @@ TV 端已经有完整的一套「壳」：`client/apps/tv` 是 Android WebView �
 | 能力 | 壳桥 `window.meowTv` + 端内网关 + dex + 原生播放器 | 壳桥 `window.meowIos`；**无网关、无 dex、无 Node**；播放走 WebKit / AVFoundation |
 | 分发 | 固定 keystore 签名的 APK；应用内自更新 | Apple 证书签名的 IPA；用户侧签名安装，**无自更新** |
 
+### 1.2 「独立 App」的三种定义（先对齐）
+
+| 定义 | 现状能否 | 方案 |
+|---|---|---|
+| **独立安装**：一个 IPA，不装模块、不开浏览器 | ✅ | iOS 壳 + 远程后端 + 包内 `danmu_api` |
+| **独立后端**：手机单机就能搜索/播放 | ❌ | 现有 Java/dex 后端搬不进来；要么用原生语言重写后端（月级，且丢 jar 源），要么放弃 |
+| **独立于网络**：离线也能用 | ❌ | 源站/播放/弹幕都要网络；最多离线打开壳 |
+
+**本项目采用第一种**：App 独立安装、独立启动；后端在 PC / NAS / Docker，
+首次启动扫码或手填地址。这也是 Plex / Jellyfin / Emby 的 iOS 形态——
+「独立 App」不等于「服务器在手机里」。
+
 ---
 
 ## 二、能力对照：哪些能对齐，哪些根本做不到
@@ -44,10 +58,10 @@ TV 端已经有完整的一套「壳」：`client/apps/tv` 是 Android WebView �
 |---|---|---|---|
 | 首页 / 搜索 / 详情 / 收藏 / 历史 | ✅ 同一份 Web 前端 | ✅ 同一份 Web 前端 | 前端不分端，只靠后端契约 |
 | 播放 | WebView + ExoPlayer 原生兜底 | WKWebView `<video>`（HLS/MP4 原生）+ 可选 AVPlayer | iOS 的 HLS 由系统解，**不要引 hls.js** |
-| 弹幕 | Web 覆盖层 + 端内 danmu_api | Web 覆盖层；走后端内置源 + 可选后端 `danmu-api` 插件 | **不内置 Node**，见 §3.7 |
+| 弹幕 | Web 覆盖层 + 端内 danmu_api | Web 覆盖层 + **包内 nodejs-mobile 跑 danmu_api**；后端弹幕作降级 | 见 §3.7；不装 Android 模块 |
 | 端内跑源（spider jar / dex） | ✅ `LocalSpiderHost` | ❌ | iOS 无 JVM；且禁止动态加载可执行代码 |
 | 端内网关（`ApiServer`） | ✅ `GatewayServer` 监听 9978 | ❌ | 同上；只能连局域网/公网后端 |
-| Node 运行时模块（danmu_api） | ✅ `:node` 进程 + `tv-node` 模块 | ❌ | 不内置 Node，也不提供模块安装，见 §3.7 |
+| Node 运行时模块（danmu_api） | ✅ `:node` 进程 + `tv-node` 模块 | ⭕ nodejs-mobile **进程内嵌 libnode** | 不走 APK/模块；见 §3.7 |
 | 插件 / 模块安装 | PC 插件、TV 运行时模块（`tv-plugins-v*`） | ❌ | iOS 不装任何插件/模块；插件全部装在后端 |
 | 播放地址嗅探 | ✅ `SniffActivity`（不可见 WebView 拦请求） | ❌ v1 不做 | 靠后端 `/api/parse` 或源直链；v2 再评估 WKWebView 嗅探 |
 | 本地目录 / 缓存导出 | TV 内置浏览器 + SAF；PC Tauri dialog | ⚠️ v1 只支持后端片库（WebDAV/SMB） | iOS 本地目录要 `UIDocumentPicker`，v1 不做 |
@@ -63,6 +77,42 @@ TV 端已经有完整的一套「壳」：`client/apps/tv` 是 Android WebView �
 **一句话**：能对齐的是「壳 + 同一份前端 + 同一个后端」，不能对齐的是「端内执行」。
 后者不是没做，是平台禁止——即便自签侧载，JavaScriptCore 也补不出 Node 的
 `net` / `fs` / 子进程能力。
+
+### 2.1 为什么 iOS 跑不了 JVM / dex（不是实现选择）
+
+先把「独立」拆成两件事：**独立安装的 App**（可以）与**独立后端**（不行）。
+iOS 能装一个自己的 App，但装不了 TV 那套「端内后端」：
+
+| 端内能力 | 依赖 | iOS 为什么没有 |
+|---|---|---|
+| `ApiServer`（Java 宿主） | JVM 17、`java.nio`、`URLClassLoader` | iOS 没有 JVM；AOT 也处理不了运行时 `Class.forName` / 动态导入 jar |
+| `spider.jar`（class 形态） | JVM + 运行时 `URLClassLoader` | 同上；且 App Store 2.5.2 禁止下载/执行改变功能的代码 |
+| dex 形态 jar | Android ART / `DexClassLoader` | ART 是 Android 专有；iOS 没有 dex 运行时 |
+| `tv-node` 模块 | Android APK + libnode | iOS 不能装 APK、不能 `exec`；**但可以进程内嵌 nodejs-mobile**（只用于 danmu_api，见 §3.7） |
+| 前端 / 弹幕覆盖层 | WKWebView / JavaScriptCore | ✅ 有，且不需要 JIT |
+
+「用别的办法把 JVM 搬上去」也走过一遍，结论都不成立：
+
+- **GraalVM native-image**：没有 iOS 目标；而且宿主的动态加载是
+  `Class.forName` + `URLClassLoader`（883 个类），AOT 穷举不了反射入口——
+  AGENTS 里已经明确不把它当构建方案。
+- **RoboVM / Multi-OS Engine**：AOT 把 Java 编成原生，**不能运行时导入用户 jar**；
+  两个项目都已停止维护。
+- **Avian 之类的嵌入式 JVM**：不是完整 JDK，没有 `java.nio` / `URLClassLoader`
+  这层能力；即使能跑，导入源包仍属「下载并执行代码」，撞 App Store 2.5.2。
+- **自己写一个 dex 解释器**：研究级工作量、性能不可接受，且同样绕不过动态代码规则。
+- **浏览器里的 JVM（CheerpJ / DoppioJVM / TeaVM）**：要么是 AOT（不能运行时加载
+  jar），要么没有真实 socket / 文件 / 线程——`ApiServer` 要监听端口、读写文件、
+  跑并发，网页沙箱给不了。
+- **在 iOS 上跑 Linux 虚拟机再装 JDK（UTM / iSH）**：解释执行或依赖 JIT 侧载，
+  体积、性能、商店规则三输；不是可交付的产品路径。
+- **越狱 / TrollStore**：不提供 JVM/ART；TrollStore 在 iOS 17 后已失效；
+  即使装上也绕不过动态代码与性能问题。
+
+所以 iOS 的「独立」只能到「独立 App + 连后端」；要做到「完全无后端」，
+等于用 Swift 重写 `ApiServer` + 源站适配层，并**放弃 jar 生态**（现有大多数站点
+是 jar 源）——那是另一个产品，不是打包问题。TV 能端内自足，是因为 Android
+有 ART + `DexClassLoader`；PC/Docker 能端内自足，是因为桌面有 JVM。iOS 两者都没有。
 
 ---
 
@@ -186,7 +236,7 @@ iOS 不能自装 IPA。壳内「检查更新」只能做两件事：
 **不要把 IPA 写进 `packages.json`**：那份清单是给 PC/TV 的自更新器用的，
 iOS 没有对应的安装执行器；写进去只会让客户端尝试下载一个装不上的包。
 
-### 3.7 弹幕与 Node/danmu_api：不内置、不单装
+### 3.7 弹幕与 Node/danmu_api：包内内置（已定）
 
 先厘清 TV 的弹幕模块到底是什么：
 
@@ -203,8 +253,8 @@ iOS 能选的三条路：
 
 | 方案 | 做法 | 结论 |
 |---|---|---|
-| **A 后端（推荐，v1）** | 壳只调 `{后端}/api/proxy/danmaku*`；后端内置 iqiyi / tencent 直连，配了 `danmu-api` 插件就用它 | ✅ 零额外体积、零端内更新负担 |
-| B 内嵌 nodejs-mobile + danmu_api 载荷 | 把 libnode 作为 framework 嵌进 IPA，随包带 47MB 载荷（zip 11.7MB） | ❌ 不推荐：下载包预计 +20–35MB、安装后 +70–90MB（估算）；iOS 无 JIT，V8 只能解释执行；载荷不能热更新（每改一个弹幕源都要重签 IPA）；播放/源仍然要后端，离线弹幕没有实际意义 |
+| **A 后端** | 壳只调 `{后端}/api/proxy/danmaku*`；后端内置 iqiyi / tencent 直连，配了 `danmu-api` 插件就用它 | ⭕ **降级路径（保留）**：内置 Node 起不来时回退到这里 |
+| **B 内嵌 nodejs-mobile + danmu_api 载荷（已选）** | 把 libnode 作为 framework 嵌进 IPA，随包带 47MB 载荷（zip 11.7MB） | ✅ **v1 采用**（2026-11-17 用户定）：下载包预计 +20–35MB、安装后 +70–90MB（估算）；无 JIT；载荷不能热更新；播放/源仍要后端 |
 | C 原生 Swift 聚合器 | 只实现 iqiyi / tencent 等固定源的搜索与 XML 解析，不加载动态代码 | ⭕ v2 可选：体积小、可随 App 更新；但等于把后端已有的聚合逻辑再写一份，长期会漂移 |
 
 B 还有两个非技术成本：① `danmu_api` 的 `LICENSE` 是 **AGPL-3.0**
@@ -213,21 +263,25 @@ B 还有两个非技术成本：① `danmu_api` 的 `LICENSE` 是 **AGPL-3.0**
 公开构建里 `danmu-api` 插件本来就是跳过的，塞进 IPA 还要先解决源码分发问题。
 这两条都不作为否决理由，只是「内置」的真实价格。
 
-**决策：v1 不内置 Node，也不提供「模块安装」入口；弹幕一律走后端。**
+**决策（2026-11-17 用户定）：iOS 作为独立应用，v1 就内置 `danmu_api`——
+用 nodejs-mobile 进程内嵌 libnode 跑它；不装 Android 模块，也不要求后端装
+`danmu-api` 插件。后端弹幕保留为降级路径。**
 
 - 后端本来就有降级链：`DANMAKU_PRIORITY = {"iqiyi", "tencent", "danmu_api", "aggregator"}`
   （`ApiServer.java`）；`server/build-plugin-danmu.ps1` 顶部写明「没装时 apiserver
-  自动降级为官方源（爱奇艺直连）」。
-- 用户想要更广覆盖：在**后端**装 `danmu-api` 插件（PC / Docker / fpk 都是后端插件），
-  不是给 iPhone 装一个 App。这样正好满足「不要单装 App」。
-- 不要照搬 TV 的 `tv-node` / `danmu-payload` 到 iOS：TV 的模块版本线由
-  `tv-plugins-v*` 和 `packages.json` 管理，iOS 没有对应的安装器与更新通道。
+  自动降级为官方源（爱奇艺直连）」。内置 Node 启动失败时，必须自动回退到这里。
+- 内置只解决「弹幕」；**源站与播放仍然要后端**（搜索/详情/play 都在 ApiServer +
+  spider jar 里，iOS 跑不了 JVM/dex）。如果「独立应用」指「完全不需要后端」，
+  那不是打包距离问题，是要重写整个后端——当前架构下不做。
+- 不要照搬 TV 的 `tv-node` / `danmu-payload`：TV 的模块版本线由
+  `tv-plugins-v*` 和 `packages.json` 管理；iOS 把运行时和载荷作为 App 的一部分，
+  没有「装模块」这一步，也不进 `packages.json`。
 
 如果以后确实要做 C，先在文档里补两样再动手：**源适配器清单**（只做哪些站、
 各自接口与签名方式）和**与后端聚合结果的一致性验收**；不要直接把 `danmu_api`
 的 JS 搬进壳里跑。
 
-#### 如果一定要内置：可行路径与三个硬点
+#### 内置路径（已选）：四件事与三个硬点
 
 技术上**不是不行**，但唯一可行的形态是 **进程内嵌 libnode（nodejs-mobile 的
 iOS framework）**，不是把 TV 的 `tv-node` APK / `libnode.so` 放进 IPA
@@ -255,9 +309,10 @@ iOS framework）**，不是把 TV 的 `tv-node` APK / `libnode.so` 放进 IPA
 | 不能热更新 | 载荷在签名包里，改一个源就要重签 IPA | 免费账号 7 天重签；后端插件却可随时更新 |
 | 分发/许可 | `danmu_api` 的 `LICENSE` 是 AGPL-3.0（`package.json` 写 ISC）；公开库不含源码 | App Store 分发有冲突风险；公开构建没有源码可打 |
 
-估算：Node 嵌入 + 载荷打包 + 契约适配 + 许可评估 ≈ **1–2 周**（不含审核），
-收益只是「后端没装 danmu_api 时多几个源」。所以 v1 不做；要做就按 v2 单独立项，
-不要顺手塞进第一个 IPA。
+估算：Node 嵌入 + 载荷打包 + 契约适配 + 许可评估 ≈ **1–2 周**（不含审核）。
+这是 v1 的必做项，不是 v2；排期时放在「壳能连后端」之后、「发版 CI」之前，
+并先做一次 1–2 天的最小验证（nodejs-mobile + danmu_api 本地跑通 + WKWebView fetch）。
+内置 Node 起不来时必须回退到后端弹幕，不能把播放拖死。
 
 ### 3.8 TV 配套组件的逐项处置（齐全性检查）
 
@@ -276,7 +331,7 @@ TV 的组件清单以 [TV 接入](./tv-integration.md) 的 §7「端上配套组
 | `CacheDownloader`（缓存导出 U 盘） | ❌ | iOS 无 U 盘/SMB 直写；缓存留在后端 |
 | `UrlCheck`（`/api/proxy/*` 目标校验） | ❌ | 没有本地代理，校验在后端 |
 | `AppUpdater`（APK 下载/安装） | ❌ | 只提示版本，打开 Release 页 |
-| `ModuleInstallReceiver` / `RuntimeModuleHost` / `NodeService` | ❌ | iOS 没有模块安装与 Node 运行时 |
+| `ModuleInstallReceiver` / `RuntimeModuleHost` / `NodeService` | ❌ 模块安装；✅ 进程内 Node | 没有「装模块」；`danmu_api` 的 libnode 编译进 App，见 §3.7 |
 | `LocalSpiderHost` / `LocalSites` / `LocalDns` | ❌ | 端内跑源与本地 DNS 都不做 |
 | `GatewayServer`（端内 ApiServer） | ❌ | 只能连后端 |
 | `TvBridge`（`window.meowTv`） | ✅ 对应 `window.meowIos` | 只保留最小桥面 |
@@ -298,12 +353,14 @@ client/apps/ios/
     Bridge/              # MeowBridge.swift（WKScriptMessageHandlerWithReply）
     Server/              # LocalWebServer.swift（127.0.0.1 静态服务）
     Settings/            # 后端地址、令牌、局域网扫描、关于
+    Danmaku/             # NodeRuntime.swift + 内置 danmu_api 载荷（构建期注入，.gitignore）
     Web/                 # 构建期从 web/dist 拷入，.gitignore
     Resources/
       Info.plist
       Assets.xcassets
   Config/
     Version.xcconfig     # MARKETING_VERSION / CURRENT_PROJECT_VERSION
+  Vendor/                # nodejs-mobile iOS framework（构建期取，.gitignore）
   exportOptions.plist    # 仅签名链需要（method=development|ad-hoc）
   README.md
 ```
@@ -402,6 +459,15 @@ jobs:
           name: web-dist
           path: client/apps/ios/Meow/Web
 
+      - name: 准备内置 danmu_api 载荷
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 公开库不含 danmu_api 源码；私有构建在 job 开始前注入这个目录
+          test -f client/apps/ios/Danmaku/danmu_api/server.js
+          test -d client/apps/ios/Danmaku/node_modules
+          du -sh client/apps/ios/Danmaku
+
       - name: 选择 Xcode
         shell: bash
         run: |
@@ -473,6 +539,9 @@ jobs:
   只提供默认值，`bump-version.ps1` 改它。
 - 自检里的源包黑名单与 `release.yml` 的公开壳守卫同口径（`spider*.jar`、
   `config.sites.json`、`node-payload-danmu.zip`）。
+- `Danmaku/` 载荷在公开仓库里不存在（源码在 `research/upstream/`，gitignore）；
+  公开 CI 跑到「准备内置 danmu_api 载荷」会失败。要么**私有构建**，
+  要么在 job 里从私有 artifact/submodule 注入，并把 `Danmaku/` 加进 `.gitignore`。
 
 ### 6.3 签名链（有 $99 账号才启用）
 
@@ -634,6 +703,8 @@ TV 的接法在 `release.yml` 里是「`plan` 判定范围 → `tv` job 调 `_tv
 | 10 | 更新提示 | 有新版本时打开 Release 页，不尝试下载安装 |
 | 11 | 投屏 | DLNA 发现（受 entitlement 影响）；失败可手填 IP |
 | 12 | 旋转 / 安全区 | 竖屏、横屏都无内容被裁；`viewport-fit=cover` 生效 |
+| 13 | 内置弹幕 | 后端**不装** danmu-api 插件时仍出弹幕；人为让内置 Node 启动失败 → 自动回退后端弹幕，不阻塞播放 |
+| 14 | 内置 Node 性能 | 记录冷启动耗时、聚合搜索耗时、常驻内存、发热；JIT-off 下可接受才保留 |
 
 ### 8.3 发版前用户文档的同步清单
 
@@ -654,17 +725,21 @@ TV 的接法在 `release.yml` 里是「`plan` 判定范围 → `tv` job 调 `_tv
 
 1. **工程骨架**：`client/apps/ios/` + Xcode 工程 + 本地静态服务 + `window.meowIos`
    最小桥 + 设置页（后端地址/令牌/扫描）（≈2–3 天）。
-2. **Web 侧三处接入**：`resolveBase` 认 `meowIos`、`bootstrapIos()`、
-   `viewport-fit=cover`（≈0.5 天，改完跑 `vue-tsc` + 相关单测）。
-3. **未签名 IPA 链**：`_ios.yml` + `release.yml` 的 `ios-v*` 分支 +
+2. **Web 侧接入**：`resolveBase` 认 `meowIos`、`bootstrapIos()`、
+   `viewport-fit=cover`、弹幕请求支持独立 `danmakuBase`（≈1 天，改完跑
+   `vue-tsc` + 相关单测）。
+3. **内置 danmu_api（v1 必做）**：nodejs-mobile iOS framework + 载荷打包 +
+   本地服务 + `/api/proxy/danmaku*` 契约适配 + 后端降级（≈1–2 周；先做
+   1–2 天最小验证，见 §3.7）。
+4. **未签名 IPA 链**：`_ios.yml` + `release.yml` 的 `ios-v*` 分支 +
    `sync-packages.ps1` 的 `ios` 空范围（≈1 天；**先只发 `ios-v*`，全量的
-   `release-v*` 分支等第 4 步通过后再加**）。
-4. **真机验收**：一台 iPhone（或 iPad）+ 免费 Apple ID，按 §8.2 逐项过；
+   `release-v*` 分支等第 5 步通过后再加**）。
+5. **真机验收**：一台 iPhone（或 iPad）+ 免费 Apple ID，按 §8.2 逐项过；
    没有真机就停在「未签名构建 + 模拟器冒烟」，**不要对外发布**。
-5. **可选签名链**：有 $99 账号后再加 `_ios.yml` 的签名分支与 secrets；
+6. **可选签名链**：有 $99 账号后再加 `_ios.yml` 的签名分支与 secrets；
    先出 development/ad-hoc 内测包，再评估 TestFlight。
-6. **可选增强**：原生 AVPlayer 兜底、后台音频、DLNA entitlement、二维码推送、
-   原生 Swift 弹幕聚合器（**不引 Node**，见 §3.7）。
+7. **可选增强**：原生 AVPlayer 兜底、后台音频、DLNA entitlement、二维码推送、
+   原生 Swift 弹幕聚合器（只在放弃内置 Node 时才考虑）。
 
 每一步的退出判据：
 
@@ -672,9 +747,10 @@ TV 的接法在 `release.yml` 里是「`plan` 判定范围 → `tv` job 调 `_tv
 |---|---|
 | 1 | 模拟器启动后首页能渲染，`window.meowIos.platform()` 返回 `ios` |
 | 2 | `resolveBase()` 在壳里取到 `bootstrap` 给的后端；Web 端行为不变 |
-| 3 | `ios-v1.2.14` 能产出 `meow-iOS-1.2.14-unsigned.ipa` 并进 draft Release |
-| 4 | §8.2 的 1–8 全过；9–12 有明确记录 |
-| 5 | 签名 IPA 在真机装得上、能覆盖安装同签名版本 |
+| 3 | 后端**不装** danmu-api 插件时仍出弹幕；杀掉内置 Node → 自动回退后端弹幕；冷启动/内存有记录 |
+| 4 | `ios-v1.2.14` 能产出 `meow-iOS-1.2.14-unsigned.ipa` 并进 draft Release |
+| 5 | §8.2 的 1–13 全过；14 有数据 |
+| 6 | 签名 IPA 在真机装得上、能覆盖安装同签名版本 |
 
 ---
 
@@ -682,7 +758,8 @@ TV 的接法在 `release.yml` 里是「`plan` 判定范围 → `tv` job 调 `_tv
 
 | 不要 | 原因 |
 |---|---|
-| 把 `tv-node` / `danmu_api` 的 Node 运行时塞进 IPA | iOS 不能 exec 子进程、无 JIT；体积 +50–80MB，载荷不能热更新（§3.7） |
+| 把 Android 的 `tv-node` / `libnode.so` 直接塞进 IPA | 格式/ABI 不兼容；iOS 只能进程内嵌 nodejs-mobile 的 iOS framework（§3.7） |
+| 内置 Node 起不来却没有后端弹幕降级 | 弹幕会把播放页拖死；必须回退（§3.7） |
 | 给 iOS 做「模块安装」入口 | iOS 没有 Android APK 模块体系；弹幕/插件都在后端 |
 | 把 IPA 写进 `packages.json` | iOS 没有自更新执行器；下载了也装不上 |
 | 在未签名产物上去掉 `-unsigned` | 用户会以为能直接安装 |

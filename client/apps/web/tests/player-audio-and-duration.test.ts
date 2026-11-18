@@ -36,8 +36,24 @@ describe('问题1：TV 播放页去掉左上角返回按钮', () => {
     // （TV 壳跑在手机模拟器上时也要能返回），真电视（960×540）仍为 false。
     const src = codeOnly(PLAYER)
     expect(src).toMatch(/v-if="showBackButton"[\s\S]{0,200}aria-label="返回"/)
-    expect(src).toContain('const showBackButton = computed(() => !isBigScreenLandscape())')
+    // 2026-11-18：TV 壳还必须"真的见过 pointer 事件"才给（投影仪 any-pointer:fine 误报）
+    expect(src).toContain(
+      'showPlayerBackButton(isTvShell(), pointerSeen.value, isBigScreenLandscape())',
+    )
+    expect(src).toContain('pointerSeen.value = true')
     expect(src).toContain('Math.min(window.innerWidth, window.innerHeight) < 480')
+  })
+
+  it('刷新 ⟳ 续播到原位置（不是从头）；重播仍从头', () => {
+    // 用户口径 2026-11-18：「播放页的刷新 ⟳，应该续播才对吧」
+    const src = codeOnly(PLAYER)
+    const i = src.indexOf('function reloadSrc()')
+    expect(i, 'reloadSrc 改了名字，测试需要同步').toBeGreaterThan(-1)
+    expect(src.slice(i, i + 500)).toContain('resumeAfterReload = at > 1 ? at : 0')
+    expect(src).toContain('if (resumeAfterReload > 0)')
+    // 重播必须清掉挂起的续播位置，否则"从头"会跳回刷新前的位置
+    const r = src.indexOf('function restart()')
+    expect(src.slice(r, r + 300)).toContain('resumeAfterReload = 0')
   })
 })
 

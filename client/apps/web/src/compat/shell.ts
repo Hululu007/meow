@@ -111,16 +111,14 @@ export function hasFinePointer(): boolean {
 }
 
 /**
- * 宽布局（≥768 的内容区）：手机竖屏为假，其余为真。
+ * 宽布局（内宽 ≥768）：搜索页源栏 / 投屏面板锚定用。
  *
- * 由 `data-form` 推导，替代各页面手写的 `innerWidth >= 768`（B 阶段收口）。
- * 没装 deviceProfile（单测）时退回宽度比较。
+ * ★ 不能用 `form !== 'phone'` 推导：640–767 的竖屏平板 form=tablet，
+ *   但 CSS 侧栏（`md:` = 768）还没出现，JS 却先扣掉 172px 源栏宽度，
+ *   卡片会被算窄（2026-11-18 复核发现的缝隙）。
+ *   768 本身就是「导航密度」的单一阈值，这里直接用它。
  */
 export function isWideLayout(): boolean {
-  if (typeof document !== 'undefined') {
-    const f = document.documentElement.dataset.form
-    if (f) return f !== 'phone'
-  }
   if (typeof window === 'undefined') return false
   return window.innerWidth >= 768
 }

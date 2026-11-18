@@ -38,7 +38,7 @@ const aiActive = computed(() => route.name === 'ai')
 const setActive = computed(() => route.name === 'settings')
 /** 历史/收藏/片库都归到「我的」：从二级页进来时父级仍该亮着 */
 const meActive = computed(() =>
-  ['me', 'history', 'favorites', 'library', 'libraryAdd'].includes(String(route.name)),
+  ['me', 'history', 'favorites', 'library'].includes(String(route.name)),
 )
 
 /**

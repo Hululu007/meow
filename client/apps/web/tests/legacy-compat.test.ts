@@ -204,6 +204,33 @@ describe('构建产物：老内核（Chrome 66）兼容性', () => {
       .toMatch(/\[class~='-translate-x-1\/2'\]\[class~='-translate-y-1\/2'\]\s*\{[^}]*transform:\s*translate\(-50%,\s*-50%\)/)
   })
 
+  it('带断点前缀的 translate 也要兜底（md:-translate-* 是另一个类名）', () => {
+    // ★ `[class~='-translate-y-1/2']` 匹配的是**完整类名**，`md:-translate-y-1/2`
+    //   是另一个 token，上面的规则一条都命中不了（2026-11-18 顶栏浮动按钮踩过：
+    //   投影仪上搜索框/设置整体下沉半行，其他端正常）。
+    //   兜底必须包在同一个 768px 断点里，否则窄屏也会被平移。
+    const s = readFileSync(
+      join(__dirname, '..', 'src', 'styles', 'legacy-css.css'), 'utf8'
+    ).replace(/\/\*[\s\S]*?\*\//g, '')
+
+    for (const [cls, tf] of [
+      ['md:-translate-y-1/2', 'translateY\\(-50%\\)'],
+      ['md:-translate-x-1/2', 'translateX\\(-50%\\)'],
+    ]) {
+      const re = new RegExp(
+        `@media\\s*\\(min-width:\\s*768px\\)\\s*\\{[\\s\\S]*?` +
+        `\\[class~='${cls}'\\]\\s*\\{[^}]*transform:\\s*${tf}`
+      )
+      expect(s, `${cls} 缺少断点内的 transform 兜底，老核心上会偏半个身位`).toMatch(re)
+    }
+
+    // 源文件对了但没重新构建也是假绿——直接查产物里有没有这条选择器
+    const css = cssFiles().map((f) => readFileSync(join(DIST, f), 'utf8')).join('\n')
+    expect(css, 'md:-translate-y-1/2 的兜底没打进产物').toMatch(
+      /\[class~="md:-translate-y-1\/2"\]/
+    )
+  })
+
   it('button 上的 grid 居中必须有 flex 兜底（旧 Blink 只对齐纵向）', () => {
     const s = readFileSync(
       join(__dirname, '..', 'src', 'styles', 'legacy-css.css'), 'utf8'
@@ -219,6 +246,30 @@ describe('构建产物：老内核（Chrome 66）兼容性', () => {
     // 反向校验：绝不能写成通配（会污染 div 等已被证明正常的元素）
     expect(/\[\s*data-legacy-css='1'\s*\]\s*\*\s*\[class~='grid'\]/.test(s),
       'button 居中兜底写成了通配选择器，会给已正常的元素重复偏移').toBe(false)
+  })
+
+  it('带断点前缀的 button grid 居中也要兜底（sm:grid / max-sm:grid）', () => {
+    // ★ 播放页弹幕搜索按钮是 `hidden … place-items-center sm:grid`，
+    //   `[class~='grid']` 命中不了 `sm:grid`（2026-11-18 投影仪踩过：
+    //   放大镜偏左，其他端正常）。两条规则各自包在自己的断点里。
+    const s = readFileSync(
+      join(__dirname, '..', 'src', 'styles', 'legacy-css.css'), 'utf8'
+    ).replace(/\/\*[\s\S]*?\*\//g, '')
+
+    for (const [mq, cls, pi] of [
+      ['min-width:\\s*640px', 'sm:grid', 'place-items-center'],
+      ['max-width:\\s*639px', 'max-sm:grid', 'max-sm:place-items-center'],
+    ]) {
+      const re = new RegExp(
+        `@media\\s*\\(${mq}\\)\\s*\\{[\\s\\S]*?` +
+        `button\\[class~='${cls}'\\]\\[class~='${pi}'\\]\\s*\\{[^}]*` +
+        `display:\\s*flex[^}]*justify-content:\\s*center`
+      )
+      expect(s, `${cls} 按钮缺少断点内的 flex 居中兜底，图标会贴左边缘`).toMatch(re)
+    }
+
+    const css = cssFiles().map((f) => readFileSync(join(DIST, f), 'utf8')).join('\n')
+    expect(css, 'sm:grid 的居中兜底没打进产物').toMatch(/\[class~="sm:grid"\]/)
   })
 
   it('降级层的 inset 不能被压缩器合并回简写（自反陷阱）', () => {

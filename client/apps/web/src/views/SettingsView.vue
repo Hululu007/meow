@@ -4901,7 +4901,7 @@ onBeforeUnmount(() => {
     </nav>
 
     <div
-      class="flex flex-col gap-4 max-sm:mt-3 wide:grid wide:min-h-0 wide:flex-1 wide:grid-cols-[200px_minmax(0,1fr)] wide:gap-6"
+      class="flex flex-col gap-4 max-sm:mt-3 wide:grid wide:min-h-0 wide:flex-1 wide:grid-cols-[200px_minmax(0,1fr)] wide:grid-rows-[minmax(0,1fr)] wide:gap-6"
     >
       <!-- ── 左侧导航（宽屏时定高不滚） ── -->
       <aside

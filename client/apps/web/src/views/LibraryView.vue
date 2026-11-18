@@ -14,10 +14,11 @@
  *
  * 缓存与片库用页签分开（原先是上下堆叠，缓存列表把片库挤到屏幕外）。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { apiBase } from '@/api'
 import CachePanel from '@/components/library/CachePanel.vue'
+import LibraryAddDialog from '@/components/library/LibraryAddDialog.vue'
 import PosterImage from '@/components/common/PosterImage.vue'
 import MeTabs from '@/components/common/MeTabs.vue'
 import { colsStyle, useCardCols } from '@/composables/useCardCols'
@@ -771,26 +772,74 @@ async function clearMirror() {
 }
 
 /**
- * 打开添加页时把当前位置带上（`backLib` / `backPath`）。
+ * 添加 / 编辑改用**原位弹框**（2026-11-18 用户反馈）。
  *
- * <p><b>为什么必须带</b>（2026-11-05 用户报「取消后像刷新页面」）：
- * 取消/保存最后都是 `replace({name:'library'})`，组件被重建、`onMounted`
- * 先 `loadRoot()` 再按 `route.query` 决定进哪层目录 —— 不带位置就退回根层，
- * 用户看到的是"骨架闪一下 + 回到片库首页"，和在子目录里点取消的预期不符。
+ * <p>原来跳 `/library/add` 路由：组件被卸载重建，取消/保存回来时
+ * `onMounted` 先 `loadRoot()`（`loading=true` → 整页骨架），用户看到
+ * 的就是"关掉弹框片库闪一下刷新"。弹框不离开本页，焦点、滚动位置、
+ * 已加载海报全都不用重算。
+ *
+ * <p>编辑复用同一个组件（`edit-id` 有值即编辑），字段与校验完全一致。
  */
-function addQuery() {
-  return currentLib.value && currentPath.value
-    ? { backLib: currentLib.value, backPath: currentPath.value }
-    : undefined
+const addOpen = ref(false)
+const addEditId = ref('')
+/** 打开弹框的按钮：关掉后把焦点还给它（tv-nav 的自动记录偶尔落到邻居） */
+let addOpener: HTMLElement | null = null
+
+function openerOf(ev?: Event): HTMLElement | null {
+  const t = ev && ev.currentTarget
+  return t instanceof HTMLElement ? t : null
 }
 
-function goAdd() {
-  void router.push({ name: 'libraryAdd', query: addQuery() })
+function goAdd(ev?: Event) {
+  addOpener = openerOf(ev)
+  addEditId.value = ''
+  addOpen.value = true
 }
 
-/** 编辑：复用添加页（?edit=id），字段与校验完全一致 */
-function goEdit(id: string) {
-  void router.push({ name: 'libraryAdd', query: { edit: id, ...addQuery() } })
+function goEdit(id: string, ev?: Event) {
+  addOpener = openerOf(ev)
+  addEditId.value = id
+  addOpen.value = true
+}
+
+/**
+ * 关弹框：先把焦点还给打开它的按钮。
+ *
+ * <p>tv-nav 自己会记 `scopeReturnEl`，但在真机上出现过"关掉后落到隔壁
+ * 删除按钮"的情况（几何上更近）。显式归还比依赖它稳，和
+ * `__meowTvFocus(el, true)` 的用法一致。
+ */
+function closeAdd() {
+  addOpen.value = false
+  const el = addOpener
+  addOpener = null
+  if (!el || !document.contains(el)) return
+  void nextTick(() => {
+    const w = window as unknown as { __meowTvFocus?: (t: Element, pin?: boolean) => boolean }
+    if (typeof w.__meowTvFocus === 'function') w.__meowTvFocus(el, true)
+    else el.focus()
+  })
+}
+
+/**
+ * 弹框保存后原地刷新库表。
+ *
+ * <p>不能直接 `loadRoot()`：它会把 `loading` 置 true，整页先变成骨架
+ * 再画回来——那正是用户报的"闪一下刷新"。这里只换 `overview`，
+ * 目录/海报状态原样保留。
+ */
+async function onLibSaved() {
+  closeAdd()
+  try {
+    overview.value = await fetchLibrary()
+    error.value = ''
+    for (const t of overview.value.tops || []) {
+      void doScrapeDirs(t.id, `root|${t.id}`, t.dirs || [])
+    }
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
 }
 
 /**
@@ -1151,7 +1200,7 @@ onBeforeUnmount(() => {
           <button
             data-tv-key="library-add"
             class="rounded-md bg-card px-2.5 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover max-sm:px-3 max-sm:py-1.5"
-            @click="goAdd"
+            @click="goAdd($event)"
           >
             添加片库
           </button>
@@ -1329,7 +1378,7 @@ onBeforeUnmount(() => {
             <span class="rounded bg-field px-1 py-0.5 text-[10px] text-ink-3">{{ l.type }}</span>
             <button
               class="rounded px-1.5 py-0.5 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink"
-              @click="goEdit(l.id)"
+              @click="goEdit(l.id, $event)"
             >
               编辑
             </button>
@@ -1538,5 +1587,13 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </template>
+
+    <!-- 添加 / 编辑片库：原位弹框（不跳路由，关掉不刷新本页） -->
+    <LibraryAddDialog
+      v-if="addOpen"
+      :edit-id="addEditId"
+      @close="closeAdd"
+      @saved="onLibSaved"
+    />
   </div>
 </template>

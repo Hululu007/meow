@@ -223,7 +223,9 @@ function pickSite(key: string) {
     class="app-header sticky top-0 z-30 flex h-16 items-center gap-2 border-b border-line px-3 backdrop-blur-xl max-sm:gap-1.5 sm:gap-3 sm:px-6"
   >
     <!-- Logo -->
-    <RouterLink to="/" class="group flex shrink-0 items-center gap-2.5">
+    <!-- 圆角必须在 <a> 上：tv-nav 的焦点框是 box-shadow，半径跟元素自身走。
+         只给 img 加圆角的话，框会画成直角（2026-11-18 用户报「logo 聚焦是方形的」）。 -->
+    <RouterLink to="/" class="group flex shrink-0 items-center gap-2.5 rounded-[9px] max-sm:rounded-lg">
       <img
         src="/icon-192.png"
         alt="猫窝"
@@ -423,10 +425,11 @@ function pickSite(key: string) {
         视口；允许收缩后窄屏自动压窄。用户要求「搜索框、设置按钮在右侧浮动」：
         左侧导航保持左对齐，这颗按钮 + 设置成组贴在右边缘（ml-auto）。
     -->
+    <div class="contents md:absolute md:inset-y-0 md:right-3 md:z-10 md:flex md:items-center md:gap-2">
     <button
       v-if="!isSearchPage"
       type="button"
-      class="ml-auto flex h-9 w-full min-w-0 max-w-[15rem] shrink items-center gap-2 rounded-full border border-line bg-card px-3 text-left text-[13px] text-ink-3 transition hover:border-accent/40 max-sm:flex-1 sm:max-w-[17rem] md:max-w-[19rem]"
+      data-tv-search class="ml-auto flex h-9 w-full min-w-0 max-w-[15rem] shrink items-center gap-2 rounded-full border border-line bg-card px-3 text-left text-[13px] text-ink-3 transition hover:border-accent/40 max-sm:flex-1 sm:max-w-[8.5rem] md:w-[8.5rem] md:max-w-[8.5rem]"
       title="搜索"
       aria-label="搜索"
       @click="goSearch()"
@@ -555,6 +558,7 @@ function pickSite(key: string) {
         </div>
       </div>
     </nav>
+    </div>
 
   </header>
 </template>

@@ -187,9 +187,9 @@ describe('移动端导航：底部标签栏 + 顶栏搜索展开', () => {
     expect(meTabs).toContain('片库')
     const library = read('views/LibraryView.vue')
     expect(library).toContain('<MeTabs active="library" />')
-    // 片库（及其添加页）归属「我的」：底栏在这一段仍亮着
+    // 片库归属「我的」：底栏在这一段仍亮着（添加已是弹框，没有单独路由）
     expect(tab).toContain(
-      "['me', 'history', 'favorites', 'library', 'libraryAdd'].includes(String(route.name))",
+      "['me', 'history', 'favorites', 'library'].includes(String(route.name))",
     )
   })
 
@@ -271,7 +271,7 @@ describe('移动端滚动（续）：搜索条吸顶 / 胶囊跟随 / AI 页高�
   const settings = read('views/SettingsView.vue')
   const ai = read('views/AiView.vue')
   const lib = read('views/LibraryView.vue')
-  const libAdd = read('views/LibraryAddView.vue')
+  const libAdd = read('components/library/LibraryAddDialog.vue')
 
   it('首页吸顶条必须满宽：容器手机内边距 12px + 胶囊 -mx-3 抵消', () => {
     expect(home).toContain('px-6 py-6 max-sm:px-3 max-sm:py-4')
@@ -296,11 +296,18 @@ describe('移动端滚动（续）：搜索条吸顶 / 胶囊跟随 / AI 页高�
     expect(ai).toContain('height: calc(100dvh - var(--header-h) - var(--tabbar-h, 0px))')
   })
 
-  it('片库「添加/编辑」带上来源目录，取消后回到原目录而不是根层', () => {
-    expect(lib).toContain('backLib')
-    expect(lib).toContain('backPath')
-    expect(libAdd).toContain('backToLibrary')
-    expect(libAdd).toContain("name: 'library'")
+  it('添加/编辑是原位弹框：不开路由、关掉不重载整页（2026-11-18）', () => {
+    // 用户口径：弹框应直接显示在片库页上。跳路由会让返回时组件重建、
+    // 骨架闪一下 —— 看起来像"关掉弹框把页面刷新了"。
+    expect(lib).toContain('<LibraryAddDialog')
+    expect(lib).not.toContain("name: 'libraryAdd'")
+    expect(libAdd).toContain('data-tv-scope')
+    // 保存后只换 overview，不能动 loading（那会把整页切成骨架）
+    const start = lib.indexOf('async function onLibSaved')
+    expect(start, 'onLibSaved 改了名字，测试需要同步').toBeGreaterThan(-1)
+    const nextFn = lib.indexOf('\nasync function', start + 10)
+    const body = lib.slice(start, nextFn > 0 ? nextFn : undefined)
+    expect(body).not.toContain('loading.value')
   })
 })
 
