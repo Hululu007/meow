@@ -21,10 +21,11 @@
 | 端 | 监听 | 鉴权 | 启停 |
 |---|---|---|---|
 | PC（Tauri） | `127.0.0.1:9339–9346`（只本机） | 无（仅回环可访问） | 随应用启动/退出，设置页只读展示 |
-| TV（Android） | `0.0.0.0:9977`（局域网可达） | `X-Meow-Token`（设置页显示，重启会换） | 设置 → 维护 → 远程调试，可随时开关 |
+| TV（Android） | `0.0.0.0:9977`（局域网可达） | `X-Meow-Token`（设置页显示，重启会换；**分隔符可省略**） | 设置 → 维护 → 远程调试，可随时开关；**空闲 30 分钟自动关闭** |
 | Web / fnOS 页面 | — | — | 没有窗口，不提供 MCP |
 
 TV 之所以需要令牌：它监听局域网，方便一台电脑遥控投影仪；不放心就直接关掉开关。
+令牌按 4 位分组显示只是排版（`a3f1-ffc7-2d7e-0eae`），请求头里带不带 `-` 都认。
 
 ## PC 接入
 
@@ -79,10 +80,15 @@ curl -s -X POST http://127.0.0.1:9339/mcp \
 
 ## 工具一览
 
-| 类 | PC（18） | TV（13） |
+| 类 | PC（18） | TV（17） |
 |---|---|---|
-| 状态 | `pc_eval` `pc_dom` `pc_console` `pc_network` `pc_perf` `pc_danmaku` `pc_plugins` `pc_backend` `pc_screenshot` | `tv_eval` `tv_dom` `tv_console` `tv_network` `tv_perf` `tv_danmaku` `tv_gateway` `tv_health` `tv_screenshot` `tv_state` |
-| 动作 | `pc_click` `pc_type` `pc_key` `pc_hover` `pc_drag` `pc_wait` `pc_navigate` `pc_plugin_start` `pc_plugin_stop` | `tv_key` `tv_navigate` `tv_wait` |
+| 状态 | `pc_eval` `pc_dom` `pc_console` `pc_network` `pc_perf` `pc_danmaku` `pc_plugins` `pc_backend` `pc_screenshot` | `tv_eval` `tv_dom` `tv_console` `tv_network` `tv_perf` `tv_danmaku` `tv_gateway` `tv_health` `tv_screenshot` `tv_state` `tv_media` `tv_storage` |
+| 动作 | `pc_click` `pc_type` `pc_key` `pc_hover` `pc_drag` `pc_wait` `pc_navigate` `pc_plugin_start` `pc_plugin_stop` | `tv_key` `tv_navigate` `tv_wait` `tv_pointer` `tv_focus` |
+
+`tv_media` 读 `currentTime/duration/readyState/buffered/src`（续播、转码、卡顿）；
+`tv_storage` 读写 localStorage（仅 `meow.*` 键）；
+`tv_pointer` 合成鼠标 move/down/up/click（验证 hover/pointer 判据；不触发原生 `:hover`）；
+`tv_focus` 把焦点设到指定选择器（走 tv-nav，会画框并钉住）。
 
 两端共用 10 个业务工具：`meow_state`、`meow_logs`、`meow_diagnose`、`meow_search`、
 `meow_play`、`meow_sources`、`meow_library`、`meow_live`、`meow_danmaku`、`meow_cache`。
