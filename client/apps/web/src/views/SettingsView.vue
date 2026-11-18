@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import TilePanel from '@/components/common/TilePanel.vue'
 import TileSelect from '@/components/common/TileSelect.vue'
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue'
+import AboutDialog from '@/components/common/AboutDialog.vue'
 import { useCardCols } from '@/composables/useCardCols'
 import WallpaperPicker from '@/components/common/WallpaperPicker.vue'
 import { THEME_MODES, THEME_STYLES, resolveMode } from '@/stores/theme'
@@ -1337,9 +1338,11 @@ const maintTiles = computed<TileAction[]>(() => [
   {
     key: 'about',
     label: '关于',
-    hint: '版本号与项目主页',
+    hint: '版本历史与项目主页',
     value: `v${appVersion.value}`,
-    onClick: () => openProjectPage(),
+    // 2026-11-18 用户口径：点「关于」先弹框（版本历史可滚 + GitHub 图标跳转），
+    // 不再直接开浏览器 —— TV 上原来只能"复制链接"，等于没入口。
+    onClick: () => (showAbout.value = true),
   },
 ])
 
@@ -1431,6 +1434,8 @@ async function clearSearchCacheNow() {
 }
 
 const showSites = ref(false)
+/** 「关于」弹框：版本历史 + 项目主页（版本历史是运行时拉的，见 api/changelog.ts） */
+const showAbout = ref(false)
 const extCount = computed(() => store.sites.filter((s) => s.ext).length)
 /**
  * 统计"当前会被聚合跳过"的源。
@@ -1511,6 +1516,20 @@ function closeSites() {
 }
 
 /**
+ * 关闭「关于」弹框（点遮罩 / 返回按钮 / Escape 都走这里）。
+ *
+ * 焦点交还：tv-nav 的 `__meowTvScopeClosed()` 能记住遥控器打开时的触发元素；
+ * 鼠标点开时没有 enterOpener，交还到左导航也算合理（弹框是临时查看）。
+ */
+function closeAbout() {
+  showAbout.value = false
+  const w = window as unknown as {
+    __meowTvScopeClosed?: (fallbackSelector?: string) => boolean
+  }
+  if (typeof w.__meowTvScopeClosed === 'function') w.__meowTvScopeClosed()
+}
+
+/**
  * Escape 关弹层：App.vue 的 onTvBack 就是靠派发 Escape 让组件自己关的。
  *
  * ★ 连接弹层也必须在这里处理。
@@ -1523,6 +1542,10 @@ function onSitesKey(e: KeyboardEvent) {
   // 扫码弹层（2026-11-04 补）：没有 Escape 接收端时 BACK 被 App 吞掉、弹层不关
   if (scanDialog.open) {
     scanDialog.open = false
+    return
+  }
+  if (showAbout.value) {
+    closeAbout()
     return
   }
   if (showSites.value) {
@@ -7795,6 +7818,14 @@ onBeforeUnmount(() => {
 
       </div><!-- /右侧内容 -->
     </div><!-- /两栏网格 -->
+
+    <!-- 「关于」：版本历史（运行时拉）+ 项目主页。Teleport 在组件内部，见 AboutDialog -->
+    <AboutDialog
+      v-if="showAbout"
+      :version="appVersion"
+      @close="closeAbout()"
+      @open-project="openProjectPage()"
+    />
 
     <!-- ══════════ 站点明细弹层 ══════════
       ★ 为什么用弹框而不是原地展开。

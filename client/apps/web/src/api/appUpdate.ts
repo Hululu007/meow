@@ -124,11 +124,19 @@ function currentAccel(): GitAccelPrefs {
  *
  * <p>只对公开地址生效：`api.github.com` 默认不挂代理（私有仓 token 请求）。
  * 公开仓的 API 由调用方显式传 `allowApi` 的候选函数处理。
+ *
+ * @param opts.index 小文件（清单 / 版本历史）传 true 才允许生成 jsDelivr 候选。
+ *   ★ 不传时只有"已知 size < 20MB"才加 jsDelivr —— 历史文件大小未知，不显式
+ *   标 index 会退化成"只有直连 + 代理"，jsDelivr 那条永远不出现。
  */
-export function downloadCandidates(url: string, accel: GitAccelPrefs = currentAccel()): string[] {
+export function downloadCandidates(
+  url: string,
+  accel: GitAccelPrefs = currentAccel(),
+  opts: { index?: boolean } = {},
+): string[] {
   const seen = new Set<string>()
   const out: string[] = []
-  for (const c of gitAccelCandidates(url, accel, { for: 'appUpdate' })) {
+  for (const c of gitAccelCandidates(url, accel, { for: 'appUpdate', ...opts })) {
     if (seen.has(c.url)) continue
     seen.add(c.url)
     out.push(c.url)
