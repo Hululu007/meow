@@ -30,6 +30,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fileNameFor, formatNoteLines } from '@/api/appUpdate'
+import { useReducedMotion } from '@/composables/useReducedMotion'
 import {
   busy,
   closeDialog,
@@ -59,6 +60,20 @@ const notesOverflow = ref(false)
 /** 更新日志按行拆开：`desc` 里存的是多行文本，原样塞进一个 div 会丢掉换行 */
 const noteLines = computed(() => {
   return formatNoteLines(found.value?.notes || '')
+})
+
+/**
+ * 弹框里的品牌图标：下载/安装中换成「扫光动图」，其余时候静态图。
+ *
+ * <p>为什么只在 busy 时动：弹框会停在「发现新版本」等用户读更新说明，一直扫会分心；
+ * 而下载/安装时没有任何进度反馈之外的动作感，扫光正好是「在干活」的信号。
+ * <p>动图 WebP 不受 CSS `prefers-reduced-motion` 约束 —— 只能用换源处理。
+ */
+const reduceMotion = useReducedMotion()
+const logoSrc = computed(() => {
+  const base = import.meta.env.BASE_URL
+  const anim = busy.value && !reduceMotion.value
+  return `${base}${anim ? 'logo-anim.webp' : 'icon-192.png'}`
 })
 
 /** 平台名（标题里给用户看，不写清单 id） */
@@ -253,21 +268,35 @@ watch(phase, (v) => {
       aria-modal="true"
       aria-labelledby="upd-title"
     >
-      <div class="border-b border-line px-4 py-3">
-        <div id="upd-title" class="text-sm font-medium text-ink">发现新版本</div>
-        <div class="mt-1 text-[12px] text-ink-3">
-          {{ platformName }} · v{{ found?.version }}
-          <span v-if="found?.size" class="ml-1.5">{{ fmtSize(found.size) }}</span>
-          <!-- 发布日：同一版本号隔很久才看到时，用户要靠它判断"是不是旧包" -->
-          <span v-if="found?.lasttime" class="ml-1.5">· {{ found.lasttime }} 发布</span>
-        </div>
+      <div class="flex items-center gap-3 border-b border-line px-4 py-3">
         <!--
-          文件名单独一行：用户能一眼看出要下的是 exe 还是 apk。
-          配错了清单时（例如 PC 上写着 .apk）这里会立刻露出来，
-          比只看版本号更容易发现问题。
+          品牌图标：**只在下载/安装中扫光**（= "在干活"），其余时候静态。
+          弹框可能被用户放着读更新说明，一直扫会分心；动图 WebP 又不听 CSS 的
+          reduced-motion，只能换源（useReducedMotion）。
         -->
-        <div v-if="fileName" class="mt-1 truncate font-mono text-[11px] text-ink-3">
-          {{ fileName }}
+        <img
+          :src="logoSrc"
+          alt=""
+          width="40"
+          height="40"
+          class="h-10 w-10 shrink-0 rounded-[10px] object-cover"
+        />
+        <div class="min-w-0 flex-1">
+          <div id="upd-title" class="text-sm font-medium text-ink">发现新版本</div>
+          <div class="mt-1 text-[12px] text-ink-3">
+            {{ platformName }} · v{{ found?.version }}
+            <span v-if="found?.size" class="ml-1.5">{{ fmtSize(found.size) }}</span>
+            <!-- 发布日：同一版本号隔很久才看到时，用户要靠它判断"是不是旧包" -->
+            <span v-if="found?.lasttime" class="ml-1.5">· {{ found.lasttime }} 发布</span>
+          </div>
+          <!--
+            文件名单独一行：用户能一眼看出要下的是 exe 还是 apk。
+            配错了清单时（例如 PC 上写着 .apk）这里会立刻露出来，
+            比只看版本号更容易发现问题。
+          -->
+          <div v-if="fileName" class="mt-1 truncate font-mono text-[11px] text-ink-3">
+            {{ fileName }}
+          </div>
         </div>
       </div>
 

@@ -24,6 +24,53 @@ PLATFORM=arm SRC=/tmp/meow-src OUT=/tmp/meow-out-arm bash client/apps/fnos/build
   走应用内升级（设置 → 应用更新，填 fpk 索引），或应用中心的上传升级。
 - 纯壳首次启动只有 44 个静态站；在应用内导入源包后 jar 站才出现。
 
+## 应用中心详情页：`manifest` 的 desc 是 HTML
+
+`desc` 会被应用中心**当 HTML 渲染**（米恋泥 fndesk 就是这么用的：`<br>` 分条 +
+`<a>` 下载按钮 + `<img>` 海报）。我们用它做「四条卖点 + 使用说明/项目主页链接」，
+比一整行纯文本好读得多。改的时候注意：
+
+- 整行必须**单行**（`key = value` 格式，不能换行）；
+- 链接带 `target='_blank' rel='noopener'`；
+- 不要引第三方统计/追踪资源。
+
+## 日志：用户能在共享目录里看到（2026-11-18）
+
+排障最痛的是「用户拿不到日志」。fnOS 的应用数据在 `@appdata/<app>/logs`（0700，
+普通用户进不去），所以额外在 **`@appshare/<app>/logs/`** 放一份**硬链**：
+
+- **建目录要 root**：`@appshare/<app>` 是 fnOS 建的 `root:root 000`，应用跑在
+  `package` 账号（meow）连写都写不进去 → 由 `cmd/log_share_setup` 在安装/升级
+  回调（root）里建好：父目录 **0711**（可穿不可列，保护同级的 `library`），
+  `logs` **0755**。
+- **写链在 main**：每次 `start` 把 `$TRIM_PKGVAR/logs/*.log` 硬链进去并 `chmod 0644`
+  （同卷硬链不占双份空间）。
+- **启动前裁剪**：单文件超 `MEOW_LOG_MAX_MB`（默认 4MB）就保留最后
+  `MEOW_LOG_KEEP_LINES`（默认 2000）行。★ 只能在启动前做——`sed -i` 换 inode，
+  运行中裁会把正在写的内容丢掉。
+- **不用软链**：万一 fnOS 把 `@appshare` 权限重置回 000，软链会让应用自己也写不进
+  日志；硬链最坏只是"用户那边看不见"。
+
+## 桌面图标是「扫光动图」（2026-11-18）
+
+飞牛的桌面/应用中心图标是静态文件直出，**不能靠 CSS**做扫光——唯一办法是让图标
+文件本身是动图。做得跟米恋泥 fndesk 1.2.1010.1 一致（解包确认：其 `ICON.PNG` 内容是
+35 帧动画 WebP，安装时 cp 覆盖根目录图标）。
+
+- **生成**：`python client/apps/fnos/tools/gen-icon-anim.py`
+  → `fpk/app/ui/images/icon_anim.webp`（256×256、35 帧、1s 停顿 + 33×20ms 扫光 + 5s 停顿、无限循环）
+- **通用生成器**：`python client/apps/fnos/tools/gen-icon-anim.py [--src X --out Y --size 512 --loop 1]`
+  —— 应用内顶栏 logo（`web/public/logo-anim.webp`，64×64）和 FnDepot 源里的
+  `meow/ICON.PNG`（512×512）都是它生成的；`--loop 1` 是"只扫一次"的静默版。
+- **落位**：包根 `ICON.PNG` / `ICON_256.PNG` 仍是**静态 PNG**（应用中心列表、未安装状态、
+  按扩展名解码的原生端都要它兜底）；动图由 `cmd/icon_setup` 在**安装与升级后**覆盖到
+  4 个位置：`$TRIM_APPDEST/ui/images/icon_{64,256}.png` + 根目录 `ICON{,_256}.PNG`。
+- **为什么升级也要跑**：升级会把载荷整目录换掉、根图标也可能被包里的静态图重置。
+  fndesk 只做了 install、`upgrade_callback` 是空 `exit 0`，所以它升级后扫光会消失。
+- **文件名与 MIME 都不影响播放**：实测 Chromium 按字节内容嗅探，`.PNG` 后缀 +
+  `Content-Type: image/png` 的动画 WebP 照样播（Edge 实测 48 次采样 7 个不同帧）。
+  ★ 验证时**必须覆盖完整 6.66s 周期**：只采两次会同时落在 5s 停顿段里，误判成「不播」。
+
 ## 两处端口约束（改之前先看，别简化回去）
 
 1. **网关会丢端口**。fnOS 网关用 `Host: <NAS>`（无 `:5666`）转发到 unix socket，

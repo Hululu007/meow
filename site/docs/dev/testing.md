@@ -62,11 +62,14 @@ cd client/apps/web && npx vitest run
 | `tv_mcp.py` | TV 端 MCP 客户端——投影仪没有 adb 时用这套操作验收 |
 | `tv_mcp_endpoints.py` | 直连设备内 9977 端口，验 TV DebugServer 的端点（服务默认关闭，没起会明说） |
 | `wsclient.py` | 上面几条共用的 CDP-over-WebSocket 模块，不是独立脚本 |
-| `meow_mcp.py` | 猫窝统一 MCP 客户端：一套接口同时驱动 PC 与 TV |
-| `skills/meow-control/SKILL.md` | 给 AI 代理用的操作手册（PC + TV、工具清单、红线）；接入方式见 [脚本与 AI 操作（MCP）](/guide/automation) |
+| `meow_mcp.py` | 兼容入口；统一 MCP 客户端的实现在 `.agents/skills/meow-control/scripts/meow_mcp.py` |
 | `edge_session.py` | 起 headless Edge 做 CDP 测试，退出时保证收尾 |
 | `kill-test-edge.ps1` | 清理冒烟残留的测试浏览器（只匹配 `--user-data-dir` 指向仓库 `tmp/` 的实例） |
 | `kill-test-edge.cmd` | 计划任务入口：每 10 分钟调上面的 ps1 `-Kill -OlderThanMinutes 90 -RemoveProfiles` |
+
+给 AI 代理用的技能不在 `smoke/` 下，在仓库 `.agents/skills/`（项目内自动发现）：
+`meow-control`（控制/排障，接入见 [脚本与 AI 操作（MCP）](/guide/automation)）、
+`meow-release`（发版流程与会话门禁）。索引见 `.agents/skills/README.md`。
 
 ::: warning 冒烟会留下浏览器进程
 Windows 上 `proc.kill` 只杀 launcher，Edge 的子进程会残留（实测顶到系统虚拟内存不足）。

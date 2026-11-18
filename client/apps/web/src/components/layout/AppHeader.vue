@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { useReducedMotion } from '@/composables/useReducedMotion'
 import { useAppStore } from '@/stores/app'
 import { listHistory } from '@/stores/history'
 import { listFavorites } from '@/stores/favorites'
@@ -20,6 +21,20 @@ const route = useRoute()
 const showSites = ref(false)
 /** 窄屏「更多」菜单；宽屏被 sm:hidden 藏起来，状态留着无害 */
 const showMore = ref(false)
+
+/**
+ * 品牌 logo：默认用「扫光动图」，`prefers-reduced-motion: reduce` 退回静态图。
+ *
+ * <p>动图是 `public/logo-anim.webp`（64×64、35 帧、6.66s 一轮，与 fpk 图标同一套
+ * 观感，生成器 `client/apps/fnos/tools/gen-icon-anim.py`）。用 WebP 而不是 CSS
+ * 扫光，是为了和飞牛桌面/应用中心那个图标**看起来是同一样东西**；代价是动图不受
+ * CSS 的 reduced-motion 规则约束，所以这里显式换源（见 `useReducedMotion`）。
+ *
+ * <p>URL 必须走 BASE_URL：fpk 挂在 `/app/meow/` 下，写死 `/xxx` 会打到站点根。
+ */
+const baseUrl = import.meta.env.BASE_URL
+const reduceMotion = useReducedMotion()
+const logoSrc = computed(() => `${baseUrl}${reduceMotion.value ? 'icon-192.png' : 'logo-anim.webp'}`)
 
 /**
  * 顶栏「…」里的「刷新首页」。
@@ -238,8 +253,10 @@ function pickSite(key: string) {
          只给 img 加圆角的话，框会画成直角（2026-11-18 用户报「logo 聚焦是方形的」）。 -->
     <RouterLink to="/" class="group flex shrink-0 items-center gap-2.5 rounded-[9px] max-sm:rounded-lg">
       <img
-        src="/icon-192.png"
+        :src="logoSrc"
         alt="猫窝"
+        width="32"
+        height="32"
         class="h-8 w-8 rounded-[9px] object-cover transition group-hover:brightness-110 max-sm:h-7 max-sm:w-7 max-sm:rounded-lg"
       />
       <!-- 窄屏只留图标：文字块占 44px，390px 视口上这点宽度要留给搜索框和站点名；

@@ -71,6 +71,10 @@ CI 建 draft Release → 人工 Publish → release:published
   → index-after-publish（fpk）写 FnDepot fnpack.json + 合并写 fpk-updates 分支
 ```
 
+- **updates 分支有两个文件**：`packages.json`（更新检查）和 `history.json`
+  （设置 → 关于 → 版本历史，由 `deploy/scripts/gen-history.ps1` 从 `CHANGELOG.md`
+  生成）。两者在同一个 orphan 提交里 force-push；`history.json` 生成失败只告警、
+  不阻塞发版。
 - **draft 不产生任何用户可见清单**，必须点 Publish：`sync-packages` 与 fpk 的
   `index-after-publish` 都只在 `release: published` 跑（前者跳过 `fpk-v*`）。
   四条链同构——tag → 构建 → draft → Publish → 写索引，**草稿阶段删掉不会留下索引**。
@@ -157,9 +161,10 @@ CI 建 draft Release → 人工 Publish → release:published
 - **dex2jar 只带 13 个 jar**（Dex2jarCmd 可达集）：上游把 ANTLR 工具链 + icu4j 一起发，
   整包 19.7MB → 裁后 1.5MB。白名单在 `deploy/scripts/fetch-dex2jar.{sh,ps1}`，另需同步
   `deploy/docker/Dockerfile.apiserver` 与 `build-fpk.sh` 的 jar 数断言；`ci.yml` 有转换冒烟
-- **FnDepot 只保留最近 3 版**（`keep` 输入）：客户端只取"大于当前的最大值"，中间版本
-  无功能作用。`download_url` 必须保持相对路径（gitee 镜像才带包体）；删文件用
-  `git update-index --index-info`（blobless 克隆里 `git rm` 会读不到对象）
+- **FnDepot 只保留最近 5 版**（`keep` 输入，2026-11-18 由 3 上调）：客户端只取"大于当前的
+  最大值"，中间版本无功能作用；留的余量是回退兜底。`download_url` 必须保持相对路径
+  （gitee 镜像才带包体）；删文件用 `git update-index --index-info`（blobless 克隆里
+  `git rm` 会读不到对象）
 
 ## 七、相关
 

@@ -1,0 +1,40 @@
+#!/bin/bash
+# 把日志目录开到「用户能在共享目录里看到」（安装/升级时以 root 跑一次）。
+#
+# 为什么必须 root：@appshare/<app> 是 fnOS 建的 root:root **000** 目录
+# （2026-11-18 在 .34 实测 `getfacl` 就是 user::--- group::--- other::---），
+# 应用本身跑在 `package` 账号（meow），连写都写不进去。
+#
+# 权限只开两档，别顺手 0755：
+#   · 父目录 0711 —— 可穿不可列：用户知道路径就能进 logs，但 ls 不出 library 等兄弟目录
+#   · logs   0755 —— 可列可读
+# 真正写日志的是 cmd/main（以 meow 跑），它把 $TRIM_PKGVAR/logs/*.log **硬链**进来。
+#
+# ★ 不把 $TRIM_PKGVAR/logs 换成指向这里的软链：万一 fnOS 把 @appshare 权限重置回 000，
+#   软链会让应用自己也写不进日志；硬链最坏只是"用户那边看不见"，应用日志照写。
+set -u
+
+[ -n "${TRIM_PKGVAR:-}" ] || exit 0
+
+vol="${TRIM_APPDEST_VOL:-}"
+if [ -z "$vol" ] && [ -n "${TRIM_APPDEST:-}" ]; then
+    vol="$(printf '%s' "$TRIM_APPDEST" | sed -n 's#^\(/vol[0-9][0-9]*\)/.*#\1#p')"
+fi
+[ -n "$vol" ] || exit 0
+
+app="${TRIM_APPNAME:-meow}"
+share="$vol/@appshare/$app"
+
+mkdir -p "$share/logs" 2>/dev/null || exit 0
+chmod 0711 "$share" 2>/dev/null
+chown "$app:$app" "$share/logs" 2>/dev/null
+chmod 0755 "$share/logs" 2>/dev/null
+
+# 安装/升级前已有的日志先补链一次（新日志由 cmd/main 每次 start 补）
+for f in "$TRIM_PKGVAR/logs"/*.log; do
+    [ -f "$f" ] || continue
+    ln -f "$f" "$share/logs/$(basename "$f")" 2>/dev/null
+    chmod 0644 "$f" 2>/dev/null
+done
+
+exit 0
