@@ -28,17 +28,12 @@
 ## 安装到用户级（可选）
 
 ```powershell
-# 整个技能
+# 整个技能（含 scripts/meow_mcp.py）
 Copy-Item -Recurse -Force .agents\skills\meow-control $HOME\.zcode\skills\
-# meow-control 还需要 MCP 客户端
-New-Item -ItemType Directory -Force $HOME\.zcode\skills\meow-control\scripts | Out-Null
-Copy-Item -Force smoke\meow_mcp.py $HOME\.zcode\skills\meow-control\scripts\
 ```
 
 ```bash
 cp -r .agents/skills/meow-control ~/.zcode/skills/
-mkdir -p ~/.zcode/skills/meow-control/scripts
-cp smoke/meow_mcp.py ~/.zcode/skills/meow-control/scripts/
 ```
 
 ## 新增技能

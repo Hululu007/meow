@@ -111,7 +111,7 @@ curl -s -X POST http://127.0.0.1:9339/mcp \
 请安装「猫窝控制」skill：
 1) 下载 https://raw.githubusercontent.com/upchr/meow/main/.agents/skills/meow-control/SKILL.md
    保存到 ~/.zcode/skills/meow-control/SKILL.md
-2) 下载 https://raw.githubusercontent.com/upchr/meow/main/smoke/meow_mcp.py
+2) 下载 https://raw.githubusercontent.com/upchr/meow/main/.agents/skills/meow-control/scripts/meow_mcp.py
    保存到 ~/.zcode/skills/meow-control/scripts/meow_mcp.py
 3) 告诉我装好了，以及 skill 的触发方式
 ```
@@ -122,12 +122,12 @@ curl -s -X POST http://127.0.0.1:9339/mcp \
 mkdir -p ~/.zcode/skills/meow-control/scripts
 curl -fL https://raw.githubusercontent.com/upchr/meow/main/.agents/skills/meow-control/SKILL.md \
   -o ~/.zcode/skills/meow-control/SKILL.md
-curl -fL https://raw.githubusercontent.com/upchr/meow/main/smoke/meow_mcp.py \
+curl -fL https://raw.githubusercontent.com/upchr/meow/main/.agents/skills/meow-control/scripts/meow_mcp.py \
   -o ~/.zcode/skills/meow-control/scripts/meow_mcp.py
 ```
 
 装好后，对 AI 说「用猫窝的 skill 验一下 / 操作一下」即可触发。SKILL.md 里写了前置探活、
-工具清单、常用配方和红线；`smoke/meow_mcp.py` 是纯标准库客户端，无第三方依赖。
+工具清单、常用配方和红线；客户端是纯标准库、无第三方依赖。仓库里 `smoke/meow_mcp.py` 是同一实现的兼容入口，老命令不用改。
 
 ## 注意
 

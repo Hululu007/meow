@@ -17,7 +17,7 @@ metadata:
 | 东西 | 位置 |
 |---|---|
 | 本技能（仓库唯一真源） | `.agents/skills/meow-control/SKILL.md` |
-| MCP 客户端（仓库内直接跑） | `smoke/meow_mcp.py`（纯标准库） |
+| MCP 客户端（唯一实现） | `.agents/skills/meow-control/scripts/meow_mcp.py`（纯标准库）；`smoke/meow_mcp.py` 是兼容入口 |
 | PC 的 MCP 服务与 18 个 `pc_*` 工具 | `client/apps/desktop/src-tauri/src/mcp.rs` |
 | TV 的 MCP 服务与 `tv_*` 工具 | `client/apps/tv/app/src/main/java/com/meow/tv/DebugServer.java` |
 | 两端共用的 `meow_*` 业务工具 | `client/apps/web/src/ai/tools.ts`（面板与外部桥同一批实现） |
@@ -25,9 +25,8 @@ metadata:
 **安装到本机**（ZCode 在项目内会自动发现 `.agents/skills/`，通常不需要装）：
 
 ```powershell
-# 仓库技能是唯一真源；装到用户级只是拷贝，改完仓库要重跑一次
+# 仓库技能是唯一真源（含 scripts/meow_mcp.py）；装到用户级只是拷贝，改完仓库要重跑一次
 Copy-Item -Recurse -Force .agents\skills\meow-control $HOME\.zcode\skills\
-Copy-Item -Force smoke\meow_mcp.py $HOME\.zcode\skills\meow-control\scripts\
 ```
 
 用户级同名技能会**遮蔽**仓库副本（ZCode 的发现顺序），两处不一致时以仓库为准。
@@ -71,7 +70,7 @@ adb forward tcp:19777 tcp:9977
 python smoke/meow_mcp.py call tv_health --target tv --host 127.0.0.1 --port 19777 --token <令牌>
 ```
 
-## 客户端：只用 `smoke/meow_mcp.py`
+## 客户端：`smoke/meow_mcp.py`（兼容入口，实现在本技能 `scripts/`）
 
 ```bash
 python smoke/meow_mcp.py probe
