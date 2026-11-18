@@ -12,6 +12,26 @@ metadata:
 不需要手写 CDP。PC 与 TV 是同一套 MCP 报文（JSON-RPC 2.0，`/mcp`），工具名只差
 前缀：PC `pc_*`、TV `tv_*`；另有 10 个两端共用的业务工具 `meow_*`。
 
+## 这套东西在哪
+
+| 东西 | 位置 |
+|---|---|
+| 本技能（仓库唯一真源） | `.agents/skills/meow-control/SKILL.md` |
+| MCP 客户端（仓库内直接跑） | `smoke/meow_mcp.py`（纯标准库） |
+| PC 的 MCP 服务与 18 个 `pc_*` 工具 | `client/apps/desktop/src-tauri/src/mcp.rs` |
+| TV 的 MCP 服务与 `tv_*` 工具 | `client/apps/tv/app/src/main/java/com/meow/tv/DebugServer.java` |
+| 两端共用的 `meow_*` 业务工具 | `client/apps/web/src/ai/tools.ts`（面板与外部桥同一批实现） |
+
+**安装到本机**（ZCode 在项目内会自动发现 `.agents/skills/`，通常不需要装）：
+
+```powershell
+# 仓库技能是唯一真源；装到用户级只是拷贝，改完仓库要重跑一次
+Copy-Item -Recurse -Force .agents\skills\meow-control $HOME\.zcode\skills\
+Copy-Item -Force smoke\meow_mcp.py $HOME\.zcode\skills\meow-control\scripts\
+```
+
+用户级同名技能会**遮蔽**仓库副本（ZCode 的发现顺序），两处不一致时以仓库为准。
+
 ## 何时用
 
 - 装了新版本（PC 包 / TV APK / fnOS fpk）要确认没坏
@@ -66,7 +86,7 @@ python smoke/meow_mcp.py call tv_state --target tv --host 127.0.0.1 --port 19777
 没有仓库副本时，把 `smoke/meow_mcp.py` 拷出来单独用即可（纯标准库，无依赖）。
 按站点说明独立安装 skill 时，客户端在 `~/.zcode/skills/meow-control/scripts/meow_mcp.py`，
 参数与上面完全一样，只换脚本路径。安装方式见 `site/docs/guide/automation.md`
-（仓库地址 `smoke/skills/meow-control/SKILL.md`）。
+（仓库地址 `.agents/skills/meow-control/SKILL.md`）。
 
 ## 工具清单
 
