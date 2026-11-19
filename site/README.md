@@ -111,6 +111,11 @@ pnpm run preview    # 本地预览产物
   页面还停在上一个版本（2026-11-19 1.2.18 实测）
 - 构建 → `upload-pages-artifact` → `deploy-pages`
 - 补部署也可 Actions 页面手动 `workflow_dispatch`
+- ★ **`github-pages` 环境必须放行这些 tag**（Settings → Environments → Deployment branches and tags）：
+  `main`（分支）+ `release-v*` / `fpk-v*` / `tv-v*` / `pc-v*` / `plugins-v*` / `tv-plugins-v*` / `ipa-v*` / `site-*`（tag）。
+  否则「构建站点」成功、「部署」job 报 `Tag "..." is not allowed to deploy to github-pages
+  due to environment protection rules`（2026-11-19 实测，已配置）。
+  用 API 查：`gh api repos/<o>/<r>/environments/github-pages/deployment-branch-policies`
 
 仓库 Pages 的 Source 必须是 **GitHub Actions**（不是分支目录）：
 
