@@ -9641,10 +9641,22 @@ public class ApiServer {
         if (durSec > 0 && !sorted.isEmpty()) {
             final int limit = durSec + 5;
             int before = sorted.size();
-            sorted.removeIf(x -> Double.parseDouble(x[0]) > limit);
-            int removed = before - sorted.size();
-            if (removed > 0) {
-                System.err.println("[danmaku] tencent " + vid + " dropped " + removed
+            /*
+             * 先计数再决定删不删：td 理论上可能是预告/片段/花絮的时长，
+             * 一旦拿到 30 秒的 td，removeIf 会把整集 27k 条全删光。
+             * 正常正片保留率实测约 50%（54,535 → 27,549）；低于 20%
+             * 说明这个 td 不可信，整段过滤放弃，宁可留死数据也不能没弹幕。
+             */
+            int over = 0;
+            for (String[] x : sorted) {
+                if (Double.parseDouble(x[0]) > limit) over++;
+            }
+            if (over > 0 && before - over < before * 0.2) {
+                System.err.println("[danmaku] tencent " + vid + " duration rejected"
+                        + " (td=" + durSec + "s, would drop " + over + "/" + before + ")");
+            } else if (over > 0) {
+                sorted.removeIf(x -> Double.parseDouble(x[0]) > limit);
+                System.err.println("[danmaku] tencent " + vid + " dropped " + over
                         + " over-duration (" + durSec + "s)");
             }
         }

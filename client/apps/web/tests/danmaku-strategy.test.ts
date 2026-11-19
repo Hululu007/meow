@@ -88,6 +88,9 @@ describe('腾讯时长校验', () => {
     expect(backend).toContain('private static int tencentDurationOf(String vid)')
     expect(backend).toContain('m.find()) sec = (int) Math.ceil(Double.parseDouble(m.group(1)))')
     expect(backend).toContain('sorted.removeIf(x -> Double.parseDouble(x[0]) > limit)')
+    // td 可能是预告/片段时长：删掉 80% 以上就放弃过滤，不能整集删光
+    expect(backend).toContain('before - over < before * 0.2')
+    expect(backend).toContain('duration rejected')
   })
 })
 
