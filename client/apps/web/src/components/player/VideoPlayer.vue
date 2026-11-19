@@ -45,6 +45,7 @@ import {
 } from '@/stores/dmOffset'
 import { danmakuHeatData, danmakuHeatGradientFromCounts, heatLevel } from './dmHeat'
 import { isDesktopShell } from '@/api/appUpdate'
+import { beginWindowDrag, toggleMaximizeOnDblClick } from '@/composables/useWindowDrag'
 import { createIdleCursor } from './idleCursor'
 import type { PlayErrorKind, PlayErrorPayload } from './playError'
 import { hasNativeHls, looksLikeHls } from './mediaKind'
@@ -5800,8 +5801,11 @@ defineExpose({
 
     <!-- 顶部标题栏 -->
     <div
-      class="meow-ctrl-bar absolute inset-x-0 top-0 z-30 flex items-center gap-3 bg-gradient-to-b from-black/75 to-transparent px-4 pb-10 pt-3 sm:px-5 sm:pt-4"
-      :class="showCtrl ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
+      class="meow-ctrl-bar absolute inset-x-0 top-0 z-30 flex items-center gap-3 bg-gradient-to-b from-black/75 to-transparent pb-10 pr-4 pt-3 sm:pr-5 sm:pt-4"
+      :class="[
+        showCtrl ? 'opacity-100' : 'pointer-events-none invisible opacity-0',
+        isDesktopShell() ? 'pl-24' : 'pl-4 sm:pl-5',
+      ]"
     >
       <!--
         ★ TV 上不给返回按钮（用户要求，2026-11-02）。
@@ -5821,7 +5825,11 @@ defineExpose({
           <path d="m15 18-6-6 6-6" />
         </svg>
       </button>
-      <div class="min-w-0 flex-1">
+      <div
+        class="min-w-0 flex-1"
+        @pointerdown="beginWindowDrag"
+        @dblclick="toggleMaximizeOnDblClick"
+      >
         <div class="truncate text-[14px] font-medium sm:text-[15px]">{{ title }}</div>
         <div class="text-[11px] text-ink-3">
           <template v-if="dmEmpty && !dmLoading">
