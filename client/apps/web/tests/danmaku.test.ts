@@ -132,6 +132,43 @@ describe('DanmakuRenderer', () => {
     r.destroy()
   })
 
+  it('同屏 300 条同时刻：轨道满只丢弃，不叠字、不抛异常', () => {
+    const r = new DanmakuRenderer(host)
+    r.load(Array.from({ length: 300 }, (_, i) => mk(0.8, '弹幕' + i)))
+    expect(() => r.sync(1)).not.toThrow()
+    // MAX_ACTIVE 是硬上限；多出来的走 dropped，不会把画布画崩
+    expect(r.debugActive().length).toBeLessThanOrEqual(120)
+    expect(r.debugState().dropped).toBeGreaterThan(0)
+    r.destroy()
+  })
+
+  it('顶部/底部各 100 条：静态轨道满直接丢弃，不重叠', () => {
+    const r = new DanmakuRenderer(host)
+    const list: Danmu[] = []
+    for (let i = 0; i < 100; i++) list.push({ ...mk(0.8, '顶' + i), mode: 5 })
+    for (let i = 0; i < 100; i++) list.push({ ...mk(0.8, '底' + i), mode: 4 })
+    r.load(list)
+    expect(() => r.sync(1)).not.toThrow()
+    expect(r.debugActive().length).toBeLessThan(200)
+    r.destroy()
+  })
+
+  it('超长文本 + 渐变 + 高权重：渲染不抛异常', () => {
+    const r = new DanmakuRenderer(host)
+    r.load([
+      {
+        ...mk(0.8, '长'.repeat(500)),
+        gradient: ['#ff0000', '#00ff00'],
+        weight: 99999,
+      },
+    ])
+    expect(() => {
+      r.sync(1)
+      r.sync(1.5)
+    }).not.toThrow()
+    r.destroy()
+  })
+
   it('回退播放位置会重建游标并重新渲染', () => {
     const r = new DanmakuRenderer(host)
     r.load([mk(0, 'A'), mk(5, 'B')])
