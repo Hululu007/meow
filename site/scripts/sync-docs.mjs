@@ -50,11 +50,15 @@ function releaseInfo() {
     const ver = tag.slice(pref.length).replace(/^v/, '')
     if (!/^\d+\.\d+\.\d+(?:-fix\d+)?$/.test(ver)) continue
     const rank = rankOf(pref)
-    if (!best[ver] || rank < best[ver].rank) best[ver] = { rank, date }
+    if (!best[ver] || rank < best[ver].rank) best[ver] = { rank, date, tag }
   }
   const dates = {}
-  for (const [ver, v] of Object.entries(best)) dates[ver] = v.date
-  return { dates, released: new Set(Object.keys(best)) }
+  const tags = {}
+  for (const [ver, v] of Object.entries(best)) {
+    dates[ver] = v.date
+    tags[ver] = v.tag
+  }
+  return { dates, released: new Set(Object.keys(best)), tags }
 }
 
 function syncChangelog() {
@@ -68,7 +72,7 @@ function syncChangelog() {
 
   // 版本日期取自发版 tag；CHANGELOG.md 本体保持不带日期，verify.ps1 的格式门禁不受影响。
   // 日期渲染成标题下方的小字（时间轴样式见 theme/custom.css 的 .changelog-page）。
-  const { dates, released } = releaseInfo()
+  const { dates, released, tags } = releaseInfo()
   const kept = []
   for (const block of raw.slice(start).trim().split(/\n(?=## )/)) {
     const m = /^## (\d+\.\d+\.\d+(?:-fix\d+)?)[ \t]*\r?\n/.exec(block)
@@ -77,8 +81,11 @@ function syncChangelog() {
     // 没形成发版资产的版本不进站点（如只写进 CHANGELOG、未打 release tag 的修正版）
     if (released.size > 0 && !released.has(ver)) continue
     const date = dates[ver]
+    const tag = tags[ver]
+    // 版本号做成 GitHub Release 链接（点标题直达对应版本的资产）
+    const heading = tag ? `## [${ver}](https://github.com/upchr/meow/releases/tag/${tag})` : `## ${ver}`
     const rest = block.slice(m[0].length).trim()
-    kept.push(`## ${ver}` + (date ? `\n\n<p class="cl-date">${date}</p>` : '') + '\n\n' + rest)
+    kept.push(heading + (date ? `\n\n<p class="cl-date">${date}</p>` : '') + '\n\n' + rest)
   }
   if (kept.length === 0) throw new Error('过滤后没有任何版本可展示（tag 或 CHANGELOG 异常）')
   const versions = kept.join('\n\n')
@@ -92,7 +99,7 @@ pageClass: changelog-page
 
 > 本页由仓库根目录的 [CHANGELOG.md](https://github.com/upchr/meow/blob/main/CHANGELOG.md)
 > 自动生成，**改它请改那份文件**，不要改这里。客户端内的更新弹框读的也是同一份。
-> 本页只列已形成发版资产的版本（全量发版或部分发版）；日期取自发版 tag。
+> 本页只列已形成发版资产的版本（全量发版或部分发版）；日期取自发版 tag，点版本号直达对应的 GitHub Release 资产。
 
 版本号与打包产物的对应关系见 [下载与版本](../reference/downloads.md)。
 
