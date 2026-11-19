@@ -197,11 +197,14 @@ describe('鼠标滚轮调音量（2026-11-03 用户要求）', () => {
 describe('缓冲参数（实测对照后调整）', () => {
   const PLAYER = readFileSync(join(__dirname, '..', 'src', 'components', 'player', 'VideoPlayer.vue'), 'utf8')
 
-  it('三档参数与实测结论一致：180/300/120MB，回看 60 秒', () => {
-    expect(PLAYER).toContain('maxBufferLength: 180')
-    expect(PLAYER).toContain('maxMaxBufferLength: 300')
-    expect(PLAYER).toContain('maxBufferSize: 120 * 1000 * 1000')
-    expect(PLAYER).toContain('backBufferLength: 60')
+  it('按设备分档：TV/2GB 60/120，桌面 120/180，回看 30 秒', () => {
+    expect(PLAYER).toContain('hlsBufferProfile(')
+    expect(PLAYER).toContain('maxBufferLength: buf.maxBufferLength')
+    expect(PLAYER).toContain('maxMaxBufferLength: buf.maxMaxBufferLength')
+    expect(PLAYER).toContain('backBufferLength: buf.backBufferLength')
+    // 旧的写死 180/300 必须消失，否则分档不生效
+    expect(PLAYER).not.toContain('maxBufferLength: 180')
+    expect(PLAYER).not.toContain('maxMaxBufferLength: 300')
   })
 
   it('注释里保留实测数据（下一个人要能判断能不能再改）', () => {

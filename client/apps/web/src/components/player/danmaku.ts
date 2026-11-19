@@ -30,8 +30,78 @@ export interface Danmu {
 
 export function parseDanmakuXml(xml: string): Danmu[] {
   if (!xml) return []
+  const scanned = scanDanmakuXml(xml)
+  /*
+   * 扫描器处理后端/聚合站的标准格式；只有遇到“看起来像 <d> 但结构
+   * 不完整/文本里有裸 <”时才退回 DOMParser。实测 42,300 条：
+   * DOMParser 128ms / 持有 DOM +23.7MB，扫描 23ms / +5.2MB JS 堆。
+   */
+  if (scanned.seen < 0) return parseDanmakuXmlByDom(xml)
+  return scanned.list.sort((a, b) => a.time - b.time)
+}
+
+/**
+ * 轻量扫描：按 `<d ...>text</d>` 顺序读，不建 DOM。
+ * 返回 seen=-1 表示结构异常，调用方应退回 DOMParser。
+ */
+function scanDanmakuXml(xml: string): { list: Danmu[]; seen: number } {
   const out: Danmu[] = []
-  // 用 DOMParser 而不是正则，避免弹幕文本里含 < > 等字符
+  let seen = 0
+  const open = /<d\b([^>]*)>/g
+  let m: RegExpExecArray | null
+  while ((m = open.exec(xml))) {
+    seen++
+    const attrs = m[1] || ''
+    if (attrs.trimEnd().endsWith('/')) continue // 自闭合空节点
+    const start = open.lastIndex
+    const end = xml.indexOf('</d>', start)
+    if (end < 0) return { list: [], seen: -1 } // 缺闭合标签 → 交给 DOMParser
+    open.lastIndex = end + 4
+
+    const pm = /\bp\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(attrs)
+    let p = pm ? (pm[1] ?? pm[2]) : ''
+    let raw = xml.slice(start, end)
+    let wasCdata = false
+    if (raw.startsWith('<![CDATA[') && raw.endsWith(']]>')) {
+      raw = raw.slice(9, -3)
+      wasCdata = true
+    }
+    raw = raw.trim()
+    if (!p || !raw) continue
+    /*
+     * XML 里文本必须转义 <；出现裸 < 说明这份 XML 不规矩（或标签嵌套
+     * 不是我们能按 indexOf 切的结构）。退回 DOMParser，别自己猜。
+     * CDATA 里的 < 是合法内容，不触发兜底。
+     */
+    if (!wasCdata && raw.includes('<')) return { list: [], seen: -1 }
+
+    const parts = p.split(',')
+    if (parts.length < 4) continue
+    const time = parseFloat(parts[0])
+    const mode = parseInt(parts[1], 10) || 1
+    const size = parseInt(parts[2], 10) || 25
+    const rgb = parseInt(parts[3], 10) || 0xffffff
+    if (!isFinite(time)) continue
+    out.push({
+      time,
+      mode,
+      size,
+      color: '#' + rgb.toString(16).padStart(6, '0'),
+      /*
+       * 解两层，和 DOMParser 路径保持一致：
+       * DOM 的 textContent 先解一层（&amp; → &），后面的 decodeEntities
+       * 再解一层（&#128077; → 👍）。旧缓存里的 &amp;#128077; 正是靠这两层
+       * 才能变成表情，而不是把 &#128077; 画上屏。
+       */
+      text: decodeEntities(decodeEntities(raw)),
+    })
+  }
+  return { list: out, seen }
+}
+
+/** 兜底：原来的 DOMParser 路径（畸形 XML / 非标准标签结构时用）。 */
+function parseDanmakuXmlByDom(xml: string): Danmu[] {
+  const out: Danmu[] = []
   let doc = new DOMParser().parseFromString(xml, 'text/xml')
   // 非法字符引用（越界/代理区）会让整份文档解析失败，一条弹幕都拿不到。
   // 这种引用在弹幕里没有意义，转义成普通文本后重解析一次。
@@ -56,8 +126,6 @@ export function parseDanmakuXml(xml: string): Danmu[] {
       mode,
       size,
       color: '#' + rgb.toString(16).padStart(6, '0'),
-      // 后端的转义修好之前抓的缓存里还是 &amp;#128077;，解析出来是字面量，
-      // 这里再兜一层，避免旧缓存把 &#128077; 直接画到屏幕上。
       text: decodeEntities(raw),
     })
   }
@@ -149,6 +217,16 @@ export const DEFAULT_DANMAKU_OPTIONS: DanmakuOptions = {
 
 /** 同时在场上限：超过就丢弃新弹幕，防止极端场景拖垮渲染 */
 const MAX_ACTIVE = 120
+
+/**
+ * 跳转（seek/换集/首屏续播）后回看多少秒的弹幕。
+ *
+ * <p>原来是 3 秒。实测：seek 到密集段后，过去 3 秒的弹幕全部以“此刻”
+ * 从右边缘重发，最长延后 2.03 秒，且 80 条里只有 14 条抢到轨道。
+ * 现在只回看 0.5 秒，且每条按自己的真实时间定位（见 emit），
+ * 既补上边界处的几条，又不会把“已经该飞到左边”的弹幕重新倒出来。
+ */
+const SEEK_REPLAY_SEC = 0.5
 
 /** 文字位图缓存上限（条）。硬保险，真正的约束是下面的像素预算 */
 const SPRITE_CACHE_MAX = 600
@@ -266,6 +344,18 @@ export class DanmakuRenderer {
   private anchorClock = 0
   /** 当前播放倍速，插值要用 */
   private rate = 1
+  /**
+   * 弹幕时间轴校准（秒，**正 = 延后**，负 = 提前）。
+   *
+   * <p>只在 sync 入口把视频时间平移成弹幕时钟；queue 里的时间保持原始值，
+   * 这样改校准值不需要重新解析 4MB XML。
+   */
+  private offset = 0
+  /** 诊断计数：成功上屏 / 因满轨或总上限被丢弃的条数 */
+  private emitted = 0
+  private dropped = 0
+  /** 最近一条成功上屏弹幕的发射延迟（now - d.time，秒） */
+  private lastEmitDelay = 0
 
   constructor(parent: HTMLElement, opts?: Partial<DanmakuOptions>) {
     this.container = document.createElement('div')
@@ -680,8 +770,39 @@ export class DanmakuRenderer {
     this.anchorTime = -1
     this.anchorClock = performance.now()
     this.lastFont = ''
+    this.emitted = 0
+    this.dropped = 0
+    this.lastEmitDelay = 0
     this.dirty = true
     this.clearCanvas()
+  }
+
+  /**
+   * 整份替换队列，但**保留已在场的弹幕**。
+   *
+   * <p>给后台补全用：旧实现走 `load()` + `sync()`，`load` 把 `lastSync`
+   * 置 -1，紧接着的 `sync` 必然判成跳转 → 清屏 + 回看 3 秒重放。
+   * 用户看到的是“弹幕突然消失、再从右边重打一遍”。这里只换 queue/cursor，
+   * 旧的在场弹幕继续飞完，新弹幕从 `time` 之后开始接上。
+   */
+  replaceQueue(list: Danmu[], time: number) {
+    const t = (Number.isFinite(time) ? time : 0) - this.offset
+    this.queue = list
+    this.cursor = lowerBound(list, t)
+    this.lastSync = t
+    this.now = t
+    this.anchorTime = t
+    this.anchorClock = performance.now()
+    this.dirty = true
+    this.paint()
+  }
+
+  /** 时间校准（秒，正=延后）。改完由播放器调 sync(..., {seek:true}) 立即生效。 */
+  setOffset(sec: number) {
+    const v = Number.isFinite(sec) ? Math.max(-30, Math.min(30, Math.round(sec * 2) / 2)) : 0
+    if (v === this.offset) return
+    this.offset = v
+    this.dirty = true
   }
 
   clear() {
@@ -690,6 +811,9 @@ export class DanmakuRenderer {
     this.cursor = 0
     this.lastSync = -1
     this.anchorTime = -1
+    this.emitted = 0
+    this.dropped = 0
+    this.lastEmitDelay = 0
     this.clearCanvas()
   }
 
@@ -710,6 +834,14 @@ export class DanmakuRenderer {
     spriteCacheSize: number
     spriteCachePx: number
     spriteCacheBudgetPx: number
+    /** 当前弹幕时钟 / 校准值 / 发射延迟 / 丢弃计数 —— MCP 用来断言时间轴 */
+    now: number
+    lastSync: number
+    offset: number
+    lastEmitDelay: number
+    emitted: number
+    dropped: number
+    running: boolean
   } {
     return {
       laneCount: this.laneCount,
@@ -721,6 +853,13 @@ export class DanmakuRenderer {
       spriteCacheSize: this.spriteCache.size,
       spriteCachePx: this.spritePx,
       spriteCacheBudgetPx: SPRITE_PIXEL_BUDGET,
+      now: this.now,
+      lastSync: this.lastSync,
+      offset: this.offset,
+      lastEmitDelay: this.lastEmitDelay,
+      emitted: this.emitted,
+      dropped: this.dropped,
+      running: this.running,
     }
   }
 
@@ -761,6 +900,15 @@ export class DanmakuRenderer {
 
   pause() {
     this.running = false
+    /*
+     * 必须真的停掉 rAF：原来只是 running=false，tick 仍每帧调度再 return，
+     * 暂停/缓冲/原生播放器盖住 WebView 时依旧 60fps 空转。
+     * 画布保留最后一帧，不需要重绘。
+     */
+    if (this.raf) {
+      cancelAnimationFrame(this.raf)
+      this.raf = 0
+    }
   }
 
   /**
@@ -784,20 +932,25 @@ export class DanmakuRenderer {
      * 阈值 0.75 > 插值上限 0.4：缓冲恢复（最多 -0.4）永远不会误判；
      * 真实的拖动通常都是秒级，仍会走清屏分支。
      */
+    /*
+     * 弹幕时钟 = 视频时间 - 校准值。正校准让弹幕延后，负校准让弹幕提前。
+     * 所有比较（跳转阈值、cursor、插值锚点）都用平移后的 t，queue 本身不动。
+     */
+    const t = time - this.offset
     const prev = this.lastSync
-    const jumped = opts?.seek === true || prev < 0 || time < prev - 0.75 || time > prev + 1.5
-    this.lastSync = time
-    this.now = time
+    const jumped = opts?.seek === true || prev < 0 || t < prev - 0.75 || t > prev + 1.5
+    this.lastSync = t
+    this.now = t
     // 记下这次权威时间，rAF 在两次 timeupdate 之间做插值
-    this.anchorTime = time
+    this.anchorTime = t
     this.anchorClock = performance.now()
 
     if (jumped) {
       this.active = []
-      // 只补「跳转前 3 秒内」的弹幕，避免整屏空白或把历史全倒出来
-      this.cursor = lowerBound(this.queue, time - 3)
+      // 只补跳转前 0.5 秒：再多就是把“早该飞到左边”的弹幕重新倒出来
+      this.cursor = lowerBound(this.queue, t - SEEK_REPLAY_SEC)
     }
-    while (this.cursor < this.queue.length && this.queue[this.cursor].time <= time) {
+    while (this.cursor < this.queue.length && this.queue[this.cursor].time <= t) {
       this.emit(this.queue[this.cursor])
       this.cursor++
     }
@@ -815,8 +968,9 @@ export class DanmakuRenderer {
    * 每收到一次 timeupdate 就重新锚定，既有 60fps 的顺滑又不会累积漂移。
    */
   private tick = () => {
-    this.raf = requestAnimationFrame(this.tick)
+    this.raf = 0
     if (!this.running) return
+    this.raf = requestAnimationFrame(this.tick)
 
     if (this.anchorTime >= 0) {
       const elapsed = ((performance.now() - this.anchorClock) / 1000) * this.rate
@@ -993,7 +1147,10 @@ export class DanmakuRenderer {
 
   private emit(d: Danmu) {
     if (!this.enabled) return
-    if (this.active.length >= MAX_ACTIVE) return
+    if (this.active.length >= MAX_ACTIVE) {
+      this.dropped++
+      return
+    }
 
     const width = this.textWidth(d.text)
     const now = this.now
@@ -1004,7 +1161,10 @@ export class DanmakuRenderer {
       // 顶部占第 0 行、底部也占第 0 行，直接叠在一起（实测全量扫描
       // 24 组配置里 24 组都撞）。
       const lane = this.findStaticLane(d.mode === 2)
-      if (lane < 0) return // 排满了，这条不上屏
+      if (lane < 0) {
+        this.dropped++
+        return // 排满了，这条不上屏
+      }
       const top = this.staticTopOf(d.mode === 2, lane)
       // 静态弹幕优先：这一行上的滚动弹幕让位（它们等下一批就有，
       // 而静态弹幕只停 4 秒，位置固定才有意义）
@@ -1017,24 +1177,35 @@ export class DanmakuRenderer {
         dur: this.scrollSeconds,
         staticUntil: now + 4,
       })
+      this.emitted++
+      this.lastEmitDelay = now - d.time
       return
     }
 
-    const lane = this.pickLane(width, d)
+    /*
+     * ★ born 用弹幕自己的时间，不用「此刻」。
+     *
+     * 原来 born=now 会把发射延迟（timeupdate 粒度，实测中位 71ms、
+     * p90 194ms）固定进整段 12 秒飞行里：弹幕永远晚 0.1~0.2 秒。
+     * 现在 born=d.time，正常播放时它最多比 now 早 0.5 秒（seek 回看窗），
+     * 位置按真实进度算；seek 后那 0.5 秒的弹幕也落在它们本该在的位置，
+     * 而不是全部从右边缘重发。
+     *
+     * born 不可能比 now 早太多：sync 的 cursor 最多回看 SEEK_REPLAY_SEC；
+     * 正常发射时 d.time <= now。Math.min 只是防御浮点/时间源抖动。
+     */
+    const dur = this.durFor(width)
+    const born = Math.min(d.time, now)
+    const lane = this.pickLane(width, d, dur, born)
     // -1 = 所有轨道都占着，这条直接丢弃，不叠到别人身上
-    if (lane < 0) return
+    if (lane < 0) {
+      this.dropped++
+      return
+    }
     const top = lane * this.laneHeight + this.laneTopOffset
-    // ★ born 用「此刻」而不是 d.time。
-    //
-    // d.time 是弹幕在视频里的原始时间。正常播放时两者几乎相等，
-    // 所以以前看不出问题。但 seek 会一口气补发好几秒的弹幕：
-    // 那些 born 都在过去、且只差 0.1 秒，算出来的横坐标也就只差
-    // 几个像素 —— 它们会被画在同一位置叠成一坨
-    // （实测 seek 20 秒后同一轨道堆了 17 条，出生时间 17.0~18.6）。
-    //
-    // 用 now 之后，补发的弹幕统一从右边缘排进来，pickLane 的区间判定
-    // 才有意义（新弹幕的起始位置恒为 x=W）。
-    this.active.push({ danmu: d, born: now, top, width, dur: this.durFor(width) })
+    this.active.push({ danmu: d, born, top, width, dur })
+    this.emitted++
+    this.lastEmitDelay = now - d.time
   }
 
   /**
@@ -1091,7 +1262,7 @@ export class DanmakuRenderer {
    * 挤占能改变的只是"选谁"，改变不了"总量"。保留它是为了在真正该取舍
    * 时保住更值得看的弹幕，而不是为了提升吞吐。
    */
-  private pickLane(width: number, danmu?: Danmu): number {
+  private pickLane(width: number, danmu: Danmu | undefined, dur: number, born: number): number {
     const W = this.W
     const t = this.now
 
@@ -1113,19 +1284,22 @@ export class DanmakuRenderer {
       })
 
     /**
-     * 某条弹幕此刻的左侧坐标，与 paint 完全一致（用各自的滚动时长）。
+     * 新弹幕此刻的左侧坐标，与 paint 完全一致（用固定时长）。
      *
-     * 因为 emit 里 born 用的是「此刻」，新弹幕的起始位置恒为 x=W，
-     * 所以判定只需看「已有弹幕有没有压到入场窗口 [W-width-GAP, W]」。
+     * 大多数时候 born=now → x0=W，入场窗口就是 [W-width-GAP, W]；
+     * seek 回看的 0.5 秒里 born 可能略早，x0 已经在 W 左边一点，
+     * 窗口必须跟着左移，否则会把“已经贴在它前面”的弹幕判成不冲突。
      */
     const GAP = 12
-    const newLeft = W - width - GAP
+    const pNew = Math.min(1.6, Math.max(0, (t - born) / dur))
+    const x0 = W - pNew * (W + width)
+    const newLeft = x0 - width - GAP
     const free = new Array(this.laneCount).fill(true)
     /** 每条轨道上「压在入场窗口」的所有弹幕 */
     const blockers: Active[][] = Array.from({ length: this.laneCount }, () => [])
 
-    // 新弹幕的时长（emit 里会用同一个值），用于追尾判定
-    const newDur = this.durFor(width)
+    // 新弹幕的时长由 emit 传入，避免两处各算一次（长弹幕加速后必须一致）
+    const newDur = dur
 
     for (const a of this.active) {
       if (a.danmu.mode === 2 || a.danmu.mode === 3) continue

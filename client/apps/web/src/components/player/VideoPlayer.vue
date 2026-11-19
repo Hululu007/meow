@@ -36,6 +36,13 @@ import {
   type DanmakuCandidate,
   type DanmakuSourceGroup,
 } from '@/api'
+import {
+  formatDmOffset,
+  getDmOffset,
+  normalizeDmOffset,
+  resetDmOffset,
+  setDmOffset,
+} from '@/stores/dmOffset'
 import { isDesktopShell } from '@/api/appUpdate'
 import { createIdleCursor } from './idleCursor'
 import type { PlayErrorKind, PlayErrorPayload } from './playError'
@@ -45,8 +52,14 @@ import {
   isBetterDanmaku,
   isSafeDanmakuSwap,
   pickSameSourceCandidate,
+  shouldSkipDanmakuBody,
 } from './dmUpgrade'
-import { capLevelForRate, shouldDropRate, shouldRestoreRate } from './playbackPolicy'
+import {
+  capLevelForRate,
+  hlsBufferProfile,
+  shouldDropRate,
+  shouldRestoreRate,
+} from './playbackPolicy'
 
 /** 倍速选项 */
 const rateOptions = [
@@ -1409,36 +1422,30 @@ function setupSource(url: string) {
   }
 
   if (isM3u8 && Hls.isSupported()) {
+    /*
+     * 缓冲按设备分档（见 playbackPolicy.hlsBufferProfile）：
+     * 原来写死 180/300 秒 / 120MB / 60 秒回看，4K 实测 renderer 469MB、
+     * GPU 私 590MB；退出 30 秒仍留 244MB/176MB。真正压内存的是缓冲秒数，
+     * 不是 maxBufferSize（它只参与反推目标长度）。
+     *
+     * 2026-11-03 的三档对照（47 分钟 VOD，2.1Mbps）：
+     *   A 60/120/60MB → 领先 87s，堆内存 3MB
+     *   B 180/300/120MB → 领先 188s，堆内存 15MB
+     *   C 240/600/200MB → 领先 235s，堆内存 19MB
+     * 现在按设备选 A/B 之间：TV/2GB 用 60/120，4GB 用 90/150，
+     * 桌面用 120/180；回看统一 30 秒（回拖超过 30 秒才重新拉分片）。
+     * 不做全片预缓冲：40 分钟 × 2Mbps ≈ 600MB，会把 MediaSource 撑爆
+     * （bufferAppendError 直接挂播放器），那比偶尔卡一下更糟。
+     */
+    const buf = hlsBufferProfile(
+      (navigator as unknown as { deviceMemory?: number }).deviceMemory,
+      isTvShell(),
+    )
     const h = new Hls({
-      /*
-       * 缓冲策略（2026-11-03 实测调整，见下面的对照数据）。
-       *
-       * ★ hls.js 的真实上限是：
-       *   `min(max(8 × maxBufferSize / 码率, maxBufferLength), maxMaxBufferLength)`
-       *   原来配 60/120/60MB，实测 2.1 Mbps 的源算出来
-       *   `min(max(240, 60), 120) = 120 秒` —— **永远只领先 2 分钟**，
-       *   网再好也囤不上去（实测 bufferedAhead 长期停在 119–124s）。
-       *
-       * 三档实测（同一份 47 分钟 VOD，各跑 25 秒）：
-       *   A 60/120/60MB   → 领先 87s，堆内存 3MB
-       *   B 180/300/120MB → 领先 188s，堆内存 15MB
-       *   C 240/600/200MB → 领先 235s，堆内存 19MB
-       *
-       * 取 B：
-       *   · 3 分钟缓冲够扛住源站 1–2 分钟的抖动（用户报的"后半段拉不到、
-       *     容易抖"就是这种抖动，多一点余量能把抖动吃掉，不需要全片预缓冲）；
-       *   · 内存代价可接受（15MB 对 TV 的 192MB heap 上限无压力）；
-       *   · 不做 C 的理由：40 分钟 × 2Mbps ≈ 600MB，真要囤满反而会把
-       *     MediaSource 撑爆（`bufferAppendError` 直接让播放器挂掉），
-       *     那比"偶尔卡一下"更糟。真正的"整片离线"应该走缓存功能。
-       *
-       * `backBufferLength` 拉到 60 秒：回拖超过 30 秒就要重新拉分片，
-       * 实测用户回看上一句台词很常见。
-       */
-      maxBufferLength: 180,
-      maxMaxBufferLength: 300,
-      maxBufferSize: 120 * 1000 * 1000, // 120MB
-      backBufferLength: 60,
+      maxBufferLength: buf.maxBufferLength,
+      maxMaxBufferLength: buf.maxMaxBufferLength,
+      maxBufferSize: buf.maxBufferSize,
+      backBufferLength: buf.backBufferLength,
       // 起播等 2 个分片，避免刚开播就 underrun
       maxBufferHole: 0.5,
       // 分片请求失败自动重试（源站经常瞬时 5xx）
@@ -2807,9 +2814,8 @@ function onLoaded() {
   if (dmRawList.length) {
     const d = duration.value
     if (d > 0 && Math.abs(d - dmAppliedDur) > 1) {
-      applyDmList(dmRawList, dmTotal.value)
       const el = video.value
-      if (el) dm.value?.sync(el.currentTime)
+      applyDmList(dmRawList, dmTotal.value, { keepActive: true, at: el?.currentTime ?? 0 })
     }
   }
 }
@@ -4587,6 +4593,35 @@ const dmSourceLabel = computed(() => {
 })
 
 /**
+ * 时间校准的持久化键：播放器拿到的 title 是「片名 · 集」，天然按片/集区分。
+ * 不用 site/vod_id —— 偏移取决于视频版本，换线路只要是同一版就该继续生效。
+ */
+const dmOffsetKey = computed(() => (props.title || '').trim() || props.danmakuUrl || '')
+const dmOffset = ref(getDmOffset(dmOffsetKey.value))
+const dmOffsetLabel = computed(() => formatDmOffset(dmOffset.value))
+
+/** 改校准值：落库 + 立即重锚（清屏回看 0.5 秒，避免旧位置残留）。 */
+function applyDmOffset(sec: number) {
+  const v = normalizeDmOffset(sec)
+  dmOffset.value = setDmOffset(dmOffsetKey.value, v)
+  dm.value?.setOffset(dmOffset.value)
+  const el = video.value
+  if (el) dm.value?.sync(el.currentTime, { seek: true })
+}
+
+function bumpDmOffset(delta: number) {
+  applyDmOffset(dmOffset.value + delta)
+}
+
+function clearDmOffset() {
+  resetDmOffset(dmOffsetKey.value)
+  dmOffset.value = 0
+  dm.value?.setOffset(0)
+  const el = video.value
+  if (el) dm.value?.sync(el.currentTime, { seek: true })
+}
+
+/**
  * 弹幕屏蔽。
  *
  * <p>三条规则：屏蔽词命中、纯符号刷屏、同屏重复（同一条文本在极短时间内
@@ -4649,14 +4684,29 @@ function filterByDuration(list: Danmu[]): Danmu[] {
  *
  * @param totalHint 后端 X-Danmaku-Total（截断前真实条数），没传则用 list 长度
  */
-function applyDmList(raw: Danmu[], totalHint = 0) {
+function applyDmList(
+  raw: Danmu[],
+  totalHint = 0,
+  opts: { keepActive?: boolean; at?: number } = {},
+) {
   dmRawList = raw
   dmAppliedDur = duration.value
   dmTotal.value = Math.max(raw.length, totalHint)
   dmTruncated.value = totalHint > 0 && totalHint > raw.length
   const usable = filterByDuration(raw)
   dmCount.value = usable.length
-  dm.value?.load(filterDanmaku(usable))
+  const filtered = filterDanmaku(usable)
+  /*
+   * keepActive：后台补全/片长修正只换 queue，不清屏。
+   * 走 load() 会把 lastSync 置 -1，紧接着的 sync 必然判成跳转，
+   * 用户看到“弹幕消失再重打”。replaceQueue 保留在场弹幕，新弹幕从
+   * 当前时间接上。
+   */
+  if (opts.keepActive && dm.value) {
+    dm.value.replaceQueue(filtered, opts.at ?? video.value?.currentTime ?? 0)
+  } else {
+    dm.value?.load(filtered)
+  }
 }
 
 async function loadDanmaku(
@@ -4715,6 +4765,28 @@ async function loadDanmaku(
       fresh ? freshDanmakuUrl(url) : url,
       fresh ? { cache: 'no-store' } : undefined,
     )
+    /*
+     * 后台补全检查先用 X-Danmaku-Count 短路，不读 body、不解析。
+     *
+     * 5 个检查点（8/12/16/22/30 秒）过去每次都把 4MB XML 完整下载 +
+     * DOMParser 重建一遍，而绝大多数时候缓存里还是同一份（实测 6 次
+     * 4.19MB GET、每次 DOM +23.7MB / 128ms）。原始条数都不到当前可用
+     * 条数的 1.2 倍时，过滤后的结果不可能更好，直接 cancel 即可。
+     *
+     * ★ header 缺失时 count=0，shouldSkipDanmakuBody 会返回 false，
+     *   继续走原解析路径 —— 不能把缺失当“0 条更少”。
+     */
+    if (!pick && (fresh || serverOnly)) {
+      const countHeader = Number(res.headers.get('X-Danmaku-Count') || 0) || 0
+      if (shouldSkipDanmakuBody(countHeader, dmCount.value, dmCount.value === 0)) {
+        try {
+          await res.body?.cancel()
+        } catch {
+          /* body 已被消费/不可取消：忽略，下一次检查点还会再判断 */
+        }
+        return
+      }
+    }
     const xml = await res.text()
     // 后端用响应头说明"这份弹幕来自哪个源、共几条、是不是空的"。
     // 读头而不解析 body 判断：XML 的 <i></i> 空壳在两种情况下都长一样，
@@ -4905,9 +4977,9 @@ function applyDmUpgrade(up: {
    */
   clearDmRetry()
   // 升级后的这份也可能触顶：带上 total，否则 "N+" 会悄悄退化成 "N"
-  applyDmList(list, up.total)
+  // ★ 不 load + sync：那会清屏并把过去 3 秒重放一遍；只换 queue，保留在场弹幕
   const v = video.value
-  if (v) dm.value?.sync(v.currentTime)
+  applyDmList(list, up.total, { keepActive: true, at: v?.currentTime ?? 0 })
   void putLocalDanmaku(up.url, up.xml, list.length, up.source)
   showDmHint(`已切换到更全的弹幕源（${filterByDuration(list).length} 条可用）`)
 }
@@ -4946,6 +5018,7 @@ onMounted(() => {
     })
     dm.value.setEnabled(dmOn.value)
     dm.value.setRate(v?.playbackRate || 1)
+    dm.value.setOffset(dmOffset.value)
     // 暴露给桌面端诊断（src-tauri/src/mcp.rs 的 pc_danmaku 读取）。
     // 弹幕画在 canvas 上，DOM 里读不到任何文本；不暴露这个引用，
     // 自动化就只能靠截图肉眼看，无法断言"第 30 秒应该出现哪几条"。
@@ -5477,6 +5550,15 @@ watch(
     loadingSrc.value = true
     lastSent = -1
     setupSource(v)
+  },
+)
+
+watch(
+  () => dmOffsetKey.value,
+  () => {
+    // 切集：校准值按新「片名 · 集」重新取；没记录就是 0
+    dmOffset.value = getDmOffset(dmOffsetKey.value)
+    dm.value?.setOffset(dmOffset.value)
   },
 )
 
@@ -7007,6 +7089,44 @@ defineExpose({
           @input="tuneDm({ area: Number(($event.target as HTMLInputElement).value) / 100 })"
         />
       </label>
+
+      <!--
+        时间校准：±30 秒、0.5 秒一档，按「片名 · 集」持久化。
+        弹幕源和播放源版本不同（片头/回顾/片尾）时，整段会偏；这里让用户
+        自己把时间轴推回去，而不是换源碰运气。
+      -->
+      <div class="mt-2.5 mb-2.5">
+        <div class="mb-1 flex items-center justify-between text-xs text-ink-2">
+          <span>时间校准</span>
+          <span class="text-ink-3">{{ dmOffsetLabel }}</span>
+        </div>
+        <div class="grid grid-cols-3 gap-1">
+          <button
+            class="rounded-md bg-white/8 py-1.5 text-[11px] text-ink-2 transition hover:bg-white/14"
+            title="弹幕偏晚：提前 0.5 秒"
+            @click="bumpDmOffset(-0.5)"
+          >
+            −0.5s
+          </button>
+          <button
+            class="rounded-md bg-white/8 py-1.5 text-[11px] text-ink-2 transition hover:bg-white/14"
+            title="恢复 0 偏移"
+            @click="clearDmOffset()"
+          >
+            归零
+          </button>
+          <button
+            class="rounded-md bg-white/8 py-1.5 text-[11px] text-ink-2 transition hover:bg-white/14"
+            title="弹幕偏早：延后 0.5 秒"
+            @click="bumpDmOffset(0.5)"
+          >
+            +0.5s
+          </button>
+        </div>
+        <p class="mt-1 text-[10px] leading-snug text-ink-3">
+          弹幕偏早点 +（延后），偏晚点 −（提前）；按片/集记住
+        </p>
+      </div>
 
       <div class="mt-3 flex items-center justify-between border-t border-white/8 pt-2.5">
         <span class="text-[11px] text-ink-3">

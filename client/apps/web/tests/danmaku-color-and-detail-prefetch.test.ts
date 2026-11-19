@@ -77,7 +77,8 @@ describe('弹幕颜色：抓取层', () => {
 
 describe('弹幕颜色：解析与渲染', () => {
   it('前端解析读 p 的第 4 段并转 #rrggbb', () => {
-    const body = region(DM, 'export function parseDanmakuXml', 1600)
+    // 扫描解析是主路径；DOMParser 只在畸形 XML 兜底，两处都读 parts[3]
+    const body = region(DM, 'function scanDanmakuXml', 1800)
     expect(body).toContain('parts[3]')
     expect(body).toContain('padStart(6')
   })

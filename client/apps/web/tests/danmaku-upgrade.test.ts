@@ -6,6 +6,7 @@ import {
   isBetterDanmaku,
   isSafeDanmakuSwap,
   pickSameSourceCandidate,
+  shouldSkipDanmakuBody,
 } from '../src/components/player/dmUpgrade'
 
 /**
@@ -27,6 +28,29 @@ describe('isBetterDanmaku', () => {
     expect(isBetterDanmaku(8000, 9000)).toBe(false)
     expect(isBetterDanmaku(8000, 8000)).toBe(false)
     expect(isBetterDanmaku(0, 100)).toBe(false)
+  })
+})
+
+describe('shouldSkipDanmakuBody', () => {
+  it('原始条数不到当前 1.2 倍时跳过 body', () => {
+    expect(shouldSkipDanmakuBody(8000, 8000)).toBe(true)
+    expect(shouldSkipDanmakuBody(9000, 8000)).toBe(true)
+    expect(shouldSkipDanmakuBody(9599, 8000)).toBe(true)
+  })
+
+  it('够 1.2 倍或更多时必须解析', () => {
+    expect(shouldSkipDanmakuBody(9600, 8000)).toBe(false)
+    expect(shouldSkipDanmakuBody(12000, 8000)).toBe(false)
+  })
+
+  it('header 缺失（0/NaN）绝不跳过 —— 否则升级会被永久锁死', () => {
+    expect(shouldSkipDanmakuBody(0, 8000)).toBe(false)
+    expect(shouldSkipDanmakuBody(Number.NaN, 8000)).toBe(false)
+  })
+
+  it('当前 0 条（从无到有）必须放行', () => {
+    expect(shouldSkipDanmakuBody(8000, 0)).toBe(false)
+    expect(shouldSkipDanmakuBody(1, 0)).toBe(false)
   })
 })
 
@@ -162,7 +186,9 @@ describe('截断总数（X-Danmaku-Total）全链路', () => {
   it('前端：升级后的那份也要带 total，否则 "N+" 会退化成 "N"', () => {
     expect(player).toContain('total: totalHeader')
     expect(player).toMatch(/applyDmUpgrade\(up: \{[^}]*total: number/)
-    expect(player).toContain('applyDmList(list, up.total)')
+    // 升级用 keepActive：不能再 load + sync 把整屏清空重放
+    expect(player).toMatch(/applyDmList\(list, up\.total, \{ keepActive: true/)
+    expect(player).not.toMatch(/applyDmList\(list, up\.total\)\s*\n\s*const v = video\.value/)
   })
 })
 

@@ -184,6 +184,46 @@ const visibleHits = computed(() => {
   return hits.value.filter((h) => h.site === siteFilter.value)
 })
 
+/*
+ * 分批渲染（P2-2）。
+ *
+ * 聚合搜索一次可能出 200+ 张卡片，实测 DOM 2730 节点；海报图已 lazy，
+ * 但卡片本身的 DOM/布局仍然是全量建的，TV 与低端机上首屏明显更慢。
+ * 这里只渲染前 60 条，尾部哨兵进视野再追加 60 —— 用户看到的是连续列表，
+ * 滚动位置不变（不是"加载更多"那种要手点的分页）。
+ *
+ * 只在换关键词/换源时重置窗口：搜索是流式的，结果条数会在任务进行中增长，
+ * 按条数重置会把已经滚到 120 条的用户瞬间弹回 60 条。
+ */
+const RENDER_STEP = 60
+const renderLimit = ref(RENDER_STEP)
+const renderTail = ref<HTMLElement | null>(null)
+let renderObserver: IntersectionObserver | null = null
+const shownHits = computed(() => visibleHits.value.slice(0, renderLimit.value))
+const hasMoreDom = computed(() => visibleHits.value.length > renderLimit.value)
+
+watch([() => wd.value, siteFilter], () => {
+  renderLimit.value = RENDER_STEP
+})
+
+function observeRenderTail() {
+  renderObserver?.disconnect()
+  renderObserver = null
+  const el = renderTail.value
+  if (!el || typeof IntersectionObserver === 'undefined') return
+  renderObserver = new IntersectionObserver(
+    (entries) => {
+      if (!entries.some((e) => e.isIntersecting)) return
+      renderLimit.value = Math.min(visibleHits.value.length, renderLimit.value + RENDER_STEP)
+    },
+    // 提前一屏追加，滚到底时下一批已经渲染好，不会看到"卡一下才出来"
+    { rootMargin: '800px 0px' },
+  )
+  renderObserver.observe(el)
+}
+
+watch(hasMoreDom, () => void nextTick(observeRenderTail), { immediate: true })
+
 /** 搜索页容器是 max-w-[1500px] px-6，比首页窄 100px */
 function contentWidth(): number {
   return Math.min(document.documentElement.clientWidth || window.innerWidth, 1500) - 48
@@ -582,11 +622,23 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  /*
+   * 作废本页所有在途轮询。
+   *
+   * 搜索是「启动任务 → 每 500ms 拉快照」，循环只检查 `runId !== runSeq`；
+   * 原来卸载时不动 runSeq，于是离开搜索页后仍会每 500ms 打一次后端，
+   * 直到长尾任务结束（实测 30 秒后还在拉，单次 61KB）。runSeq/hotSeq
+   * 自增后，循环下一轮就会 return，结果数组也能随组件释放。
+   */
+  runSeq++
+  hotSeq++
   const w = window as unknown as { __meowTvPageBack?: () => boolean }
   if (w.__meowTvPageBack === handleTvBackHere) w.__meowTvPageBack = undefined
   window.dispatchEvent(new Event('meow:tv-pageback'))
   moreObserver?.disconnect()
   moreObserver = null
+  renderObserver?.disconnect()
+  renderObserver = null
 })
 </script>
 
@@ -925,7 +977,7 @@ onBeforeUnmount(() => {
         <!-- 缩略图视图 -->
         <div v-if="layout === 'grid'" class="poster-grid" :style="colsStyle(groupCols)">
           <button
-            v-for="h in visibleHits"
+            v-for="h in shownHits"
             :key="h.key"
             class="group rounded-lg text-left"
             :title="`${h.vod_name} · ${h.site_name}`"
@@ -959,7 +1011,7 @@ onBeforeUnmount(() => {
         <!-- 列表视图 -->
         <div v-else class="space-y-2">
           <button
-            v-for="h in visibleHits"
+            v-for="h in shownHits"
             :key="h.key"
             class="flex w-full items-center gap-4 rounded-lg border border-line bg-surface p-3 text-left transition hover:border-accent/30 hover:bg-elevated"
             @click="openHit(h)"
@@ -981,6 +1033,9 @@ onBeforeUnmount(() => {
             </svg>
           </button>
         </div>
+
+        <!-- 分批渲染的尾部哨兵：进视野再追加下一批（两种视图共用） -->
+        <div v-if="hasMoreDom" ref="renderTail" class="h-px w-full" aria-hidden="true" />
       </div>
     </div>
 

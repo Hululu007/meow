@@ -26,6 +26,28 @@ export function isBetterDanmaku(current: number, next: number, factor = 1.2): bo
 }
 
 /**
+ * 后台补全拿到响应头后，是否可以跳过 body 下载与解析。
+ *
+ * <p>`X-Danmaku-Count` 是后端在响应头里给的**原始条数**（CORS 已 expose），
+ * 比 `dmCount`（按片长过滤后的可用条数）大。若原始条数都不到当前的
+ * 1.2 倍，过滤后的可用条数更不可能达到，直接 cancel 即可。
+ *
+ * <p>★ `count <= 0` 必须返回 false：header 缺失时 `Number(null)` 会得到 0，
+ * 若把 0 当“更少”就会永久跳过所有升级（实测风险，不是理论问题）。
+ * `fillEmpty`（当前 0 条）也必须放行，这是“从无到有”的路径。
+ */
+export function shouldSkipDanmakuBody(
+  count: number,
+  current: number,
+  fillEmpty = false,
+  factor = 1.2,
+): boolean {
+  if (!Number.isFinite(count) || count <= 0) return false
+  if (fillEmpty || current <= 0) return false
+  return count < Math.ceil(current * factor)
+}
+
+/**
  * 当前是否处于可以整份替换弹幕的安全点。
  *
  * <p>`currentTime < 15 秒`：刚开播，换来源用户几乎无感；

@@ -196,6 +196,14 @@ fn spawn_api(cfg: &Config, java: &Path) -> anyhow::Result<Child> {
 
     let mut cmd = tokio::process::Command::new(java);
     cmd.current_dir(&apiserver_dir)
+        /*
+         * 必须显式给堆上限：JDK 默认 MaxRAMPercentage=25%，OECT 这类 4GB
+         * 机器会拿到 ~972MB，长时间播放/大 XML 会把提交量推高（实测 PC
+         * 同代码可到 800MB+）。512m 与 Docker 配置一致；堆内实测只用
+         * 88–363MB。未设置时 JVM 只会“懒回收”，不会主动把提交量降回来。
+         */
+        .arg("-Xms64m")
+        .arg("-Xmx512m")
         .arg("-Dfile.encoding=UTF-8")
         .arg("-cp")
         // 插件清单里的分号是 Windows 写法；Linux 的 classpath 分隔符是冒号。

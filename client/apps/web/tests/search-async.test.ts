@@ -99,6 +99,18 @@ describe('异步搜索前端', () => {
   it('用 runSeq 防旧响应覆盖新搜索', () => {
     expect(v).toContain('runSeq')
   })
+
+  it('离开搜索页后停止轮询', () => {
+    /*
+     * 踩过：轮询循环只检查 runId !== runSeq，但 onBeforeUnmount 不自增 runSeq，
+     * 于是离开页面后仍每 500ms 打一次 /api/search/task/*，长尾任务不结束就一直打。
+     */
+    const i = v.indexOf('onBeforeUnmount(')
+    expect(i).toBeGreaterThan(-1)
+    const seg = v.slice(i, i + 600)
+    expect(seg, '卸载时没有作废 runSeq，轮询会继续').toContain('runSeq++')
+    expect(seg, '卸载时没有作废 hotSeq，热播榜请求会继续').toContain('hotSeq++')
+  })
 })
 
 /**
@@ -167,5 +179,33 @@ describe('搜索链路的收尾问题', () => {
   it('前端显示"已搜 N/M 个源"', () => {
     expect(VIEW).toContain('searchProgress')
     expect(VIEW, '没显示已返回源数').toMatch(/returned.*total|个源已返回|个源/)
+  })
+})
+
+describe('搜索结果分批渲染（P2-2，2026-11-19）', () => {
+  const v = readFileSync(VIEW, 'utf8')
+
+  it('首屏只渲染 60 条，尾部哨兵进入视野再追加', () => {
+    expect(v, '缺分批常量').toContain('const RENDER_STEP = 60')
+    expect(v, '没有切片').toMatch(/shownHits = computed\(\(\) => visibleHits\.value\.slice\(0, renderLimit\.value\)\)/)
+    expect(v, '没有追加逻辑').toContain('renderLimit.value + RENDER_STEP')
+    expect(v, '哨兵没提前预取').toContain("rootMargin: '800px 0px'")
+  })
+
+  it('两种视图都用分批后的列表，计数仍显示总数', () => {
+    // 网格与列表各一处 v-for，都不能直接用 visibleHits
+    expect(v.match(/v-for="h in shownHits"/g)?.length, 'v-for 未全部改成分批列表').toBe(2)
+    expect(v, '计数被改小了').toContain('搜索({{ visibleHits.length }}/{{ hits.length }})')
+    expect(v, '结果条数提示被改小了').toContain('找到 {{ visibleHits.length }} 条结果')
+  })
+
+  it('只在换词/换源时重置窗口（流式结果增长不能把人弹回顶部）', () => {
+    expect(v).toMatch(/watch\(\[\(\) => wd\.value, siteFilter\], \(\) => \{\s*renderLimit\.value = RENDER_STEP/)
+  })
+
+  it('卸载时断开观察器', () => {
+    const i = v.indexOf('onBeforeUnmount(')
+    const body = v.slice(i, i + 900)
+    expect(body, 'renderObserver 没断开').toContain('renderObserver?.disconnect()')
   })
 })

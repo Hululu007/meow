@@ -74,10 +74,15 @@ if ($env:MEOW_SKIP_WEB_BUILD -eq '1') {
 
 try {
     $common = @('--target', 'x86_64-pc-windows-gnu') + $cfgArgs
+    # 直接调本地 CLI：PATH 过滤掉 Git\usr\bin 后，npx 在部分机器上会联网
+    # 解析 `tauri` 包并报 "could not determine executable to run"，而
+    # node_modules/.bin/tauri 明明存在（实测）。
+    $tauri = Join-Path $PSScriptRoot 'node_modules\.bin\tauri.CMD'
+    if (-not (Test-Path $tauri)) { throw "找不到 Tauri CLI：$tauri（先 pnpm install）" }
     if ($args.Count -gt 0) {
-        & npx tauri build @common @args
+        & $tauri build @common @args
     } else {
-        & npx tauri build @common --no-bundle
+        & $tauri build @common --no-bundle
     }
 } finally {
     if ($tmpCfg) { Remove-Item $tmpCfg -Force -ErrorAction SilentlyContinue }

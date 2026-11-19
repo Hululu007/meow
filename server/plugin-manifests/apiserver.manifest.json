@@ -10,6 +10,8 @@
     "java"
   ],
   "args": [
+    "-Xms64m",
+    "-Xmx768m",
     "-Dfile.encoding=UTF-8",
     "-cp",
     "apiserver.jar;dist/spider.jar",

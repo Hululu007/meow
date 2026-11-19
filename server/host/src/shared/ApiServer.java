@@ -1901,6 +1901,17 @@ public class ApiServer {
                 if (used > heapPeakMB) heapPeakMB = used;
                 o.put("heapUsedMB", used);
                 o.put("heapPeakMB", heapPeakMB);
+                // 已提交堆（不是上限）：排查"private 涨到 800MB 但 used 只有 100MB"
+                o.put("heapCommittedMB", rt.totalMemory() / (1024 * 1024));
+                /*
+                 * 线程数：Thread.activeCount 是当前线程组的近似值，但足够做
+                 * "抓 20 集后有没有多出 60 个线程"的冒烟断言；精确值需要
+                 * ThreadMXBean（Android 上不一定有），这里不做平台分支。
+                 */
+                o.put("threads", Thread.activeCount());
+                // 弹幕内存缓存：条数 + 字符数（UTF-16 下约 2 字节/字符）
+                o.put("danmakuMemCacheEntries", DANMAKU_CACHE.size());
+                o.put("danmakuMemCacheChars", DANMAKU_CACHE.chars());
             } catch (Throwable ignored) {
             }
             o.put("searchConcurrencyCapped", searchConcurrencyCapped);
@@ -7892,6 +7903,16 @@ public class ApiServer {
             srcNames.add(src);
             futures.add(pool.submit(() -> runDanmakuSource(src, clean, ep)));
         }
+        /*
+         * ★ 提交完立刻 shutdown()（不是 shutdownNow()）。
+         *
+         * 后台补全线程还要从 future 里取结果，shutdown() 不会取消已入队任务；
+         * 任务跑完后 worker 才能退出。不调用时 newFixedThreadPool 的 core
+         * 线程永不超时，线程池又被存活 worker 引用，GC 收不掉 —— 独立实例
+         * A/B 实测：3 次 fresh（每次 3 个源）会多出 3 个池、共 9 个常驻线程
+         * （jstack 可见 pool-3/5/6），30 秒后仍不回收。
+         */
+        pool.shutdown();
 
         /*
          * 按「谁先完成」收，不是按提交顺序。
@@ -7964,9 +7985,9 @@ public class ApiServer {
         /*
          * 后台补全：没完成的源继续跑，只在"明显更全"时覆盖缓存。
          *
-         * 用 daemon 线程：JVM 退出时不该被它拖住。线程池不 shutdown ——
-         * 后台线程还要从里面取 future；任务跑完后池自然空闲，由 GC 回收
-         * （每个请求一个池，数量受用户播放行为限制，不会无限增长）。
+         * 用 daemon 线程：JVM 退出时不该被它拖住。线程池已在提交后
+         * shutdown()，这里只是继续从 future 取结果；shutdown 不影响已入队
+         * 任务，worker 会在任务跑完后退出。
          */
         if (!pending.isEmpty()) {
             final List<Integer> rest = new ArrayList<>(pending);
@@ -7987,8 +8008,6 @@ public class ApiServer {
             }, "danmaku-bg-" + clean);
             t.setDaemon(true);
             t.start();
-        } else {
-            pool.shutdown();
         }
         return out;
     }
@@ -8439,23 +8458,62 @@ public class ApiServer {
     }
 
     /**
-     * 简易 TTL 缓存。容量 24 条，超过就清最旧的。
-     * 肥猫用的是 12 条 / 12 MB，我们弹幕单集最大约 2.5 MB，24 条更实用。
+     * 简易 TTL 缓存：条数 + 字符数双预算，超过就清最旧的。
+     *
+     * <p>原实现只限 24 条。但同一个缓存同时存 `tx|vid` / `iq|tvId` / `dm|title|ep`，
+     * 一集可能占 2–3 条；而一集 4.2 万条弹幕的 XML 是 4.19MB（约 3.2M 字符，
+     * String 在 JVM 里 UTF-16 约 6.4MB）。24 条最坏可到 150–300MB，OECT
+     * 512m 容器里很危险。现在按 8 条 / 16M 字符（约 32MB UTF-16）双限，
+     * 约等于“最近 3–4 份大 XML”，够快速返回上一集，又不会把堆吃穿。
      */
     private static final class TtlCache {
         private final java.util.LinkedHashMap<String, Object[]> map =
                 new java.util.LinkedHashMap<>(32, 0.75f, true);
-        private static final int MAX = 24;
+        private final int maxEntries;
+        private final long maxChars;
+        /** 当前所有 value.length() 之和（字符数，非字节） */
+        private long chars = 0;
+
+        TtlCache() {
+            this(24, Long.MAX_VALUE);
+        }
+
+        TtlCache(int maxEntries, long maxChars) {
+            this.maxEntries = Math.max(1, maxEntries);
+            this.maxChars = Math.max(1L, maxChars);
+        }
 
         synchronized void put(String key, String value, long ttlMs) {
-            map.put(key, new Object[]{value, System.currentTimeMillis() + ttlMs});
-            while (map.size() > MAX) {
-                java.util.Iterator<String> it = map.keySet().iterator();
-                if (it.hasNext()) {
-                    it.next();
-                    it.remove();
-                }
+            Object[] old = map.put(key, new Object[]{value, System.currentTimeMillis() + ttlMs});
+            if (old != null) chars -= ((String) old[0]).length();
+            chars += value.length();
+            /*
+             * 双预算：任一条超了就淘汰最久未用的。单条 value 本身超过
+             * maxChars 时，循环会把它自己淘汰掉（缓存不生效，但不会 OOM）。
+             */
+            while (map.size() > maxEntries || chars > maxChars) {
+                /*
+                 * 必须从 entrySet 迭代器直接取 value：这是 accessOrder=true 的
+                 * LinkedHashMap，循环里再调 map.get(victimKey) 会把该键记一次
+                 * “访问”并 modCount++，紧接着 it.remove() 就抛
+                 * ConcurrentModificationException（实测 2026-11-19：put 32 次后
+                 * size 仍是 31，淘汰从没生效过 → 缓存无上限增长）。
+                 */
+                java.util.Iterator<java.util.Map.Entry<String, Object[]>> it =
+                        map.entrySet().iterator();
+                if (!it.hasNext()) break;
+                java.util.Map.Entry<String, Object[]> victim = it.next();
+                chars -= ((String) victim.getValue()[0]).length();
+                it.remove();
             }
+        }
+
+        synchronized int size() {
+            return map.size();
+        }
+
+        synchronized long chars() {
+            return chars;
         }
 
         /**
@@ -8471,13 +8529,15 @@ public class ApiServer {
             if (v == null) return null;
             if ((Long) v[1] < System.currentTimeMillis()) {
                 map.remove(key);
+                chars -= ((String) v[0]).length();
+                if (chars < 0) chars = 0;
                 return null;
             }
             return (String) v[0];
         }
     }
 
-    private static final TtlCache DANMAKU_CACHE = new TtlCache();
+    private static final TtlCache DANMAKU_CACHE = new TtlCache(8, 16_000_000L);
 
     // ---------------------------------------------------------------- 搜索结果缓存
 
@@ -8753,7 +8813,8 @@ public class ApiServer {
      * <p>为什么单独一张表而不是塞进内容里：内容是给播放器吃的 XML，
      * 混进来源标记就破坏了 XML 格式；而且来源要能在缓存命中时仍然说出来。
      */
-    private static final TtlCache DANMAKU_SRC_CACHE = new TtlCache();
+    // 来源标记只有几个字符：条数放宽，字符预算 1M 足够
+    private static final TtlCache DANMAKU_SRC_CACHE = new TtlCache(256, 1_000_000L);
 
     /**
      * 爱奇艺 tvId → 时长（秒）。
@@ -9011,7 +9072,13 @@ public class ApiServer {
                                 }
                             } catch (Exception ignored) {
                             }
-                            all.add(new String[]{String.valueOf(absMs / 1000),
+                            /*
+                             * 保留毫秒（absMs 本来就是毫秒）。原来整数除法会向下
+                             * 取整到秒，弹幕最多提前 1 秒；腾讯分片自带
+                             * time_offset 毫秒精度，没有理由丢掉。
+                             * Double.toString 永远用 '.'，不受默认 Locale 影响。
+                             */
+                            all.add(new String[]{String.valueOf(absMs / 1000.0),
                                     color, escapeXmlText(text)});
                         }
                     } catch (Exception ignored) {
@@ -9034,7 +9101,8 @@ public class ApiServer {
         synchronized (all) {
             sorted = new ArrayList<>(all);
         }
-        sorted.sort((x, y) -> Integer.compare(Integer.parseInt(x[0]), Integer.parseInt(y[0])));
+        // 时间现在是小数秒（保留毫秒），排序必须按 double，不能 Integer.parseInt
+        sorted.sort((x, y) -> Double.compare(Double.parseDouble(x[0]), Double.parseDouble(y[0])));
         java.util.List<String[]> capped = capDanmakuList(sorted);
         if (capped.size() < sorted.size()) {
             // 截断前的真实条数 → ThreadLocal 带回 runDanmakuSource（本函数没有 clean/ep）

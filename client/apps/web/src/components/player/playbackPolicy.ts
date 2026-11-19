@@ -56,6 +56,47 @@ export function shouldDropRate(s: UnderrunState): boolean {
   return s.bufferedAhead <= UNDERRUN_BUFFER_SEC
 }
 
+export interface HlsBufferProfile {
+  /** hls.js 目标前向缓冲（秒） */
+  maxBufferLength: number
+  /** 前向缓冲上限（秒） */
+  maxMaxBufferLength: number
+  /** hls.js 用来推算目标缓冲的码率参考（字节） */
+  maxBufferSize: number
+  /** 回拖保留的后向缓冲（秒） */
+  backBufferLength: number
+}
+
+/**
+ * 按设备内存/端类型选 hls.js 缓冲档。
+ *
+ * <p>原来写死 180/300 秒 / 120MB / 60 秒回看。4K 实测播放 110 秒时
+ * renderer 469MB、GPU 私 590MB；退出后 30 秒仍留 244MB/176MB。
+ * 缓冲秒数是内存的第一驱动（4K 40Mbps × 180s ≈ 900MB 的编码数据，
+ * 还没算 MSE/解码表面），所以按设备收：
+ *
+ *   · TV / 低内存（≤2GB）：60 / 120 / 48MB / 30s
+ *   · 中内存（≤4GB）：90 / 150 / 64MB / 30s
+ *   · 桌面高内存：120 / 180 / 80MB / 30s
+ *
+ * <p>`maxBufferSize` 不是硬字节上限（hls.js 用它反推目标缓冲长度），
+ * 真正压内存的是 maxBufferLength/maxMaxBufferLength。保留 30 秒回看
+ * 是为了回拖不重新拉分片，又不把已看过的整段留在内存里。
+ */
+export function hlsBufferProfile(
+  deviceMemoryGB?: number,
+  tvShell = false,
+): HlsBufferProfile {
+  const mem = Number(deviceMemoryGB)
+  if (tvShell || (Number.isFinite(mem) && mem > 0 && mem <= 2)) {
+    return { maxBufferLength: 60, maxMaxBufferLength: 120, maxBufferSize: 48 * 1024 * 1024, backBufferLength: 30 }
+  }
+  if (Number.isFinite(mem) && mem > 0 && mem <= 4) {
+    return { maxBufferLength: 90, maxMaxBufferLength: 150, maxBufferSize: 64 * 1024 * 1024, backBufferLength: 30 }
+  }
+  return { maxBufferLength: 120, maxMaxBufferLength: 180, maxBufferSize: 80 * 1024 * 1024, backBufferLength: 30 }
+}
+
 /** 降速后：观察够久 + 缓冲够深 → 回到用户倍速 */
 export function shouldRestoreRate(s: {
   dropped: boolean

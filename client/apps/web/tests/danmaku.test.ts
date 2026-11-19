@@ -42,6 +42,29 @@ describe('parseDanmakuXml', () => {
       '<i><d p="1,1,25,16777215">赞&#x1F44D;不明&amp;nbsp;越界&#1114112;</d></i>'
     expect(parseDanmakuXml(xml)[0].text).toBe('赞👍不明&nbsp;越界&#1114112;')
   })
+
+  it('扫描解析：p 不在第一个属性、单引号、自闭合、CDATA 都能处理', () => {
+    const xml =
+      '<i>' +
+      '<d foo="1" p="2,1,25,16777215">A&lt;B</d>' +
+      "<d p='3,1,25,16777215'>C</d>" +
+      '<d p="4,1,25,16777215"/>' +
+      '<d p="5,1,25,16777215"><![CDATA[D<D]]></d>' +
+      '</i>'
+    const list = parseDanmakuXml(xml)
+    expect(list.map((x) => [x.time, x.text])).toEqual([
+      [2, 'A<B'],
+      [3, 'C'],
+      [5, 'D<D'],
+    ])
+  })
+
+  it('扫描解析：结构异常时退回 DOMParser，不抛异常', () => {
+    // 缺闭合标签：扫描器看到 <d 但没有 </d>，必须交给 DOM 兜底
+    expect(() => parseDanmakuXml('<i><d p="1,1,25,16777215">X</i>')).not.toThrow()
+    // 文本里裸 <（不是合法 XML）：同样走兜底，不自己猜
+    expect(() => parseDanmakuXml('<i><d p="1,1,25,16777215">A<B</d></i>')).not.toThrow()
+  })
 })
 
 const mk = (time: number, text: string): Danmu => ({
@@ -65,7 +88,8 @@ describe('DanmakuRenderer', () => {
   it('sync 到时间点会把弹幕放进渲染队列', () => {
     const r = new DanmakuRenderer(host)
     r.load([mk(0, 'A'), mk(0.5, 'B')])
-    r.sync(1)
+    // seek 回看窗口是 0.5 秒：t=0.5 时 0 秒那条刚好在窗口边界内
+    r.sync(0.5)
     expect(r.debugActive()).toHaveLength(2)
     r.destroy()
   })
@@ -129,7 +153,7 @@ describe('DanmakuRenderer', () => {
   it('关闭时清空，重新开启后可继续渲染', () => {
     const r = new DanmakuRenderer(host)
     r.load([mk(0, 'X')])
-    r.sync(1)
+    r.sync(0.1)
     expect(r.debugActive()).toHaveLength(1)
 
     r.setEnabled(false)
@@ -137,7 +161,7 @@ describe('DanmakuRenderer', () => {
 
     r.setEnabled(true)
     r.load([mk(0, 'X')])
-    r.sync(1)
+    r.sync(0.1)
     expect(r.debugActive()).toHaveLength(1)
     r.destroy()
   })
@@ -748,6 +772,94 @@ describe('长弹幕速度上限', () => {
     const { r, W } = make(1280, 12)
     expect(r.durFor(100)).toBe(12)
     expect(r.durFor(W * 0.2)).toBe(12)
+    r.destroy()
+  })
+})
+
+describe('时间轴准确性（born / seek 窗口 / 校准 / 升级）', () => {
+  let host: HTMLDivElement
+
+  beforeEach(() => {
+    host = document.createElement('div')
+    Object.defineProperty(host, 'clientWidth', { value: 800, configurable: true })
+    Object.defineProperty(host, 'clientHeight', { value: 450, configurable: true })
+    document.body.appendChild(host)
+  })
+
+  it('发射延迟不再被 born=now 固定：晚 0.2 秒发射，位置仍按 d.time', () => {
+    const r = new DanmakuRenderer(host, { duration: 12 })
+    r.load([mk(10, '晚到')])
+    // 等价于 timeupdate 晚到 0.2 秒才把 10 秒这条交进来
+    r.sync(10.2)
+    const a = r.debugActive()[0]
+    expect(a).toBeTruthy()
+    // born=now 时 x 正好是 800；born=10 时已经向左走了约 13px
+    expect(a.x).toBeLessThan(799)
+    expect(a.x).toBeGreaterThan(700)
+    expect(r.debugState().lastEmitDelay).toBeCloseTo(0.2, 1)
+    r.destroy()
+  })
+
+  it('seek 只回看 0.5 秒，不再把 3 秒前的弹幕倒出来', () => {
+    const r = new DanmakuRenderer(host)
+    r.load(Array.from({ length: 50 }, (_, i) => mk(i, `D${i}`)))
+    r.sync(40, { seek: true })
+    const texts = r.debugActive().map((a) => a.text)
+    expect(texts).toEqual(['D40'])
+    r.destroy()
+  })
+
+  it('时间校准：正值让弹幕延后，负值让弹幕提前', () => {
+    const r = new DanmakuRenderer(host)
+    r.load([mk(10, 'X')])
+
+    r.setOffset(2)
+    r.sync(11)
+    expect(r.debugActive()).toHaveLength(0) // 弹幕时钟才 9s
+    r.sync(12)
+    expect(r.debugActive()).toHaveLength(1)
+
+    r.setOffset(-2)
+    r.sync(8)
+    expect(r.debugActive().length).toBeGreaterThan(0) // 弹幕时钟 10s
+    r.destroy()
+  })
+
+  it('replaceQueue 保留在场弹幕，不触发清屏重放', () => {
+    const r = new DanmakuRenderer(host)
+    r.load([mk(0, '旧')])
+    r.sync(0.1)
+    expect(r.debugActive()).toHaveLength(1)
+
+    r.replaceQueue([mk(100, '新')], 0.1)
+    expect(r.debugActive().map((a) => a.text)).toEqual(['旧'])
+
+    r.sync(0.2)
+    expect(r.debugActive().map((a) => a.text)).toEqual(['旧']) // 新队列还没到 100s
+    r.destroy()
+  })
+
+  it('pause 真的取消 rAF，start 能重新拉起', () => {
+    const r = new DanmakuRenderer(host)
+    r.start()
+    expect((r as any).raf).toBeGreaterThan(0)
+    r.pause()
+    expect((r as any).raf).toBe(0)
+    r.start()
+    expect((r as any).raf).toBeGreaterThan(0)
+    r.destroy()
+  })
+
+  it('debugState 暴露时钟/校准/丢弃计数，供 MCP 断言', () => {
+    const r = new DanmakuRenderer(host)
+    r.load([mk(0, 'A')])
+    r.setOffset(1.5)
+    r.sync(1.5)
+    const s = r.debugState()
+    expect(s.offset).toBe(1.5)
+    expect(s.now).toBe(0)
+    expect(s.emitted).toBe(1)
+    expect(s.dropped).toBe(0)
     r.destroy()
   })
 })

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   capLevelForRate,
+  hlsBufferProfile,
   shouldDropRate,
   shouldRestoreRate,
 } from '../src/components/player/playbackPolicy'
@@ -69,5 +70,33 @@ describe('缓冲恢复后回到用户倍速', () => {
 
   it('没降过速就不谈恢复', () => {
     expect(shouldRestoreRate({ dropped: false, sinceMs: 99_000, bufferedAhead: 99 })).toBe(false)
+  })
+})
+
+describe('hls 缓冲按设备分档', () => {
+  it('TV / ≤2GB 用最小档', () => {
+    const a = hlsBufferProfile(undefined, true)
+    expect(a.maxBufferLength).toBe(60)
+    expect(a.maxMaxBufferLength).toBe(120)
+    expect(a.backBufferLength).toBe(30)
+    expect(hlsBufferProfile(2, false)).toEqual(a)
+  })
+
+  it('≤4GB 用中档', () => {
+    const b = hlsBufferProfile(4, false)
+    expect(b.maxBufferLength).toBe(90)
+    expect(b.maxMaxBufferLength).toBe(150)
+  })
+
+  it('桌面高内存用 120/180，且不再回到旧的 180/300', () => {
+    const c = hlsBufferProfile(16, false)
+    expect(c.maxBufferLength).toBe(120)
+    expect(c.maxMaxBufferLength).toBe(180)
+    expect(c.maxMaxBufferLength).toBeLessThan(300)
+    expect(c.backBufferLength).toBe(30)
+  })
+
+  it('deviceMemory 缺失时按桌面档（不误伤 PC）', () => {
+    expect(hlsBufferProfile(undefined, false).maxBufferLength).toBe(120)
   })
 })
