@@ -135,5 +135,7 @@ curl -I "<spider 里的地址去掉 ;md5;>"
 ## 相关
 
 - 按症状排查：[常见问题](/guide/faq)
+- 确认当前版本 / 下载资产：[下载与版本](/reference/downloads)
+- 是否新版已修：[更新日志](/reference/changelog)
 - 边界与已知缺陷：[已知限制](/reference/limits)
 - 后端接口与错误码：开发文档 [接口契约](/dev/api-contract)

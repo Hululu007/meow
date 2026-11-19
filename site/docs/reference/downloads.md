@@ -91,4 +91,6 @@ Releases 页可以展开旧版本。应用内也能看：设置 → 关于 → �
 ## 相关
 
 - 每版改了什么：[更新日志](/reference/changelog)
+- 我的设备支持哪些能力：[版本兼容矩阵](/reference/compatibility)
+- 装不上、起不来：[诊断手册](/reference/diagnostics)
 - 装完下一步：[导入源包](/guide/source-pack)

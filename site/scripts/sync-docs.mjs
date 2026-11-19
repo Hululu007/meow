@@ -101,7 +101,7 @@ pageClass: changelog-page
 > 自动生成，**改它请改那份文件**，不要改这里。客户端内的更新弹框读的也是同一份。
 > 本页只列已形成发版资产的版本（全量发版或部分发版）；日期取自发版 tag，点版本号直达对应的 GitHub Release 资产。
 
-版本号与打包产物的对应关系见 [下载与版本](../reference/downloads.md)。
+版本号与打包产物的对应关系见 [下载与版本](../reference/downloads.md)；兼容性见 [版本兼容矩阵](../reference/compatibility.md)；排查见 [诊断手册](../reference/diagnostics.md)。
 
 ${versions}
 `

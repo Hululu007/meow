@@ -97,6 +97,7 @@ macOS 与 iOS 不发布原生包：两者都没有官方验证条件，不发布
 
 ## 相关
 
+- 下载对应安装包：[下载与版本](/reference/downloads)
 - 升级步骤与迁移：[升级与迁移](/guide/upgrade)
 - 导入选项与字段：[导入源包](/guide/source-pack)、[配置格式](/ecosystem/source-format)
 - 实际版本记录：[更新日志](/reference/changelog)
