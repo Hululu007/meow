@@ -1,6 +1,6 @@
 # Web / PC 前端手册
 
-> 范围：`client/apps/web/src`，95 个 `.vue`/`.ts`、约 4.9 万行（另有 110+ 个测试文件在
+> 范围：`client/apps/web/src`，120 个 `.vue`/`.ts`、约 5.9 万行（另有 110+ 个测试文件在
 > `client/apps/web/tests`）。
 > 本文只写**当前状态与改动约束**：为什么这样做、动了会坏在哪、阈值是多少。
 > 端点与字段见 [API 契约](./api-contract.md)，播放/转码策略见 [播放与转码](./playback.md)，
@@ -8,16 +8,6 @@
 > AI 面板与意图编排见 [AI 助手](./ai-assistant.md)。
 
 ---
-
-
-### 3.9 首页续播卡（1.2.17）
-
-首页首屏只放**续播**，不再放"列表第一条"（那既与网格重复、又与用户无关）。四条不可回退的判据：
-
-1. **时间窗**：只认 24 小时内（`ep_at`）的观看；`pos > 30s` 且离结尾 `> 60s`，否则整块不渲染
-2. **占位条目必须补全**：后端 `/api/state/progress` 只存 8 个字段（无片名/封面），别处看过、本机没有的片会被补成 `vod_name = vod_id`。拿到后要拉一次 detail，补名/补图并写回历史（只补元信息，进度字段别动）
-3. **右栏内容位置**：集名/站点 + 年份/地区/状态放左栏一行（`hero-facts`），右栏只放简介 + 导演/主演；短屏（≤600 高）只隐藏右栏与进度文本，元数据那行永远保留
-4. **TV 焦点**：海报与片名是点击区但**不参与移焦**（`data-tv-skip`，`tv-nav.js` 的 `FOCUSABLE` 已支持），遥控器只在「继续播放 / 详情」之间走
 
 ## 第零章 铁律（改之前必读）
 
@@ -44,8 +34,10 @@
 
 1. **不擅自打包 PC**。日常验证一律走 Web（`pnpm --filter @meow/web dev`）。
 2. **不常驻 9979**。需要后端时临时启动，验完即停。
-3. **不臆造后端能力**。能力探测目前只有 `/api/health` 的 `capabilities` 里的 `state`
-   一项（`api/index.ts:838`），对应 `/api/state/*` 同步；其余功能没有协商层。
+3. **不臆造后端能力**。后端 `/api/health` 的 `capabilities` 上报
+   danmakuExternal/danmaku/search/proxy/webdav/dns/state/parse（`server/host/src/shared/ApiServer.java`
+   的 `healthJson()`，grep `caps.put`），前端目前只对 `state` 做了协商
+   （`api/index.ts` 的 `hasStateCapability()`，对应 `/api/state/*`），其余能力尚未接入协商层。
 
 ---
 
@@ -55,14 +47,17 @@
 
 ```
 src/
-├── api/          13 个模块：index（请求封装 + 端点函数）、library、appUpdate、
+├── api/          15 个模块：index（请求封装 + 端点函数）、library、appUpdate、
 │                 fpkUpgrade、gitAccel、health、logs、nativeBridge、playExtras、
-│                 liveMerge、searchAffinity、searchRank、types
+│                 liveMerge、searchAffinity、searchRank、changelog、networkRetry、types
 ├── ai/           意图解析、编排、工具、摘要、诊断、桥接、斜杠命令
-├── components/   20 个 .vue：common 14、layout 2、library 1、player 2、ai 1
-├── composables/  useCardCols（按卡宽算列数）、useReturnRestore（返回恢复滚动/焦点）
+├── components/   27 个 .vue：common 17、layout 5（AppHeader / DesktopTopChrome /
+│                 MobileTabBar / ResizeHandles / WindowControls）、library 2、player 2、ai 1
+├── composables/  useCardCols（按卡宽算列数）、useReturnRestore（返回恢复滚动/焦点）、
+│                 useWindowDrag（无边框窗口拖动/双击最大化）、useConfirm、useOverlayHost、
+│                 useReducedMotion
 ├── stores/       16 个
-├── views/        14 个路由视图
+├── views/        15 个路由视图
 ├── styles/       tokens.css（主题与断点的唯一运行时真源）
 ├── utils/        下集预取、弹幕候选标题清洗、历史分组、互斥播放、二维码
 └── tests/        测试与 src/ 平级：client/apps/web/tests，110+ 个文件
@@ -93,11 +88,13 @@ src/
 | `/category/:site` | `CategoryView` | 分页 + 筛选；页数硬上限 50（`CategoryView.vue:38`） |
 | `/detail/:site/:id` | `DetailView` | 多线路 + 剧集网格 + 收藏 + 缓存整季 |
 | `/play/:site` | `PlayView` | query：`flag/id/name/ep/vod/list`；片库直链另有 `direct/library/file` |
+| `/ext-play` | `ExternalPlayView` | 投屏接收页：别人把会话投到本机时由它播放（保留弹幕） |
 | `/search` | `SearchView` | 聚合结果 + 按源筛选 + 最近搜索 |
+| `/me` | `MeView` | 「我的」一级入口：历史 + 收藏内嵌，分区写进 `?tab=` |
 | `/history` | `HistoryView` | 历史 + 观看统计 |
 | `/live` | `LiveView` | 直播（分组 + 频道格 + hls.js） |
 | `/library` | `LibraryView` | 本地 / NAS 片库（根层级带「我的缓存」）；添加/编辑是页内弹框 `LibraryAddDialog`，不占路由 |
-| `/offline` | `OfflineView` | 22 行薄壳，只渲染 `CachePanel`，兼容旧深链 |
+| `/offline` | `OfflineView` | 22 行薄壳，`onMounted` 里 `router.replace` 重定向到 `/library?tab=cache`，兼容旧深链（`OfflineView.vue:14`） |
 | `/favorites` | `FavoritesView` | 收藏 |
 | `/settings` | `SettingsView` | 16 个导航项，按平台过滤 |
 | `/ai` | `AiView` | AI 独立页（复用 `AiPanel` 的 inline 模式） |
@@ -238,6 +235,29 @@ TV 壳的 WebView 设置（`client/apps/tv` 的 `MainActivity`）里有几条不
 ExoPlayer 慢；遥控器按键要跨 `KeyEvent → WebView → JS → DOM` 四层。**只能靠减少
 每帧工作量间接改善**，别指望调到原生手感。
 
+### 2.7 PC 壳：无边框 + 自绘标题栏 + 快捷键 + 托盘
+
+窗口装饰全部由前端自绘（`tauri.conf.json` 里 `decorations:false` / `shadow:false`；
+`apply_undecorated_frame` 只为拿 Win11 圆角/投影并去掉 1px 边框）：
+
+- `WindowControls.vue`：左上角红黄绿（红=关闭，走既有 `CloseRequested` → 托盘/退出；
+  黄=最小化；绿=最大化/还原），只在 Tauri 壳挂载。
+- `useWindowDrag.ts`：自绘标题栏拖动 + 双击最大化。**不要改回 `data-tauri-drag-region`**：
+  `core:window:allow-start-dragging` 没授，实测拖不动（2026-11-18）。
+- `ResizeHandles.vue`：8 向缩放手柄（边 1.5px、角 3px）。`decorations:false` 会同时去掉
+  `WS_THICKFRAME`，不放手柄窗口就调不了大小。
+- `DesktopTopChrome.vue`：播放/直播页不渲染 `AppHeader`，用顶部 1.5px 拖拽条 +
+  右上角 hover 才浮出的红黄绿（放右侧是为了避开播放器左上角的返回键）。
+
+**快捷键**（`App.vue`，只在 Tauri 壳生效）：Ctrl/Cmd+F 去搜索页（输入框内不拦；
+Web/Docker 上这是浏览器页内查找，不能劫）、F11 窗口全屏、Ctrl/Cmd+0 缩放复位、
+Esc 返回上一页（输入框 / 弹框 / 播放或直播页 / 首页不处理）。
+
+**关闭到托盘**：`lib.rs` 的 `CloseRequested` + `tray.rs`，开关由设置页经
+`desktop_set_close_to_tray` 递进来。**窗口状态记忆**只存 SIZE / POSITION / MAXIMIZED——
+不能含 `VISIBLE`（关闭=隐藏，退出时窗口是 hidden，下次启动会看不见窗口），
+也不存 FULLSCREEN / DECORATIONS。
+
 ---
 
 ## 第三章 常见坑（前端专项）
@@ -339,8 +359,10 @@ if (!v.paused && !v.seeking && watchedTickAt) {
 判据是"提示是否还在屏上"，按慢了就重新提示，不会误退出（`VideoPlayer.vue:4393`）。
 倒计时进行中返回 = 立即跳过片头/片尾。
 
-**TV 上默认不渲染左上角返回按钮**（`showBackButton = !isTvEnv() || compactViewport`，
-`VideoPlayer.vue:2522`）：它是几何选焦的头号命中目标，按 ok 会直接退出整集。
+**横屏电视在 TV 壳且未产生真实指针输入时默认不渲染左上角返回按钮**
+（`showBackButton = showPlayerBackButton(isTvShell(), pointerSeen.value, isBigScreenLandscape())`，
+`VideoPlayer.vue` 的 `showBackButton`；判据见 `compat/deviceForm.ts` 的 `showPlayerBackButton`，
+**竖屏 TV 显示返回按钮**）：它是几何选焦的头号命中目标，按 ok 会直接退出整集。
 遥控器自己有返回键。
 
 ### 3.6 TV 弹框与横向选焦
@@ -372,8 +394,9 @@ if (!v.paused && !v.seeking && watchedTickAt) {
 
 - **顶栏搜索是"输入框外形的按钮"**（`AppHeader.vue:404`，`sm:hidden`），点一下直达
   `/search`：手机先弹键盘再跳页是多余的一步，搜索页本来就有输入框、范围切换和最近搜索。
-- **底部标签栏**三入口：首页 / AI / 设置（`MobileTabBar.vue`）。中间 AI 是向上顶出的
-  异形球，绝对定位不占布局，左右两项仍等宽。播放页与直播页不渲染（会盖进度条）。
+- **底部标签栏**五入口：首页 / 直播 / AI / 设置 / 我的（`MobileTabBar.vue`）。中间 AI 是向上顶出的
+  异形球，绝对定位不占布局，左右各两项等宽。仅播放页与投屏接收页（ext-play）不渲染，
+  直播页保留底栏（`App.vue` 的 `showTabBar` 判据）。
   页面底部留 `--tabbar-h`，值 = `calc(6rem + env(safe-area-inset-bottom))`（`tokens.css:1379`）。
 - **触屏没有 hover**：历史/收藏的"移除/取消收藏"必须 `max-sm:opacity-100` 常显，
   删除类操作在 `(hover: none)` 下加一次确认。
@@ -401,6 +424,15 @@ if (!v.paused && !v.seeking && watchedTickAt) {
 | Tauri 图标不跟随 `web/public` | `npx tauri icon "<绝对路径>"`（相对路径报 os error 3），并更新 `bundle.icon` |
 | WebView 缓存了 API 响应 | 壳侧 `LOAD_DEFAULT`，后端 `sendText` 统一 `no-store`。判据：加 `&_r=<随机数>` 就正常 |
 
+### 3.9 首页续播卡（1.2.17）
+
+首页首屏只放**续播**，不再放"列表第一条"（那既与网格重复、又与用户无关）。四条不可回退的判据：
+
+1. **时间窗**：只认 24 小时内（`ep_at`）的观看；`pos > 30s` 且离结尾 `> 60s`，否则整块不渲染
+2. **占位条目必须补全**：后端 `/api/state/progress` 只存 8 个字段（无片名/封面），别处看过、本机没有的片会被补成 `vod_name = vod_id`。拿到后要拉一次 detail，补名/补图并写回历史（只补元信息，进度字段别动）
+3. **右栏内容位置**：集名/站点 + 年份/地区/状态放左栏一行（`hero-facts`），右栏只放简介 + 导演/主演；短屏（≤600 高）只隐藏右栏与进度文本，元数据那行永远保留
+4. **TV 焦点**：海报与片名是点击区但**不参与移焦**（`data-tv-skip`，`tv-nav.js` 的 `FOCUSABLE` 已支持），遥控器只在「继续播放 / 详情」之间走
+
 ---
 
 ## 第四章 测试与验证
@@ -422,7 +454,7 @@ cd client/apps/web && npx vitest run
 | `player-*.test.ts` | 错误分类、看门狗、返回键、停播、进度 |
 | `settings-nav-sync.test.ts` | `NAV_ITEMS` 与模板顺序/标题一致 |
 | `settings-controls-consistency.test.ts` | 控件真实行为、分区归属 |
-| `theme-tokens.test.ts` | 每套风格浅/深两块 × 27 变量、对比度、hex 格式 |
+| `theme-tokens.test.ts` | 每套风格浅/深两块 × 28 变量、对比度、hex 格式 |
 | `tv-nav-*.test.ts` | 真实 `tv-nav.js` 进 jsdom 的选焦/派发 |
 | `mobile-layout.test.ts` | 手机断点只覆盖、不污染桌面 |
 | `ai-commands.test.ts` | 斜杠命令解析/拒绝路径；`TOOL_LABEL` 覆盖全部 `TOOL_DEFS` |

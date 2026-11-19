@@ -49,7 +49,7 @@ data/
   policy.json           用户策略（弹幕 API、DNS、代理…）
   state-*.json          收藏 / 进度
   cache/                转码与 TTL 缓存（可丢）
-  jar/                  spider jar 缓存
+  jars/                 spider jar 缓存
   posters/              刮削封面
 ```
 
@@ -85,7 +85,7 @@ TV 端只读 `spider`，Fongmi 也一样——它们不认 `spiderJvm`。
 |---|---|
 | 下载 | 按 URL 拉取；已有同 md5 缓存则跳过 |
 | 校验 | md5 不匹配 → **拒绝加载**（不会用半截文件启动） |
-| 缓存 | 落在 `data/jar/` |
+| 缓存 | 落在 `data/jars/` |
 | 装载 | JVM：`URLClassLoader`；TV：`DexClassLoader` |
 
 ### ClassLoader 只装一次
@@ -104,7 +104,9 @@ TV 端有 DexClassLoader 钩子，重复安装会把钩子顶掉，导致 jar �
 | 以 `.js`/`.py` 结尾、`js:`/`py:`/`node:` 开头 | drpy 运行时（Node） | 转发到 `policy.json` 的 `jsRuntime` |
 | 其余（`csp_XXX`） | spider jar（反射 `crawler.Spider`） | `call()` 的 jar 分支 |
 
-分派顺序是**原生源 → CMS → drpy → jar**，前一个能处理就不看后面的（`call()`，`ApiServer.java:2229`）。
+分派顺序是**原生源 → CMS → drpy → jar**，前一个能处理就不看后面的（`call()`，
+`ApiServer.java`，grep `private static String call(`；三个分支分别搜
+`NativeSources.get(site)` / `CmsSource.invoke` / `isScriptApi(jsApi)`）。
 
 ::: tip 为什么原生源排最前
 公开壳没有内置 jar，如果原生源排在 jar 后面，没有 jar 时整个后端会被判成「不可用」。
@@ -116,7 +118,8 @@ TV 端有 DexClassLoader 钩子，重复安装会把钩子顶掉，导致 jar �
 TV 端逐个站点构造 `DexClassLoader`（`LocalSpiderHost`），所以**每个 `csp_` 站点要有
 `jar` 字段**（或顶层 `spider` 可用）。
 JVM 端 `Jars.collect()` 同时收顶层字段（`spiderJvm` 优先、回退 `spider`）与**每个站点的
-`jar` 字段**，各自挂独立 `URLClassLoader`——有就挂，没有就跳过（`Jars.java:132-153`）。
+`jar` 字段**，各自挂独立 `URLClassLoader`——有就挂，没有就跳过（`Jars.java`，
+grep `private static LinkedHashSet<String> collect()`）。
 
 这也是一份配置能同时给两端用的前提：顶层 `spider`（dex）给 TV，`spiderJvm`（class）给
 JVM，站点级 `jar` 在多 jar 场景按站点写。

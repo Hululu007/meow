@@ -160,8 +160,9 @@ window.meowIos = {
   `WKScriptMessageHandlerWithReply`（iOS 14+）回 Promise。
 - 原生侧只认白名单方法名，不 eval 网页传来的任意 JS。
 - **不要**为了 iOS 新增 `html[data-ios]` 身份：
-  [端与尺寸适配](./device-adaptive.md) 已经点名「11 套身份判据」是历史债，
-  再加第十二套只会让同一台 iPad 同时命中更多互相矛盾的判据。
+  [端与尺寸适配](./device-adaptive.md) 的四层判据（身份/形态/输入/方向，见 §1 判据全景）
+  已在 1.2.15（e993204，2026-11-17）收口，再加一套只会绕开收口，
+  让同一台 iPad 同时命中更多互相矛盾的判据。
   iOS 的触屏布局沿用现有 `(pointer: coarse)` + 竖屏断点；壳身份只通过
   `window.meowIos` 做**能力入口**，不做样式判据。
 
@@ -765,7 +766,7 @@ TV 的接法在 `release.yml` 里是「`plan` 判定范围 → `tv` job 调 `_tv
 | 在未签名产物上去掉 `-unsigned` | 用户会以为能直接安装 |
 | 把证书/描述文件/`.p12` 提交进 git | 与 TV keystore 同级别的红线；泄露只能换证书 |
 | 用 `file://` 加载 `web/dist` | ES module / localStorage / fetch 全受限（TV 的 build.gradle 已记录同款坑） |
-| 新增 `html[data-ios]` 身份 | 端判据已经有 11 套，见 [端与尺寸适配](./device-adaptive.md) |
+| 新增 `html[data-ios]` 身份 | 判据已在 1.2.15（e993204）收口为四层（身份/形态/输入/方向，见 [端与尺寸适配](./device-adaptive.md) §1），新增会绕开收口 |
 | 引 hls.js 兜底 iPhone | MSE 支持不完整，只会把可播变成黑屏 |
 | 用 `webkitEnterFullscreen` 做全屏 | 既有决策：切系统播放器会丢弹幕/控制栏 |
 | 承诺“支持 iOS”而不写真机验收结论 | 没有 iPhone 就验不了签名、本地网络、HLS、安全区 |

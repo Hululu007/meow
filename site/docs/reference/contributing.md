@@ -53,9 +53,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/verify.ps1
 
 ### 改文档
 
-技术文档是 `docs/*.md`，站点里的 `dev/` 是构建时自动同步的，**不要手改**。
+技术文档在 `site/docs/dev/`（手写，与 GitHub 共用同一份文件，直接改这份）；
+唯一构建时自动生成的是 `docs/reference/changelog.md`——由根 `CHANGELOG.md`
+经 `scripts/sync-docs.mjs` 生成，**不要手改**。
 
-用户指南在 `site/docs/` 下，改之前看一眼 [site/README 的同步清单](https://github.com/upchr/meow/blob/main/site/README.md)。
+用户指南在 `site/docs/guide/` 下，改之前看一眼 [site/README 的同步清单](https://github.com/upchr/meow/blob/main/site/README.md)。
 
 ## 反馈质量
 

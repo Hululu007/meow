@@ -3,6 +3,8 @@
 播放链路的复杂度集中在两个判断上：**这次失败该换线还是转码**，以及**倍速下要不要降档**。
 两者都抽成了纯函数（`playError.ts` / `playbackPolicy.ts`），可以用单测钉死边界。
 
+> 代码引用按**符号名**找（函数名 + 文件）；行号会随改动漂移，引用前先 grep，不要按行号找。
+
 ## 一、错误分八类
 
 `client/apps/web/src/components/player/playError.ts`：
@@ -19,10 +21,10 @@ export type PlayErrorKind =
   | 'unknown'
 ```
 
-`VideoPlayer` 的分类：`video.error` 2→`network`、3→`media`、4→`src`（`VideoPlayer.vue:4284`）；
-hls.js 只给 detail 字符串，`classifyHlsDetail()` 按关键字猜：4xx→`http`、5xx→`network`，
-`bufferAppend/bufferStalled/decode/remux`→`media`，其余→`network`
-（`VideoPlayer.vue:1421`）。**宁可归 network 去换线，也不要把抖动错归成 media 白等转码**。
+`VideoPlayer` 的分类：`video.error` 2→`network`、3→`media`、4→`src`
+（`VideoPlayer.vue` 的 `MediaError` 映射）；hls.js 只给 detail 字符串，`classifyHlsDetail()`
+按关键字猜：4xx→`http`、5xx→`network`，`bufferAppend/bufferStalled/decode/remux`→`media`，
+其余→`network`（`VideoPlayer.vue`）。**宁可归 network 去换线，也不要把抖动错归成 media 白等转码**。
 
 ## 二、转码只在三类失败时走
 
@@ -39,7 +41,11 @@ hls.js 只给 detail 字符串，`classifyHlsDetail()` 按关键字猜：4xx→`
 - 可转码的三类**先转码、只试一次**（`transcodeTried`）；其余先换线，没有未试过的线路才停
   错误页。转码前 `transcodeAvailable()` 探 ffmpeg——TV 网关常没有，文案要给可执行建议。
 - **首次响应只代表任务排上**（`state=running`、`playlist` 为空），必须每 2s 轮询 status
-  等 `playlist` 出现。URL 转码 90s 超时，片库转码 180s（`api/library.ts:481`、`:444`）。
+  等 `playlist` 出现。URL 转码 90s 超时（`waitTranscode`，`api/library.ts:557`），
+  片库转码 600s（`waitLibraryTranscode`，`api/library.ts:513`）。
+- **返回里带 `duration`**（源真实总时长）：转码未完成时 `video.duration` 只是已转出时长，
+  进度条必须用 `duration`（`api/library.ts` 的 `TranscodeResult.duration`、`VideoPlayer.vue`
+  按真实时长优先取值）。
 - 产物是增量 HLS，前几个分片就绪即可起播，可边转边看；**源文件不动**。
 - 片库没有"线路"概念：失败时传 `lib + path` 让后端自己读文件转码。不能把 `127.0.0.1`
   的流（被 SSRF 防线拒）或 SMB 地址交给 ffmpeg。
@@ -48,7 +54,7 @@ hls.js 只给 detail 字符串，`classifyHlsDetail()` 按关键字猜：4xx→`
 
 失败页的**主文案**是播放器/源站原因（没有才用兜底文案），**括号**里是兜底这一跳失败的原因
 （转码没起来、代理 502……）。转码失败**不能覆盖主文案**，否则用户看到"找不到 ffmpeg"而
-不是真实原因（`PlayView.vue:795`）；只有主文案说明还没走到兜底。
+不是真实原因（`PlayView.vue` 的转码兜底）；只有主文案说明还没走到兜底。
 
 ## 四、倍速与 ABR
 
@@ -71,7 +77,7 @@ export const RATE_RESTORE_BUFFER_SEC = 20    // 缓冲到 20 s 才恢复倍速
 
 ## 五、起播与假死看门狗
 
-两只计时器判据完全不同（`armWatchdogs()`，`VideoPlayer.vue:1029`）：
+两只计时器判据完全不同（`armWatchdogs()`，`VideoPlayer.vue`）：
 
 | 计时器 | 预算 | 判据 | 失败类型 |
 |---|---|---|---|
@@ -89,17 +95,20 @@ export const RATE_RESTORE_BUFFER_SEC = 20    // 缓冲到 20 s 才恢复倍速
 ## 六、续播
 
 - 进度存在**历史记录**里（localStorage），按 `site + vod_id` 一条，带 `ep_url`/`ep`；换线路时
-  url 变、集名相同仍认作同一集，进度保留（`history.ts:221`）。
-- 本地门禁：`pos > 5`，且已知时长时不在结尾 10 秒内（`PlayView.vue:1505`）。源站 `position`
+  url 变、集名相同仍认作同一集，进度保留（`stores/history.ts`）。
+- 本地门禁：`pos > 5`，且已知时长时不在结尾 10 秒内（`PlayView.vue` 的 `applyResume`）。源站 `position`
   也参与，和本地进度取**较大者**（提示"继续播放"/"开始播放"）；提示条 8 秒，可清进度重看。
 - 跨端：`capabilities` 含 `state` 时才推 `/api/state/progress`，且必须带 `ep_at`（缺省会被
-  后端按当前时间打戳，压掉别处更新的进度；`api/index.ts:894`）；WebDAV 另走
-  `{dir}/history.json`（`sync.ts:185`）。
+  后端按当前时间打戳，压掉别处更新的进度；`api/index.ts` 的 `pushStateProgress`）；WebDAV 另走
+  `{dir}/history.json`（`stores/sync.ts`）。
+- **刷新/重试续播**（1.2.16 起）：顶部 ⟳ 刷新与错误页「重试」都走 `reloadSrc()`，它记住刷新前
+  位置（`resumeAfterReload`），第二次 loaded 时自行 seek 回位（父组件的 `applyResume` 有一次性
+  守卫，只覆盖首次 loaded）；只有「重播」才从头。
 - 下集地址在本集播放 30 秒后预取，取走即删、TTL 10 分钟（源站直链带时效签名）。
 
 ## 七、代理与请求头
 
-- 外部 `http(s)` 地址在 `playableSrc` 里统一包 `/api/proxy/stream`（`PlayView.vue:292`）。
+- 外部 `http(s)` 地址在 `playableSrc` 里统一包 `/api/proxy/stream`（`PlayView.vue` 的 `playableSrc`）。
 - `proxyStream()` 把 `Referer`/`User-Agent` 拆成独立参数，其余头（Cookie、Origin、token）
   序列化进 `headers`，后端按白名单过滤。**只透传 Referer/UA 会让"原生能播、Web 永久 403"**。
 - 自家的 `/api/...`（缓存清单、转码产物）和片库直链**不能再包一层代理**：相对分片会按

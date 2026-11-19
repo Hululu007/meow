@@ -197,6 +197,8 @@ WebDAV 靠"只接受相对路径"防穿越；本地目录天生是绝对路径�
 - 播放地址：`playableSrc` 里 `query.direct` 只是**首选**。预判/直连失败后要把
   `libraryNoDirect` 置真、改用 `play.value.url`（转码清单），否则 `<video>` 会一直
   挂在直连地址上，转码转完也播不到。
+- **1.2.14 起 `status` 带 `duration`**（源真实总时长，落盘 `.duration`）：转码未完成时
+  `video.duration` 只是已转出时长，进度条必须用 `duration`；转码中断/失败会明确提示。
 
 #### 1.9.1 硬件转码（Rockchip：OEC / RK3566 实测）
 
@@ -236,7 +238,8 @@ udevadm control --reload && udevadm trigger /dev/mpp_service /dev/rga
 ### 2.1 入口与页面
 
 - 顶栏「片库」与「直播」并列，是一个独立路由 `/library`（`AppHeader.vue:286-297`、
-  `router/index.ts:31`）。添加/编辑是另一个路由 `/library/add`（`:33`）。
+  `router/index.ts:40`）。添加/编辑是片库页内的原位弹框 `LibraryAddDialog`（2026-11-18 起），
+  `/library/add` 仅为兼容旧书签的重定向（`router/index.ts:43`）。
 - **片库配置不在设置页**。设置页只保留应用行为；片库的增删改在片库页本身
   （`SettingsView.vue:114-115`）。设置页现在有 16 个分区（`SettingsView.vue:3722-3738`），与缓存相关的是「存储」。
 - `/offline` 只是重定向到片库页的「我的缓存」页签，兼容旧书签（`OfflineView.vue:1-15`）。

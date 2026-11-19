@@ -19,18 +19,12 @@ PC 版安装包只有壳（约 6 MB）。后端、drpy、弹幕、Node 运行时
 | `apiserver` | `backend` | 宿主后端：搜索 / 详情 / 播放 / 代理 | 是 |
 | `danmu-api` | `danmaku` | 弹幕多源聚合 | 否 |
 | `drpy` | `runtime` | Node 运行时，跑 `.js` / drpy 源 | 强烈建议 |
-| `node` | `tool` | Node 可执行文件，`danmu-api` 的依赖 | 跟随依赖 |
+| `ffmpeg` | `tool` | FFmpeg 转码器（约 39 MB），装后写 `policy.json` 的 `ffmpegPath` | 否 |
+| `node` | `tool` | Node 可执行文件，`danmu-api` 的依赖 | 需先单独安装 Node 运行时（官方清单 `requires` 为空，不会级联） |
 
 `apiserver` 与 `danmu-api` 的 id 是**应用内置识别**的：前端靠 `capability: "backend"`
 认后端，靠 `capability: "danmaku"` 认弹幕服务。其他 id 也能装、也能被启停，
 但应用不知道它们的用途，不会自动接线。
-
-::: warning 官方清单当前是空的（已知问题）
-官方清单把插件条目都标记成了隐藏，应用里「可安装」列表可能为空。当前可在
-[Releases](https://github.com/upchr/meow/releases) 手动下载 `apiserver-<版本>.zip`，
-用「导入本地包」安装；`drpy`、`danmu-api`、`node` 条目待补，可先自建源
-（见 [自建插件源](/ecosystem/plugin-source)）。
-:::
 
 ## 安装流程
 
@@ -89,7 +83,7 @@ PC 版安装包只有壳（约 6 MB）。后端、drpy、弹幕、Node 运行时
 - 版本比较用语义化版本，远端更高才显示「可升级」
 - `min_app_version` 不满足时拒绝安装并提示需要更高版本的应用
 
-不要为了「看起来整齐」强行对齐版本——每次改前端都重发 37 MB 的后端包没有意义。
+不要为了「看起来整齐」强行对齐版本——每次改前端都重发约 31–32 MB 的后端包没有意义（体积以更新清单里的 `size` 为准）。
 
 ## 从哪拿插件
 

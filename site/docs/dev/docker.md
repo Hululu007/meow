@@ -1,7 +1,7 @@
 # Docker 构建与部署手册
 
 > **面向**：自己部署 Meow 后端、换机器重建、排障的人。**代码位置**：`deploy/docker/`
-> 下的三个 Dockerfile、四个 compose 文件、`nginx.conf.template` 和 `.env.example`。
+> 下的三个 Dockerfile、五个 compose 文件、`nginx.conf.template` 和 `.env.example`。
 > 弹幕用官方镜像，没有自己的 Dockerfile；源服务镜像只在私仓构建。
 > **公开壳不带 spider.jar**：镜像播种 `config.sites.example.json`（`sites` / `lives` /
 > `parses` 都是空数组），jar 站由用户导入源包恢复。统一入口 `config.all.json`，dex
@@ -108,6 +108,7 @@ Windows 用 Docker Desktop 即可；**宿主机不需要 JDK / Node**，编译�
 | `docker-compose.build.yml` | **主体构建**（本地源码） | 4 | 本地构建 |
 | `docker-compose.with-sources.yml` | **带源主体启动**：主栈 + 源服务 | 5 | 从 Registry 拉 |
 | `docker-compose.sources.yml` | **源服务独立启动** | 1 | 从 Registry 拉 |
+| `docker-compose.standalone.yml` | **独立编排（下载即用，不 clone 仓库）** | 4 | 从 Registry 拉（用法见 [Web / Docker](/guide/web-docker)） |
 
 前两个**完整且独立，二选一，不是叠加**：端口、环境变量、卷、网络、`name: meow`、
 `container_name` 完全一致，唯一差别是后者多了 `build:` 段，切换时接管同一组容器。
@@ -120,10 +121,12 @@ drpy 的 tag 来源不同——`docker-compose.yml` 用 `${DRPY_VERSION:-0.9.23}
 首次部署：`cd deploy/docker && cp .env.example .env && docker compose up -d`。
 
 默认镜像 `chrplus/meow-{web,apiserver}:${MEOW_VERSION}`（amd64 + arm64 双架构）。
-`MEOW_VERSION` 的 compose 兜底值必须与 `client/package.json` 及 `ApiServer.VERSION`
-同步；不一致的表现是“代码是新的、跑起来是旧行为”。兜底值
-散落在**每个 compose 文件**里，改版本时逐一检查——只改主文件、漏掉
-`docker-compose.with-sources.yml` 的情况出现过。
+`MEOW_VERSION` 的 compose 兜底值必须与 `client/package.json` 及
+`server/plugin-manifests/apiserver.manifest.json` 同步（apiserver 版本由打包脚本
+写入 `VERSION` 文件、运行时读取，`ApiServer.java` 不再写死；`.env` 存在时同时改其
+`MEOW_VERSION`），用 `deploy/scripts/bump-version.ps1` 一次改齐；不一致的表现是
+“代码是新的、跑起来是旧行为”。兜底值散落在**每个 compose 文件**里，改版本时逐一检查
+——只改主文件、漏掉 `docker-compose.with-sources.yml` 的情况出现过。
 
 **升级**必须显式 pull，否则 `up -d` 发现本地已有同 tag 镜像就不再拉，静默跑旧版：
 
@@ -159,6 +162,12 @@ docker compose -f docker-compose.build.yml build --no-cache                     
 ```
 
 产物按 image 名打 tag，之后改用 `docker-compose.yml` 启动会命中本地镜像。
+
+> **★ 预编译 class 目录 `deploy/docker/prebuilt-classes/`**：CI 会从 apiserver job
+> 下载 class artifact 填进去，镜像构建阶段优先复用（`.class` 与 CPU 架构无关，省掉
+> arm64 在 QEMU 里再跑一遍 `javac`）；目录为空（本地构建 / 单独 dispatch）时回退
+> 镜像内编译。**本地构建前若该目录有残留 class 会被优先复用，需先清空**——构建日志
+> 只回声「使用预编译 class：N 个」，不比对时间戳。
 
 > **★ `Dockerfile.web` 的多阶段构建必须把“容器内构建”放最后**：不给 `--target` 时
 > Docker 取**最后一个 stage**。把“用宿主 dist”的 stage 写在最后，`docker compose

@@ -31,7 +31,7 @@
 
 1. **不能用 nginx basic auth**：WebView 与 Fongmi 都带不了 basic 凭据，做了就断三端。
 2. **`/config.json` 不能靠应用层令牌**：它必须匿名可 GET，而 `ext` 里常常是 API key / cookie
-   （`ApiServer.java:13225` 原样透传）——所以只能用「URL 即密钥」这个生态惯例兜住。
+   （`ApiServer.java:12020-12021` 原样透传）——所以只能用「URL 即密钥」这个生态惯例兜住。
 
 ## 二、威胁模型（当前形态暴露什么）
 
@@ -39,16 +39,16 @@
 
 | 能力 | 入口 | 代码位置 |
 |---|---|---|
-| 拿到所有站点 `ext` | `GET /config.json`、`GET /api/config` | `ApiServer.java:13214-13244` |
+| 拿到所有站点 `ext` | `GET /config.json`、`GET /api/config` | `/config.json` 分派 `ApiServer.java:1429-1431`；构造在 `catVodConfigJson`（`:11956`）/ `configJson`（`:13448`），ext 原样透传在 `:12020-12021` 与 `:13456-13457` |
 | 看播放历史 / 收藏 | `GET /api/state/*` | `routes/StateRoutes.java:112-380` |
-| 把服务器当正向代理 | `GET /api/proxy/stream?url=` | `ApiServer.java:10591` |
-| 打内网 / 云元数据并回显响应 | `GET /api/webdav` + body 里的 `method` | `routes/LibraryRoutes.java:73-140` |
-| 盲 SSRF（无 URL 校验） | `GET /api/proxy/danmaku?url=` | `ApiServer.java:9098-9121` |
-| 改策略 / 导配置 / 删备份 | `POST /api/policy`、`/api/config/*` | `ApiServer.java:1094-1119` |
+| 把服务器当正向代理 | `GET /api/proxy/stream?url=` | `ApiServer.java:10778`（`handleStream`） |
+| 打内网 / 云元数据并回显响应 | `GET /api/webdav` + body 里的 `method` | `routes/LibraryRoutes.java:73-147`（`handleWebdav`） |
+| 盲 SSRF（无 URL 校验） | `GET /api/proxy/danmaku?url=` | `ApiServer.java:9285-9309`（`handleDanmaku` 的直连分支） |
+| 改策略 / 导配置 / 删备份 | `POST /api/policy`、`/api/config/*` | `ApiServer.java:1111-1136`（`writeRequiresAuth`） |
 
 根因两条：
 
-- `writeRequiresAuth` **先判 GET 全豁免**，再判手写黑名单（`ApiServer.java:1094-1119`）——黑名单漏了 8 项；
+- `writeRequiresAuth` **先判 GET 全豁免**，再判手写黑名单（`ApiServer.java:1111-1136`）——黑名单漏了 8 项；
 - `POST /api/webdav` 把方法藏在 body 里，而 `GET /api/webdav` 免鉴权 → 等于一条任意方法的 SSRF 隧道。
 
 ## 三、目标形态
@@ -72,7 +72,7 @@
 | `sources` | **`0.0.0.0:18080`** | `127.0.0.1:18080` |
 
 `drpy` 那个口子必须收：它的 `POST /{site}/{action}` 会执行请求头里的 JS
-（`server/drpy/server.js:242-268` 的注释记录了 2026-10-30 修 C1 的原因）。
+（`server/drpy/server.js:301-313` 的注释记录了 2026-10-30 修 C1 的原因）。
 现在它靠「没配 token 时只允许回环」兜住，但那是**依靠运气**，不是依靠边界。
 
 ## 四、实施清单
@@ -245,11 +245,11 @@ server {
 MEOW_CORS=https://meow.example.com,http://meow.local,http://tauri.localhost,tauri://localhost,http://192.168.1.10:30010
 ```
 
-**漏一个的后果不是"写操作失败"，是整页空白**——前端首个写请求 403 就停在空状态。2026-11-02 踩过一次（`ApiServer.java:1142-1145` 的注释记着：写门禁连 `192.168` 都没放行，局域网部署首页第一个 POST 就 403）。
+**漏一个的后果不是"写操作失败"，是整页空白**——前端首个写请求 403 就停在空状态。2026-11-02 踩过一次（`ApiServer.java:1160-1161` 的注释记着：写门禁连 `192.168` 都没放行，局域网部署首页第一个 POST 就 403）。
 
 实操建议：**先在 `MEOW_CORS=none` 下抓一次真实 Origin**（后端 403 时会把 Origin 打出来，或看浏览器 DevTools → Network → 请求头），逐个加进去，最后再切正式值。
 
-理由（为什么默认是 `*`）：`originAllowed()` 在 `corsAllowList()==null` 时直接 `return true`（`ApiServer.java:1139-1140`）。令牌走自定义 header 本身免疫 CSRF，但收紧 CORS 后连「读响应」也堵上，所以公网值得做——代价就是上面这张源表必须齐全。
+理由（为什么默认是 `*`）：`originAllowed()` 在 `corsAllowList()==null` 时直接 `return true`（`ApiServer.java:1157`）。令牌走自定义 header 本身免疫 CSRF，但收紧 CORS 后连「读响应」也堵上，所以公网值得做——代价就是上面这张源表必须齐全。
 
 > `architecture.md` 6.1 的 S4 写的是「与 token 无关，默认部署也生效」，与代码不符——已在 6.1 更正。
 
@@ -278,7 +278,7 @@ MEOW_AUTH_TOKEN=
 | **TV 本地网关** | 端内 `GatewayServer`（9978），直接复用 `ApiServer` 类 | ❌ 不设 | **零影响**。`authTokenExpected()` 为空 → `requiresAuth` 返回 false |
 | **PC 本地插件** | `plugins/apiserver`，`manifest.json` 的 `env` 为 `{}` | ❌ 不设 | **零影响** |
 | **Web / Docker 公网** | `apiserver` 容器 | ✅ 自动生成 | 首访弹「输入访问令牌」；输对后存 `localStorage['meow.authToken']` |
-| **TV / PC 连公网后端** | 远端 | ✅ 需手填 | 设置 →「写操作令牌」填同一个值（`SettingsView.vue:5041`）；不填就是 401 |
+| **TV / PC 连公网后端** | 远端 | ✅ 需手填 | 设置 →「写操作令牌」填同一个值（`SettingsView.vue:5100`）；不填就是 401 |
 | **TV / PC 连局域网后端** | 局域网 `http://<IP>:30010` | 看那台后端 | 设了就填，没设就不用 |
 
 三个细节：
@@ -289,7 +289,7 @@ MEOW_AUTH_TOKEN=
    与后端令牌无关，别混用。
 3. **三端共用一个前端**，所以「令牌输入页」写一次三端都有；无需为 TV 单独实现。
 4. **每台设备各填一次**：令牌存的是 `localStorage['meow.authToken']`，而 localStorage **按 origin 隔离**——浏览器（https://域名）、TV 壳（http://meow.local）、PC（tauri 协议）是三份独立存储，各填一次。这是 WebDAV 同步也不带它的原因（`STATE_PREFS_SYNC` 白名单里没有令牌）。
-5. **判断要不要弹令牌页，用 `/api/health` 的 `authRequired`**（`ApiServer.java:1743`），别用 `/api/config`：
+5. **判断要不要弹令牌页，用 `/api/health` 的 `authRequired`**（`ApiServer.java:1851`），别用 `/api/config`：
    health 是白名单端点、匿名可达，返回里直接有 `authRequired: true/false`。用探测业务端点会多一次 401 往返，而且 401 无法区分「没令牌」和「后端没起」。
 
 ### 哪个界面会被要求输入令牌
@@ -342,7 +342,7 @@ ss -lntp | grep -E ':(30010|30011|30012|30013|18080|443)'   # 只有 443 在 0.0
 
 - 拿到令牌的人 = 管理员；令牌泄露即等于交出后端（可改 policy、可导入远程 jar）。
 - 静态前端公开，别人能看出这里跑着猫窝。
-- **`/api/health` 匿名且带 `dataDir` 绝对路径与 `disabled` 站点名**（`ApiServer.java:1760`）——公网可见部署路径。要隐藏就得在 `healthJson()` 里脱敏，本方案接受。
+- **`/api/health` 匿名且带 `dataDir` 绝对路径与 `disabled` 站点名**（`ApiServer.java:1869`）——公网可见部署路径。要隐藏就得在 `healthJson()` 里脱敏，本方案接受。
 - **无域名场景**：纯 IP 只能自签证书，浏览器会报警告；而且 `?key=` 走明文 http 等于公开。公网部署应配域名 + 真证书。
 - `/config.json?key=` 的 key 会进 nginx access log 与浏览器历史——换 key 时两处都要改。
 - 证书由宿主签发与续期，本方案不含自动续期（可加 `certbot renew --deploy-hook 'docker exec meow-web nginx -s reload'`）。
@@ -363,20 +363,20 @@ ss -lntp | grep -E ':(30010|30011|30012|30013|18080|443)'   # 只有 443 在 0.0
 
 | # | 改动 | 位置 | 判据 |
 |---|---|---|---|
-| B1 | `writeRequiresAuth` → `requiresAuth`，白名单 4 条 | `ApiServer.java:1094-1119` | 无令牌 `GET /api/config` → 401；`GET /api/health` → 200 |
-| B2 | 调用点同步改名与语义 | `ApiServer.java:1218-1225` | 同 B1 |
-| B3 | `MEOW_AUTH_MODE=auto`：首启生成 32 字节 → 写 `policy.json` → 日志方框打印 | `ApiServer.java:1087-1091`（读取）+ policy 保存处 | 日志可见；重启后值不变；未设 env 时行为不变 |
-| B4 | `handleWebdav`：`method != GET` 要令牌，或来源限回环 | `routes/LibraryRoutes.java:73-140` | `GET /api/webdav` 打 `169.254.169.254` → 被拒 |
-| B5 | `handleDanmaku` 的 `?url=` 加 `UrlSafety.isSafeHttpUrl` | `ApiServer.java:9098-9121` | `?url=http://127.0.0.1:9979/api/config` → 被拒 |
-| B6 | （P2）`authTokenMatches` 只认 header，去掉 `?token=` | `ApiServer.java:1152-1165` | `?token=` 不再生效 |
-| B7 | 确认 `authRequired` 反映新语义、`/api/policy` 仍摘掉 `authToken` | `ApiServer.java:1699`、`10011-1022` | `GET /api/health` 的 `authRequired=true`；`/api/policy` 响应无 `authToken` |
+| B1 | `writeRequiresAuth` → `requiresAuth`，白名单 4 条 | `ApiServer.java:1111-1136`（`writeRequiresAuth`） | 无令牌 `GET /api/config` → 401；`GET /api/health` → 200 |
+| B2 | 调用点同步改名与语义 | `ApiServer.java:1283`（调用点） | 同 B1 |
+| B3 | `MEOW_AUTH_MODE=auto`：首启生成 32 字节 → 写 `policy.json` → 日志方框打印 | `ApiServer.java:1104-1109`（`authTokenExpected()` 读取）+ policy 保存处 | 日志可见；重启后值不变；未设 env 时行为不变 |
+| B4 | `handleWebdav`：`method != GET` 要令牌，或来源限回环 | `routes/LibraryRoutes.java:73-147` | `GET /api/webdav` 打 `169.254.169.254` → 被拒 |
+| B5 | `handleDanmaku` 的 `?url=` 加 `UrlSafety.isSafeHttpUrl` | `ApiServer.java:9285-9309` | `?url=http://127.0.0.1:9979/api/config` → 被拒 |
+| B6 | （P2）`authTokenMatches` 只认 header，去掉 `?token=` | `ApiServer.java:1169-1182` | `?token=` 不再生效 |
+| B7 | 确认 `authRequired` 反映新语义、`/api/policy` 仍摘掉 `authToken` | `ApiServer.java:1851`（`healthJson`）、`10194`（`handlePolicy`，摘除在 `:10209`） | `GET /api/health` 的 `authRequired=true`；`/api/policy` 响应无 `authToken` |
 
 ### C 前端（`client/apps/web/src`）
 
 | # | 改动 | 位置 | 判据 |
 |---|---|---|---|
-| C1 | 401 拦截 → 「输入访问令牌」空态页（复用 `meow.authToken`） | 新组件 + `api/index.ts:392-398`（已带 header） | 输错停页；输对进首页；清掉后重新要求 |
-| C2 | 设置页文案「写操作令牌」→「访问令牌」 | `views/SettingsView.vue:5041-5046` | 文案与实际语义一致 |
+| C1 | 401 拦截 → 「输入访问令牌」空态页（复用 `meow.authToken`） | 新组件 + `api/index.ts:375`（已带 header） | 输错停页；输对进首页；清掉后重新要求 |
+| C2 | 设置页文案「写操作令牌」→「访问令牌」 | `views/SettingsView.vue:5100-5106` | 文案与实际语义一致 |
 | C3 | 排查是否有请求绕过统一封装（裸 `fetch` / `EventSource`） | `api/*.ts` 全量 `grep -n "fetch("` | 所有 `/api` 请求都带 `X-Meow-Token` |
 | C4 | 令牌页的触发条件用 `/api/health` 的 `authRequired` | `api/health.ts` + 新空态页 | 后端关令牌时不弹；开令牌时弹 |
 
@@ -384,7 +384,7 @@ ss -lntp | grep -E ':(30010|30011|30012|30013|18080|443)'   # 只有 443 在 0.0
 
 | # | 改动 | 位置 | 判据 |
 |---|---|---|---|
-| D1 | `drpy` 端口收口 | `docker-compose.yml:96-98` 及 `standalone` / `with-sources` 同名段 | `ss -lntp` 无 `0.0.0.0:30013` |
+| D1 | `drpy` 端口收口 | `docker-compose.yml:96-97` 及 `standalone` / `with-sources` 同名段 | `ss -lntp` 无 `0.0.0.0:30013` |
 | D2 | `sources` 端口收口 | `docker-compose.with-sources.yml` | 无 `0.0.0.0:18080` |
 | D3 | 新增 `nginx.secure.conf.template`（TLS + `?key=` + `limit_req` + 安全头） | 新文件 | 无 key 与空 key `GET /config.json` 都 403；有 key 200；播放分片不被限流 |
 | D4 | `.env.example` 增加 `MEOW_AUTH_MODE`、`MEOW_CONFIG_KEY`，并把 `MEOW_CORS` 的注释改成「公网必填」 | `.env.example:65`、`:78` | 默认值不改变现有部署行为 |

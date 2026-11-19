@@ -47,10 +47,15 @@ my-plugin.zip
 | `dataDir` | | 数据目录，支持 `{appData}` |
 | `cwd` | | 工作目录，默认插件目录 |
 | `env` | | 环境变量，值也支持占位符 |
-| `capability` | | `backend` / `danmaku`，决定应用怎么用它 |
+| `capability` | | `backend`（后端 API）/ `danmaku`（弹幕）/ `runtime`（运行时，如 drpy）；应用只自动识别 `backend` 与 `danmaku`，其余值可装可启停但不会自动接线 |
 | `tool` | | `true` = 工具型（只提供文件，不常驻） |
 | `autostart` | | 默认是否随应用启动（用户可在设置页覆盖） |
+| `required` | | `true` = 没有它就没有后端（apiserver）；不禁止停止，只在本应运行却没起来时提示降级 |
+| `fatal` | | `true` = 启动失败视为致命，透传前端（`boot_info.fatal_reason`） |
 | `inject` | | 启动后自动写配置 |
+
+`capability` 的取值以官方 manifest 为准：`apiserver` 用 `backend`，`danmu-api` 用 `danmaku`，
+`drpy` 用 `runtime`。`required` / `fatal` 的完整行为见开发文档 [插件系统](/dev/plugin-system)。
 
 ## 占位符
 
@@ -115,7 +120,7 @@ my-plugin.zip
 {
   "id": "node",
   "name": "Node 运行时",
-  "version": "22.18.0",
+  "version": "x.y.z",
   "tool": true,
   "exec": "node.exe",
   "autostart": false

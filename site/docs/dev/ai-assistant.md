@@ -156,7 +156,7 @@ warn/error 才有信息——两种状态的正确采样完全不同，写死哪
 ```
 
 壳不重写业务逻辑，只转发到页面里的 `window.__meowTool`（`bridge.ts`），唯一真源留在
-前端。PC 暴露 18 个 `pc_*`（UI 原语）+ **10 个 `meow_*`**；TV 13 个 `tv_*` + 10 个
+前端。PC 暴露 18 个 `pc_*`（UI 原语）+ **10 个 `meow_*`**；TV 17 个 `tv_*` + 10 个
 `meow_*`（两处与 bridge 一一对应，`mcp.rs` 的 match 分支逐个列出工具名、
 `DebugServer.java` 的 `mcpTools()` 逐个注册）。`meow_cache_start` 是写操作不进外部桥；
 `meow_cache` 只暴露 `list`。

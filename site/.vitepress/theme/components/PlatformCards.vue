@@ -27,7 +27,7 @@ const platforms = [
     kicker: 'TV · ANDROID',
     title: '遥控器优先',
     desc: '端内网关 + DexClassLoader，电视不依赖电脑也能直接跑 dex 形态的源。',
-    points: ['41 条端内路由', '扫码推送后端与配置地址', '运行时模块按 ABI 匹配'],
+    points: ['端内网关复用后端全部 /api 路由', '扫码推送后端与配置地址', '运行时模块按 ABI 匹配'],
     code: 'meow-TV-x.y.z.apk',
     href: withBase('/guide/tv.html'),
     action: '安装与扫码',

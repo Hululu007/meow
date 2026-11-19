@@ -30,13 +30,14 @@ cd client/apps/web && npx vitest run
 
 ## 二、CI
 
-`.github/workflows/ci.yml` 四个互不依赖的 job：
+`.github/workflows/ci.yml` 五个互不依赖的 job：
 
 | job | 做什么 |
 |---|---|
 | `version` | 跑 `bump-version.ps1 -Check`，校验全部版本号位置一致 |
 | `web` | `pnpm --filter @meow/web build`（含 vue-tsc）+ `vue-tsc --noEmit` + `vitest run` |
 | `backend` | `javac` 编译 apiserver + 空壳站点表门禁（`python3 test_empty_shell_sites.py`） |
+| `dex2jar` | dex2jar 裁剪冒烟：`bash deploy/scripts/smoke-dex2jar.sh`（真跑夹具转换，防裁剪漏 jar） |
 | `drpy` | `npm ci` + `npm test`（宿主契约测试，离线） |
 
 触发条件：PR 到 main（收紧到 main 是为了不吃 fork PR），或手动 dispatch。
@@ -64,6 +65,8 @@ cd client/apps/web && npx vitest run
 | `wsclient.py` | 上面几条共用的 CDP-over-WebSocket 模块，不是独立脚本 |
 | `meow_mcp.py` | 兼容入口；统一 MCP 客户端的实现在 `.agents/skills/meow-control/scripts/meow_mcp.py` |
 | `edge_session.py` | 起 headless Edge 做 CDP 测试，退出时保证收尾 |
+| `cast_smoke.py` | 投屏链路端到端（开接收端 → SSDP → 会话 → 遥控 → 进度 → 停止 → 令牌校验） |
+| `mumu-net.ps1` | 把 MuMu 出网口/网关对齐到 PC（模拟器重启后要重跑） |
 | `kill-test-edge.ps1` | 清理冒烟残留的测试浏览器（只匹配 `--user-data-dir` 指向仓库 `tmp/` 的实例） |
 | `kill-test-edge.cmd` | 计划任务入口：每 10 分钟调上面的 ps1 `-Kill -OlderThanMinutes 90 -RemoveProfiles` |
 

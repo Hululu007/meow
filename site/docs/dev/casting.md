@@ -3,7 +3,7 @@
 > 改造入口文档。**先读第一节的边界，再读第三节的坑**——投屏坏掉的地方几乎都在"URL 可达性"，
 > 不在协议本身。文中提到的符号名可用 grep 定位；行号会随改动漂移，不要按行号找。
 >
-> **实现状态（2026-11-16，分支 `feat/casting`）**：§12 的必做 1~7 已落地。
+> **实现状态（2026-11-16，已合入 `main`）**：§12 的必做 1~7 已落地。
 > Android release APK 已构建并装到真机（Android 15 / SM-S9210）验证：
 > SSDP 发现、首投确认、allowlist 免确认、WebView 接收页（弹幕可见）、
 > 暂停 / seek 120s / 续播 / 停止 全通。
@@ -93,7 +93,7 @@
 **根因**：`UrlSafety.isSafeMediaUrl()` 明确拒绝 `isLoopbackAddress()` / `isLinkLocalAddress()`（允许 `192.168/10.x`，
 因为自建采集站/NAS 是真实场景）。这个规则本身是对的（防 SSRF），**错的是我们喂给它的 URL 形态**。
 
-### 3.3 修复口径（尚未实施）
+### 3.3 修复口径（已实施，见 §14.1）
 
 三件事必须一起做，少一件仍然不通：
 
@@ -150,11 +150,13 @@
 |---|---|---|
 | `SetAVTransportURI` | 设置媒体（带 DIDL 元数据）| ✅ 投屏时 |
 | `Play` | 开始播放（**必须在 Set 之后单独发**）| ✅ |
-| `Pause` | 暂停 | ❌ 后端有，UI 没接 |
-| `Stop` | 停止 | ❌ 同上 |
-| `Seek` | 拖进度（`REL_TIME` + `HH:MM:SS`）| ❌ 同上 |
+| `Pause` | 暂停 | ✅ 投屏遥控条（暂停/继续、进度滑块、停止）|
+| `Stop` | 停止 | ✅ 投屏遥控条（暂停/继续、进度滑块、停止）|
+| `Seek` | 拖进度（`REL_TIME` + `HH:MM:SS`）| ✅ 投屏遥控条（暂停/继续、进度滑块、停止）|
 
-> 现状是"投上去就撒手"：后端四个动作都实现了，前端全仓只有 `castControl('play', …)` 一处。
+> 遥控条在播放页「投屏中」区（`PlayView` 的 `castToggle` / `onCastSeek` / `stopCast`）。
+> 进度来自每 **1.5s** 一次的 `status` 轮询（`castStatus` / `castSessionStatus` 回填
+> `castPosition` / `castDuration`），不依赖 GENA 事件订阅。
 
 ### 5.2 DIDL 与 `protocolInfo`
 
@@ -188,7 +190,7 @@ DIDL-Lite 里 `<res protocolInfo="http-get:*:video/*:*">` 用的是**通配符**
 
 ---
 
-## 六、进度与遥控（未接线）
+## 六、进度与遥控（已接线：1.5s 轮询 status + 遥控条）
 
 **不需要 GENA 事件订阅**。`Cast.java` 注释里"要做进度同步就得订阅 AVTransport 事件"的判断可以推翻：
 轮询 `GetTransportInfo` + `GetPositionInfo` 就够（A 类 1~2s；B 类 1s），与仓库现有"不用 WebSocket/SSE"的取向一致
@@ -212,7 +214,7 @@ DIDL-Lite 里 `<res protocolInfo="http-get:*:video/*:*">` 用的是**通配符**
 | HLS（m3u8）| ⚠️ 看设备 | **DLNA 规范不强制支持 HLS**；国产电视多有私有扩展，廉价盒子常不认 |
 | MKV / HEVC | ⚠️ 大多不行 | 需要 `/api/transcode` 先转 HLS/MP4 |
 | 直播（m3u8 live）| ⚠️ 看设备 | 部分电视支持 HLS live；B 类无此限制（接收端自己的播放器）|
-| 需解析的源 | ❌ 不该投 | 解析地址常带时效；且 `canCastCurrent` **没排 `needsParse`**（与组件 props 注释冲突）|
+| 需解析的源 | ❌ 不该投 | 解析地址常带时效；`canCastCurrent` 已排除 `needsParser`/`needsParse`（`PlayView.vue:1107-1115`，门禁 `tests/casting.test.ts`），结论仍是"不该投" |
 | 片库 / 本地文件 | ⚠️ 当前被排除 | `canCastCurrent` 里 `isLibraryPlay → false`；放开前要先确认 Range 与鉴权 |
 
 改造时应先查 `GetProtocolInfo` 再决定：直接投 / 转码投 / 提示不支持。
@@ -564,7 +566,7 @@ body 为 `Content-Location / Start-Position / X-Apple-Session-ID`，随后轮询
 ### 11.2 真机清单（无法自动化）
 
 - 小米/海信/极米/当贝 各一台：m3u8 + mp4 各投一次
-- 投后暂停/拖进度（验证 5.1 的未接线动作）
+- 投后暂停/拖进度（验证 5.1 的遥控动作）
 - 投屏中切集 / 切线路各一次（验证 8.8，重点听有没有双声）
 - 多网卡 PC、Docker 部署、AP 隔离网络各验一次"发现得到/发现不到"
 - 拔网/关电视：错误提示是否可读（不要暴露 `HTTP 403`）
@@ -628,7 +630,7 @@ body 为 `Content-Location / Start-Position / X-Apple-Session-ID`，随后轮询
 
 ---
 
-## 十四、实现记录与未验项（2026-11-16，`feat/casting`）
+## 十四、实现记录与未验项（2026-11-16，已合入 `main`）
 
 ### 14.1 落地清单
 

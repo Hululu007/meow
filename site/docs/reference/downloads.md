@@ -25,7 +25,7 @@
 
 ::: warning 公开 Release 不含源包
 没有 spider jar、没有站点配置、没有弹幕载荷（TV 运行时模块除外，它是执行环境）。
-装完是空壳，需要自己导入源包，见 [导入源包](/guide/source-pack)。
+**Docker 镜像同样不含 spider jar**。装完是空壳，需要自己导入源包，见 [导入源包](/guide/source-pack)。
 :::
 
 ## Docker 镜像
@@ -35,7 +35,7 @@ Web 形态直接拉镜像，不需要源码：
 | 镜像 | 内容 |
 |---|---|
 | `chrplus/meow-web` | nginx + 静态前端 |
-| `chrplus/meow-apiserver` | JVM + spider jar + ffmpeg |
+| `chrplus/meow-apiserver` | JVM + ffmpeg（**不含 spider jar**，需在应用内导入源包） |
 | `chrplus/meow-drpy` | Node 运行时（**独立版本线**，不跟应用版本） |
 | `logvar/danmu-api` | 弹幕聚合（上游镜像） |
 | `chrplus/meow-sources` | 源服务：自带主爬虫 + Jable + 41 站默认源（**独立版本线**），见 [源包与配置格式](/ecosystem/source-format) |
@@ -81,7 +81,8 @@ Get-FileHash .\meow-setup-<版本>.exe -Algorithm SHA256
 
 ## 历史版本
 
-Releases 页可以展开旧版本。跨大版本升级前建议先备份数据目录：
+Releases 页可以展开旧版本。应用内也能看：设置 → 关于 → 版本历史（数据源为 updates 分支的 `history.json`）。
+跨大版本升级前建议先备份数据目录：
 
 - Web：`MEOW_DATA` 挂载目录
 - PC：`%APPDATA%\com.meow.player\data`

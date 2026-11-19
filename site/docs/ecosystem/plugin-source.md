@@ -30,14 +30,14 @@ https://example.com/path/packages.json            → 直接用
   "packages": {
     "apiserver": {
       "display_name": "影视后端",
-      "version": "1.1.6",
+      "version": "x.y.z",
       "platform": ["windows-x64"],
       "desc": "宿主后端：搜索 / 详情 / 播放 / 弹幕代理",
       "author": "your-name",
       "homepage": "",
       "size": 38843935,
       "sha256": "0f8a60aafa93…",
-      "url": "apiserver-1.1.6.zip",
+      "url": "apiserver-x.y.z.zip",
       "requires": [],
       "hidden": false,
       "lasttime": "2026-10-22",
@@ -73,7 +73,7 @@ https://example.com/path/packages.json            → 直接用
 | `author` / `homepage` | | 作者与主页 |
 | `requires` | | 依赖的插件 id 数组，安装时级联下载 |
 | `hidden` | | `true` 时不在列表单独展示，只作为依赖被拉起 |
-| `platform` | | 如 `["windows-x64"]`，当前不做强制过滤 |
+| `platform` | ✅ | 发布插件时必填，如 `["windows-x64"]`；PC「本机插件」只列含 `windows-x64` 的条目，TV 运行时模块按 `android-<abi>` 硬匹配，缺失或不匹配一律不显示/不下发 |
 | `api_version` | | manifest 结构版本，固定 `1` |
 | `min_app_version` | | 单个插件的最低应用版本 |
 | `lasttime` | | 更新日期 |
@@ -84,7 +84,7 @@ https://example.com/path/packages.json            → 直接用
 
 | 写法 | 示例 | 解析结果 |
 |---|---|---|
-| 相对同级（推荐） | `"apiserver-1.1.6.zip"` | `http://h:9000/plugins/apiserver-1.1.6.zip` |
+| 相对同级（推荐） | `"apiserver-x.y.z.zip"` | `http://h:9000/plugins/apiserver-x.y.z.zip` |
 | 相对上跳 / 子目录 | `"../apiserver.zip"` | `http://h:9000/apiserver.zip` |
 | 绝对地址 | `"https://cdn.example.com/x.zip"` | 原样使用 |
 | 协议相对 | `"//cdn.example.com/x.zip"` | 补上源的协议 |
@@ -106,8 +106,8 @@ https://example.com/path/packages.json            → 直接用
 ```
 plugins/
 ├── packages.json
-├── apiserver-1.1.6.zip
-├── drpy-1.1.6.zip
+├── apiserver-x.y.z.zip
+├── drpy-x.y.z.zip
 └── danmu-api-1.0.0.zip
 ```
 
@@ -116,8 +116,10 @@ plugins/
 ### GitHub Releases
 
 插件 zip 作为 Release 资产，清单里的 `url` 写绝对地址。
-注意 Release 资产会 302 到对象存储，不影响下载，但**私有仓需要 token**，
-而客户端默认不带 `Authorization`——私有仓请走 API 资产地址或对象存储。
+注意 Release 资产会 302 到对象存储，不影响下载。**私有仓需要 token**：在
+设置 → 网络加速处填一次（PC 存 `%APPDATA%/com.meow.player/plugin-token.txt`，
+插件源与应用更新共用）；填了 token 后清单与资产 URL 仍可写标准 Release 链接，
+下载时会自动转成 API 资产端点。不填 token 时私有仓会 404，才需改用对象存储。
 
 ### 子目录部署
 

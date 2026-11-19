@@ -112,7 +112,7 @@ docker compose up -d
 
 ## 在 iPhone 和 iPad 上
 
-iOS 没有客户端 App，也不会做。用 **Safari** 打开 Web 版，再「添加到主屏幕」当 App 用：
+iOS 目前没有客户端 App（iOS 壳的落地契约见开发文档 [iOS 壳](/dev/ios-integration)，尚未实现）。用 **Safari** 打开 Web 版，再「添加到主屏幕」当 App 用：
 
 1. Safari 打开 `http://<后端所在机器的 IP>:30010`（**不要写 `localhost`**，那指手机自己）
 2. 底部「分享」→「添加到主屏幕」→ 命名为「猫窝」
@@ -143,7 +143,7 @@ docker compose -f docker-compose.build.yml up -d --build
 | 后端起来了但站点全红 | 容器内能不能访问源包地址；`127.0.0.1` 在容器里指容器自己 |
 | drpy 站全部不可用 | `drpy` 容器是否在跑，`MEOW_JS_RUNTIME` 是否可达 |
 | 弹幕一直转圈 | `danmu_api` 是否健康；不想要就显式置空 `MEOW_DANMAKU_API=` |
-| 播放卡顿 / 转码失败 | `apiserver` 里有没有 ffmpeg；看后端日志的 `hopError` / `playError` |
+| 播放卡顿 / 转码失败 | `apiserver` 里有没有 ffmpeg；播放页错误文字里的 `playError`（源站 / 播放器原因）与 `hopError`（转码、代理这一跳的原因）——它们是前端状态，不在后端日志里；后端日志用 `docker compose logs -f apiserver` 看 |
 
 看日志：
 

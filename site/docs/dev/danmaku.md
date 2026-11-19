@@ -5,20 +5,20 @@
 
 ## 一、四个来源（先分清两个概念）
 
-`DANMAKU_PRIORITY`（`server/host/src/shared/ApiServer.java:6225`）里有四个值：
+`DANMAKU_PRIORITY`（`server/host/src/shared/ApiServer.java`）里有四个值：
 
 ```
 iqiyi / tencent / danmu_api / aggregator
 ```
 
-但它**只决定手动搜索候选的排序**（`sourcePriority()`，`:6349`），不决定自动抓取顺序。
+但它**只决定手动搜索候选的排序**（`sourcePriority()`），不决定自动抓取顺序。
 自动链由 `danmakuOrder()` 决定，合法值只有三个：`iqiyi`、`tencent`、`aggregator`。
 
 | key | 是什么 | 备注 |
 |---|---|---|
 | `iqiyi` | 爱奇艺直连 | 最快（搜不到秒回；直连通常 1–3 s），覆盖中等 |
 | `tencent` | 腾讯直连（经 360 定位 vid） | 设置页可关：policy `danmakuTencent`，默认开 |
-| `aggregator` | 聚合档 | 自建 `danmu_api` 的 host 全部优先并发，没有自建才用内置镜像；回传来源标记统一为 `danmu_api`（`sourceTagOf()`，`:7847`） |
+| `aggregator` | 聚合档 | 自建 `danmu_api` 的 host 全部优先并发，没有自建才用内置镜像；回传来源标记统一为 `danmu_api`（`sourceTagOf()`） |
 | `danmu_api` | 自建聚合服务 | **不是独立的自动档**，属于 `aggregator` 档；地址在 policy `danmakuApi` |
 
 所以"四源"是优先级表的口径，实际自动抓取只有三档：`iqiyi`、`tencent`、`aggregator`。
@@ -32,11 +32,11 @@ iqiyi / tencent / danmu_api / aggregator
 ["iqiyi","tencent","aggregator"]   // 默认：内置直连优先
 ```
 
-- 未知项直接丢弃；解析后为空则回退默认 `iqiyi,tencent,aggregator`（`:7876`）。
+- 未知项直接丢弃；解析后为空则回退默认 `iqiyi,tencent,aggregator`（`danmakuOrder()`）。
 - 设置页只暴露两档：「内置直连优先」写默认数组，「弹幕 API 优先」写 aggregator 开头。
 - 配了 `danmakuApi` 但没写 `danmakuOrder` 时，设置页显示「API 优先」，**后端仍是默认顺序**——
   要保存一次才真正生效。
-- 首屏预算：aggregator 排第一 → 10 s，否则 6 s（`:7933`）。只写一个源时同步执行，不适用预算。
+- 首屏预算：aggregator 排第一 → 10 s，否则 6 s（`danmakuFirstScreenMs()`）。只写一个源时同步执行，不适用预算。
 - 不是串行：所有源同时提交，**第一个非空结果立即返回**（通常是 iqiyi/tencent，1–3 s）。
 
 剩余源继续在后台跑；结果**明显更全**（≥1.2 倍条数）才覆盖缓存，下一次 seek / 切回 / 重进
@@ -45,11 +45,11 @@ iqiyi / tencent / danmu_api / aggregator
 ## 三、降级与空结果
 
 - 全部失败返回**空 XML**，并带 `X-Danmaku-Empty: 1`；来源和条数在 `X-Danmaku-Source` /
-  `X-Danmaku-Count`（`ApiServer.java:8996`）。前端读响应头，不能只看 body 是否为空。
-- 空结果只做 **30 秒负缓存**，不写磁盘（`:7860`）；前端 30 秒后自动重试**一次**
-  （`VideoPlayer.vue:4054`），避免无限请求。
-- 同一集并发请求会去重：后到的等先到的完成（最多 20 秒，`:7602`），超时才自己抓，
-  防止打上游限流。
+  `X-Danmaku-Count`（`ApiServer.java` 的弹幕响应头）。前端读响应头，不能只看 body 是否为空。
+- 空结果只做 **30 秒负缓存**，不写磁盘（`storeDanmaku` 的空结果分支）；前端 30 秒后自动重试**一次**
+  （`VideoPlayer.vue` 的 `dmRetried`），避免无限请求。
+- 同一集并发请求会去重：后到的等先到的完成（最多 20 秒，`DANMAKU_INFLIGHT` 等待 40 × 500 ms），
+  超时才自己抓，防止打上游限流。
 - 常见空结果：本集确实没有；`danmakuOrder` 只留 aggregator 而自建没起、内置镜像全在冷却；
   片名与平台命名差异；源站风控。
 
@@ -57,17 +57,17 @@ iqiyi / tencent / danmu_api / aggregator
 
 | 层 | 位置 | 生命周期 |
 |---|---|---|
-| 后端内存 | 进程内 TtlCache | 成功 30 分钟；失败 30 秒（`:7855`、`:7860`） |
+| 后端内存 | 进程内 TtlCache | 成功 30 分钟；失败 30 秒（`storeDanmaku`） |
 | 后端磁盘 | `data/cache/danmaku/<md5>.xml` | 30 天（`VideoCache.DANMAKU_TTL_MS`，`VideoCache.java:1407`）；写入即查配额，按 lastModified LRU 淘汰，**正在播的那一集受保护**（`VideoCache.java:1488`） |
 | 前端 IndexedDB | `meow-danmaku` | 30 天；单集 ≤2 MB、≤300 集，按 `at` 淘汰最旧（`danmakuStore.ts:18-27`） |
 
 - 前端**本地优先**：命中就先用，省一次往返；空结果不写本地（避免把上游抖动固化）。
-- 首次加载后（含本地命中）**12 秒**发一次 `fresh=1` 检查（`scheduleDmUpgrade`，
-  `VideoPlayer.vue:4096`；后端据此跳过内存/磁盘缓存与去重等待，`:7560`）。
-  新结果 ≥1.2 倍（`:7669`）且处于安全点（`currentTime < 15 s`，或 3 秒内刚 seek，
-  `dmUpgrade.ts:41`）才整份替换并提示；播放中途不静默换源，避免弹幕突然变密。
-- 后端磁盘命中会刷新"最近使用"并标记"正在播"（`ApiServer.java:8430`），正在播的集
-  因此不会被配额清掉；预取写入用额外保护键，不抢占"正在播"标记（`ApiServer.java:8451`）。
+- 首屏成功后按 **8/12/16/22/30 秒**共 5 个检查点（每集排一次）以 `serverOnly` 只读后端缓存
+  （不带 `fresh=1`；`VideoPlayer.vue` 的 `scheduleDmUpgrade` + `DM_UPGRADE_CHECKPOINTS`）。
+  新结果 ≥1.2 倍且处于安全点（暂停中 / 开头 60 秒内 / 10 秒内刚 seek，
+  `dmUpgrade.ts` 的 `isSafeDanmakuSwap`）才整份替换并提示；播放中途不静默换源，避免弹幕突然变密。
+- 后端磁盘命中会刷新"最近使用"并标记"正在播"（`danmakuDiskGet`），正在播的集
+  因此不会被配额清掉；预取写入用额外保护键，不抢占"正在播"标记（`danmakuDiskPut` 的预取路径）。
   前端淘汰只看 `at`，**没有**"正在播不清理"的保证。
 
 ## 五、播放器侧的调度
@@ -84,10 +84,10 @@ iqiyi / tencent / danmu_api / aggregator
    屏幕 20% 的弹幕按宽度比例缩短时长（下限 0.3×，另有速度上限）——这是防堵轨，
    不是"密度随屏幕宽度收敛"。
 
-过滤在**加载时**做一次，不在渲染帧里（`VideoPlayer.vue:3941`）：屏蔽词（`,` / `，` /
+过滤在**加载时**做一次，不在渲染帧里（`VideoPlayer.vue` 的 `filterDanmaku`）：屏蔽词（`,` / `，` /
 换行分隔）、纯符号、同文本 1.5 秒内重复，三条都直接丢弃。
 
-预取：`min(片尾标记, 时长) - danmakuPrefetchLead 秒`（默认 180，`PlayView.vue:1346`）
+预取：`min(片尾标记, 时长) - danmakuPrefetchLead 秒`（默认 180，`PlayView.vue` 的 `prefetchLead`）
 请求下一集；后端立刻返回，抓取在后台，和主请求走同一套链路、幂等；
 `policy.danmakuPrefetch` 可关（默认开）。
 

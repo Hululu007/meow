@@ -531,7 +531,7 @@ id 由我们自己的 `/list` 或 `/search` 生成，不依赖上游临时地址
 | `GET/POST /api/library`、`GET /api/library/stream` | 片库配置、列目录、流 | `path` 是**相对库根**的路径，服务端拼接；`stream` 必须透传 Range |
 | `POST /api/webdav` | WebDAV 转发（PUT/GET/DELETE/MKCOL/PROPFIND） | **始终 200** + `{ok,status,body}`；传输失败 `ok:false,status:0,msg`；`PROPFIND` 默认 `Depth: 1`；body 截断 200KB |
 | `/api/cache*`（10 条） | 离线缓存：批次、状态、续传、导出 | `GET /api/cache` 带 `cacheDirReloadRequired`；导出格式由 `X-Meow-Export-Format`（mp4/ts）说明；`export-to` 仅回环可用 |
-| `POST/GET/DELETE /api/transcode` | MKV/HEVC 现转 HLS | 不带 `src` 回 `{available,bytes}`（探测 ffmpeg）；首次 `state=running` 且清单为空**不能判失败** |
+| `POST/GET/DELETE /api/transcode` | MKV/HEVC 现转 HLS | 不带 `src` 回 `{available,bytes}`（探测 ffmpeg）；首次 `state=running` 且清单为空**不能判失败**；状态 JSON 含 `duration`（源真实总时长，秒，落盘 `.duration`）——转码未完成时 `video.duration` 只是已转出时长，不能用它当总长 |
 | `GET/POST/DELETE /api/scrape` | 刮削 | 缺 `groups` / `title` → 400 |
 | `GET/POST /api/cast` | DLNA 发现 / 控制 | POST 需 `device{controlUrl,…}`；投的 url 走宽松档 SSRF |
 | `GET /api/dns/resolve?host=&provider=` | DoH A 记录 | provider 默认 `ali`，缓存 5 分钟；失败也 200，`ip:""` + `msg` |
@@ -595,7 +595,7 @@ id 由我们自己的 `/list` 或 `/search` 生成，不依赖上游临时地址
 
 ## 附录 A 端点全表
 
-`equals(path)` 显式路由 50 条 + 少量前缀兜底。路径即契约。
+`equals(path)` 显式路由 57 条 + 少量前缀兜底。路径即契约。
 
 | 域 | 方法 | 路径 |
 |---|---|---|
@@ -618,6 +618,7 @@ id 由我们自己的 `/list` 或 `/search` 生成，不依赖上游临时地址
 | 健康 | POST | `/api/health/probe`、`/api/health/degrade`、`/api/health/reset` |
 | 健康 | GET | `/api/health/state` |
 | 本地 | GET/POST | `/api/library`、`/api/cast` |
+| 投屏 | GET/POST | `/api/cast/health`、`/api/cast/base`、`/api/cast/receiver`、`/api/cast/receiver/pending`、`/api/cast/session`、`/api/cast/command`、`/api/cast/progress` |
 | 本地 | GET | `/api/library/stream`、`/api/dns/resolve`、`/api/transcode/status`、`/api/transcode/{id}/index.m3u8`、`/api/transcode/{id}/{seg}` |
 | 本地 | POST | `/api/webdav`、`/api/llm/relay` |
 | 本地 | GET/POST/DELETE | `/api/cache`、`/api/transcode`、`/api/scrape` |

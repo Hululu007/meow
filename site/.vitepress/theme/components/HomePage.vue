@@ -9,7 +9,7 @@ const stats = [
   { value: '0', label: '内置内容源' },
   { value: '3', label: '端形态' },
   { value: '4', label: 'Docker 容器' },
-  { value: '41', label: 'TV 端内路由' },
+  { value: '全量', label: 'TV 端内路由' },
 ]
 
 /** 把指针位置写进卡片的 CSS 变量，光斑才能跟随鼠标 */

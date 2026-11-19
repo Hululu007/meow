@@ -17,20 +17,24 @@ curl -s http://127.0.0.1:9979/api/health
 ```json
 {
   "ok": true,
-  "version": "1.1.6",
+  "version": "<实际版本>",
   "sites": 56,
   "ext": 12,
   "spiderJar": true,
   "configLoaded": true,
   "nativeSources": 1,
   "capabilities": ["danmaku", "search", "proxy", "webdav", "dns", "state", "parse"],
-  "danmakuApi": "builtin"
+  "danmakuApi": "builtin",
+  "authRequired": true,
+  "authSource": "env",
+  "disabled": []
 }
 ```
 
 | 字段 | 怎么看 |
 |---|---|
 | `ok` | 服务活着 **且**（spider jar 已加载 **或** 有原生源）**且** 站点表非空 |
+| `version` | 实际运行版本；以它为准，不要对照文档里的示例值 |
 | `sites` | 站点总数；比预期少说明导入不全 |
 | `ext` | 带 `ext` 的站点数；jar 站能否工作的关键 |
 | `spiderJar` | 公开壳正常是 `false`，导入源包后应为 `true` |
@@ -38,6 +42,9 @@ curl -s http://127.0.0.1:9979/api/health
 | `nativeSources` | 原生源数量（豆瓣等），没有 jar 也能靠它出内容 |
 | `danmakuApi` | `builtin` 表示只用内置直连，`configured` 表示接了外部弹幕服务 |
 | `capabilities` | 前端据此显示/隐藏功能；缺 `webdav` 说明后端不支持片库 |
+| `authRequired` | 是否开启写鉴权（设了令牌即 `true`） |
+| `authSource` | 鉴权来源：`none` = 未设令牌，`env` = 环境变量 `MEOW_AUTH_TOKEN`，`policy` = 策略文件；容器改完令牌用它确认生效没 |
+| `disabled` | 被手动停用的站点 key 数组 |
 
 ::: tip `ok:false` 不等于进程没起来
 后端活着但没配置时 `ok` 也是 `false`。区分方法：`version` 有值说明进程在，
@@ -50,7 +57,7 @@ curl -s http://127.0.0.1:9979/api/health
 |---|---|
 | **Web / Docker** | `docker compose logs -f apiserver`（加 `--tail 200`） |
 | **PC** | 插件详情里的日志；或 `%APPDATA%\com.meow.player\` 下的日志文件 |
-| **TV** | 设置 → 远程调试；或 `adb logcat -s Meow:*` |
+| **TV** | 设置 → 远程调试；或 `adb logcat --pid=$(adb shell pidof com.meow.tv)` |
 | **fnOS** | 应用中心 → 猫窝 → 日志 |
 
 日志是 2000 条环形缓冲，重启就清空。**出问题后尽快取**。
@@ -82,13 +89,15 @@ curl -s http://127.0.0.1:9979/api/health
 
 ## 站点健康
 
-设置 → 站点管理里有每个站点的状态。三个值：
+设置 → 站点管理里有每个站点的状态，可按 **全部 / 已跳过 / 失效 / 待配置 / 已停用 / 正常** 筛选，明细里还有「未探测」「反复失败」等文案：
 
 | 状态 | 含义 |
 |---|---|
-| 可用 | 最近一次探测通过 |
-| 不可用 | 探测失败（域名挂了 / 需要代理 / 解析器不对） |
-| 停用 | 手动关掉，不参与搜索 |
+| 正常 | 最近一次探测通过 |
+| 已跳过 / 失效 | 累计失败被跳过 |
+| 待配置 | 缺运行时，或 `ext` 为空 |
+| 已停用 | 手动关掉，不参与搜索 |
+| 反复失败 | 连续失败但仍参与搜索（**不算不可用**） |
 
 批量排查顺序：先看 `ok`，再看站点健康，最后才看单个片。
 

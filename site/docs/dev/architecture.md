@@ -29,7 +29,7 @@
 
 > **一个内核（JVM 宿主）+ 一份配置（CatVod 语义）+ 一套状态（后端持久化）+ 三个渲染出口（TV/PC/Web）。**
 
-内核只有一份实现：`shared/ApiServer.java`（13064 行）+ `routes/` 7 个、`core/` 13 个、
+内核只有一份实现：`shared/ApiServer.java`（约 1.3 万行）+ `routes/` 7 个、`core/` 15 个、
 `sources/` 4 个模块。TV 壳把同一份 `shared/` 编译进去，两端分叉压在 `platform/` 五个类里。
 
 ### 0.2 四条判断
@@ -78,7 +78,7 @@ Fongmi（客户端内 DexClassLoader）与 zyfun（客户端内解释适配器�
 ┌─────────┴─────────────────┴─────────────────┴──────────────────────┐
 │  L2 内核层（唯一真相来源）                                            │
 │  ApiServer：站点表 + 分派 + 归一化 + 代理/弹幕/离线缓存               │
-│  routes/ 7 模块 · sources/ 4 模块 · core/ 13 模块                    │
+│  routes/ 7 模块 · sources/ 4 模块 · core/ 15 模块                    │
 └───────────────────────────┬───────────────────────────────────────┘
 ┌───────────────────────────┴───────────────────────────────────────┐
 │  L1 执行层（按 api 形态分派，顺序敏感）                                │
@@ -112,12 +112,13 @@ CMS 直连、脚本运行时还是 jar；具体类加载走 `platform.Bridge.loa
 ```
 server/host/src/
 ├── shared/                      ← TV 也编译这一份
-│   ├── ApiServer.java           入口 + 路由表 + 分派 + 归一化（13064 行）
+│   ├── ApiServer.java           入口 + 路由表 + 分派 + 归一化（约 1.3 万行）
 │   ├── platform/                5 个类：HttpServer / HttpExchange / Headers /
 │   │                            ServerProvider / Bridge（两端差异的唯一注入点）
-│   ├── core/                    13 个：DataPaths / ConfigText / Doh / UrlSafety /
+│   ├── core/                    15 个：DataPaths / ConfigText / Doh / UrlSafety /
 │   │                            Jars / Dex2Jvm / Library / PosterStore / Scrape /
-│   │                            Transcode / VideoCache / Cast / LogBuffer
+│   │                            Transcode / VideoCache / Cast / CastLan / CastReceiver /
+│   │                            LogBuffer
 │   ├── routes/                  7 个：Api / StateRoutes / LibraryRoutes / CacheRoutes /
 │   │                            HealthRoutes / LogRoutes / LlmRelay
 │   └── sources/                 4 个：CmsSource / DoubanSource / NativeSource(s)
@@ -129,9 +130,9 @@ server/host/src/
 
 | 组件 | 位置 | 规模（实测） |
 |---|---|---|
-| **Web 前端** | `client/apps/web/` | 90+ 个 `.vue`/`.ts`，14 条路由 |
+| **Web 前端** | `client/apps/web/` | 120 个 `.vue`/`.ts`，15 条路由（含投屏接收页 `/ext-play`） |
 | **PC 壳** | `client/apps/desktop/` | Tauri 2，`productName`「猫窝」 |
-| **TV 壳** | `client/apps/tv/` | 70 个 java 文件，`minSdk 26`，Media3 ExoPlayer 1.4.1 |
+| **TV 壳** | `client/apps/tv/` | 73 个 java 文件，`minSdk 26`，Media3 ExoPlayer 1.4.1 |
 
 ### 1.3 启动序列
 
@@ -184,7 +185,9 @@ SITES : key → 展示名     API : key → api（csp_Xxx / xxx.js / http 地址
 ```
 
 **真源是数据目录的 `config.sites.json`，不是源码静态表。** 静态表只提供基线
-（`SITES.put` 49 处、`EXT.put` 12 处，`grep -o` 计数），启动时先 `snapshotBaseline()`
+（`grep -o 'SITES.put("' server/host/src/shared/ApiServer.java | wc -l` = 44 处、
+`grep -o 'EXT.put("' server/host/src/shared/ApiServer.java | wc -l` = 8 处，
+不含注释与运行时 `put` / `putAll`），启动时先 `snapshotBaseline()`
 再 `loadMultiInstances()` 叠加配置。
 
 **站点身份 = `key + api`：**
@@ -296,7 +299,7 @@ api 一律拼成 `csp_<key>`、type 固定 3。CatVod 客户端必须用 `/confi
 
 ### 3.2 出口 B：`/api/*`（给 PC/Web/TV）
 
-路由是**逐条 `equals` + 少量前缀兜底**（显式 50 条，`grep -c 'equals(path)'`）。
+路由是**逐条 `equals` + 少量前缀兜底**（显式 57 条，`grep -c 'equals(path)'`）。
 顺序是正确性的一部分：所有 `/api/xxx/yyy` 形式的专用端点必须排在 `/api/{site}/{action}`
 兜底之前，否则会被当成 `site=xxx, action=yyy` 去加载不存在的类。
 
@@ -312,6 +315,7 @@ api 一律拼成 `csp_<key>`、type 固定 3。CatVod 客户端必须用 `/confi
 | 数据 | `POST /api/webdav`、`GET/POST /api/policy`、`GET /api/dns/resolve`、`/api/library*`、`/api/cache*`、`/api/state/*`、`GET/DELETE /api/posters` |
 | 配置 | `POST /api/config/import`、`GET/POST/DELETE /api/config/backup`、`POST /api/config/depot` |
 | AI | `POST /api/llm/relay`（LLM 中继，`policy.llmRelay.enabled` 显式打开才生效） |
+| 投屏 | `GET /api/cast/health`、`/api/cast/base`、`/api/cast/receiver/pending`；`GET/POST /api/cast/receiver`；`GET/POST /api/cast/session`；`POST /api/cast/command`、`/api/cast/progress` |
 | 运维 | `GET /api/logs`、`/api/health/{probe,degrade,state,reset}`、`/api/scrape`、`/api/cast`、`/api/transcode` |
 
 **`/proxy` 是 jar 的端口握手，不是普通代理**：`Proxy` 的端口初值是 `-1`，首次 `getPort()`

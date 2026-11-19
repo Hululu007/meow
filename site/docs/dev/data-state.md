@@ -16,7 +16,7 @@
 | Web / Docker | 容器内 `/data`，宿主 `deploy/docker/../../data` | compose 里 `MEOW_DATA=/data`（`docker-compose.yml:38-42`） |
 | PC | `%APPDATA%\com.meow.player\data` | 插件清单 `--data-dir={dataDir}`，`dataDir={appData}/data`（`apiserver.manifest.json:18,34`；identifier 在 `tauri.conf.json:5`） |
 | TV | `<filesDir>/gateway` | 端内网关 `--data-dir`（`GatewayServer.java:538-539`） |
-| 飞牛 fnOS | `<pkg var>/data` | supervisor `--data-dir`（`config.rs:58` 定路径、`supervisor.rs:176` 传参） |
+| 飞牛 fnOS | `<pkg var>/data` | supervisor `--data-dir`（路径在 `config.rs` 的 `pkg_var.join("data")`，参数在 `supervisor.rs` 的 `spawn_api()` 里） |
 
 ::: danger 相对路径是历史坑
 早期 `new File("policy.json")` 跟着工作目录走，Docker 里会写到 `/`、容器重建即丢。现在统一走
@@ -34,7 +34,7 @@
 | `config.sites.json` | `sites` 表 + `parses` / `lives` / `rules` / `ads` / `proxy` / `hosts` / `doh` / `headers` / `flags` 表；导入前自动备份为 `.bak` | 要重新导入源包 | ❌ |
 | `policy.json` | 运行时策略（见 §三） | 弹幕、DNS、缓存配额等设置丢失 | ❌ |
 | `state-progress.json` / `state-favorites.json` / `state-prefs.json` | 跨端进度（写回上限 2000、拉取 500）/ 收藏（上限 5000）/ 偏好白名单（见 §四） | 其他端对应数据无法同步 | ❌ |
-| `site-health.json` | 站点探活 / 降级 / 停用标记（`ApiServer.java:2553`） | 重新探测即可 | ✅ |
+| `site-health.json` | 站点探活 / 降级 / 停用标记（`server/host/src/shared/routes/HealthRoutes.java`，grep `site-health.json`） | 重新探测即可 | ✅ |
 | `library.json` | 片库配置（**含密码**） | 重新配片库 | ❌ |
 | `scrape-cache.json` | 刮削结果（命中永久、未命中 10 分钟） | 重新刮 | ✅ |
 | `posters/` / `jars/` | 海报落盘（500MB 配额）与 spider jar 缓存 | 重新拉 / 下载 | ✅ |
@@ -45,7 +45,7 @@
 
 ## 三、`policy.json` 的字段
 
-键很多，按用途分组即可；写入走 `POST /api/policy`，后端**按 key 合并**，不是整份替换（`ApiServer.java:9846-9852`）。
+键很多，按用途分组即可；写入走 `POST /api/policy`，后端**按 key 合并**，不是整份替换（`handlePolicy`，grep `handlePolicy`）。
 
 | 用途 | 字段 |
 |---|---|
@@ -55,7 +55,9 @@
 | 安全 / 网络 | `authToken`、`corsOrigins`、`rateLimit`（`parse`/`proxy`/`windowSec`）、`trustProxy` |
 | 模型转发 | `llmRelay.enabled`（`LlmRelay.java:67-70`） |
 
-- `authToken` / `corsOrigins` 都是**环境变量优先**（`MEOW_AUTH_TOKEN` / `MEOW_CORS`，`ApiServer.java:782-785`、`:1033-1038`）；`GET /api/policy` 回包摘掉 `authToken`、只回 `authRequired`（`ApiServer.java:9839-9841`）。
+- `authToken` / `corsOrigins` 都是**环境变量优先**（`MEOW_AUTH_TOKEN` / `MEOW_CORS`，
+  `ApiServer.java` 的 `authTokenExpected()` / `corsAllowList()`）；`GET /api/policy`
+  回包摘掉 `authToken`、只回 `authRequired`（`handlePolicy`，grep `p.remove("authToken")`）。
 - `proxy` / `hosts` / `doh` 是 **`config.sites.json` 里的表**，不是 policy 字段。
 
 ::: warning 插件 `inject` 不覆盖手填值

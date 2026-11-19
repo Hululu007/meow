@@ -58,19 +58,18 @@ ABI 对应关系：
   "platform": ["android-arm64-v8a"],
   "url": "tv-node-arm64-v8a-18.20.4.1.apk",
   "sha256": "……",
-  "size": 52116312,
-  "min_app_version": "1.1.0",
-  "min_sdk": 26
+  "size": 52116312
 }
 ```
 
 | 字段 | 说明 |
 |---|---|
-| `min_app_version` | 第一个支持运行时模块的壳版本，当前 `1.1.0` |
-| `min_sdk` | 模块 APK 的 minSdk，当前 26（Android 8.0） |
+| `min_app_version` | 已定义：第一个支持运行时模块的壳版本（当前 `1.1.0`）；当前官方清单未输出该字段，下载前预检不会生效 |
+| `min_sdk` | 已定义：模块 APK 的 minSdk（当前 26，Android 8.0）；当前官方清单未输出该字段，下载前预检不会生效 |
 | `platform` | ABI 标识，客户端按设备 ABI 匹配 |
 
-客户端在**下载前**就比对 `min_app_version` 与 `min_sdk`，不满足直接禁用按钮并说明原因。
+`min_app_version` 与 `min_sdk` 字段已定义，但当前官方清单未输出，客户端的下载前预检
+不会生效；自建清单带上这两个字段时，客户端会在**下载前**比对，不满足直接禁用按钮并说明原因。
 
 ## 版本兼容契约
 

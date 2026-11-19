@@ -90,13 +90,15 @@ cd client/apps/web && npx vitest run tests/device-profile.test.ts
 | **1024** | 触屏小屏隐藏底栏重播/刷新 + 顶栏导航文字图标化（**同一判据**，原 899/1023 已删除） | `tokens.css`（`max-width: 1024px` + `pointer: coarse`） |
 | **1280**（`xl`） | 顶栏同步徽标文字 | `AppHeader.vue` |
 | **520** | 海报行距收紧 / `compact`（CSS `max-height` 与 JS `isShortViewport()` **同源**，原 560 已删除） | `tokens.css` / `compat/deviceProfile.ts` |
+| **600**（`max-height`，投影仪/短屏压缩档） | TV 顶栏 4.5→3.5rem、分类条/hero 收紧、隐藏年份行与 hero 侧栏 | `tokens.css`（grep `max-height: 600px`） |
 | **≥1024** 或 **(`pointer: coarse` + 横屏)** | 自定义变体 `wide`（设置页双栏）；960–1023 无鼠标电视 → 单列胶囊 | `tokens.css` `@custom-variant` |
 | 卡宽 76 / 104 / 112 + 矮屏加列 | 海报列数算法（76 仍只在 TV 视口 ≥640 时生效） | `resolveCardCols()` |
 | `prefs.homeCols` | 列数上限（用户设置） | 设置页「外观」 |
-| `--header-h` 三档 | 默认 4rem / TV 4.5rem / 手机 `3.5rem + safe-area` | `tokens.css` |
+| `--header-h` | 默认 4rem / TV 4.5rem / ≤600px TV 3.5rem / 手机 `3.5rem + safe-area` | `tokens.css` |
 | 方向 | **唯一出口 `html[data-orient]`**（`compat/deviceProfile.ts`）；CSS 的 `wide` 是样式变体，不是 JS 判据 | `compat/deviceProfile.ts` / `tokens.css` |
 | `visualViewport` 键盘 | 布局视口高 − visualViewport 高 **> 120** → 键盘弹起（隐藏底部 tabbar） | `MobileTabBar.vue` |
 | **359**（超窄屏） | 设置页 `.set-grid` 变单列（Galaxy Fold 外屏 / iPhone SE 一类） | `tokens.css` |
+| **430**（`max-width`） | 详情页片名收字号（1.375rem） | `tokens.css`（grep `max-width: 430px`） |
 | TV 字号阶梯 **1280 / 1920 / 2400** | `html[data-tv]` 根字号 16 → 18 → 20 → **24px**（所有 rem 一起放大） | `tokens.css`（`tests/tv-font-scale.test.ts` 锁住） |
 
 **`prefs` 里与端相关的字段**（用户设置层，不是判据）：
@@ -235,7 +237,7 @@ cd client/apps/web && npx vitest run tests/device-profile.test.ts
 | 初始焦点 | `data-tv-first`（打开弹层后落点；优先级最高） | TV 壳 | AiPanel/DetailView/播放器面板 |
 | 滚动停靠点 | `data-tv-scroll`（焦点跟随滚动） | TV 壳 | 长列表/设置页/日志 |
 | 内缩焦点框 | `data-tv-inset-focus`（贴边按钮的焦点框内缩） | TV 壳 | `tv-nav.js` |
-| MCP / 调试控制面 | PC 18 个 `pc_*`（应用内线程）；TV 13 个 `tv_*` + `X-Meow-Token`；Docker/fnOS 无服务端 MCP | PC / TV / 其他 | `client/apps/desktop`、`client/apps/tv` `DebugServer` |
+| MCP / 调试控制面 | PC 18 个 `pc_*`（应用内线程）；TV 17 个 `tv_*`（含 media / storage / pointer / focus 等）+ `X-Meow-Token`；Docker/fnOS 无服务端 MCP | PC / TV / 其他 | `client/apps/desktop`、`client/apps/tv` `DebugServer` |
 | 投屏设备名 | TV：`meowTv.deviceName()`；PC：`isDesktop()` → `'PC'` | TV / PC | `api/library.ts` |
 | 启动容错 | 后端连不上时的重试次数：`isDesktop()` → **4 次**，其他端 1 次 | PC | `stores/app.ts` |
 | AI 面板开关 | `window.__meowAiOpen/__meowAiClose/__meowAiIsOpen`（壳/系统入口触发） | TV / PC | `AiPanel.vue` |

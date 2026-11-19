@@ -9,11 +9,12 @@
 |---|---|---|
 | 首页、指南、生态、参考 | `site/docs/**` | 手写 |
 | 技术文档 | `site/docs/dev/**` | 手写，与 GitHub 共用同一份文件 |
-| 更新日志（`docs/reference/changelog.md`） | 由 `scripts/sync-docs.mjs` 生成 | 不提交，构建前从 `CHANGELOG.md` 重建 |
-| Logo | `client/brand/` | 构建时复制到 `docs/public/` |
+| 更新日志（`docs/reference/changelog.md`） | 由 `site/scripts/sync-docs.mjs` 生成 | 不提交，构建前从 `CHANGELOG.md` 重建 |
+| Logo | `client/brand/`（源） | 构建前由 `sync-docs.mjs` 复制到 `docs/public/`；副本已入库（与 changelog / compose 不同），改 logo 后跑 `pnpm run sync` 并一并提交副本 |
 
-技术文档已经迁入 `site/docs/dev/`，仓库的 `docs/` 只留一个 `00-目录索引.md`
-指向这里。所以**改技术文档就是改站点目录里的那份文件**，GitHub 上点开也是它。
+技术文档正文都在 `site/docs/dev/`；仓库的 `docs/` 只放索引与阶段性快照/专项文档
+（`00-目录索引.md`，以及索引里登记的 `现状快照-*.md`、进行中的专项方案），
+不再有技术文档正文。所以**改技术文档就是改站点目录里的那份文件**，GitHub 上点开也是它。
 
 ## 改功能时要同步哪些页
 
@@ -22,21 +23,31 @@
 
 | 改了什么 | 要同步的页面 |
 |---|---|
-| Docker 容器 / 端口 / `.env` 键 | `guide/web-docker.md`、`guide/quick-start.md`、`reference/downloads.md` |
+| Docker 容器 / 端口 / `.env` 键 | `guide/web-docker.md`、`guide/quick-start.md`、`reference/downloads.md`、`dev/docker.md` |
 | PC 插件流程、端口回退、安装包形态 | `guide/pc.md`、`ecosystem/plugins.md` |
-| TV 安装、遥控、网关、运行时模块 | `guide/tv.md`、`ecosystem/runtime-module.md` |
+| TV 安装、遥控、网关、运行时模块 | `guide/tv.md`、`ecosystem/runtime-module.md`、`dev/tv-integration.md` |
 | iOS 壳 / IPA 发版（签名、资产名、端支持） | `dev/ios-integration.md`、`reference/downloads.md`、`reference/compatibility.md`、`guide/faq.md` |
 | 投屏（DLNA / 应用内会话）| `guide/playback.md`、`dev/casting.md` |
 | config 字段（`spider` / `spiderJvm` / `sites` / `parses` …） | `ecosystem/source-format.md`、`guide/source-pack.md` |
 | 导入选项（`mode` / `onConflict` / `replaceSpider`） | `guide/source-pack.md` |
 | 插件清单字段（fnpack / manifest） | `ecosystem/plugin-manifest.md`、`ecosystem/plugin-source.md` |
-| Release 资产名、系统要求 | `reference/downloads.md` |
-| 新增或移除用户可见能力 | 首页 `index.md`、`guide/what-is-meow.md` 的能力表 |
+| Release 资产名、系统要求 | `reference/downloads.md`、`dev/build-release.md` |
+| 新增或移除用户可见能力 | 首页能力卡：`site/.vitepress/theme/components/FeatureGrid.vue` 的 `features` 数组（`index.md` 只挂 `<HomePage />`，不含文案）、`guide/what-is-meow.md` 的能力表 |
 | 支持的端 / 平台（新增或取消某端） | `reference/compatibility.md` 的「端支持」、`guide/quick-start.md` 路线表、`guide/web-docker.md`、`guide/faq.md` |
 | 鉴权范围 / 令牌语义（谁能调什么） | `dev/api-contract.md` §1.2、`dev/architecture.md` §6.1、`dev/public-deployment.md` |
 | MCP 工具、调试入口、AI skill | `guide/automation.md`、`dev/ai-assistant.md` §2.7、`dev/testing.md` |
 | 已知缺陷新增或修复 | `reference/limits.md`、`guide/faq.md` |
 | 许可条款、第三方代码 | `reference/license.md` |
+| 弹幕（渲染、默认优先级、屏蔽词） | `guide/playback.md`、`dev/danmaku.md` |
+| 直播（频道源、EPG、回看） | `guide/vod-live.md`、`dev/live.md` |
+| 片库 / 离线缓存 / 转码 | `guide/library.md`、`dev/library-cache.md`、`dev/playback.md` |
+| 构建与发版（版本号、资产名、CI 触发） | `deploy/README.md`、`dev/build-release.md` |
+| 数据与状态（配置落盘、迁移、清理） | `dev/data-state.md` |
+| fnOS 套件 / fpk / 应用中心 | `guide/fnos.md` |
+| 更新中心 / 版本历史 / updates 分支 | `guide/upgrade.md`、`reference/downloads.md` |
+| 端 / 设备 / 尺寸判据（四层） | `dev/device-adaptive.md`（唯一真源）、`dev/frontend.md`、涉及的 UI 页 |
+
+未列出的 `dev/*.md` 按其主题归属就近合并到上面某一行，不要让它谁都不挂。
 
 ## 硬事实去哪核对
 
@@ -82,7 +93,7 @@ pnpm run preview    # 本地预览产物
 
 `.github/workflows/pages.yml`：
 
-- 触发：push 到 `main` 且改动涉及 `site/**`、`CHANGELOG.md`、`client/package.json`
+- 触发：push 到 `main` 且改动涉及 `site/**`、`CHANGELOG.md`、`client/package.json`、`.github/workflows/pages.yml`
 - 构建 → `upload-pages-artifact` → `deploy-pages`
 - 也可以在 Actions 页面手动 `workflow_dispatch`
 
@@ -115,5 +126,6 @@ gh api -X POST repos/upchr/meow/pages -f build_type=workflow
 
 ## 配色
 
-主色取自 `client/apps/web/src/styles/tokens.css` 的 Material 主题：
-浅色 `#00897B`，深色 `#03DAC5`。改主题在 `.vitepress/theme/custom.css`。
+主色取自 `client/apps/web/src/styles/tokens.css` 的 Material accent `#03DAC5`；
+浅色模式在 `.vitepress/theme/custom.css` 压暗到 `#00897B` 保证正文对比度，
+改主题只改 `custom.css`。

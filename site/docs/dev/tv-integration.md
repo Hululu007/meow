@@ -30,8 +30,8 @@ TV 有两条并存路线：**兼容上游**（Fongmi / TVBox 系客户端直接�
 
 - 形态：Android WebView 壳，内置前端经本地服务以 `http://meow.local` 提供
   （`MainActivity` 深链与 JS 桥 origin 白名单都锚在这个 host，
-  `MainActivity.java:288/933`）
-- 遥控：注入 `tv-nav.js`（`MainActivity.java:571`），方向键做几何最近邻选焦、
+  grep `meow.local`）
+- 遥控：注入 `tv-nav.js`（`MainActivity.java`，grep `tv-nav.js`），方向键做几何最近邻选焦、
   确认键点击——WebView 默认只认 Tab 遍历
 - 构建：`minSdk 26` / `targetSdk 34` / `compileSdk 34`（`app/build.gradle:63-64`；
   抬到 26 是因为更低的设备进网关就 `NoClassDefFoundError`）；
@@ -42,7 +42,7 @@ TV 有两条并存路线：**兼容上游**（Fongmi / TVBox 系客户端直接�
   手机扫码推送、连接校验、远程调试（**默认关**，局域网 PC 验收用）
 - 换后端：`adb shell am start -n com.meow.tv/.MainActivity --es url http://192.168.1.2:30010`；
   深链 `am start -a VIEW -d 'http://meow.local/index.html#/play/…'` 也能直达播放页
-  （intent 的 `#/play/...` 会拼进 loadUrl，`MainActivity.java:925-939`）
+  （intent 的 `#/play/...` 会拼进 loadUrl，`MainActivity` 里 grep `深链`）
 - 更新：`AppUpdater` 原生下载/校验/交系统安装器（不走 JS 桥传整包——11MB apk
   base64 后约 15MB 字符串，`AppUpdater.java:32`）
 
@@ -68,11 +68,11 @@ TV 有两条并存路线：**兼容上游**（Fongmi / TVBox 系客户端直接�
 
 ### 2.1 `GET /config.json`
 
-`catVodConfigJson`（`ApiServer.java:11536-11557`）输出 CatVod 形状：
+`catVodConfigJson`（`ApiServer.java`，grep `catVodConfigJson`）输出 CatVod 形状：
 
 - `spider`：`{base}/spider-latest.jar;md5;{md5}`；**拿不到 jar 就不写 md5**——
   空 md5 让客户端走"总是下载"，比写个错的稳
-- `sites`：`sitesForCatVod` 转换（`ApiServer.java:11588-11620`）：
+- `sites`：`sitesForCatVod` 转换（`ApiServer.java`，grep `sitesForCatVod`）：
   - `type` 用配置原值不硬编码 3——写成 3 会让 TV 端按 `csp_` 类名去 jar 里找类，
     苹果 CMS 直连站（api 是 http 地址）直接整站消失
   - `ext` 原样透传（可能是字符串也可能是对象，转 String 会破坏 `{"json":...}` 结构）
@@ -89,11 +89,12 @@ TV 有两条并存路线：**兼容上游**（Fongmi / TVBox 系客户端直接�
 - **必须 dex 形态**（ZIP 里有 `classes.dex`）。判据是读中央目录，不是看文件名——
   仓库 `libs/spider.jar` 是 883 个 `.class` 的 JVM jar，发给 Android 一律
   「jar 里没有类 Xxx」。实测：TV 能导入 39/40 站但每次 play 都失败，换成 dex 后同一批站立刻可用
-  （`ApiServer.java:11440-11455`）
+  （`ApiServer.java` 的 `findSpiderJarForClient()`，grep `hasClassesDex`）
 - 候选顺序：`spider-complete-latest-patched.jar` → `spider-complete-latest.jar` →
   `spider-latest-patched.jar` → … → classpath 那份（PC 插件仍需要 class 版）
 - `ETag` = md5（**带引号**，RFC 7232 要求），命中 `If-None-Match` 回 304 +
-  `Cache-Control: public, max-age=0, must-revalidate`（`ApiServer.java:11627-11646`）
+  `Cache-Control: public, max-age=0, must-revalidate`（`ApiServer.java` 的
+  `handleSpiderJar()`，grep `If-None-Match`）
 
 ```
 GET /spider-latest.jar
@@ -101,14 +102,15 @@ GET /spider-latest.jar
 GET /spider-latest.jar   (If-None-Match: "<md5>")
   → 304, 无响应体
 ```
-- md5 以「文件最新修改时间 + 长度」为 key 现算缓存（`ApiServer.java:11409-11419`）：
+- md5 以「文件最新修改时间 + 长度」为 key 现算缓存（`ApiServer.java` 的
+  `spiderJarMd5()`，grep `spiderJarMd5`）：
   一致才复用缓存、不一致重新下载——jar 换了缓存必须失效，否则用户永远停在旧 jar
 
 ### 2.3 `spiderJvm`：JVM 端优先读的字段
 
 一份配置同时给 TV 和 JVM 用时，顶层 `spider` 必须是 **dex** 形态（Fongmi 系只认它）；
 JVM 端优先读自定义字段 `spiderJvm`（class 形态），没有才回退 `spider`
-（`server/host/src/shared/core/Jars.java:139-144`）。
+（`server/host/src/shared/core/Jars.java`，grep `spiderJvm`）。
 
 | 端 | 读哪个字段 | 说明 |
 |---|---|---|
@@ -120,14 +122,16 @@ JVM 端优先读自定义字段 `spiderJvm`（class 形态），没有才回退 
 
 ### 2.4 地址按请求 Host 生成
 
-`baseUrlFor`（`ApiServer.java:8858`）按请求的 `Host` 头（其次 `X-Forwarded-Host`）
-生成 `spider` 等字段里的基地址。模拟器里用 `10.0.2.2:9979` 访问时，配置里的
+`baseUrlFor`（`ApiServer.java`，grep `baseUrlFor`）按请求的 `Host` 头（其次
+`Origin` / `Referer`，最后 `X-Forwarded-Host`——前两者带端口更可信，Host 丢端口时
+靠它们纠正，`X-Forwarded-Host` 只在都不可用时兜底）生成 `spider` 等字段里的基地址。
+模拟器里用 `10.0.2.2:9979` 访问时，配置里的
 jar 地址自动变成 `http://10.0.2.2:9979/spider-latest.jar;md5;…`——不需要额外配置。
 用 `curl` 验证时要显式 `-H 'Host: 10.0.2.2:9979'`，否则看到的是 `127.0.0.1`，那是正常的。
 
 > 曾计划过的 `/config-upstream.json`、`/depot.json` 没有实现，现行出口只有
 > `/config.json` 与 `/spider-latest.jar`；多仓/导入走 `/api/config/import`、
-> `/api/config/depot`（`ApiServer.java:1250-1256`）。
+> `/api/config/depot`（`ApiServer.java` 的显式路由表，grep `/api/config/depot`）。
 
 ### 2.5 一条站点的最小形状
 
@@ -192,7 +196,7 @@ jar 地址自动变成 `http://10.0.2.2:9979/spider-latest.jar;md5;…`——不
 两个入口、两个方向，缺一半就是"导入成功但站点空 / 站点在但一调 ClassNotFound"：
 
 - **网关导入**（`POST /api/config/import`）：ApiServer 写网关表后调
-  `Bridge.notifyConfigImported`（`ApiServer.java:12751`）→ 壳侧钩子
+  `Bridge.notifyConfigImported`（`ApiServer.java`，grep `notifyConfigImported`）→ 壳侧钩子
   （`GatewayServer.startInProcess` 里注册）→ `LocalSites.importFrom` +
   **`LocalSpiderHost.clear`**（jar 地址可能换了，不清就是"导入成功但跑的还是旧实现"，
   且同类对象在 ART 非移动区再叠一份）。替换模式先 `clearAll`
@@ -217,7 +221,7 @@ jar 地址自动变成 `http://10.0.2.2:9979/spider-latest.jar;md5;…`——不
 
 - `LocalDns.apply / applyStored`：把配置的 `hosts` / `doh` 表接进 catvod 的
   `OkHttp.dns()`。网关每次启动都要重放一次——`OkHttp.dns()` 是静态单例，
-  进程重启后回到"只有系统 DNS"（`GatewayServer.java:598`）。配置文件变了
+  进程重启后回到"只有系统 DNS"（`GatewayServer.java`，grep `OkHttp.dns()`）。配置文件变了
   `refreshIfChanged` 按文件长度自动重放
 - 弹幕两条路：
   - **远端后端模式**：`ensureDanmakuApi` 把 `policy.json` 的 `danmakuApi` 写成
@@ -301,7 +305,8 @@ jar 地址自动变成 `http://10.0.2.2:9979/spider-latest.jar;md5;…`——不
 **`installClassLoaderIfAbsent` 必须是"先装先生效"**：JVM 与 TV 跑同一份 ApiServer，
 强制覆盖会让后启动的一方顶掉另一方——TV 上被顶掉就是所有 jar 站点
 ClassNotFound，且不报错、只是空。parser 类（`/api/parse` 的 type 2/3，`Json*`/`Mix*`）
-与 spider 在同一个 dex 里，走同一个钩子（`ApiServer.java:4792/4821`）。
+与 spider 在同一个 dex 里，走同一个钩子（`Bridge.installClassLoaderIfAbsent`，
+`server/host/src/shared/platform/Bridge.java`；由 `core/Jars.java` 安装）。
 
 ---
 
@@ -335,7 +340,7 @@ ClassNotFound，且不报错、只是空。parser 类（`/api/parse` 的 type 2/
 - `GatewayService` 跑在 `android:process=":spider"`：主进程 = UI + WebView（不跑
   spider，崩不了）；服务进程 = 纯 Java + jar，崩了由系统 `START_STICKY` 重建 +
   `gwKeeper` 兜底（退避表 `GW_RETRY_BACKOFF` = 3/6/12/20s，表用完仍按最后一档
-  持续重试不放弃，`MainActivity.java:969`；上一版 5/15/45/120s 已废弃——端口先开后
+  持续重试不放弃，`MainActivity.java`，grep `GW_RETRY_BACKOFF`；上一版 5/15/45/120s 已废弃——端口先开后
   冷启动只要几秒，45/120s 纯属惩罚用户）。跨进程唯一通道
   就是网关自己的 HTTP，探活判据用"127.0.0.1:9978 能连上"，不能用静态标记
 - `isolateMode()`：32 位默认 true，`setprop debug.meow.iso 1/0` 强制切换
@@ -420,13 +425,14 @@ TV 内嵌网关跑的就是共享的 `ApiServer`，搜索行为与 [架构](./ar
 ### 6.1 异步搜索任务
 
 `POST /api/search {async:true}` 建后台任务立刻返回 taskId →
-`GET /api/search/task/{id}` 轮询快照（`ApiServer.java:1331-1356`）。为什么必须异步：
+`GET /api/search/task/{id}` 轮询快照（`ApiServer.java`，grep `/api/search/task/`）。为什么必须异步：
 同步路径在**请求线程**里跑完整个聚合（2~20 秒），12 并发搜索就把 12 线程的
-`POOL`（`ApiServer.java:372`）占满，`/api/health` 延迟涨到秒级——用户看到的是
+`POOL`（`ApiServer.java`，grep `ExecutorService POOL`）占满，`/api/health` 延迟涨到秒级——用户看到的是
 "整个应用崩了"；异步化后同一场景毫秒级返回，首屏结果由轮询在 1 秒内带出。
 
 - 任务保留：**最少 60 秒、最多 3 个**（低内存设备上个数比 TTL 重要——极米上
-  5 分钟 TTL 连续搜索会把堆顶爆，`ApiServer.java:4970-4984`）
+  5 分钟 TTL 连续搜索会把堆顶爆，`ApiServer.java` 的 `SEARCH_TASK_MIN_TTL_MS` /
+  `SEARCH_TASK_MAX_KEPT`）
 - 轮询路由必须注册在 `/api/{site}/{action}` 兜底**之前**，否则被当成 site=search
 - 不带 `async` 仍走同步路径（老客户端 / 自动化脚本可用）
 - 缓存写在 worker 的 lambda 里、**空串不缓存**（那是超时/异常返回值，不是源站答复）、
@@ -462,7 +468,7 @@ TV 内嵌网关跑的就是共享的 `ApiServer`，搜索行为与 [架构](./ar
 
 1. `/api/health` 带 `now`（服务器毫秒时间），客户端算偏移不用额外端点
 2. 壳侧 `TvBridge.checkClockSkew`：拉 health 算 `mid - server`，超 **5 分钟**写
-   可读告警（`TvBridge.java:1363-1410`）。**指向本机网关时跳过**——同进程里
+   可读告警（`TvBridge.java`，grep `checkClockSkew`）。**指向本机网关时跳过**——同进程里
    `now` 就是设备自己的时钟，skew 恒为 0，比较无意义；探测要等网关端口可连之后
    再做（`core.LogBuffer` 是 `ApiServer.boot()` 里初始化的，早于它写入的告警
    在 `/api/logs` 里查不到）
@@ -490,8 +496,9 @@ TV 内嵌网关跑的就是共享的 `ApiServer`，搜索行为与 [架构](./ar
 |---|---|---|
 | `SetupActivity` | 连接设置：局域网扫描 / 扫码推送 / 校验 / 远程调试 | 远程调试默认关 |
 | `LanScan` / `PushServer` | 找局域网里跑着的猫窝后端 / 手机扫码填设置推给电视 | 电视上没有好用的输入法 |
-| `DebugServer` | 局域网远程调试（状态 / 任意 JS / 截图 / 遥控按键 / 媒体状态 / localStorage / 合成指针 / 设焦点） | 给"没有 adb 开关"的投影仪验收用；空闲 30 分钟自动关 |
+| `DebugServer` | 局域网远程调试（17 个 `tv_*`：健康 / 状态 / JS / 截图 / 按键 / DOM / 控制台 / 网络 / 弹幕 / 性能 / 导航 / 等待 / 网关 / 媒体 / 存储 / 指针 / 焦点；完整清单见 `DebugServer.mcpTools()`） | 给"没有 adb 开关"的投影仪验收用；空闲 30 分钟自动关；**所有请求必须带 `X-Meow-Token`**（分隔符可省略）：无令牌 / 不匹配一律 403，空令牌 `start()` 直接拒启；需在配置页手动开启并读屏幕令牌，重启会换 |
 | `NativePlayerActivity` | ExoPlayer 原生播放页 | WebView 的 MediaCodec 受盒子固件限制，硬解失败类问题走这里 |
+| `CastReceiverBridge` | 投屏接收：把共享的 `core.CastReceiver` 接到 Android（SSDP 发现 / 会话控制 / 进度回传） | 必须装在主进程（会话状态与播放器桥要同进程）；Android WiFi 驱动默认滤多播，`MulticastLock` 必须拿，否则永远发现不了设备 |
 | `SniffActivity` | 不可见 WebView 打开播放页拦请求找媒体地址 | 播放地址是 JS 现算的源，服务端抓 HTML 拿不到 |
 | `MetaMirror` | 片库元数据与海报的本地只读副本 | NAS 重启 / 断网那几分钟界面不空白 |
 | `CacheDownloader` | 缓存导出 U 盘 | targetSdk 34 分区存储，必须走 SAF，不要申请 MANAGE_EXTERNAL_STORAGE |
@@ -542,8 +549,9 @@ keystore 只在两处：本机 + GitHub Secrets（同一套账号体系）。**�
 | 密码丢失 | 同上 |
 | keystore 泄露 | 别人能签发冒名更新包，需立即换新并公告 |
 
-两个文件都在 `client/apps/tv/.gitignore`（`keystore.properties`、`*.jks`），
-发版前可用 `git ls-files client/apps/tv/ | grep -iE 'jks|keystore'` 确认为空。
+两条规则在仓库根 `.gitignore`（grep `client/apps/tv/keystore.properties` 与
+`client/apps/tv/*.jks`），发版前可用
+`git ls-files client/apps/tv/ | grep -iE 'jks|keystore'` 确认为空。
 
 ### 8.3 两种打包方式的签名行为
 
@@ -587,13 +595,14 @@ apksigner verify --print-certs <apk> | head -3
 拿不到——统一状态属后端数据面的职责，见 [架构](./architecture.md)）；统一能力
 声明（TV 端 `Site` 字段与 REST 契约不同形）。
 
-跨端状态在 TV 上的候选路径（**待确认**，需实机验证）：
+跨端状态在 TV 上的候选路径（**部分已实现**：1.2.12 的投屏走 B 类应用内会话，
+进度可回传，见 [投屏](./casting.md)；其余仍待确认）：
 
 | 方案 | 做法 | 评价 |
 |---|---|---|
 | 各自独立 | TV 状态不进后端 | 不满足三端统一 |
 | 解析客户端备份 | 逆向备份 JSON 双向转换 | 可行，但格式随上游漂移 |
-| 只同步播放进度 | 在 spider `play` 返回里带 `position` 字段 | 成本最低；协议侧有此字段，但上游客户端是否真的读取**未验证** |
+| 只同步播放进度 | 在 spider `play` 返回里带 `position` 字段 | 成本最低；自研壳投屏已用自有会话回传进度，但**上游 Fongmi 客户端**是否真的读取仍未验证 |
 
 ### 9.2 兼容上游 Fongmi 的约束
 
