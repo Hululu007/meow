@@ -105,25 +105,26 @@ curl -s -X POST http://127.0.0.1:9339/mcp \
 - 国内加速镜像：
   `https://cdn.jsdelivr.net/gh/upchr/meow@main/.agents/skills/meow-control/SKILL.md`
 
-**最简单的用法**：把下面这段原样发给你的 AI（ZCode / Claude 等支持 skill 的客户端）：
+**最简单的用法**：把下面这段原样发给你的 AI（任何支持 skill / 自定义指令的客户端）：
 
 ```text
 请安装「猫窝控制」skill：
 1) 下载 https://raw.githubusercontent.com/upchr/meow/main/.agents/skills/meow-control/SKILL.md
-   保存到 ~/.zcode/skills/meow-control/SKILL.md
 2) 下载 https://raw.githubusercontent.com/upchr/meow/main/.agents/skills/meow-control/scripts/meow_mcp.py
-   保存到 ~/.zcode/skills/meow-control/scripts/meow_mcp.py
-3) 告诉我装好了，以及 skill 的触发方式
+3) 按你所在客户端的 skill 规范安装：SKILL.md 作为 meow-control 的入口，
+   脚本放在同目录的 scripts/meow_mcp.py（各客户端目录不同，你自己判断放在哪）
+4) 告诉我装好了，以及 skill 的触发方式
 ```
 
-手动安装（bash / PowerShell 同理，注意替换 `$HOME`）：
+手动安装（bash / PowerShell 同理；`SKILLS_DIR` 换成你所用客户端的 skills 目录——各客户端不一样，不确定就把上面的提示词发给 AI 让它自己放）：
 
 ```bash
-mkdir -p ~/.zcode/skills/meow-control/scripts
+SKILLS_DIR="<你的客户端 skills 目录>"
+mkdir -p "$SKILLS_DIR/meow-control/scripts"
 curl -fL https://raw.githubusercontent.com/upchr/meow/main/.agents/skills/meow-control/SKILL.md \
-  -o ~/.zcode/skills/meow-control/SKILL.md
+  -o "$SKILLS_DIR/meow-control/SKILL.md"
 curl -fL https://raw.githubusercontent.com/upchr/meow/main/.agents/skills/meow-control/scripts/meow_mcp.py \
-  -o ~/.zcode/skills/meow-control/scripts/meow_mcp.py
+  -o "$SKILLS_DIR/meow-control/scripts/meow_mcp.py"
 ```
 
 装好后，对 AI 说「用猫窝的 skill 验一下 / 操作一下」即可触发。SKILL.md 里写了前置探活、
