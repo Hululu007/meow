@@ -831,6 +831,8 @@ export interface DanmakuCandidate {
   episode?: number
   /** 稳定 id，形如 iqiyi:tvId:1 */
   id?: string
+  /** 360 候选的真实平台（qq/qiyi/youku…）；source 固定为 "360" 时用它 */
+  platform?: string
   /** 抓取路径：direct=API 直连，aggregator=danmu_api/聚合站 */
   via?: 'direct' | 'aggregator'
 }

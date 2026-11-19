@@ -49,6 +49,7 @@ import { createIdleCursor } from './idleCursor'
 import type { PlayErrorKind, PlayErrorPayload } from './playError'
 import { hasNativeHls, looksLikeHls } from './mediaKind'
 import {
+  dmPlatformOf,
   freshDanmakuUrl,
   isBetterDanmaku,
   isSafeDanmakuSwap,
@@ -3838,8 +3839,8 @@ async function runDmSearch() {
 /** 选中某一条：加载它的弹幕，并从当前进度接着放 */
 async function pickDm(item: DanmakuCandidate) {
   dmOverrideUrl.value = item.url
-  // 记住来源 key（360/tencent/iqiyi…），切集时用于「同源同集」自动沿用
-  dmManualSource.value = item.source || ''
+  // 记住平台（360 候选取 platform，其余取 source），切集时用于同源沿用
+  dmManualSource.value = dmPlatformOf(item)
   clearDmUpgrade()
   showDmSearch.value = false
   // ★ 手选必须 fresh：普通路径先读 IndexedDB（key=URL），若这个 URL 的缓存
@@ -5597,6 +5598,21 @@ watch(
   },
 )
 
+/**
+ * 把上一集手选的平台透传给自动抓取接口（prefer=iqiyi/tencent）。
+ *
+ * <p>只对自家自动接口生效；手选候选是完整 URL，不走这里。
+ * 厂商平台之外的 youku/mango 不传——内置没有对应 handler，
+ * 传了也不会改变顺序，交给聚合源覆盖。
+ */
+function withDmPrefer(url: string, prefer: string): string {
+  if (!prefer || !url.includes('/api/proxy/danmaku?')) return url
+  const p = dmPlatformOf({ source: prefer })
+  if (p !== 'iqiyi' && p !== 'tencent') return url
+  if (/[?&]prefer=/.test(url)) return url
+  return url + '&prefer=' + encodeURIComponent(p)
+}
+
 watch(
   () => props.danmakuUrl,
   (v) => {
@@ -5605,11 +5621,14 @@ watch(
     /*
      * 手选源只对当前集有效（2026-11-09）：
      *   1. 先尝试在新一集的候选列表里找「同源同集」→ 找到就沿用；
-     *   2. 找不到 → 清掉手选状态，回退自动，并提示。
+     *   2. 找不到 → 记住平台，自动抓取时把它排到最前（prefer），
+     *      并清掉手选 URL（否则面板显示手选、实际加载自动结果）。
      *
      * 不能直接 clear 了事：旧实现切集后 dmOverrideUrl 还挂着，
      * 面板显示「已手动指定弹幕源」但实际加载的是自动结果。
      */
+    const prefer = dmManualSource.value
+    let autoUrl = v
     if (dmOverrideUrl.value) {
       const ep = currentEpNo() || episodeFromTitle()
       const same = pickSameSourceCandidate(dmResults.value, dmManualSource.value, ep)
@@ -5621,9 +5640,10 @@ watch(
       }
       dmOverrideUrl.value = ''
       dmManualSource.value = ''
-      showDmHint('手动弹幕源仅对当前集有效，已恢复自动')
+      autoUrl = withDmPrefer(v || '', prefer)
+      showDmHint(prefer ? `已沿用弹幕平台 ${prefer}，其余回退自动` : '手动弹幕源仅对当前集有效，已恢复自动')
     }
-    if (v) void loadDanmaku(v)
+    if (autoUrl) void loadDanmaku(autoUrl)
     else {
       dmCount.value = 0
     dmTotal.value = 0

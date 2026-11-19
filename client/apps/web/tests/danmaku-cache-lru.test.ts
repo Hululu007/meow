@@ -106,7 +106,7 @@ describe('★ 正在播的那一集永不被淘汰', () => {
 
   it('主播放 handler 显式标记正在播的那一集', () => {
     // 写入侧分不出「在看」和「预取」，只能由播放器取弹幕的入口标
-    const i = API.indexOf('String xml = fetchDanmakuAuto(clean, epNo, src, fresh)')
+    const i = API.indexOf('String xml = fetchDanmakuAuto(clean, epNo, src, fresh, prefer)')
     expect(i).toBeGreaterThan(-1)
     expect(API.slice(i, i + 700)).toContain('touchDanmaku')
   })

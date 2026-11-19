@@ -366,6 +366,15 @@ export class DanmakuRenderer {
   /** 文字位图缓存：同一句话+颜色只渲染一次 */
   private spriteCache = new Map<string, HTMLCanvasElement>()
   /**
+   * 文本宽度缓存：emit 时每条都要量一次宽度，而同一句话在一集里
+   * 会重复出现（"哈哈哈哈"最多几百次）。measureText 是布局级开销，
+   * 命中缓存后 emit 只剩一次 Map 查找。
+   *
+   * key 带字号——字号会随容器宽度变化；超过上限整体清空（不做 LRU，
+   * 条数上限换来的是零维护成本，清空后重建也只是几十次 measureText）。
+   */
+  private widthCache = new Map<string, number>()
+  /**
    * 缓存里所有位图的像素总量（增量维护）。
    *
    * 每次都要遍历算一遍的话，代价随缓存条数线性增长；
@@ -1184,19 +1193,28 @@ export class DanmakuRenderer {
   private prune() {
     const W = this.W
     const t = this.now
-    const keep: Active[] = []
-    for (const a of this.active) {
+    /*
+     * 原地压缩，不每帧新建数组。
+     *
+     * 原来 `const keep=[]` + filter 式重建：60fps 下每秒分配 60 个数组
+     * （每条引用还被 GC 扫描），长时间播放表现为周期性小卡顿。
+     * 写指针只动数组内容，最后截断长度，零分配。
+     */
+    const list = this.active
+    let w = 0
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i]
       if (a.danmu.mode === 5 || a.danmu.mode === 4) {
         if (a.staticUntil !== undefined && t > a.staticUntil) continue
-        keep.push(a)
+        list[w++] = a
         continue
       }
       const p = (t - a.born) / a.dur
       // 完全飞出左侧（多留 40px 余量）后丢弃
       if (p > 1 + (a.width + 40) / (W + a.width)) continue
-      keep.push(a)
+      list[w++] = a
     }
-    this.active = keep
+    list.length = w
   }
 
   /**
@@ -1293,10 +1311,20 @@ export class DanmakuRenderer {
    * 宽度和位图实际宽度不一致时文字会被横向拉伸。
    */
   private textWidth(text: string): number {
+    const key = `${this.fontSize}|${text}`
+    const hit = this.widthCache.get(key)
+    if (hit !== undefined) return hit
     const c = this.measureCtx()
-    if (!c) return Math.max(24, text.length * this.fontSize * 0.6)
-    c.font = `600 ${this.fontSize}px "PingFang SC","Microsoft YaHei",system-ui,sans-serif`
-    return Math.max(24, Math.ceil(c.measureText(text).width) + 8)
+    let width: number
+    if (!c) {
+      width = Math.max(24, text.length * this.fontSize * 0.6)
+    } else {
+      c.font = `600 ${this.fontSize}px "PingFang SC","Microsoft YaHei",system-ui,sans-serif`
+      width = Math.max(24, Math.ceil(c.measureText(text).width) + 8)
+    }
+    if (this.widthCache.size >= 2048) this.widthCache.clear()
+    this.widthCache.set(key, width)
+    return width
   }
 
   /**

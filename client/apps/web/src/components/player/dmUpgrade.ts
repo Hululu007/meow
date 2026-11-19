@@ -9,9 +9,28 @@
 /** 弹幕候选的最小形状（与 `DanmakuCandidate` 兼容）。 */
 export interface DanmakuCandidateLike {
   source?: string
+  /** 360 候选的平台（qq/qiyi/youku…），source 固定是 "360" 时用它 */
+  platform?: string
   episode?: number
   url?: string
   label?: string
+}
+
+/**
+ * 候选的平台 key（归一成内置源能认的 iqiyi/tencent）。
+ *
+ * <p>360 候选的 `source` 恒为 "360"，真正平台在 `platform`；聚合源
+ * 的 `source` 已经是 qq/iqiyi/youku。不归一的话「手选腾讯 → 下一集沿用」
+ * 永远匹配不到（"360" ≠ "tencent"）。
+ */
+export function dmPlatformOf(c: DanmakuCandidateLike): string {
+  const raw = (c.source === '360' ? c.platform : c.source) || c.platform || c.source || ''
+  const s = raw.toLowerCase()
+  if (s === 'qiyi' || s === 'iqiyi') return 'iqiyi'
+  if (s === 'qq' || s === 'tencent') return 'tencent'
+  if (s === 'imgo' || s === 'mango' || s === 'mgtv') return 'mango'
+  if (s.startsWith('bilibili')) return 'bilibili'
+  return s
 }
 
 /**
@@ -105,5 +124,6 @@ export function pickSameSourceCandidate<T extends DanmakuCandidateLike>(
   episode: number,
 ): T | undefined {
   if (!source || !episode) return undefined
-  return list.find((r) => (r.source || '') === source && (r.episode || 0) === episode)
+  const want = dmPlatformOf({ source })
+  return list.find((r) => dmPlatformOf(r) === want && (r.episode || 0) === episode)
 }

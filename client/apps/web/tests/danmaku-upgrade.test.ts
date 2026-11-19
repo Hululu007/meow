@@ -116,10 +116,11 @@ describe('源码门禁', () => {
     expect(player).toContain("{ cache: 'no-store' }")
   })
 
-  it('后端 fresh=1 跳过 30 分钟缓存重抓，且不误删 inflight 标记', () => {
+  it('后端 fresh=1 跳过 30 分钟缓存重抓，且只删自己登记的 inflight 标记', () => {
     expect(backend).toContain('boolean fresh = "1".equals(q.getOrDefault("fresh", ""))')
-    expect(backend).toContain('fetchDanmakuAuto(clean, epNo, src, fresh)')
-    expect(backend).toContain('if (!fresh) DANMAKU_INFLIGHT.remove(cacheKey)')
+    expect(backend).toContain('fetchDanmakuAuto(clean, epNo, src, fresh, prefer)')
+    // 主请求等预取超时后自己抓，不能把预取还没完成的标记删掉
+    expect(backend).toContain('if (registered) DANMAKU_INFLIGHT.remove(cacheKey)')
   })
 
   it('手动源切集：同源同集沿用，否则恢复自动并提示', () => {

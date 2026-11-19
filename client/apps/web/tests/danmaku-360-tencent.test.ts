@@ -181,7 +181,7 @@ describe('下集弹幕预取（片尾前）', () => {
   it('后端有预取端点，且立刻返回不阻塞', () => {
     expect(API).toContain('handleDanmakuPrefetch')
     expect(API).toContain('/api/proxy/danmaku/prefetch')
-    const body = region('private static void handleDanmakuPrefetch', 3000)
+    const body = region('private static void handleDanmakuPrefetch', 7000)
     // 先回 queued/cached 再起线程 —— 预取是"顺手做"，不能阻塞前端
     // 源码里是 JSON 转义形式 \"queued\"
     expect(body).toContain('queued')
@@ -196,14 +196,14 @@ describe('下集弹幕预取（片尾前）', () => {
      *
      * 早期版本为躲限流只走内置源，那个担心是错估了时间尺度。
      */
-    const body = region('private static void handleDanmakuPrefetch', 3000)
+    const body = region('private static void handleDanmakuPrefetch', 7000)
     expect(body).toContain('fetchDanmakuAuto')
     // 不能再自己拼 iqiyi/tencent 列表（那样两边行为会漂移）
     expect(body).not.toContain('new String[]{"iqiyi", "tencent"}')
   })
 
   it('预取可关、提前量可配', () => {
-    const body = region('private static void handleDanmakuPrefetch', 3000)
+    const body = region('private static void handleDanmakuPrefetch', 7000)
     expect(body).toContain('isDanmakuPrefetchEnabled')
     expect(body).toContain('disabled')
     const lead = region('private static int danmakuPrefetchLeadSec', 900)
@@ -212,7 +212,7 @@ describe('下集弹幕预取（片尾前）', () => {
   })
 
   it('幂等：已有缓存直接 cached，不重复抓', () => {
-    const body = region('private static void handleDanmakuPrefetch', 3000)
+    const body = region('private static void handleDanmakuPrefetch', 7000)
     expect(body).toContain('cached')
     // 磁盘那半用只读探测：预取的「查有没有」不能篡改 activeKey/LRU
     expect(body).toContain('danmakuOnDiskUnread')
@@ -247,8 +247,8 @@ describe('首屏等待预算（调序后"出弹幕慢了"的根因）', () => {
     // 聚合排第一 → 10s（用户明确选了「弹幕 API 优先」，就该等它）
     expect(body).toContain('10_000L')
     expect(body).toContain('"aggregator".equals(order[0])')
-    // 其它情况 → 6s（直连最慢 5s，等得到）
-    expect(body).toContain('6_000L')
+    // 其它情况 → 10s（腾讯 360 链冷抓实测 6.10s / 8.08s 都落空）
+    expect(body.match(/10_000L/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
   })
 
   it('首屏循环用的是这个预算，不再有裸的 6_000L', () => {
@@ -267,7 +267,7 @@ describe('首屏等待预算（调序后"出弹幕慢了"的根因）', () => {
     expect(fn).toMatch(/cur \* 1\.2/)
     expect(fn).toMatch(/cur \* 0\.5/)
     // 调用点仍在并发收尾里
-    const loop = region('private static String fetchDanmakuAuto0', 6000)
+    const loop = region('private static String fetchDanmakuAuto0', 12000)
     expect(loop).toContain('tellLaterIfBetter(')
   })
 })

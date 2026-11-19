@@ -61,7 +61,7 @@ describe('弹幕颜色：抓取层', () => {
 
   it('颜色值兼容十进制 / #RRGGBB / 六位十六进制', () => {
     const i = API.indexOf('private static String fetchTencentXml')
-    const body = API.slice(i, i + 7000)
+    const body = API.slice(i, i + 12000)
     expect(body).toContain('startsWith("#")')
     expect(body).toContain('[0-9a-f]{6}')
     // 0（纯黑）在深色背景上等于看不见，必须当缺省

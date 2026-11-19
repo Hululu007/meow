@@ -6423,6 +6423,14 @@ public class ApiServer {
             "采集站", "爱爱", "腾疼", "悠悠", "哔哔", "茫茫"
     };
 
+    /**
+     * 手动搜索结果短缓存（5 分钟）：同一片名反复开面板/切胶囊时不重复打三家。
+     *
+     * <p>缓存的是**完整响应 JSON**（含固定胶囊与截断后的 items），
+     * 所以命中后「胶囊数字 == 能翻到的条数」这条不变量仍然成立。
+     */
+    private static final TtlCache DANMAKU_SEARCH_CACHE = new TtlCache(32, 4_000_000L);
+
     private static void handleDanmakuSearch(HttpExchange ex) throws Exception {
         Map<String, String> q = query(ex);
         String name = q.getOrDefault("name", "").trim();
@@ -6431,6 +6439,15 @@ public class ApiServer {
             return;
         }
         String clean = cleanName(name);
+        String searchCacheKey = "dms|" + clean;
+        boolean searchFresh = "1".equals(q.getOrDefault("fresh", ""));
+        if (!searchFresh) {
+            String cachedJson = DANMAKU_SEARCH_CACHE.get(searchCacheKey);
+            if (cachedJson != null) {
+                sendText(ex, 200, cachedJson, "application/json; charset=utf-8");
+                return;
+            }
+        }
         List<JSONObject> items = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
 
@@ -6485,6 +6502,8 @@ public class ApiServer {
          * 直接切掉 —— 用户在前端翻到底也找不到自己那一集。
          * 1100 条的 JSON 约 220KB，局域网一次拉完约 0.2s，可以接受。
          */
+        // 3.5) 同平台同集去重：direct 已覆盖时丢掉 aggregator 的重复候选
+        items = dedupeDanmakuCandidates(items);
         int cap = Math.min(items.size(), 3000);
         JSONArray arr = new JSONArray();
         for (int i = 0; i < cap; i++) arr.put(items.get(i));
@@ -6513,12 +6532,14 @@ public class ApiServer {
         JSONArray fixedArr = new JSONArray();
         for (String lb : DANMAKU_FIXED_LABELS) fixedArr.put(lb);
 
-        sendJson(ex, 200, new JSONObject()
+        String payload = new JSONObject()
                 .put("name", clean)
                 .put("fixed", fixedArr)
                 .put("sources", srcArr)
                 .put("items", arr)
-                .toString());
+                .toString();
+        DANMAKU_SEARCH_CACHE.put(searchCacheKey, payload, 5 * 60_000L);
+        sendText(ex, 200, payload, "application/json; charset=utf-8");
     }
 
     /** 源的尝试优先级（数字小的先）。 */
@@ -6651,36 +6672,172 @@ public class ApiServer {
      * </pre>
      * 有 cookie 方案后补 searchYouku / searchBilibili 即可，接口已留好。
      */
+    /**
+     * 片名归一：去年份/括号别名、去季号、去标点空白。
+     *
+     * <p>用于跨源比对，不用于展示。只做保守变换，避免把「2046」这类
+     * 纯数字片名改坏；季号交给 {@link #extractSeasonNo} 单独比较。
+     */
+    private static String normTitleKey(String s) {
+        if (s == null) return "";
+        String t = s;
+        t = t.replaceAll("[（(][^）)]{0,20}[)）]", " ");
+        t = t.replaceAll("第\\s*[一二三四五六七八九十\\d]+\\s*[季部]", " ");
+        t = t.replaceAll("(?i)\\b(?:season|s)\\s*\\d+\\b", " ");
+        t = t.replaceAll("[《》\\[\\]【】:：·,，.。!！?？\\-—_/\\\\|\\s]", "");
+        return t.trim();
+    }
+
+    /**
+     * 候选与目标片名的匹配分：基础名相同/包含、季号一致、集数多者优先。
+     *
+     * <p>为什么需要它：爱奇艺/腾讯搜索对「庆余年」会同时返回第一季、第二季、
+     * 解说、预告；旧实现取「第一个频道匹配的正片」，经常拿到错季 —— 弹幕
+     * 时间轴与剧情对不上。360 那条已经按季度挑（{@code splitSeasonKeyword}），
+     * 这里补上直连两家的同一层判据。
+     *
+     * <p>不做硬过滤：别名/翻译名差异会误杀，只用于**排序**选最佳候选。
+     */
+    private static int danmakuTitleScore(String clean, String title, int episodes) {
+        String a = normTitleKey(clean);
+        String b = normTitleKey(title);
+        int score = 0;
+        if (!a.isEmpty() && !b.isEmpty()) {
+            if (a.equals(b)) score += 100;
+            else if (b.contains(a) || a.contains(b)) score += 60;
+            else {
+                // 最长公共子串，给「庆余年」vs「庆余年2特别版」这类留分
+                int common = 0;
+                for (int i = 0; i < a.length(); i++) {
+                    for (int j = i + 1; j <= a.length(); j++) {
+                        if (b.contains(a.substring(i, j))) common = Math.max(common, j - i);
+                    }
+                }
+                if (common >= Math.min(3, a.length())) score += common * 4;
+            }
+        }
+        int want = extractSeasonNo(clean);
+        int got = extractSeasonNo(title);
+        if (want > 0) {
+            if (got == want) score += 80;
+            else if (got == 0) score -= 30;
+            else score -= 120;
+        } else if (got > 0) {
+            // 目标没写季号：第一季优先，后续季依次降权
+            score -= got * 5;
+        }
+        score += Math.min(20, Math.max(0, episodes) / 5);
+        return score;
+    }
+
+    /** 平台名归一：360 的 qiyi/qq/bilibili1/imgo 与聚合源的 iqiyi/tencent/... 对齐。 */
+    private static String normDanmakuPlatform(String source, String platform) {
+        String s = platform == null ? "" : platform.trim().toLowerCase();
+        if (s.isEmpty() && source != null) s = source.trim().toLowerCase();
+        if (s.isEmpty() || "360".equals(s) || "aggregator".equals(s)) return s;
+        if (s.equals("qiyi") || s.equals("iqiyi")) return "iqiyi";
+        if (s.equals("qq") || s.equals("tencent")) return "tencent";
+        if (s.equals("imgo") || s.equals("mango") || s.equals("mgtv")) return "mango";
+        if (s.startsWith("bilibili")) return "bilibili";
+        return s;
+    }
+
+    /** 候选优先级：direct > aggregator；带 platform 的 360 候选 > 纯 cid 的腾讯搜索。 */
+    private static int danmakuCandidateRank(JSONObject o) {
+        int r = "direct".equals(o.optString("via")) ? 10 : 0;
+        if (!o.optString("platform").isEmpty()) r += 3;
+        if ("iqiyi".equals(normDanmakuPlatform(o.optString("source"), o.optString("platform")))) r += 1;
+        return r;
+    }
+
+    /**
+     * 同平台同集去重：只留优先级最高的一条。
+     *
+     * <p>实测（2026-11-19）：360 与 danmu_api 指向同一个腾讯 video id 时，
+     * 返回条数逐字节一致（仙逆 25,446 条）；用户会在面板里看到两条几乎一样的
+     * 候选。保留 direct 是因为它更快、且保留顶/底模式；360 的每集 vid 比
+     * 腾讯搜索的 cid（还要再转一次）更精确。aggregator 仍保留平台不同、
+     * 或 direct 没覆盖的集。
+     */
+    private static List<JSONObject> dedupeDanmakuCandidates(List<JSONObject> items) {
+        Map<String, JSONObject> best = new java.util.LinkedHashMap<>();
+        Map<String, Integer> ranks = new java.util.HashMap<>();
+        for (JSONObject o : items) {
+            String key = normDanmakuPlatform(o.optString("source"), o.optString("platform"))
+                    + "|" + o.optInt("episode", 9999);
+            int rank = danmakuCandidateRank(o);
+            Integer prevRank = ranks.get(key);
+            if (prevRank == null) {
+                best.put(key, o);
+                ranks.put(key, rank);
+            } else if (rank > prevRank) {
+                // LinkedHashMap 替换 value 不改变首次插入位置，输出顺序仍按排序结果
+                best.put(key, o);
+                ranks.put(key, rank);
+            }
+        }
+        return new ArrayList<>(best.values());
+    }
+
+    /** 官方源异常冷却（网络/解析异常 60 秒内不再打；空结果不算失败）。 */
+    private static final Map<String, Long> DANMAKU_SOURCE_DOWN = new ConcurrentHashMap<>();
+    private static final long DANMAKU_SOURCE_COOLDOWN_MS = 60_000L;
+
+    private static boolean danmakuSourceDown(String src) {
+        Long until = DANMAKU_SOURCE_DOWN.get(src);
+        if (until == null) return false;
+        if (System.currentTimeMillis() >= until) {
+            DANMAKU_SOURCE_DOWN.remove(src);
+            return false;
+        }
+        return true;
+    }
+
+    private static void markDanmakuSource(String src, boolean ok) {
+        if (src == null || src.isEmpty()) return;
+        if (ok) DANMAKU_SOURCE_DOWN.remove(src);
+        else DANMAKU_SOURCE_DOWN.put(src, System.currentTimeMillis() + DANMAKU_SOURCE_COOLDOWN_MS);
+    }
+
+    /**
+     * 官方源搜索：爱奇艺 / 腾讯 / 360 三路并发。
+     *
+     * <p><b>为什么改成并发</b>（2026-11-19）：旧实现串行，爱奇艺 12s +
+     * 腾讯 12s + 360 最多 3×8s，最坏四十多秒；而 360 只是补「前两家搜不到」
+     * 的缺口，前两家有结果时等它纯属浪费。并发后总预算 9 秒，谁先到谁先入列。
+     *
+     * <p>异常退避：某一家抛异常（风控/网络）后 60 秒内跳过它；
+     * **空结果不退避**——那通常只是"这部剧这家没有"，退避会误伤下一部剧。
+     */
     private static List<JSONObject> searchOfficialSources(String clean) {
         List<JSONObject> out = new ArrayList<>();
-        // iqiyi：一次搜索能拿到整季的分集，直接展开
-        try {
-            out.addAll(searchIqiyi(clean));
-        } catch (Throwable t) {
-            System.err.println("[danmaku] search iqiyi failed: " + t);
+        List<java.util.concurrent.Future<List<JSONObject>>> fs = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        if (!danmakuSourceDown("iqiyi")) {
+            names.add("iqiyi");
+            fs.add(POOL.submit(() -> searchIqiyi(clean)));
         }
-        try {
-            out.addAll(searchTencent(clean));
-        } catch (Throwable t) {
-            System.err.println("[danmaku] search tencent failed: " + t);
+        if (!danmakuSourceDown("tencent")) {
+            names.add("tencent");
+            fs.add(POOL.submit(() -> searchTencent(clean)));
         }
-        /*
-         * 360 看（采集站）：补的是「前两家搜不到正片」的缺口。
-         *
-         * 实测（2026-11-02）：
-         *   · 凡人修仙传 —— 爱奇艺搜索只有片花/解说/游戏（正片在 B站 + 优酷），
-         *     360 给出 {@code bilibili1} 196 集、{@code youku}；
-         *   · 小城良方 —— 360 给 29 集，爱奇艺只给 20 集（多出未上线的预告集）；
-         *   · 庆余年第二季 / 我不是大师 —— 360 的站内索引**反而 0 条**，
-         *     所以它是**补充**而不是替代，必须排在前两家之后。
-         *
-         * 它自己不含弹幕（上游 getEpisodeDanmu 是空函数），返回的是
-         * 「哪个平台、第几集、播放页 URL」——用来定位真正的弹幕源。
-         */
-        try {
-            out.addAll(search360(clean));
-        } catch (Throwable t) {
-            System.err.println("[danmaku] search 360 failed: " + t);
+        if (!danmakuSourceDown("360")) {
+            names.add("360");
+            fs.add(POOL.submit(() -> search360(clean)));
+        }
+        long deadline = System.currentTimeMillis() + 9_000L;
+        for (int i = 0; i < fs.size(); i++) {
+            long left = deadline - System.currentTimeMillis();
+            if (left <= 0) break;
+            try {
+                List<JSONObject> r = fs.get(i).get(left, java.util.concurrent.TimeUnit.MILLISECONDS);
+                if (r != null && !r.isEmpty()) out.addAll(r);
+            } catch (java.util.concurrent.TimeoutException te) {
+                System.err.println("[danmaku] search " + names.get(i) + " timeout (9s budget)");
+            } catch (Throwable t) {
+                markDanmakuSource(names.get(i), false);
+                System.err.println("[danmaku] search " + names.get(i) + " failed: " + t);
+            }
         }
         return out;
     }
@@ -6791,6 +6948,25 @@ public class ApiServer {
 
     private static List<JSONObject> search360(String clean) throws Exception {
         List<JSONObject> out = new ArrayList<>();
+        /*
+         * 360 结果缓存 5 分钟：自动链每一集都会调 tencentVidFrom360 → search360，
+         * 而 360 搜索实测 1–3 秒（还带 3 次重试）。同一部剧连看时只需搜一次，
+         * 否则每集首屏都被这 1–3 秒挤占（实测 ep4 冷抓 8.08s 仍落空）。
+         * 空结果不缓存：360 会间歇性返回空，缓存住会让整部剧 5 分钟没弹幕。
+         */
+        String cached360 = S360_CACHE.get(clean);
+        if (cached360 != null && !cached360.isEmpty()) {
+            try {
+                JSONArray a = new JSONArray(cached360);
+                for (int i = 0; i < a.length(); i++) {
+                    JSONObject o = a.optJSONObject(i);
+                    if (o != null) out.add(o);
+                }
+                if (!out.isEmpty()) return out;
+            } catch (Exception ignored) {
+                S360_CACHE.remove(clean);
+            }
+        }
         String[] parts = splitSeasonKeyword(clean);
         String base = parts[0].isEmpty() ? clean : parts[0];
         int wantSeason = cnNum(parts[1]);
@@ -6923,8 +7099,17 @@ public class ApiServer {
             System.out.println("[danmaku] 360: " + title + " → "
                     + bySite.keySet() + " 共 " + out.size() + " 集");
         }
+        if (!out.isEmpty()) {
+            try {
+                S360_CACHE.put(clean, new JSONArray(out).toString(), 5 * 60_000L);
+            } catch (Exception ignored) {
+            }
+        }
         return out;
     }
+
+    /** 360 站内搜索结果（clean → 候选 JSON），5 分钟。 */
+    private static final TtlCache S360_CACHE = new TtlCache(32, 2_000_000L);
 
     /** 从标题里抽季度号（第2季 / 第二季 / Season 2 / S2）。 */
     private static int extractSeasonNo(String title) {
@@ -7050,33 +7235,52 @@ public class ApiServer {
         JSONArray docs = data == null ? null : data.optJSONArray("docinfos");
         if (docs == null) return out;
 
+        /*
+         * 先挑「最像目标片名」的专辑，再展开分集。
+         *
+         * 旧实现遇到第一个频道匹配的正片就 break：搜「庆余年」时第一季/第二季/
+         * 解说版都在 docinfos 里，顺序由上游决定，经常拿到错季 —— 弹幕时间轴
+         * 和剧情对不上。评分只看标题/季号/集数，不做硬过滤（别名会误杀）。
+         */
+        JSONObject best = null;
+        JSONArray bestVids = null;
+        String bestTitle = clean;
+        int bestScore = Integer.MIN_VALUE;
         for (int i = 0; i < docs.length(); i++) {
             JSONObject album = docs.optJSONObject(i).optJSONObject("albumDocInfo");
             if (album == null) continue;
             if (!IQIYI_CHANNEL.matcher(album.optString("channel", "")).matches()) continue;
-            String title = album.optString("albumTitle", clean);
             JSONArray vids = album.optJSONArray("videoinfos");
-            if (vids == null) continue;
-            for (int k = 0; k < vids.length(); k++) {
-                JSONObject v = vids.optJSONObject(k);
-                if (v == null) continue;
-                String tvId = String.valueOf(v.optLong("tvId", 0));
-                int ep = v.optInt("itemNumber", k + 1);
-                if (tvId.length() < 8) continue;
-                // 把时长一起带进缓存：真正取弹幕时按 300 秒一片算分片数，
-                // 没有时长就只能瞎猜（早先传集数 → 只下 1 片）。
-                int dur = v.optInt("timeLength", 0);
-                if (dur > 0) IQIYI_DURATION.put(tvId, dur);
-                out.add(new JSONObject()
-                        .put("name", title + " 第" + ep + "集")
-                        .put("url", "/api/proxy/danmaku/xml?id=iqiyi:" + tvId + ":" + ep)
-                        .put("id", "iqiyi:" + tvId + ":" + ep)
-                        .put("source", "iqiyi")
-                        .put("label", "爱爱")
-                        .put("episode", ep)
-                        .put("host", "iqiyi.com"));
+            if (vids == null || vids.length() == 0) continue;
+            String title = album.optString("albumTitle", clean);
+            int score = danmakuTitleScore(clean, title, vids.length());
+            if (score > bestScore) {
+                bestScore = score;
+                best = album;
+                bestVids = vids;
+                bestTitle = title;
             }
-            break;   // 只取第一个正片
+        }
+        if (best == null || bestVids == null) return out;
+
+        for (int k = 0; k < bestVids.length(); k++) {
+            JSONObject v = bestVids.optJSONObject(k);
+            if (v == null) continue;
+            String tvId = String.valueOf(v.optLong("tvId", 0));
+            int ep = v.optInt("itemNumber", k + 1);
+            if (tvId.length() < 8) continue;
+            // 把时长一起带进缓存：真正取弹幕时按 300 秒一片算分片数，
+            // 没有时长就只能瞎猜（早先传集数 → 只下 1 片）。
+            int dur = v.optInt("timeLength", 0);
+            if (dur > 0) IQIYI_DURATION.put(tvId, dur);
+            out.add(new JSONObject()
+                    .put("name", bestTitle + " 第" + ep + "集")
+                    .put("url", "/api/proxy/danmaku/xml?id=iqiyi:" + tvId + ":" + ep)
+                    .put("id", "iqiyi:" + tvId + ":" + ep)
+                    .put("source", "iqiyi")
+                    .put("label", "爱爱")
+                    .put("episode", ep)
+                    .put("host", "iqiyi.com"));
         }
         return out;
     }
@@ -7105,12 +7309,21 @@ public class ApiServer {
         JSONArray list = normal == null ? null : normal.optJSONArray("itemList");
         if (list == null) return out;
 
+        /*
+         * 按标题/季号排序：自动抓取只取 out.get(0)，必须把最匹配的那条放最前。
+         * 腾讯搜索的 doc.title 带 <em> 高亮，评分前先剥掉。
+         */
+        List<JSONObject> picked = new ArrayList<>();
+        List<Integer> scores = new ArrayList<>();
         for (int i = 0; i < list.length() && i < 5; i++) {
             JSONObject doc = list.optJSONObject(i).optJSONObject("doc");
             if (doc == null) continue;
             String cid = doc.optString("id", "");
             if (cid.isEmpty()) continue;
-            out.add(new JSONObject()
+            String rawTitle = doc.optString("title", doc.optString("videoTitle", ""));
+            String title = rawTitle.replaceAll("<[^>]+>", "");
+            int eps = Math.max(doc.optInt("episodeCount", 0), doc.optInt("videoNum", 0));
+            picked.add(new JSONObject()
                     .put("name", clean + " · 腾疼")
                     .put("url", "/api/proxy/danmaku/xml?id=tencent:" + cid + ":1")
                     .put("id", "tencent:" + cid + ":1")
@@ -7118,7 +7331,19 @@ public class ApiServer {
                     .put("label", "腾疼")
                     .put("episode", 1)
                     .put("host", "v.qq.com"));
+            scores.add(danmakuTitleScore(clean, title, eps));
         }
+        for (int a = 1; a < picked.size(); a++) {
+            for (int b = a; b > 0 && scores.get(b) > scores.get(b - 1); b--) {
+                JSONObject jo = picked.get(b);
+                picked.set(b, picked.get(b - 1));
+                picked.set(b - 1, jo);
+                int si = scores.get(b);
+                scores.set(b, scores.get(b - 1));
+                scores.set(b - 1, si);
+            }
+        }
+        out.addAll(picked);
         return out;
     }
 
@@ -7498,13 +7723,37 @@ public class ApiServer {
          */
         Thread t = new Thread(() -> {
             try {
+                /*
+                 * 让路 5 秒，不是 1.5 秒（2026-11-19 实测改）。
+                 *
+                 * 预取和主请求同时抓同一集时，两边各打一遍 360 搜索 + 90 个
+                 * 腾讯分片，主请求的 6 秒首屏预算被拖爆 → 返回 0 条，而后台
+                 * 补全 6 秒后才写入 27,127 条。预取提前 3 分钟触发，等 5 秒
+                 * 完全不影响它的价值；用户真在这 5 秒内切集，主请求独占上游
+                 * 反而更快，预取醒来看到 inflight 会自动放弃。
+                 */
+                Thread.sleep(5_000);
                 long t0 = System.currentTimeMillis();
-                String r = fetchDanmakuAuto(clean, ep);
-                System.err.println("[danmaku] prefetch " + clean + " ep" + ep
-                        + (r == null || r.isEmpty()
-                            ? " 无结果"
-                            : " ← " + countTags(r) + " 条")
-                        + " (" + (System.currentTimeMillis() - t0) + "ms)");
+                String r = fetchDanmakuAutoPrefetch(clean, ep);
+                int n = countTags(r);
+                /*
+                 * 质量门：低于 120 条基本是残缺结果（正常剧集几千条）。
+                 * 不删的话主请求会直接命中这份缓存并 return，后台补全也
+                 * 因为“已有缓存”而不触发 —— 用户整集只有几十条弹幕。
+                 */
+                if (n > 0 && n < 120) {
+                    DANMAKU_CACHE.remove(cacheKey);
+                    DANMAKU_SRC_CACHE.remove(cacheKey);
+                    danmakuDiskRemove(cacheKey);
+                    System.err.println("[danmaku] prefetch low-quality " + clean + " ep" + ep
+                            + " (" + n + " 条) → 丢弃，主请求重抓");
+                } else {
+                    System.err.println("[danmaku] prefetch " + clean + " ep" + ep
+                            + (r == null || r.isEmpty() ? " 无结果" : " ← " + n + " 条")
+                            + " (" + (System.currentTimeMillis() - t0) + "ms)");
+                }
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
             } catch (Throwable ignored) {
                 // 预取失败不影响任何东西
             }
@@ -7727,9 +7976,49 @@ public class ApiServer {
      */
     private static final java.util.Set<String> DANMAKU_INFLIGHT =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /**
+     * 正在跑预取的 key（低优先级标记）。
+     *
+     * <p>主请求撞上它只等 1 秒（2×500ms）就自己抓，不陪预取跑满 20 秒；
+     * 反向：预取看到主请求在跑就直接放弃——预取是顺手优化，不能挡用户。
+     */
+    private static final java.util.Set<String> DANMAKU_PREFETCHING =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /**
+     * 预取线程不写负缓存。
+     *
+     * <p>实测（2026-11-19）：预取的 6 秒首屏预算内所有源都没返回时，
+     * fetchDanmakuAuto0 会写 30 秒的空串负缓存；主请求 1 秒后自己抓，
+     * 反而先命中这份空缓存 → 整集 0 条。预取是"顺手提前抓"，它没拿到
+     * 不等于没有，不能替主请求做否定结论。
+     */
+    private static final ThreadLocal<Boolean> DM_NO_NEGATIVE_CACHE = new ThreadLocal<>();
 
     private static String fetchDanmakuAuto(String clean, int ep, String[] sourceOut) {
         return fetchDanmakuAuto(clean, ep, sourceOut, false);
+    }
+
+    /**
+     * 预取专用入口：低优先级。
+     *
+     * <p>已经有主请求在抓这一集 → 直接放弃（主请求会写缓存，预取再做一遍没意义）；
+     * 自己开跑时打上 {@link #DANMAKU_PREFETCHING}，让后到的主请求别等满 20 秒。
+     */
+    private static String fetchDanmakuAutoPrefetch(String clean, int ep) {
+        String cacheKey = "dm|" + clean + "|" + ep;
+        if (DANMAKU_INFLIGHT.contains(cacheKey)) {
+            System.err.println("[danmaku] prefetch skipped (main request running): "
+                    + clean + " ep" + ep);
+            return "";
+        }
+        DANMAKU_PREFETCHING.add(cacheKey);
+        DM_NO_NEGATIVE_CACHE.set(Boolean.TRUE);
+        try {
+            return fetchDanmakuAuto(clean, ep, null, false);
+        } finally {
+            DM_NO_NEGATIVE_CACHE.remove();
+            DANMAKU_PREFETCHING.remove(cacheKey);
+        }
     }
 
     /**
@@ -7742,7 +8031,19 @@ public class ApiServer {
      */
     private static String fetchDanmakuAuto(
             String clean, int ep, String[] sourceOut, boolean fresh) {
+        return fetchDanmakuAuto(clean, ep, sourceOut, fresh, null);
+    }
+
+    /**
+     * @param prefer 用户上一集手选的平台（iqiyi/tencent/...），排在降级链最前。
+     *               只影响官方源顺序；没有对应内置实现的平台（youku/mango）
+     *               保持原顺序，由聚合源覆盖。
+     */
+    private static String fetchDanmakuAuto(
+            String clean, int ep, String[] sourceOut, boolean fresh, String prefer) {
         String cacheKey = "dm|" + clean + "|" + ep;
+        // 只有真正 add 成功的那次请求才有权在 finally 里删标记
+        boolean registered = false;
         if (!fresh) {
             String cached = DANMAKU_CACHE.get(cacheKey);
             if (cached != null) {
@@ -7778,8 +8079,14 @@ public class ApiServer {
              * 并发去重：同一集已经有人在抓就等它，不要重复打上游。
              * 等不到（超时/对方异常）就自己抓，宁可多打一次也不能卡住。
              */
-            if (!DANMAKU_INFLIGHT.add(cacheKey)) {
-                for (int i = 0; i < 40; i++) {          // 最多等 20 秒
+            registered = DANMAKU_INFLIGHT.add(cacheKey);
+            if (!registered) {
+                /*
+                 * 对方是预取就只等 1 秒：预取可能正在跑 danmu_api 的 10+ 秒，
+                 * 用户点播放不该陪它。等到缓存就赚，等不到立刻自己抓。
+                 */
+                int maxLoops = DANMAKU_PREFETCHING.contains(cacheKey) ? 2 : 40;
+                for (int i = 0; i < maxLoops; i++) {
                     try {
                         Thread.sleep(500);
                     } catch (InterruptedException ie) {
@@ -7798,10 +8105,16 @@ public class ApiServer {
             }
         }
         try {
-            return fetchDanmakuAuto0(clean, ep, cacheKey, sourceOut, fresh);
+            return fetchDanmakuAuto0(clean, ep, cacheKey, sourceOut, fresh, prefer);
         } finally {
-            // fresh 没有登记 inflight，不能误删别的请求的标记
-            if (!fresh) DANMAKU_INFLIGHT.remove(cacheKey);
+            /*
+             * 只删自己登记的标记。
+             *
+             * 旧实现无条件 remove：主请求等预取超时后自己抓，结束时会把
+             * 预取还没完成的 inflight 标记删掉 → 第三个请求以为没人抓、
+             * 又起一份。用 registered 区分“我登记的”才是正确语义。
+             */
+            if (registered) DANMAKU_INFLIGHT.remove(cacheKey);
         }
     }
 
@@ -7880,8 +8193,32 @@ public class ApiServer {
      * 留一倍余量；再长用户已经在看转圈了，不如先给个空让界面别卡。
      */
     private static String fetchDanmakuAuto0(
-            String clean, int ep, String cacheKey, String[] sourceOut, boolean skipCacheWrite) {
+            String clean, int ep, String cacheKey, String[] sourceOut, boolean skipCacheWrite,
+            String prefer) {
         String[] order = danmakuOrder();
+        /*
+         * 手选源跨集沿用：上一集用户点了腾讯，这一集就把腾讯排到最前。
+         * 只重排不删源 —— prefer 的平台没命中时仍然按原链兜底。
+         */
+        if (prefer != null && !prefer.isEmpty()) {
+            String p = normDanmakuPlatform(prefer, null);
+            if ("iqiyi".equals(p) || "tencent".equals(p)) {
+                List<String> reordered = new ArrayList<>(order.length);
+                reordered.add(p);
+                for (String s : order) {
+                    if (!s.equals(p)) reordered.add(s);
+                }
+                order = reordered.toArray(new String[0]);
+                System.err.println("[danmaku] prefer " + p + " → order "
+                        + java.util.Arrays.toString(order));
+            }
+        }
+        /*
+         * 异常退避：某一家刚抛过（风控/网络）就跳过 60 秒，别让每一集都
+         * 先等它超时。全部都在冷却时回退原顺序——宁可试一次也不能没弹幕。
+         */
+        String[] filtered = filterCoolingSources(order);
+        if (filtered.length > 0) order = filtered;
         // 单源不必起线程：少一层调度，也让日志更直白
         if (order.length == 1) {
             String only = order[0];
@@ -7901,7 +8238,26 @@ public class ApiServer {
         List<String> srcNames = new ArrayList<>();
         for (String src : order) {
             srcNames.add(src);
-            futures.add(pool.submit(() -> runDanmakuSource(src, clean, ep)));
+            /*
+             * 聚合源延迟 2 秒启动（除非它排第一）。
+             *
+             * 实测（2026-11-19）：三源同时发时，聚合的 7 个 host 并发抢带宽，
+             * 腾讯 90 个分片从 4.7 秒拖到 10 秒+，主请求 10 秒预算落空返回 0 条，
+             * 后台补全才写入 27,064 条。聚合本来就是"后台补全"角色（不排第一时
+             * 用户没选它优先），晚 2 秒不影响最终结果，却能让首屏快一倍。
+             */
+            final boolean delayAgg = "aggregator".equals(src)
+                    && !"aggregator".equals(order[0]);
+            futures.add(pool.submit(() -> {
+                if (delayAgg) {
+                    try {
+                        Thread.sleep(2_000);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                return runDanmakuSource(src, clean, ep);
+            }));
         }
         /*
          * ★ 提交完立刻 shutdown()（不是 shutdownNow()）。
@@ -8137,7 +8493,11 @@ public class ApiServer {
                 r = fetchDanmakuFromTencent(clean, ep);
             }
         } catch (Throwable t) {
+            if ("iqiyi".equals(src) || "tencent".equals(src)) markDanmakuSource(src, false);
             System.err.println("[danmaku] source " + src + " threw: " + t);
+        }
+        if (r != null && !r.isEmpty() && ("iqiyi".equals(src) || "tencent".equals(src))) {
+            markDanmakuSource(src, true);
         }
         // 底层函数触顶截断时留下的真实总数 → 转存给响应头（X-Danmaku-Total）
         int[] trueTotal = DANMAKU_TOTAL_TL.get();
@@ -8163,13 +8523,30 @@ public class ApiServer {
                     30 * 60_000L);
             danmakuDiskPut(cacheKey, result);
         } else {
-            DANMAKU_CACHE.put(cacheKey, "", 30_000L);
+            /*
+             * 预取失败不写负缓存：它的 6 秒预算内没拿到，不代表这一集没有；
+             * 写了会让 1 秒后自己抓的主请求先命中空串（实测 2026-11-19：
+             * 预取 ep2 空 → 主请求 0 条，而后台补全明明抓到了 1388806B）。
+             */
+            if (!Boolean.TRUE.equals(DM_NO_NEGATIVE_CACHE.get())) {
+                DANMAKU_CACHE.put(cacheKey, "", 30_000L);
+            }
             result = "";
         }
         if (sourceOut != null) {
             sourceOut[0] = result.isEmpty() ? "none" : (hit == null || hit.isEmpty() ? "unknown" : hit);
         }
         return result;
+    }
+
+    /** 过滤掉异常冷却中的官方源；aggregator 由 host 级冷却单独管理。 */
+    private static String[] filterCoolingSources(String[] order) {
+        List<String> out = new ArrayList<>(order.length);
+        for (String s : order) {
+            if (("iqiyi".equals(s) || "tencent".equals(s)) && danmakuSourceDown(s)) continue;
+            out.add(s);
+        }
+        return out.toArray(new String[0]);
     }
 
     /**
@@ -8232,13 +8609,24 @@ public class ApiServer {
      * <ul>
      *   <li>聚合<b>排第一</b> → 10s。用户明确选了"弹幕 API 优先"，就该等它；
      *       10s 是从实测 11–14s 里取的保守下界（多数命中在 9–11s）。</li>
-     *   <li>聚合排后面 → 6s。直连最慢 5s，等得到；聚合慢慢在后台补。</li>
-     *   <li>没有聚合（纯直连）→ 6s。</li>
+     *   <li>聚合排后面 → 10s（2026-11-19 从 6s 提高）。腾讯 360 链冷抓实测
+     *       6.10s / 8.08s 两次都卡在更低的预算上返回 0 条，而分片本身只需
+     *       3–5s；差的是 360 搜索的 1–3s。360 结果现已缓存 5 分钟。</li>
+     *   <li>没有聚合（纯直连）→ 10s。</li>
      * </ul>
      */
     private static long danmakuFirstScreenMs(String[] order) {
         if (order.length > 0 && "aggregator".equals(order[0])) return 10_000L;
-        return 6_000L;
+        /*
+         * 10 秒（2026-11-19 实测）。
+         *
+         * 腾讯 360 链冷抓（360 搜索 1–3 秒 + 分片表 + 90 个分片 4 并发）
+         * 实测到 8.08 秒仍未完成：6 秒预算返回 0 条、8 秒预算也落空，
+         * 后台补全随后才写入 27,127 条。360 结果已做 5 分钟缓存，同剧连看
+         * 时后续集只需分片（~5 秒）；首集仍可能 8 秒+，所以给 10 秒。
+         * 弹幕是异步加载，不阻塞视频播放；真没弹幕时多等 2 秒可接受。
+         */
+        return 10_000L;
     }
 
     /**
@@ -8506,6 +8894,13 @@ public class ApiServer {
                 chars -= ((String) victim.getValue()[0]).length();
                 it.remove();
             }
+        }
+
+        /** 删除一个键（预取质量门用：低质量结果不能留着挡住主请求重抓）。 */
+        synchronized void remove(String key) {
+            Object[] old = map.remove(key);
+            if (old != null) chars -= ((String) old[0]).length();
+            if (chars < 0) chars = 0;
         }
 
         synchronized int size() {
@@ -8807,6 +9202,17 @@ public class ApiServer {
         }
     }
 
+    /** 删除一集的磁盘缓存（预取质量门：低质量结果不能挡住主请求重抓）。 */
+    private static void danmakuDiskRemove(String key) {
+        try {
+            java.io.File f = danmakuCacheFile(key);
+            if (f != null && f.exists() && !f.delete()) {
+                System.err.println("[danmaku] 低质量缓存删除失败: " + key);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     /**
      * 「这一集弹幕是哪个源给的」。与 DANMAKU_CACHE 同 key、同 TTL。
      *
@@ -8910,21 +9316,31 @@ public class ApiServer {
                 System.err.println("[danmaku] iqiyi search: no docinfos");
                 return "";
             }
+            JSONObject best = null;
+            JSONArray bestVids = null;
+            int bestScore = Integer.MIN_VALUE;
             for (int i = 0; i < docs.length(); i++) {
                 JSONObject album = docs.optJSONObject(i).optJSONObject("albumDocInfo");
                 if (album == null) continue;
                 if (!IQIYI_CHANNEL.matcher(album.optString("channel", "")).matches()) continue;
                 JSONArray vids = album.optJSONArray("videoinfos");
                 if (vids == null || vids.length() == 0) continue;
-                int idx = Math.max(0, Math.min(ep - 1, vids.length() - 1));
-                JSONObject v = vids.optJSONObject(idx);
-                if (v == null) continue;
-                String tvId = String.valueOf(v.optLong("tvId", 0));
-                if (tvId.length() < 8) continue;
-                // 必须传真实时长：分片数 = ceil(时长/300)，传集数会只下 1 片
-                int dur = v.optInt("timeLength", 0);
-                return fetchIqiyiBulletXml(tvId, dur);
+                int score = danmakuTitleScore(clean, album.optString("albumTitle", clean), vids.length());
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = album;
+                    bestVids = vids;
+                }
             }
+            if (best == null || bestVids == null) return "";
+            int idx = Math.max(0, Math.min(ep - 1, bestVids.length() - 1));
+            JSONObject v = bestVids.optJSONObject(idx);
+            if (v == null) return "";
+            String tvId = String.valueOf(v.optLong("tvId", 0));
+            if (tvId.length() < 8) return "";
+            // 必须传真实时长：分片数 = ceil(时长/300)，传集数会只下 1 片
+            int dur = v.optInt("timeLength", 0);
+            return fetchIqiyiBulletXml(tvId, dur);
         } catch (Throwable t) {
             System.err.println("[danmaku] iqiyi by title: " + t);
         }
@@ -8999,6 +9415,48 @@ public class ApiServer {
         }
     }
 
+    /** 腾讯 vid → 正片时长（秒）；拿不到返回 0（调用方不过滤）。 */
+    private static final Map<String, Integer> TENCENT_DURATION = new ConcurrentHashMap<>();
+
+    private static int tencentDurationOf(String vid) {
+        if (vid == null || vid.isEmpty()) return 0;
+        Integer cached = TENCENT_DURATION.get(vid);
+        if (cached != null) return cached;
+        int sec = 0;
+        String body = null;
+        try {
+            /*
+             * 必须用 fetchText（DoH + Host 头），不能用 fetchTextPlain：
+             * 本机挂 TUN（OpenClash）时 vv.video.qq.com 会被系统 DNS 解析成
+             * 198.18.x 的 fake-ip，普通 HttpURLConnection 直接超时（实测
+             * duration unknown，而同 URL 的 curl 正常）。
+             */
+            body = fetchText("https://vv.video.qq.com/getinfo?vids=" + vid
+                    + "&platform=101001&charge=0&otype=json", 6_000, TENCENT_REFERER);
+            if (body != null) {
+                /*
+                 * 响应是 JSONP（QZOutputJson={...};）。td 实测是**字符串**
+                 * （"td":"2730.22"），不是数字——只匹配裸数字会让所有集都
+                 * duration unknown（2026-11-19 实测踩过）。
+                 */
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                        .compile("\"td\"\\s*:\\s*\"?([0-9]+(?:\\.[0-9]+)?)")
+                        .matcher(body);
+                if (m.find()) sec = (int) Math.ceil(Double.parseDouble(m.group(1)));
+            }
+        } catch (Throwable ignored) {
+        }
+        if (sec > 0) {
+            if (TENCENT_DURATION.size() > 512) TENCENT_DURATION.clear();
+            TENCENT_DURATION.put(vid, sec);
+        } else {
+            System.err.println("[danmaku] tencent duration unknown for " + vid
+                    + " body=" + (body == null ? "null"
+                        : body.length() + ":" + body.substring(0, Math.min(120, body.length()))));
+        }
+        return sec;
+    }
+
     private static String fetchTencentXml(String vid, int ep) {
         String cacheKey = "tx|" + vid;
         String cached = DANMAKU_CACHE.get(cacheKey);
@@ -9043,9 +9501,10 @@ public class ApiServer {
         if (segs.isEmpty()) return "";
         segs.sort((a, b) -> Long.compare((Long) a[0], (Long) b[0]));
 
-        // 3) 并发取片（上限 4，爱奇艺 CDN 那边的经验：太高会被限流）
+        // 3) 并发取片（腾讯分片实测 90+ 片；并发 8 把 6.5s 压到 ~4s。
+        //    爱奇艺那条仍是 4，别混——腾讯 dm.video.qq.com 没观察到限流）
         java.util.concurrent.ExecutorService pool =
-                java.util.concurrent.Executors.newFixedThreadPool(4);
+                java.util.concurrent.Executors.newFixedThreadPool(8);
         List<String[]> all = java.util.Collections.synchronizedList(new ArrayList<>());
         try {
             List<java.util.concurrent.Future<?>> fs = new ArrayList<>();
@@ -9171,6 +9630,24 @@ public class ApiServer {
         }
         // 时间现在是小数秒（保留毫秒），排序必须按 double，不能 Integer.parseInt
         sorted.sort((x, y) -> Double.compare(Double.parseDouble(x[0]), Double.parseDouble(y[0])));
+        /*
+         * 时长校验：腾讯分片里常见 30% 以上的弹幕时间超过正片长度
+         * （花絮/预告/其他版本的死数据）。前端 filterByDuration 会过滤，
+         * 但后端缓存里留着会白占内存/带宽，还会让 tellLaterIfBetter 的
+         * 总条数比较被死数据带偏。拿到真实时长后在这里先删掉。
+         * getinfo 失败（0）就不过滤，保持原行为。
+         */
+        int durSec = tencentDurationOf(vid);
+        if (durSec > 0 && !sorted.isEmpty()) {
+            final int limit = durSec + 5;
+            int before = sorted.size();
+            sorted.removeIf(x -> Double.parseDouble(x[0]) > limit);
+            int removed = before - sorted.size();
+            if (removed > 0) {
+                System.err.println("[danmaku] tencent " + vid + " dropped " + removed
+                        + " over-duration (" + durSec + "s)");
+            }
+        }
         java.util.List<String[]> capped = capDanmakuList(sorted);
         if (capped.size() < sorted.size()) {
             // 截断前的真实条数 → ThreadLocal 带回 runDanmakuSource（本函数没有 clean/ep）
@@ -9401,8 +9878,10 @@ public class ApiServer {
         // 顺序见 DANMAKU_PRIORITY；14 秒的旧串行路径已改为分片并行，命中缓存 ~0ms。
         // fresh=1：客户端 12 秒后台补全检查用，跳过缓存强制重抓一次。
         boolean fresh = "1".equals(q.getOrDefault("fresh", ""));
+        // 上一集手选过平台 → 这一集优先同平台（前端 dmManualSource 透传）
+        String prefer = q.getOrDefault("prefer", "").trim();
         String[] src = new String[1];
-        String xml = fetchDanmakuAuto(clean, epNo, src, fresh);
+        String xml = fetchDanmakuAuto(clean, epNo, src, fresh, prefer);
         String from = src[0] == null ? "unknown" : src[0];
 
         /*
