@@ -266,3 +266,89 @@ body {
     bottom: 76px !important;
   }
 }
+
+
+/* ───────────────────────────────────────────────────────────────
+   更新日志：时间轴
+   版本号仍用 ## 标题（右侧「本页目录」靠它），日期是标题下方的小字；
+   左侧轨道的「节点 + 竖线」全部由下面这些伪元素画出来。
+   ─────────────────────────────────────────────────────────────── */
+.changelog-page .vp-doc h2 {
+  position: relative;
+  margin: 2.2rem 0 0.15rem;
+  padding: 0 0 0 2.05rem;
+  border-top: none;
+  font-size: 1.3rem;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+}
+
+.changelog-page .vp-doc h2::before {
+  content: '';
+  position: absolute;
+  left: 0.24rem;
+  top: 50%;
+  width: 0.68rem;
+  height: 0.68rem;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: var(--vp-c-brand-1);
+  box-shadow: 0 0 0 4px var(--vp-c-bg), 0 0 0 5px var(--vp-c-divider);
+}
+
+.changelog-page .cl-date {
+  position: relative;
+  margin: 0 0 0.55rem;
+  padding-left: 2.05rem;
+  font-size: 0.8rem;
+  color: var(--vp-c-text-2);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+}
+
+.changelog-page .cl-date::before {
+  content: '';
+  position: absolute;
+  left: 0.57rem;
+  top: -0.15rem;
+  bottom: -0.8rem;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--vp-c-divider);
+}
+
+.changelog-page .vp-doc h2 + p.cl-date + ol,
+.changelog-page .vp-doc h2 + ol {
+  position: relative;
+  margin: 0 0 0.3rem;
+  padding-left: 2.05rem;
+}
+
+.changelog-page .vp-doc h2 + p.cl-date + ol::before,
+.changelog-page .vp-doc h2 + ol::before {
+  content: '';
+  position: absolute;
+  left: 0.57rem;
+  top: -0.2rem;
+  bottom: 0.55rem;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--vp-c-divider);
+}
+
+.changelog-page .vp-doc h2 + p.cl-date + ol > li,
+.changelog-page .vp-doc h2 + ol > li {
+  margin: 0.3rem 0;
+}
+
+.changelog-page .cl-date--pending {
+  color: var(--vp-c-text-3);
+  font-style: italic;
+}
+
+@media (max-width: 640px) {
+  .changelog-page .vp-doc h2 {
+    margin-top: 1.8rem;
+    font-size: 1.18rem;
+  }
+}

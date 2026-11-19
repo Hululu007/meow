@@ -64,24 +64,32 @@ function syncChangelog() {
   const start = raw.search(/^## \d/m)
   if (start < 0) throw new Error('CHANGELOG.md 里找不到版本小节')
 
-  // 版本日期取自发版 tag；CHANGELOG.md 本体保持不带日期，verify.ps1 的格式门禁不受影响
+  // 版本日期取自发版 tag；CHANGELOG.md 本体保持不带日期，verify.ps1 的格式门禁不受影响。
+  // 日期渲染成标题下方的小字（时间轴样式见 theme/custom.css 的 .changelog-page）。
   const dates = versionDates()
+  let isFirstVersion = true
   const versions = raw
     .slice(start)
     .trim()
-    .replace(/^## (\d+\.\d+\.\d+(?:-fix\d+)?)$/gm, (line, ver) =>
-      dates[ver] ? `## ${ver} · ${dates[ver]}` : line,
-    )
+    .replace(/^## (\d+\.\d+\.\d+(?:-fix\d+)?)[ \t]*$/gm, (line, ver) => {
+      const first = isFirstVersion
+      isFirstVersion = false
+      const date = dates[ver]
+      if (date) return `## ${ver}\n\n<p class="cl-date">${date}</p>`
+      // 只有最新一版可能是「写进 CHANGELOG 但还没打 tag」；更老的版本没 tag 就不显示日期
+      return first ? `## ${ver}\n\n<p class="cl-date cl-date--pending">尚未发版</p>` : line
+    })
   const page = `---
 outline: [2, 3]
 editLink: false
+pageClass: changelog-page
 ---
 
 # 更新日志
 
 > 本页由仓库根目录的 [CHANGELOG.md](https://github.com/upchr/meow/blob/main/CHANGELOG.md)
 > 自动生成，**改它请改那份文件**，不要改这里。客户端内的更新弹框读的也是同一份。
-> 版本标题后的日期取自发版 tag；尚未发版的版本不显示日期。
+> 版本号下方的小字是发版日期（取自发版 tag）；尚未发版的版本标注「尚未发版」。
 
 版本号与打包产物的对应关系见 [下载与版本](../reference/downloads.md)。
 
