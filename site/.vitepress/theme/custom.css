@@ -341,11 +341,6 @@ body {
   margin: 0.3rem 0;
 }
 
-.changelog-page .cl-date--pending {
-  color: var(--vp-c-text-3);
-  font-style: italic;
-}
-
 @media (max-width: 640px) {
   .changelog-page .vp-doc h2 {
     margin-top: 1.8rem;

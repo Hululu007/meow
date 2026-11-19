@@ -18,11 +18,12 @@ const repoRoot = join(here, '..', '..')
 const siteRoot = join(here, '..')
 
 /**
- * 版本 → 发版日期：取 tag 的提交日期（`creatordate`）。
- * 同一版本可能有多个 tag（release-v* / fpk-v* / tv-v* …），优先 release-v*，其次无前缀 v*。
- * 浅克隆拿不到 tag 时返回空表，页面就不带日期（不会报错）。
+ * 发版信息：只认「形成发版资产」的 tag（全量 release-v*；部分发版 fpk-v* / tv-v* /
+ * pc-v* / plugins-v* / tv-plugins-* / ipa-v*）。无前缀 v* 只是版本标记、不产出资产，不算发版。
+ * 只取当前 HEAD 可达的 tag：公开库的更新日志只列公开历史里真实发过的版本。
+ * 没有 tag（浅克隆等）时返回空表，调用方回退为「不过滤」。
  */
-function versionDates() {
+function releaseInfo() {
   let out = ''
   try {
     // ★ 用 execFileSync 而不是 execSync：Windows 的 execSync 走 cmd，
@@ -30,29 +31,30 @@ function versionDates() {
     //   git ref 名不允许空格，所以用空格分隔两个字段是安全的。
     out = execFileSync(
       'git',
-      ['for-each-ref', '--format=%(refname:short) %(creatordate:short)', 'refs/tags'],
+      ['for-each-ref', '--merged=HEAD', '--format=%(refname:short) %(creatordate:short)', 'refs/tags'],
       { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     )
   } catch {
-    return {}
+    return { dates: {}, released: new Set() }
   }
   const prefixes = ['tv-plugins-', 'release-', 'plugins-', 'docker-', 'fpk-', 'ipa-', 'pc-', 'tv-']
-  const rankOf = (p) => (p === 'release-' ? 0 : p === '' ? 1 : 2)
+  const rankOf = (p) => (p === 'release-' ? 0 : 2)
   const best = {}
   for (const line of out.split('\n')) {
     const parts = line.trim().split(/\s+/)
     if (parts.length < 2) continue
     const tag = parts[0]
     const date = parts[1]
-    const pref = prefixes.find((p) => tag.startsWith(p)) ?? ''
+    const pref = prefixes.find((p) => tag.startsWith(p))
+    if (!pref) continue // 无前缀 v* 等只是标记，不算发版资产
     const ver = tag.slice(pref.length).replace(/^v/, '')
     if (!/^\d+\.\d+\.\d+(?:-fix\d+)?$/.test(ver)) continue
     const rank = rankOf(pref)
     if (!best[ver] || rank < best[ver].rank) best[ver] = { rank, date }
   }
-  const map = {}
-  for (const [ver, v] of Object.entries(best)) map[ver] = v.date
-  return map
+  const dates = {}
+  for (const [ver, v] of Object.entries(best)) dates[ver] = v.date
+  return { dates, released: new Set(Object.keys(best)) }
 }
 
 function syncChangelog() {
@@ -66,19 +68,20 @@ function syncChangelog() {
 
   // 版本日期取自发版 tag；CHANGELOG.md 本体保持不带日期，verify.ps1 的格式门禁不受影响。
   // 日期渲染成标题下方的小字（时间轴样式见 theme/custom.css 的 .changelog-page）。
-  const dates = versionDates()
-  let isFirstVersion = true
-  const versions = raw
-    .slice(start)
-    .trim()
-    .replace(/^## (\d+\.\d+\.\d+(?:-fix\d+)?)[ \t]*$/gm, (line, ver) => {
-      const first = isFirstVersion
-      isFirstVersion = false
-      const date = dates[ver]
-      if (date) return `## ${ver}\n\n<p class="cl-date">${date}</p>`
-      // 只有最新一版可能是「写进 CHANGELOG 但还没打 tag」；更老的版本没 tag 就不显示日期
-      return first ? `## ${ver}\n\n<p class="cl-date cl-date--pending">尚未发版</p>` : line
-    })
+  const { dates, released } = releaseInfo()
+  const kept = []
+  for (const block of raw.slice(start).trim().split(/\n(?=## )/)) {
+    const m = /^## (\d+\.\d+\.\d+(?:-fix\d+)?)[ \t]*\r?\n/.exec(block)
+    if (!m) continue
+    const ver = m[1]
+    // 没形成发版资产的版本不进站点（如只写进 CHANGELOG、未打 release tag 的修正版）
+    if (released.size > 0 && !released.has(ver)) continue
+    const date = dates[ver]
+    const rest = block.slice(m[0].length).trim()
+    kept.push(`## ${ver}` + (date ? `\n\n<p class="cl-date">${date}</p>` : '') + '\n\n' + rest)
+  }
+  if (kept.length === 0) throw new Error('过滤后没有任何版本可展示（tag 或 CHANGELOG 异常）')
+  const versions = kept.join('\n\n')
   const page = `---
 outline: [2, 3]
 editLink: false
@@ -89,7 +92,7 @@ pageClass: changelog-page
 
 > 本页由仓库根目录的 [CHANGELOG.md](https://github.com/upchr/meow/blob/main/CHANGELOG.md)
 > 自动生成，**改它请改那份文件**，不要改这里。客户端内的更新弹框读的也是同一份。
-> 版本号下方的小字是发版日期（取自发版 tag）；尚未发版的版本标注「尚未发版」。
+> 本页只列已形成发版资产的版本（全量发版或部分发版）；日期取自发版 tag。
 
 版本号与打包产物的对应关系见 [下载与版本](../reference/downloads.md)。
 
