@@ -256,6 +256,9 @@ impl AppUpdater {
         let safe = safe_file_name(file_name, urls.first().map(|s| s.as_str()).unwrap_or(""));
         let out_path = self.cache_dir.join(&safe);
         let _ = std::fs::remove_file(&out_path);
+        // 缓存里只该留"当前这一版"的安装包：每版一个文件，升几版就堆几十上百 MB
+        // （`clear_cache` 只是设置页的手动按钮，不会自动跑）。这里顺手清掉旧文件。
+        self.prune_stale_packages(&out_path);
 
         let cancel = Arc::new(AtomicBool::new(false));
         {
@@ -395,6 +398,9 @@ impl AppUpdater {
          * `--speed-limit 32768 --speed-time 8`：8 秒内平均低于 32KB/s 就让
          * curl 以退出码 28（timeout）结束，外层 download_with_fallback 收到
          * 「线路太慢」后换下一个候选。
+         *
+         * ★ 这两个数与前端 `ACCEL_LIMITS.slowSpeedBps / slowWindowMs` 是同一份
+         * 口径（三端统一，TV 侧见 `AppUpdater.java` 的慢启动保护）。调整时一起改。
          */
         cmd.args([
             "-L",
@@ -582,6 +588,30 @@ impl AppUpdater {
     /// 一起删掉。所以显式断言目录名，改错了直接报错而不是静默误删。
     ///
     /// <p>不删的东西（都在别的目录）：`prefs` / `history` / `favorites`
+    /// 清掉下载缓存里**除了本次目标之外**的旧安装包。
+    ///
+    /// <p>只删 1 小时前的文件：同一次会话里换线路重下时，旧文件是刚写的，
+    /// 误删会打断重试（单实例 + `active` 锁已经保证只有一个下载，这里是双保险）。
+    fn prune_stale_packages(&self, keep: &std::path::Path) {
+        let Ok(rd) = std::fs::read_dir(&self.cache_dir) else { return };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p == keep || !p.is_file() {
+                continue;
+            }
+            let stale = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.elapsed().ok())
+                .map(|d| d.as_secs() > 3600)
+                .unwrap_or(false);
+            if stale {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+
     /// （localStorage）、`plugins/`、`library/`、海报缓存。
     pub fn clear_cache(&self) -> Result<u64, String> {
         // 只允许清名为 `updates` 的目录

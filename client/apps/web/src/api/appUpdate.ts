@@ -49,9 +49,14 @@ import { isDesktopShell } from '@/compat/shell'
 import { getPrefs, savePrefs } from '../stores/prefs'
 import { getPluginSource } from '@/api'
 import {
+  ACCEL_LIMITS,
+  accelRaceDisabled,
   DEFAULT_GIT_ACCEL,
   gitAccelCandidates,
   markAccelResult,
+  raceFirst,
+  rememberAccelWinner,
+  warmUpdateHosts,
   type GitAccelPrefs,
 } from './gitAccel'
 
@@ -945,7 +950,41 @@ async function fetchManifestPrimary(url: string, token: string): Promise<string>
     }
   }
 
+  // PC：前端并发竞速（TV 上面已走原生 manifest-any；纯 Web 不检查壳更新）。
+  // ★ 串行 + 每条 30s curl 超时的最坏耗时是 90–150s，竞速后 ≈ 最快成功那条。
+  // ★ 必须排除 jsDelivr：它对 raw 有小时级缓存，抢答会拿到旧清单、
+  //   把「有新版本」判成「已是最新」。串行兜底里它仍在（原行为不变）。
+  const inv = tauriInvoke()
+  if (inv && !accelRaceDisabled()) {
+    const raced = gitAccelCandidates(target, currentAccel(), { for: 'appUpdate' })
+      .filter((c) => c.proxyId !== 'jsdelivr')
+    if (raced.length > 1) {
+      try {
+        const { text, item } = await raceFirst(
+          raced,
+          (c) => fetchRawText(c.url, token),
+          isManifestJson,
+        )
+        markAccelResult(item, true)
+        rememberAccelWinner('index', item)
+        return text
+      } catch {
+        /* 竞速全败 → 落到下面的串行（含 jsDelivr 兜底、镜像、备用源） */
+      }
+    }
+  }
+
   return fetchRawTextCandidates(target, token, {})
+}
+
+/** 清单内容判定：JSON 且含 packages（代理的 HTML 错误页也会 200，必须看内容） */
+function isManifestJson(text: string): boolean {
+  try {
+    const doc = JSON.parse(text) as { packages?: unknown }
+    return !!doc && typeof doc === 'object' && !!doc.packages
+  } catch {
+    return false
+  }
 }
 
 /** 直接用原生通道拉一段文本（不解析） */
@@ -1053,6 +1092,9 @@ export async function checkAppUpdate(sourceUrl?: string): Promise<AppUpdate | nu
   resetCancel()
   const platform = currentPlatform()
   if (platform === 'web') return null // 纯 Web 没有"安装包"这个概念
+
+  // 预热 DNS/TLS（每会话一次，只加 preconnect，不发请求）
+  warmUpdateHosts(currentAccel())
 
   const src = (sourceUrl ?? (await getUpdateSource()) ?? '').trim()
   if (!src) return null

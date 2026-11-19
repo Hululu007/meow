@@ -435,6 +435,10 @@ public final class AppUpdater {
              *
              * 判据：前 5 秒内下载量 < 200KB（约 40KB/s）就放弃这条线路，
              * 交给外层换下一个候选。已经下到的字节由外层删除后重下。
+             *
+             * ★ 三个端是同一件事的三种实现（原生 OkHttp / PC 的 curl / Web 的 fetch），
+             * 阈值口径收在前端 `ACCEL_LIMITS`（PC 与 Web 用 32KB/s × 8s 滚动窗口）。
+             * 这里保持 5s×200KB 的**快速**判定：TV 上一次更新要等太久用户会直接拔电。
              */
             final long slowStartAt = System.currentTimeMillis();
             final long SLOW_WINDOW_MS = 5000L;

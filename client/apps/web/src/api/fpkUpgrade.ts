@@ -17,7 +17,18 @@
 import { apiBase } from '@/api'
 import { formatNoteLines, isNewer, resolveUrl, sha256Hex } from '@/api/appUpdate'
 import { getPrefs } from '@/stores/prefs'
-import { gitAccelCandidates, markAccelResult, type AccelCandidate } from '@/api/gitAccel'
+import {
+  ACCEL_LIMITS,
+  accelRaceDisabled,
+  accelSlowDisabled,
+  gitAccelCandidates,
+  isLineTooSlow,
+  markAccelResult,
+  raceFirst,
+  rememberAccelWinner,
+  warmUpdateHosts,
+  type AccelCandidate,
+} from '@/api/gitAccel'
 
 /** 应用中心里的应用名（= fpk manifest 的 appname） */
 export const FPK_APP_NAME = 'meow'
@@ -228,6 +239,33 @@ export interface FpkIndex {
   apps: Record<string, { releases?: Record<string, FpkReleaseInfo> }>
 }
 
+/**
+ * 取一份索引文本（15s 超时；非 JSON / 没有 apps 段都算失败）。
+ *
+ * <p>单独抽出来是为了竞速和串行兜底共用同一套判定——
+ * 代理的 HTML 错误页会返回 200，只看状态码会被骗过去。
+ */
+async function fetchIndexText(url: string): Promise<string> {
+  const res = await fetch(url, {
+    cache: 'no-store',
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(15000),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const text = await res.text()
+  if (!isIndexJson(text)) throw new Error('不是合法索引 JSON')
+  return text
+}
+
+function isIndexJson(text: string): boolean {
+  try {
+    const doc = JSON.parse(text) as { apps?: unknown }
+    return !!doc && typeof doc === 'object' && !!doc.apps
+  } catch {
+    return false
+  }
+}
+
 export async function fetchIndex(input = fpkIndexUrl()): Promise<FpkIndex> {
   const prefs = getPrefs().gitAccel
   const bases = fpkIndexBases(input)
@@ -245,24 +283,36 @@ export async function fetchIndex(input = fpkIndexUrl()): Promise<FpkIndex> {
       /* 保持原样，让 fetch 报错 */
     }
     const cands = gitAccelCandidates(logical, prefs, { for: 'fpk', index: true })
+
+    // 同一条 base 的候选**并发竞速**（排除 jsDelivr：CDN 小时级缓存会给旧索引，
+    // 抢答反而把「有新版本」判成「已是最新」）。失败再落到下面的串行（含 jsDelivr）。
+    if (!accelRaceDisabled() && cands.length > 1) {
+      const raced = cands.filter((c) => c.proxyId !== 'jsdelivr')
+      if (raced.length > 1) {
+        try {
+          const { text, item } = await raceFirst(raced, (c) => fetchIndexText(c.url), isIndexJson)
+          markAccelResult(item, true)
+          rememberAccelWinner('index', item)
+          const doc = JSON.parse(text) as {
+            apps: Record<string, { releases?: Record<string, FpkReleaseInfo> }>
+          }
+          // 相对 download_url 按**逻辑**地址解析，不按代理/镜像地址
+          return { url: item.baseUrl || logical, apps: doc.apps }
+        } catch {
+          /* 竞速全败：继续串行尝试（jsDelivr 等） */
+        }
+      }
+    }
+
     for (const c of cands) {
       tried++
       try {
-        const res = await fetch(c.url, {
-          cache: 'no-store',
-          headers: { Accept: 'application/json' },
-          signal: AbortSignal.timeout(15000),
-        })
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        let doc: { apps?: Record<string, { releases?: Record<string, FpkReleaseInfo> }> }
-        try {
-          doc = await res.json()
-        } catch {
-          throw new Error('不是合法 JSON')
+        const text = await fetchIndexText(c.url)
+        const doc = JSON.parse(text) as {
+          apps: Record<string, { releases?: Record<string, FpkReleaseInfo> }>
         }
-        if (!doc || !doc.apps) throw new Error('没有 apps 段')
         markAccelResult(c, true)
-        // 相对 download_url 按逻辑地址解析，不按代理/镜像地址
+        rememberAccelWinner('index', c)
         return { url: c.baseUrl || logical, apps: doc.apps }
       } catch (e) {
         markAccelResult(c, false)
@@ -636,6 +686,17 @@ async function downloadFpkOne(
 
   const total = Number(res.headers.get('content-length')) || size || 0
   let received = 0
+  /*
+   * 低速换线（只对大文件）。
+   *
+   * 之前 Web 只有 60s 停滞检测：线路 **90KB/s** 也算"在走"，22MB 会一路爬完
+   * （代码里就记着实测 90KB/s）。PC 用 curl --speed-limit、TV 用 5s×200KB，
+   * 这里补上同口径：ACCEL_LIMITS（32KB/s × 8s 滚动窗口）。
+   * 小文件不做——换线比重下更慢。
+   */
+  const slowCheck = !accelSlowDisabled() && (size || total || 0) >= ACCEL_LIMITS.slowMinBytes
+  let winStart = 0
+  let winBytes = 0
   try {
     if (res.body) {
       const reader = res.body.getReader()
@@ -648,6 +709,23 @@ async function downloadFpkOne(
           chunks.push(value)
           received += value.length
           if (total) onProgress(Math.min(99, Math.round((received / total) * 100)))
+          if (slowCheck) {
+            const now = Date.now()
+            if (!winStart) winStart = now
+            winBytes += value.length
+            if (now - winStart >= ACCEL_LIMITS.slowWindowMs) {
+              const bps = (winBytes * 1000) / (now - winStart)
+              if (isLineTooSlow(winBytes, now - winStart)) {
+                void reader.cancel().catch(() => {})
+                throw new Error(
+                  `线路太慢（${Math.max(1, Math.round(bps / 1024))}KB/s，已换下一条）`,
+                )
+              }
+              // 过线后重新开始一个窗口（滚动判定，不是只赌开头）
+              winStart = now
+              winBytes = 0
+            }
+          }
         }
       }
       const out = new Uint8Array(received)
@@ -683,6 +761,7 @@ async function downloadFpk(
     try {
       const bytes = await downloadFpkOne(c.url, size, sha, onProgress)
       markAccelResult(c, true)
+      rememberAccelWinner('file', c)
       return bytes
     } catch (e) {
       markAccelResult(c, false)
@@ -1019,6 +1098,8 @@ export async function checkFpkUpdate(): Promise<{
 } | null> {
   const det = await detectFpkShell()
   if (!det) return null
+  // 预热 DNS/TLS（每会话一次，只加 preconnect，不发请求）
+  warmUpdateHosts(getPrefs().gitAccel)
   // 应用中心的已安装版本更权威（升级后重启期间 meowd 报的还是旧值）
   const current = det.installed?.version || det.info.version
   if (!current) return null
