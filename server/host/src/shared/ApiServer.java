@@ -8946,6 +8946,59 @@ public class ApiServer {
      * <p>并发 4：分片数可达 90+（45 分钟片），串行会把搜索拖到十几秒。
      * 只取"有内容"的分片，空片直接跳过——合集类视频常有大量空段。
      */
+    /**
+     * 腾讯 content_style（JSON 字符串）→ B 站模式：position 2=顶部→5、3=底部→4。
+     *
+     * <p><b>证据等级</b>：2/3 的语义来自 danmu_api 内置 dan-any 的
+     * {@code mapPositionToMode}；我们自己抓的 34,602 条（《流浪地球2》60 个分片）
+     * 只出现 position 缺失/1，没有 2/3，所以这条映射目前是**待观测**的。
+     * position=1 与 track_type=1、gradient 颜色同时出现，更像"彩色普通弹幕"，
+     * 不能当顶部；track_type 也不是位置（1 与渐变评论相关）。真遇到 2/3 再按
+     * 实际渲染效果校准。
+     */
+    private static int tencentDanmakuMode(String contentStyle) {
+        if (contentStyle == null || contentStyle.isEmpty()) return 1;
+        try {
+            int pos = new org.json.JSONObject(contentStyle).optInt("position", 0);
+            if (pos == 2) return 5;
+            if (pos == 3) return 4;
+        } catch (Exception ignored) {
+        }
+        return 1;
+    }
+
+    /** 腾讯 content_style 里的颜色（"#RRGGBB" / "RRGGBB"），没有返回 null。 */
+    private static String tencentStyleColor(String contentStyle) {
+        if (contentStyle == null || contentStyle.isEmpty()) return null;
+        try {
+            String c = new org.json.JSONObject(contentStyle).optString("color", "");
+            return c.isEmpty() ? null : c;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /** 腾讯 content_style 的 gradient_colors（数组）→ "RRGGBB,RRGGBB"；不足两色返回 null。 */
+    private static String tencentStyleGradient(String contentStyle) {
+        if (contentStyle == null || contentStyle.isEmpty()) return null;
+        try {
+            org.json.JSONArray arr = new org.json.JSONObject(contentStyle)
+                    .optJSONArray("gradient_colors");
+            if (arr == null || arr.length() < 2) return null;
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < arr.length() && i < 4; i++) {
+                String c = arr.optString(i, "").trim();
+                if (c.startsWith("#")) c = c.substring(1);
+                if (!c.matches("(?i)[0-9a-f]{6}")) return null;
+                if (sb.length() > 0) sb.append(',');
+                sb.append(c.toUpperCase());
+            }
+            return sb.toString();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
     private static String fetchTencentXml(String vid, int ep) {
         String cacheKey = "tx|" + vid;
         String cached = DANMAKU_CACHE.get(cacheKey);
@@ -9046,12 +9099,26 @@ public class ApiServer {
                              * 前端 parseDanmakuXml 直接 parseInt(...,10) 就能用。
                              */
                             String color = "16777215";
+                            /*
+                             * 位置（顶部/底部）只在 content_style 的 JSON 里：
+                             * position 2=顶部、3=底部（0/缺省=滚动）。腾讯没有
+                             * 独立的 mode 字段（track_type 在实测样本里恒 0，
+                             * 不是位置）。这里转成 B 站约定：4=底部、5=顶部。
+                             * 颜色也优先从同一段 JSON 取（content_style.color）。
+                             */
+                            String styleRaw = c.optString("content_style", "");
+                            int mode = tencentDanmakuMode(styleRaw);
+                            String styleColor = tencentStyleColor(styleRaw);
+                            String styleGradient = tencentStyleGradient(styleRaw);
+                            int weight = Math.max(0, Math.min(100_000, c.optInt("show_weight", 0)));
                             try {
-                                String raw = null;
-                                for (String k : new String[]{
-                                        "color", "content_color", "fontcolor", "font_color"}) {
-                                    String v = c.optString(k, "");
-                                    if (!v.isEmpty()) { raw = v; break; }
+                                String raw = styleColor;
+                                if (raw == null || raw.isEmpty()) {
+                                    for (String k : new String[]{
+                                            "color", "content_color", "fontcolor", "font_color"}) {
+                                        String v = c.optString(k, "");
+                                        if (!v.isEmpty()) { raw = v; break; }
+                                    }
                                 }
                                 if (raw != null) {
                                     raw = raw.trim();
@@ -9079,7 +9146,8 @@ public class ApiServer {
                              * Double.toString 永远用 '.'，不受默认 Locale 影响。
                              */
                             all.add(new String[]{String.valueOf(absMs / 1000.0),
-                                    color, escapeXmlText(text)});
+                                    color, escapeXmlText(text), String.valueOf(mode),
+                                    styleGradient, weight > 0 ? String.valueOf(weight) : null});
                         }
                     } catch (Exception ignored) {
                     }
@@ -9111,8 +9179,12 @@ public class ApiServer {
         StringBuilder sb = new StringBuilder(capped.size() * 48 + 64);
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?><i>");
         for (String[] b : capped) {
-            sb.append("<d p=\"").append(b[0]).append(",1,25,")
-                    .append(b[1]).append(",0,0,0,0\">").append(b[2]).append("</d>");
+            sb.append("<d p=\"").append(b[0]).append(",").append(b[3]).append(",25,")
+                    .append(b[1]).append(",0,0,0,0\"");
+            // 可选属性：g=渐变（逗号分隔 RRGGBB）、w=权重（同屏满时淘汰用）
+            if (b.length > 4 && b[4] != null) sb.append(" g=\"").append(b[4]).append('"');
+            if (b.length > 5 && b[5] != null) sb.append(" w=\"").append(b[5]).append('"');
+            sb.append('>').append(b[2]).append("</d>");
         }
         sb.append("</i>");
         String xml = sb.toString();
@@ -9695,15 +9767,39 @@ public class ApiServer {
     private static final java.util.regex.Pattern IQIYI_CHANNEL =
             java.util.regex.Pattern.compile(".*,(1|2|3|4|6|15)$");
     /**
-     * Bullet 分片里的一条弹幕。四个捕获组：
-     * contentId → showTime(秒) → color(RRGGBB) → content(文本)
-     * 中间还有 font/opacity/uid 等字段，用 [\s\S]*? 非贪婪跨过。
+     * Bullet 分片里的一条弹幕。
+     *
+     * <p>原来是一条大正则按固定顺序跨字段匹配；现在先按 {@code <bulletInfo>}
+     * 切块，再逐字段取 —— 这样 {@code position} 无论排在 content 前还是后都能读到，
+     * 不会因为上游改字段顺序就丢弹幕。
+     *
+     * <p>位置实测：0=滚动、100/108=顶部（含角色）、200/208=底部（含角色）；
+     * 转成 B 站约定 1/5/4。
      */
-    private static final java.util.regex.Pattern IQIYI_BULLET = java.util.regex.Pattern.compile(
-            "<contentId>(\\d+)</contentId>[\\s\\S]*?"
-                    + "<showTime>(\\d+)</showTime>[\\s\\S]*?"
-                    + "<color>([0-9a-fA-F]{6})</color>[\\s\\S]*?"
-                    + "<content>(.*?)</content>");
+    private static final java.util.regex.Pattern IQIYI_BULLET_BLOCK =
+            java.util.regex.Pattern.compile("<bulletInfo>([\\s\\S]*?)</bulletInfo>");
+    private static final java.util.regex.Pattern IQIYI_CONTENT_ID =
+            java.util.regex.Pattern.compile("<contentId>(\\d+)</contentId>");
+    private static final java.util.regex.Pattern IQIYI_SHOW_TIME =
+            java.util.regex.Pattern.compile("<showTime>(\\d+)</showTime>");
+    private static final java.util.regex.Pattern IQIYI_COLOR =
+            java.util.regex.Pattern.compile("<color>([0-9a-fA-F]{6})</color>");
+    private static final java.util.regex.Pattern IQIYI_CONTENT =
+            java.util.regex.Pattern.compile("<content>(.*?)</content>");
+    private static final java.util.regex.Pattern IQIYI_POSITION =
+            java.util.regex.Pattern.compile("<position>(\\d+)</position>");
+
+    private static final java.util.regex.Pattern IQIYI_LIKE =
+            java.util.regex.Pattern.compile("<likeCount>(\\d+)</likeCount>");
+    private static final java.util.regex.Pattern IQIYI_PLUS =
+            java.util.regex.Pattern.compile("<plusCount>(\\d+)</plusCount>");
+    private static final java.util.regex.Pattern IQIYI_DISS =
+            java.util.regex.Pattern.compile("<dissCount>(\\d+)</dissCount>");
+
+    private static String iqiyiField(java.util.regex.Pattern p, String block) {
+        java.util.regex.Matcher m = p.matcher(block);
+        return m.find() ? m.group(1) : null;
+    }
 
     /**
      * 按弹弹play 协议取一集的弹幕（肥猫 merge/P/m.java 的 m.j() 逻辑）。
@@ -9857,9 +9953,11 @@ public class ApiServer {
         StringBuilder sb = new StringBuilder(capped.size() * 48 + 64);
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?><i>");
         for (String[] b : capped) {
-            sb.append("<d p=\"").append(b[0]).append(",1,25,")
-                    .append(b[1]).append(",0,0,0,0\">")
-                    .append(b[2]).append("</d>");
+            sb.append("<d p=\"").append(b[0]).append(",").append(b[3]).append(",25,")
+                    .append(b[1]).append(",0,0,0,0\"");
+            if (b.length > 4 && b[4] != null) sb.append(" g=\"").append(b[4]).append('"');
+            if (b.length > 5 && b[5] != null) sb.append(" w=\"").append(b[5]).append('"');
+            sb.append('>').append(b[2]).append("</d>");
         }
         sb.append("</i>");
         String xml = sb.toString();
@@ -9933,14 +10031,15 @@ public class ApiServer {
         }
     }
 
-    /** 从 Bullet XML 里抠出 contentId/showTime/color/content，转成 [time, colorDec, escapedText]。 */
+    /** 从 Bullet XML 里抠出 contentId/showTime/color/content/position，转成 [time, colorDec, escapedText, mode]。 */
     private static void parseIqiyiBullets(String xml, List<String[]> out, java.util.Set<String> seen) {
-        java.util.regex.Matcher m = IQIYI_BULLET.matcher(xml);
+        java.util.regex.Matcher m = IQIYI_BULLET_BLOCK.matcher(xml);
         while (m.find()) {
-            String contentId = m.group(1);
-            String showTime = m.group(2);
-            String colorHex = m.group(3);
-            String content = m.group(4);
+            String block = m.group(1);
+            String contentId = iqiyiField(IQIYI_CONTENT_ID, block);
+            String showTime = iqiyiField(IQIYI_SHOW_TIME, block);
+            String colorHex = iqiyiField(IQIYI_COLOR, block);
+            String content = iqiyiField(IQIYI_CONTENT, block);
             if (content == null) continue;
             content = content.trim();
             if (content.isEmpty()) continue;
@@ -9960,8 +10059,31 @@ public class ApiServer {
                 }
             } catch (Exception ignored) {
             }
+            /*
+             * position：实测《狂飙》分片 0×1895 / 1×164 / 100×15 / 200×7 /
+             * 8×4 / 108×1 —— 顶部/底部是 100/108 和 200/208（含角色弹幕），
+             * 不是接口注释里写的 1/2。1 的语义未确认且大量出现，按滚动处理
+             * （误判成顶部会把 8% 的普通弹幕钉在顶上）。
+             */
+            int mode = 1;
+            try {
+                int pos = Integer.parseInt(iqiyiField(IQIYI_POSITION, block));
+                if (pos == 100 || pos == 108) mode = 5;
+                else if (pos == 200 || pos == 208) mode = 4;
+            } catch (Exception ignored) {
+            }
+            // 权重：赞/顶 - 踩（负分归零）；同屏满时低权重先被淘汰
+            int weight = 0;
+            try {
+                int like = Integer.parseInt(iqiyiField(IQIYI_LIKE, block));
+                int plus = Integer.parseInt(iqiyiField(IQIYI_PLUS, block));
+                int diss = Integer.parseInt(iqiyiField(IQIYI_DISS, block));
+                weight = Math.max(0, Math.min(100_000, like + plus - diss));
+            } catch (Exception ignored) {
+            }
             String text = escapeXmlText(content);
-            out.add(new String[]{String.valueOf(t), color, text});
+            out.add(new String[]{String.valueOf(t), color, text, String.valueOf(mode),
+                    null, weight > 0 ? String.valueOf(weight) : null});
         }
     }
 

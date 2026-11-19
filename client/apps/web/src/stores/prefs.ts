@@ -99,6 +99,13 @@ export interface Prefs {
   danmakuArea: number
   /** 弹幕屏蔽词，逗号/换行分隔，命中即不显示 */
   danmakuBlock: string
+  /**
+   * 时间轴弹幕密度带：
+   *  - bar：进度条上方独立峰谷图（B 站高能条同款，默认）
+   *  - inline：压进进度条内部当热力底色（单条，YouTube 风）
+   *  - off：不显示
+   */
+  danmakuHeat: 'bar' | 'inline' | 'off'
   /** 画面缩放：contain 适应 / cover 铺满 / fill 拉伸 */
   videoFit: 'contain' | 'cover' | 'fill'
   /**
@@ -260,6 +267,7 @@ export const DEFAULTS: Prefs = {
   danmakuDuration: 12,
   danmakuArea: 0.7,
   danmakuBlock: '',
+  danmakuHeat: 'bar',
   videoFit: 'contain',
   autoNextMode: 'countdown',
   autoNextDelay: 5,
@@ -453,6 +461,7 @@ export function getPrefs(): Prefs {
   if (raw.danmakuDensity === undefined || !['sparse', 'standard', 'dense', 'custom'].includes(out.danmakuDensity)) {
     out.danmakuDensity = paramsToDensity(out.danmakuDuration, out.danmakuArea)
   }
+  if (!['bar', 'inline', 'off'].includes(out.danmakuHeat)) out.danmakuHeat = 'bar'
   // 倒计时秒数收紧到 3–30
   const delay = Number(out.autoNextDelay)
   out.autoNextDelay = Number.isFinite(delay) ? Math.min(30, Math.max(3, Math.round(delay))) : 5

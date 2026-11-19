@@ -84,10 +84,12 @@ describe('弹幕颜色：解析与渲染', () => {
   })
 
   it('渲染按 颜色+文本 缓存精灵图（不是所有弹幕共用一个白图）', () => {
-    const body = region(DM, 'private makeSprite', 1400)
+    const body = region(DM, 'private makeSprite', 2400)
     // 颜色必须进缓存键，否则不同颜色的同一句话会互相覆盖
     expect(body).toContain('${color}')
-    expect(body).toContain('fillStyle = color')
+    // 渐变也必须进缓存键（同文本不同渐变不能共用位图）
+    expect(body).toContain("${gradient?.join(',') || ''}")
+    expect(body).toContain('g.fillStyle = color')
   })
 })
 

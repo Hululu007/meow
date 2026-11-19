@@ -43,6 +43,7 @@ import {
   resetDmOffset,
   setDmOffset,
 } from '@/stores/dmOffset'
+import { danmakuHeatData, danmakuHeatGradientFromCounts, heatLevel } from './dmHeat'
 import { isDesktopShell } from '@/api/appUpdate'
 import { createIdleCursor } from './idleCursor'
 import type { PlayErrorKind, PlayErrorPayload } from './playError'
@@ -384,6 +385,10 @@ const dmOn = ref(getPrefs().danmaku)
 const dmCount = ref(0)
 /** 原始解析条数（含超出片长的部分）——「可用/共 N」里的 N */
 const dmTotal = ref(0)
+/** 时间轴热度：每桶条数 / 峰值 / 桶宽（秒）；null=不渲染 */
+const dmHeat = ref<number[] | null>(null)
+const dmHeatMax = ref(1)
+const dmHeatBucketSec = ref(0)
 /** 后端是否因上限截断过（X-Danmaku-Total > XML 条数），显示时给 N 加 + */
 const dmTruncated = ref(false)
 /**
@@ -2830,6 +2835,21 @@ const shownPct = computed(() =>
 )
 
 /** 悬停/拖动时显示的时间提示 */
+const dmHeatInline = computed(() =>
+  dmHeat.value?.length ? danmakuHeatGradientFromCounts(dmHeat.value, dmHeatMax.value) : '',
+)
+/** 悬停时间点的桶条数（并进现有时间气泡，不额外做浮层） */
+const dmHeatTipCount = computed(() => {
+  const t = tipTime.value
+  const c = dmHeat.value
+  if (t == null || !c?.length || !dmHeatBucketSec.value) return null
+  const i = Math.min(c.length - 1, Math.floor(t / dmHeatBucketSec.value))
+  return c[i] ?? 0
+})
+/** 峰谷图柱高：1px 基线 + 最高 11px（12px 条带内），sqrt 归一化 */
+function heatBarPx(c: number): string {
+  return (1 + 10 * heatLevel(c, dmHeatMax.value)).toFixed(1) + 'px'
+}
 const tipTime = computed(() => dragTime.value ?? hoverTime.value)
 const tipLeft = computed(() => {
   if (tipTime.value == null || !shownDur.value) return 0
@@ -3752,6 +3772,11 @@ function tuneDm(patch: { duration?: number; area?: number }) {
 }
 
 /** 面板里的三档胶囊（custom 只作为状态显示，不在这里选） */
+const heatButtons = [
+  { value: 'bar' as const, label: '双条', hint: '进度条上方独立峰谷图（B 站高能条同款）' },
+  { value: 'inline' as const, label: '内嵌', hint: '压进进度条内部当热力底色（单条）' },
+  { value: 'off' as const, label: '关闭', hint: '不显示时间轴密度' },
+]
 const densityButtons = [
   { value: 'sparse' as const, label: '稀疏', hint: '18 秒 / 区域 55%：节奏舒缓，不挡画面' },
   { value: 'standard' as const, label: '标准', hint: '12 秒 / 区域 70%：默认，与以往一致' },
@@ -3836,6 +3861,9 @@ function clearDmOverride() {
     dmTotal.value = 0
     dmTruncated.value = false
     dmRawList = []
+    dmHeat.value = null
+    dmHeatMax.value = 1
+    dmHeatBucketSec.value = 0
     dm.value?.clear()
   }
 }
@@ -4695,6 +4723,10 @@ function applyDmList(
   dmTruncated.value = totalHint > 0 && totalHint > raw.length
   const usable = filterByDuration(raw)
   dmCount.value = usable.length
+  const heat = danmakuHeatData(usable, duration.value)
+  dmHeat.value = heat?.counts ?? null
+  dmHeatMax.value = heat?.max ?? 1
+  dmHeatBucketSec.value = heat?.bucketSec ?? 0
   const filtered = filterDanmaku(usable)
   /*
    * keepActive：后台补全/片长修正只换 queue，不清屏。
@@ -4905,6 +4937,9 @@ async function loadDanmaku(
     dmTotal.value = 0
     dmTruncated.value = false
     dmRawList = []
+    dmHeat.value = null
+    dmHeatMax.value = 1
+    dmHeatBucketSec.value = 0
       dmSource.value = ''
     }
   } finally {
@@ -5594,6 +5629,9 @@ watch(
     dmTotal.value = 0
     dmTruncated.value = false
     dmRawList = []
+    dmHeat.value = null
+    dmHeatMax.value = 1
+    dmHeatBucketSec.value = 0
       dm.value?.clear()
     }
   },
@@ -6221,14 +6259,37 @@ defineExpose({
     >
       <!-- 进度条：悬停显示时间，按下拖动只改视觉，松手才 seek -->
       <div
-        class="group/bar relative mb-2.5 cursor-pointer py-2"
+        class="group/bar relative mb-2.5 cursor-pointer pb-2 pt-3"
         @pointerdown="onBarDown"
         @pointermove="onBarMove"
         @pointerup="onBarUp"
         @pointercancel="onBarUp"
         @pointerleave="onBarLeave"
       >
+        <!--
+          时间轴弹幕密度：双条模式 = 进度条上方的独立峰谷图（B 站高能条同款）。
+          纯预览，不参与渲染调度；悬停条数并进下面的时间气泡。
+        -->
+        <div
+          v-if="showCtrl && prefs.danmakuHeat === 'bar' && dmHeat"
+          class="pointer-events-none absolute inset-x-0 top-0 flex h-3 items-end overflow-hidden"
+          aria-hidden="true"
+        >
+          <span
+            v-for="(c, i) in dmHeat"
+            :key="i"
+            class="min-w-0 flex-1 bg-sky-300/80"
+            :style="{ height: heatBarPx(c) }"
+          />
+        </div>
         <div class="relative h-1.5 w-full rounded-full bg-white/20 transition-all group-hover/bar:h-2">
+          <!-- 单条模式：热度压进进度条内部当底色（播放/缓冲仍在上层） -->
+          <div
+            v-if="showCtrl && prefs.danmakuHeat === 'inline' && dmHeatInline"
+            class="absolute inset-0 rounded-full opacity-80"
+            :style="{ backgroundImage: dmHeatInline }"
+            aria-hidden="true"
+          />
           <!-- 已缓冲 -->
           <div class="absolute inset-y-0 left-0 rounded-full bg-white/25" :style="{ width: buffered + '%' }" />
           <!-- 已播放 -->
@@ -6246,7 +6307,7 @@ defineExpose({
           class="pointer-events-none absolute bottom-full z-10 mb-1 -translate-x-1/2 rounded bg-black/85 px-1.5 py-0.5 font-mono text-[11px] text-ink shadow"
           :style="{ left: tipLeft + '%' }"
         >
-          {{ fmt(tipTime) }}
+          {{ fmt(tipTime) }}<template v-if="dmHeatTipCount != null"> · {{ dmHeatTipCount }} 条</template>
         </div>
       </div>
 
@@ -7022,6 +7083,26 @@ defineExpose({
             @click="pickDensity(d.value)"
           >
             {{ d.label }}
+          </button>
+        </div>
+      </div>
+
+      <div class="mb-2.5">
+        <div class="mb-1 text-xs text-ink-2">时间轴密度条</div>
+        <div class="grid grid-cols-3 gap-1">
+          <button
+            v-for="h in heatButtons"
+            :key="h.value"
+            class="rounded-md py-1.5 text-[11px] transition"
+            :class="
+              prefs.danmakuHeat === h.value
+                ? 'bg-player/25 font-medium text-player'
+                : 'bg-white/8 text-ink-2 hover:bg-white/14'
+            "
+            :title="h.hint"
+            @click="patchDmOptions({ danmakuHeat: h.value })"
+          >
+            {{ h.label }}
           </button>
         </div>
       </div>

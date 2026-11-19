@@ -26,6 +26,37 @@ export interface Danmu {
   size: number
   color: string
   text: string
+  /** 上游权重（同屏满时优先丢最低分）；没有就是 0 */
+  weight?: number
+  /** 渐变（≥2 个 #rrggbb）；单色弹幕为 undefined */
+  gradient?: string[]
+}
+
+/** `<d g="FF0000,00FF00" w="8">` 里的渐变；非法/单色返回 undefined */
+function parseGradientValue(raw: string): string[] | undefined {
+  const parts = raw
+    .split(',')
+    .map((x) => x.trim().replace(/^#/, ''))
+    .filter((x) => /^[0-9a-fA-F]{6}$/.test(x))
+  if (parts.length < 2) return undefined
+  return parts.slice(0, 4).map((x) => '#' + x.toLowerCase())
+}
+
+function parseGradientAttr(attrs: string): string[] | undefined {
+  const m = /(?:^|\s)g\s*=\s*"([^"]*)"/.exec(attrs) || /(?:^|\s)g\s*=\s*'([^']*)'/.exec(attrs)
+  return m ? parseGradientValue(m[1]) : undefined
+}
+
+/** `<d w="8">` 里的权重；缺省/非正数返回 undefined */
+function parseWeightValue(raw: string): number | undefined {
+  const n = parseInt(raw, 10)
+  if (!Number.isFinite(n) || n <= 0) return undefined
+  return Math.min(100_000, n)
+}
+
+function parseWeightAttr(attrs: string): number | undefined {
+  const m = /(?:^|\s)w\s*=\s*"([^"]*)"/.exec(attrs) || /(?:^|\s)w\s*=\s*'([^']*)'/.exec(attrs)
+  return m ? parseWeightValue(m[1]) : undefined
 }
 
 export function parseDanmakuXml(xml: string): Danmu[] {
@@ -78,7 +109,13 @@ function scanDanmakuXml(xml: string): { list: Danmu[]; seen: number } {
     const parts = p.split(',')
     if (parts.length < 4) continue
     const time = parseFloat(parts[0])
+    /*
+     * 模式采用 B 站约定（聚合源/tvbox 生态通用）：
+     *   1/2/3 滚动（字号档位差异）· 4 底部 · 5 顶部 · 6 逆向 · 7+ 高级/代码/BAS。
+     * 6 暂按滚动处理；7+ 的 content 是 JSON/脚本，画成文字只会是乱码，直接丢。
+     */
     const mode = parseInt(parts[1], 10) || 1
+    if (mode >= 7) continue
     const size = parseInt(parts[2], 10) || 25
     const rgb = parseInt(parts[3], 10) || 0xffffff
     if (!isFinite(time)) continue
@@ -87,6 +124,8 @@ function scanDanmakuXml(xml: string): { list: Danmu[]; seen: number } {
       mode,
       size,
       color: '#' + rgb.toString(16).padStart(6, '0'),
+      gradient: parseGradientAttr(attrs),
+      weight: parseWeightAttr(attrs),
       /*
        * 解两层，和 DOMParser 路径保持一致：
        * DOM 的 textContent 先解一层（&amp; → &），后面的 decodeEntities
@@ -117,7 +156,13 @@ function parseDanmakuXmlByDom(xml: string): Danmu[] {
     const parts = p.split(',')
     if (parts.length < 4) continue
     const time = parseFloat(parts[0])
+    /*
+     * 模式采用 B 站约定（聚合源/tvbox 生态通用）：
+     *   1/2/3 滚动（字号档位差异）· 4 底部 · 5 顶部 · 6 逆向 · 7+ 高级/代码/BAS。
+     * 6 暂按滚动处理；7+ 的 content 是 JSON/脚本，画成文字只会是乱码，直接丢。
+     */
     const mode = parseInt(parts[1], 10) || 1
+    if (mode >= 7) continue
     const size = parseInt(parts[2], 10) || 25
     const rgb = parseInt(parts[3], 10) || 0xffffff
     if (!isFinite(time)) continue
@@ -126,6 +171,8 @@ function parseDanmakuXmlByDom(xml: string): Danmu[] {
       mode,
       size,
       color: '#' + rgb.toString(16).padStart(6, '0'),
+      gradient: parseGradientValue(el.getAttribute('g') || ''),
+      weight: parseWeightValue(el.getAttribute('w') || ''),
       text: decodeEntities(raw),
     })
   }
@@ -567,7 +614,7 @@ export class DanmakuRenderer {
     if (widthChanged) {
       this.lastW = w
       for (const a of this.active) {
-        if (a.danmu.mode === 2 || a.danmu.mode === 3) continue
+        if (a.danmu.mode === 5 || a.danmu.mode === 4) continue
         a.dur = this.durFor(a.width)
       }
     }
@@ -630,10 +677,10 @@ export class DanmakuRenderer {
     // 所以每处理完一条就要放回去——否则同类之间互相看不见，
     // 每条都以为第 0 行是空的（实测顶部×顶部、底部×底部全部重叠）。
     const pending = this.active
-    this.active = pending.filter((a) => a.danmu.mode !== 2 && a.danmu.mode !== 3)
+    this.active = pending.filter((a) => a.danmu.mode !== 5 && a.danmu.mode !== 4)
     for (const a of pending) {
-      if (a.danmu.mode !== 2 && a.danmu.mode !== 3) continue
-      const isTop = a.danmu.mode === 2
+      if (a.danmu.mode !== 5 && a.danmu.mode !== 4) continue
+      const isTop = a.danmu.mode === 5
       const lane = this.findStaticLane(isTop)
       if (lane < 0) continue // 放不下就丢弃，绝不叠在别人身上
       a.top = this.staticTopOf(isTop, lane)
@@ -642,7 +689,7 @@ export class DanmakuRenderer {
     }
 
     for (const a of this.active) {
-      if (a.danmu.mode === 2 || a.danmu.mode === 3) continue
+      if (a.danmu.mode === 5 || a.danmu.mode === 4) continue
 
       const want = Math.round((a.top - this.laneTopOffset) / this.laneHeight)
       const x = leftOf(a)
@@ -730,7 +777,7 @@ export class DanmakuRenderer {
     const h = Math.ceil(this.fontSize) + this.spritePadY * 2
     return this.active.some((a) => {
       if (a === ignore) return false
-      if (staticOnly && a.danmu.mode !== 2 && a.danmu.mode !== 3) return false
+      if (staticOnly && a.danmu.mode !== 5 && a.danmu.mode !== 4) return false
       return top < a.top + h && a.top < top + h
     })
   }
@@ -744,7 +791,7 @@ export class DanmakuRenderer {
   private evictScrollingAt(top: number) {
     const h = Math.ceil(this.fontSize) + this.spritePadY * 2
     this.active = this.active.filter((a) => {
-      if (a.danmu.mode === 2 || a.danmu.mode === 3) return true
+      if (a.danmu.mode === 5 || a.danmu.mode === 4) return true
       return !(top < a.top + h && a.top < top + h)
     })
   }
@@ -875,7 +922,7 @@ export class DanmakuRenderer {
     return this.active.map((a) => ({
       text: a.danmu.text,
       x:
-        a.danmu.mode === 2 || a.danmu.mode === 3
+        a.danmu.mode === 5 || a.danmu.mode === 4
           ? (W - a.width) / 2
           : W - Math.min(1.6, Math.max(0, (t - a.born) / a.dur)) * (W + a.width),
       top: a.top,
@@ -1020,7 +1067,7 @@ export class DanmakuRenderer {
     const t = this.now
     for (let i = 0; i < this.active.length; i++) {
       const a = this.active[i]
-      const isStatic = a.danmu.mode === 2 || a.danmu.mode === 3
+      const isStatic = a.danmu.mode === 5 || a.danmu.mode === 4
       let x: number
       if (isStatic) {
         x = (W - a.width) / 2
@@ -1033,7 +1080,7 @@ export class DanmakuRenderer {
       // 位图缓存：每条文字只渲染一次，之后每帧只做 drawImage。
       // fillText + shadowBlur 是 Canvas 2D 里最贵的操作之一，
       // 在场 100+ 条时开销是 drawImage 的数倍。
-      const sprite = a.sprite || this.makeSprite(a.danmu.text, a.danmu.color)
+      const sprite = a.sprite || this.makeSprite(a.danmu.text, a.danmu.color, a.danmu.gradient)
       a.sprite = sprite
       if (sprite) {
         ctx.drawImage(sprite, x, a.top, a.width, sprite.height / dpr)
@@ -1058,8 +1105,8 @@ export class DanmakuRenderer {
    * 结果是按 dpr 放大的（因为主画布也是 dpr 缩放），
    * 绘制时再按逻辑尺寸缩放回去，所以文字仍然清晰。
    */
-  private makeSprite(text: string, color: string): HTMLCanvasElement | null {
-    const cacheKey = `${this.fontSize}|${color}|${text}`
+  private makeSprite(text: string, color: string, gradient?: string[]): HTMLCanvasElement | null {
+    const cacheKey = `${this.fontSize}|${color}|${gradient?.join(',') || ''}|${text}`
     const hit = this.spriteCache.get(cacheKey)
     if (hit) {
       // LRU：命中后移到队尾
@@ -1093,7 +1140,14 @@ export class DanmakuRenderer {
     g.shadowColor = 'rgba(0,0,0,0.9)'
     g.shadowBlur = 3
     g.shadowOffsetY = 1
-    g.fillStyle = color
+    if (gradient && gradient.length >= 2) {
+      // 渐变按文字宽度铺满（位图只画一次，之后每帧 drawImage，不增加运行时成本）
+      const lg = g.createLinearGradient(padX, 0, padX + textW, 0)
+      gradient.forEach((c, i) => lg.addColorStop(i / (gradient.length - 1), c))
+      g.fillStyle = lg
+    } else {
+      g.fillStyle = color
+    }
     g.fillText(text, padX, padY)
 
     /*
@@ -1132,7 +1186,7 @@ export class DanmakuRenderer {
     const t = this.now
     const keep: Active[] = []
     for (const a of this.active) {
-      if (a.danmu.mode === 2 || a.danmu.mode === 3) {
+      if (a.danmu.mode === 5 || a.danmu.mode === 4) {
         if (a.staticUntil !== undefined && t > a.staticUntil) continue
         keep.push(a)
         continue
@@ -1145,9 +1199,33 @@ export class DanmakuRenderer {
     this.active = keep
   }
 
+  /**
+   * 同屏满时按权重淘汰：只有新弹幕权重更高才顶掉一条最低权重的滚动弹幕，
+   * 否则丢弃新弹幕。顶部/底部静态弹幕不参与淘汰（位置语义比权重重要）。
+   */
+  private admit(d: Danmu): boolean {
+    if (this.active.length < MAX_ACTIVE) return true
+    const weight = d.weight ?? 0
+    if (weight <= 0) return false
+    let victim = -1
+    let lowest = Infinity
+    for (let i = 0; i < this.active.length; i++) {
+      const a = this.active[i]
+      if (a.danmu.mode === 5 || a.danmu.mode === 4) continue
+      const w = a.danmu.weight ?? 0
+      if (w < weight && w < lowest) {
+        lowest = w
+        victim = i
+      }
+    }
+    if (victim < 0) return false
+    this.active.splice(victim, 1)
+    return true
+  }
+
   private emit(d: Danmu) {
     if (!this.enabled) return
-    if (this.active.length >= MAX_ACTIVE) {
+    if (!this.admit(d)) {
       this.dropped++
       return
     }
@@ -1155,17 +1233,17 @@ export class DanmakuRenderer {
     const width = this.textWidth(d.text)
     const now = this.now
 
-    if (d.mode === 2 || d.mode === 3) {
+    if (d.mode === 5 || d.mode === 4) {
       // 顶部/底部弹幕横向居中，只要纵向区间重叠就一定压字。
       // **两者必须共享同一套轨道占用**：早先各自维护一份 used，
       // 顶部占第 0 行、底部也占第 0 行，直接叠在一起（实测全量扫描
       // 24 组配置里 24 组都撞）。
-      const lane = this.findStaticLane(d.mode === 2)
+      const lane = this.findStaticLane(d.mode === 5)
       if (lane < 0) {
         this.dropped++
         return // 排满了，这条不上屏
       }
-      const top = this.staticTopOf(d.mode === 2, lane)
+      const top = this.staticTopOf(d.mode === 5, lane)
       // 静态弹幕优先：这一行上的滚动弹幕让位（它们等下一批就有，
       // 而静态弹幕只停 4 秒，位置固定才有意义）
       this.evictScrollingAt(top)
@@ -1279,7 +1357,7 @@ export class DanmakuRenderer {
     const spriteH = Math.ceil(this.fontSize) + this.spritePadY * 2
     const staticBlocks = (top: number) =>
       this.active.some((a) => {
-        if (a.danmu.mode !== 2 && a.danmu.mode !== 3) return false
+        if (a.danmu.mode !== 5 && a.danmu.mode !== 4) return false
         return top < a.top + spriteH && a.top < top + spriteH
       })
 
@@ -1302,7 +1380,7 @@ export class DanmakuRenderer {
     const newDur = dur
 
     for (const a of this.active) {
-      if (a.danmu.mode === 2 || a.danmu.mode === 3) continue
+      if (a.danmu.mode === 5 || a.danmu.mode === 4) continue
       const lane = Math.round((a.top - this.laneTopOffset) / this.laneHeight)
       if (lane < 0 || lane >= this.laneCount) continue
       const p = Math.min(1.6, Math.max(0, (t - a.born) / a.dur))

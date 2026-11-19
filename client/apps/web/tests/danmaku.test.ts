@@ -3,18 +3,47 @@ import { DanmakuRenderer, parseDanmakuXml, type Danmu } from '../src/components/
 
 const SAMPLE = `<?xml version="1.0" ?>
 <i>
-  <d p="0.0,2,25,14463824,1751533608,0,0,1">顶部弹幕</d>
+  <d p="0.0,5,25,14463824,1751533608,0,0,1">顶部弹幕</d>
   <d p="1.0,1,25,16777215,1751533608,0,0,2">滚动弹幕</d>
-  <d p="2.0,3,25,16711680,1751533608,0,0,3">底部弹幕</d>
+  <d p="2.0,4,25,16711680,1751533608,0,0,3">底部弹幕</d>
 </i>`
 
 describe('parseDanmakuXml', () => {
   it('解析 B 站式 XML', () => {
     const list = parseDanmakuXml(SAMPLE)
     expect(list).toHaveLength(3)
-    expect(list[0]).toMatchObject({ time: 0, mode: 2, text: '顶部弹幕' })
+    expect(list[0]).toMatchObject({ time: 0, mode: 5, text: '顶部弹幕' })
     expect(list[1]).toMatchObject({ time: 1, mode: 1, text: '滚动弹幕' })
     expect(list[2].color).toBe('#ff0000')
+  })
+
+  it('模式按 B 站约定：4 底 5 顶，2/3 仍是滚动，7+ 高级弹幕丢弃', () => {
+    const xml = `<i>
+      <d p="0,2,25,16777215">m2</d>
+      <d p="1,3,25,16777215">m3</d>
+      <d p="2,4,25,16777215">m4</d>
+      <d p="3,5,25,16777215">m5</d>
+      <d p="4,6,25,16777215">m6</d>
+      <d p="5,7,25,16777215">adv</d>
+      <d p="6,8,25,16777215">code</d>
+    </i>`
+    const list = parseDanmakuXml(xml)
+    expect(list.map((d) => [d.text, d.mode])).toEqual([
+      ['m2', 2],
+      ['m3', 3],
+      ['m4', 4],
+      ['m5', 5],
+      ['m6', 6],
+    ])
+  })
+
+  it('解析渐变与权重属性（g / w）', () => {
+    const xml = '<i><d p="0,1,25,16777215" g="FF0000,00ff00" w="8">渐变</d><d p="1,1,25,16777215" w="0">普通</d></i>'
+    const list = parseDanmakuXml(xml)
+    expect(list[0].gradient).toEqual(['#ff0000', '#00ff00'])
+    expect(list[0].weight).toBe(8)
+    expect(list[1].gradient).toBeUndefined()
+    expect(list[1].weight).toBeUndefined()
   })
 
   it('按时间排序', () => {
@@ -420,7 +449,7 @@ describe('弹幕重叠扫描', () => {
 
     const rects: Rect[] = (anyR.active as any[])
       .map((a) => {
-        const isStatic = a.danmu.mode === 2 || a.danmu.mode === 3
+        const isStatic = a.danmu.mode === 5 || a.danmu.mode === 4
         const x = isStatic
           ? (W - a.width) / 2
           : W - Math.min(1.6, Math.max(0, (t - a.born) / dur)) * (W + a.width)
@@ -463,8 +492,8 @@ describe('弹幕重叠扫描', () => {
       list.push({ time: i * 0.03, mode: 1, size: 25, color: '#fff', text: `滚动弹幕比较长的内容${i}` })
     }
     for (let i = 0; i < 8; i++) {
-      list.push({ time: 0.5 + i * 0.1, mode: 2, size: 25, color: '#fff', text: `顶部${i}` })
-      list.push({ time: 0.6 + i * 0.1, mode: 3, size: 25, color: '#fff', text: `底部${i}` })
+      list.push({ time: 0.5 + i * 0.1, mode: 5, size: 25, color: '#fff', text: `顶部${i}` })
+      list.push({ time: 0.6 + i * 0.1, mode: 4, size: 25, color: '#fff', text: `底部${i}` })
     }
     return list.sort((a, b) => a.time - b.time)
   }
@@ -494,12 +523,50 @@ describe('弹幕重叠扫描', () => {
     const r = setup(900, 500)
     const list: Danmu[] = []
     for (let i = 0; i < 4; i++) {
-      list.push({ time: 0, mode: 2, size: 25, color: '#fff', text: `顶${i}` })
-      list.push({ time: 0, mode: 3, size: 25, color: '#fff', text: `底${i}` })
+      list.push({ time: 0, mode: 5, size: 25, color: '#fff', text: `顶${i}` })
+      list.push({ time: 0, mode: 4, size: 25, color: '#fff', text: `底${i}` })
     }
     r.load(list)
     r.sync(0.5)
     expect(findOverlaps(r)).toHaveLength(0)
+    r.destroy()
+  })
+
+  it('只有 4/5 走静态轨道，2/3 是滚动', () => {
+    // 分成两个渲染器：静态弹幕会主动清掉同纵带的滚动弹幕，
+    // 混在一起测会把"滚动弹幕被让位"误判成"模式没生效"。
+    const r1 = setup(900, 500)
+    r1.load([
+      { time: 0, mode: 2, size: 25, color: '#fff', text: '滚2' },
+      { time: 0, mode: 3, size: 25, color: '#fff', text: '滚3' },
+    ])
+    r1.sync(0.1)
+    for (const a of (r1 as any).active as any[]) expect(a.staticUntil).toBeUndefined()
+    r1.destroy()
+
+    const r2 = setup(900, 500)
+    r2.load([
+      { time: 0, mode: 4, size: 25, color: '#fff', text: '底4' },
+      { time: 0, mode: 5, size: 25, color: '#fff', text: '顶5' },
+    ])
+    r2.sync(0.1)
+    const active = (r2 as any).active as any[]
+    expect(active).toHaveLength(2)
+    for (const a of active) expect(a.staticUntil).toBeDefined()
+    r2.destroy()
+  })
+
+  it('同屏满时按权重淘汰最低分的滚动弹幕', () => {
+    const r = setup(900, 500)
+    const active = (r as any).active as any[]
+    for (let i = 0; i < 120; i++) active.push({ danmu: { mode: 1, weight: 0, text: `l${i}` }, top: 0 })
+    const high = { time: 0, mode: 1, size: 25, color: '#fff', text: '高权重', weight: 9 }
+    ;(r as any).emit(high)
+    expect(active).toHaveLength(120)
+    expect(active.some((a) => a.danmu.text === '高权重')).toBe(true)
+
+    const low = { time: 0, mode: 1, size: 25, color: '#fff', text: '低权重', weight: 0 }
+    ;(r as any).emit(low)
     r.destroy()
   })
 
@@ -660,15 +727,15 @@ describe('弹幕重叠扫描', () => {
     const r = setup(900, H)
     const list: Danmu[] = []
     for (let i = 0; i < 3; i++) {
-      list.push({ time: 0, mode: 2, size: 25, color: '#fff', text: `顶${i}` })
-      list.push({ time: 0, mode: 3, size: 25, color: '#fff', text: `底${i}` })
+      list.push({ time: 0, mode: 5, size: 25, color: '#fff', text: `顶${i}` })
+      list.push({ time: 0, mode: 4, size: 25, color: '#fff', text: `底${i}` })
     }
     r.load(list)
     r.sync(0.5)
 
     const act = (r as any).active as Array<{ top: number; danmu: Danmu }>
-    const tops = act.filter((a) => a.danmu.mode === 2).map((a) => a.top)
-    const bots = act.filter((a) => a.danmu.mode === 3).map((a) => a.top)
+    const tops = act.filter((a) => a.danmu.mode === 5).map((a) => a.top)
+    const bots = act.filter((a) => a.danmu.mode === 4).map((a) => a.top)
 
     // 第一条顶部弹幕必须靠近顶边
     expect(Math.min(...tops)).toBeLessThan(H * 0.15)
@@ -687,13 +754,13 @@ describe('弹幕重叠扫描', () => {
     }
     // 再插几条顶部弹幕
     for (let i = 0; i < 3; i++) {
-      list.push({ time: 0.5 + i * 0.05, mode: 2, size: 25, color: '#ff0', text: `顶${i}` })
+      list.push({ time: 0.5 + i * 0.05, mode: 5, size: 25, color: '#ff0', text: `顶${i}` })
     }
     r.load(list.sort((a, b) => a.time - b.time))
     r.sync(1.0)
 
     const tops = ((r as any).active as Array<{ top: number; danmu: Danmu }>)
-      .filter((a) => a.danmu.mode === 2)
+      .filter((a) => a.danmu.mode === 5)
       .map((a) => a.top)
     // 静态弹幕优先级更高：哪怕轨道全满，顶部弹幕也要待在顶部
     expect(Math.min(...tops)).toBeLessThan(H * 0.15)
@@ -707,8 +774,8 @@ describe('弹幕重叠扫描', () => {
       list.push({ time: i * 0.1, mode: 1, size: 25, color: '#fff', text: `R${i}` })
     }
     for (let i = 0; i < 30; i++) {
-      list.push({ time: i * 0.5, mode: 2, size: 25, color: '#fff', text: `T${i}` })
-      list.push({ time: i * 0.5 + 0.2, mode: 3, size: 25, color: '#fff', text: `B${i}` })
+      list.push({ time: i * 0.5, mode: 5, size: 25, color: '#fff', text: `T${i}` })
+      list.push({ time: i * 0.5 + 0.2, mode: 4, size: 25, color: '#fff', text: `B${i}` })
     }
     r.load(list.sort((a, b) => a.time - b.time))
 
