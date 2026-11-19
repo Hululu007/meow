@@ -103,9 +103,14 @@ pnpm run preview    # 本地预览产物
 
 `.github/workflows/pages.yml`：
 
-- 触发：push 到 `main` 且改动涉及 `site/**`、`CHANGELOG.md`、`client/package.json`、`.github/workflows/pages.yml`
+- 触发：**只认 tag**（不监听 main 推送，用户 2026-11-19 口径）：
+  - 发版 tag：`release-v*` / `fpk-v*` / `tv-v*` / `pc-v*` / `plugins-v*` / `tv-plugins-v*` / `ipa-v*`
+  - 纯文档重建：`site-*`（不为发版，只把 `site/**` 的改动推上线；`releaseInfo()` 不认这个前缀，
+    所以它不会出现在更新日志版本列表里）
+- 为什么：更新日志页只列「已有发版资产」的版本，tag 是发版的唯一信号；监听 main 会在 tag 之前白跑一次、
+  页面还停在上一个版本（2026-11-19 1.2.18 实测）
 - 构建 → `upload-pages-artifact` → `deploy-pages`
-- 也可以在 Actions 页面手动 `workflow_dispatch`
+- 补部署也可 Actions 页面手动 `workflow_dispatch`
 
 仓库 Pages 的 Source 必须是 **GitHub Actions**（不是分支目录）：
 

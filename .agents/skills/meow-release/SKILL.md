@@ -27,6 +27,14 @@ description: 发布猫窝新版本时使用：打 release tag、跑 CI 发版、
 - `CHANGELOG.md` 顶部写 `## x.y.z` 小节：`1. 2. 3.` 编号、每条 ≤60 字、≤6 条、
   面向用户（不写类名/`fix:`）。`verify.ps1` 会卡格式。
 - 更新说明只写“用户能感知的变化”，内部重构不写。
+- **取数兜底**（`sync-packages.ps1` 的 `Get-ReleaseNotes`）：CHANGELOG 小节优先；
+  缺节才用 `git log <上一个发版 tag>..<main 最新>` 里的 `feat/fix/perf`（最多 8 条，
+  终点优先 `origin/main` → 本地 `main` → `HEAD`）；再没有才用模板串。
+- **站点更新日志页**由 `site/scripts/sync-docs.mjs` 从 CHANGELOG 生成、**只列有发版 tag
+  的版本**。`pages.yml` **只监听 tag**（用户 2026-11-19 口径）：发版 tag
+  （`release-v*` / `fpk-v*` / `tv-v*` / `pc-v*` / `plugins-v*` / `tv-plugins-v*` / `ipa-v*`）
+  顺带重建；纯文档改动打 `site-*` tag 单独重建（不进版本列表）。不随 main 推送重建；
+  漏了重建就 `gh workflow run pages.yml`。
 
 ## 标准流程（CI 发版）
 

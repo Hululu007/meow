@@ -1,18 +1,29 @@
 # 文档站（VitePress）→ GitHub Pages
 #
-# 只在文档相关路径变化时触发：站点源码、仓库里的技术文档、更新日志、应用版本号。
-# 技术文档与 CHANGELOG 是唯一真源，站内的 dev/ 与 changelog 由 site/scripts/sync-docs.mjs
-# 在构建前生成，所以改 docs/ 也要重建。
+# 只在**tag**时触发（用户 2026-11-19 口径）：不监听 main 推送。
+#   · 全量/部分发版 tag → 顺带重建站点（更新日志拿到新版本）；
+#   · 纯文档改动 → 打一个 `site-*` tag 单独重建（不进版本号、不影响更新日志列表）。
+# 站内的 dev/ 与 changelog 由 site/scripts/sync-docs.mjs 在构建前从仓库生成。
 name: docs
 
 on:
   push:
-    branches: [main]
-    paths:
-      - 'site/**'
-      - 'CHANGELOG.md'
-      - 'client/package.json'
-      - '.github/workflows/pages.yml'
+    # ★ 只用 tag：更新日志页只列「已有发版资产」的版本，tag 是唯一信号。
+    #   以前监听 main 会白跑两次（main 推送一次、tag 再补一次），而且 main 那次
+    #   看不到刚打的 tag，页面会停在上一个版本（2026-11-19 1.2.18 实测）。
+    #   注：GitHub 对 tag 推送不评估 paths 过滤，所以这里一打 tag 必触发。
+    tags:
+      # 发版 tag：全量 + 各独立前缀（顺带更新站点）
+      - 'release-v*'
+      - 'fpk-v*'
+      - 'tv-v*'
+      - 'pc-v*'
+      - 'plugins-v*'
+      - 'tv-plugins-v*'
+      - 'ipa-v*'
+      # 纯文档重建：不为发版、只为把 site/** 的改动推上线。
+      # sync-docs.mjs 的 releaseInfo() 不认 site- 前缀，所以它不会出现在更新日志版本列表里。
+      - 'site-*'
   workflow_dispatch:
 
 # 同一时间只跑一个部署；不要取消进行中的，避免 Pages 上出现半套产物

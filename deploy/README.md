@@ -564,7 +564,8 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 客户端弹框里显示的正文来自清单条目的 `desc`，三档来源按优先级：
 
 1. **`CHANGELOG.md` 里 `## <版本>` 那一节**（人写的，最准）
-2. `git log <上个 tag>..HEAD` 只取 `feat:` / `fix:` / `perf:`（自动兜底）
+2. `git log <上个 tag>..<main 最新>` 只取 `feat:` / `fix:` / `perf:`（自动兜底；
+   终点优先 `origin/main`，其次本地 `main`，都没有才退回 `HEAD`）
 3. 模板串 `猫窝 XX 版 x.y.z`（等于没有说明）
 
 **写法**（详见仓库根 `CHANGELOG.md` 顶部）：
@@ -610,7 +611,7 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 #### ★ `fetch-depth: 0` 不能删
 
 `sync-packages` job 的 checkout 显式写了 `fetch-depth: 0`。默认的 `fetch-depth: 1`
-是浅克隆，`git log <上个 tag>..HEAD` 会报 `unknown revision or path`，
+是浅克隆，`git log <上个 tag>..<main 最新>` 会报 `unknown revision or path`，
 于是每条产物的 `desc` 都静默退化成模板串——**不报错，只是更新说明永远失效**。
 
 > **本地也要先 `git fetch --tags`**：我们的 release tag 是 `gh` 在远端建的，

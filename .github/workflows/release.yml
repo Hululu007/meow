@@ -411,6 +411,12 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+      # 更新说明的 git-log 兜底范围终点是「main 最新」（sync-packages.ps1 的
+      # Get-GitLogNotes 优先读 origin/main）。checkout ref: main 会建本地 main，
+      # 但显式把 origin/main 也刷到最新，避免 checkout 的 refspec 细节导致回退到 HEAD。
+      - name: 刷新 origin/main（更新说明范围终点）
+        shell: bash
+        run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
       - name: 生成并上传清单
         shell: pwsh
         env:

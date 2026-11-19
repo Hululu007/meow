@@ -44,9 +44,14 @@ cd client/apps/web && npx vitest run
 **不监听 push**——这三块在本地是同一组命令，推 main 时本地必然已跑过；
 私有仓又不支持分支保护，云端重放起不到门禁作用。
 
-`pages.yml` 单独一条：push main 且路径命中 `site/**`、`CHANGELOG.md`、
-`client/package.json` 或该 workflow 自身时，构建 + 部署文档站（构建前先由
-`site/scripts/sync-docs.mjs` 同步 `docs/` 与 changelog）。
+`pages.yml` 单独一条：**只在 tag 时**构建 + 部署文档站（构建前先由
+`site/scripts/sync-docs.mjs` 同步 `docs/` 与 changelog）：
+
+- 发版 tag：`release-v*` / `fpk-v*` / `tv-v*` / `pc-v*` / `plugins-v*` / `tv-plugins-v*` / `ipa-v*`
+- 纯文档重建：`site-*`（不为发版；`releaseInfo()` 不认该前缀，不会进更新日志版本列表）
+
+不监听 main 推送——更新日志页只列「已有发版资产」的版本，tag 才是发版信号；
+补部署也可手动 `workflow_dispatch`。
 
 ## 三、冒烟脚本
 

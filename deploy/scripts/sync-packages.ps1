@@ -282,7 +282,7 @@ Write-Host "版本：$appVersion" -ForegroundColor DarkGray
 #
 # 用户看到的 `desc` 有三个来源，按优先级：
 #   ① CHANGELOG.md 里 `## <版本>` 那一节的正文      —— 人写的，最准确
-#   ② git log <上个 tag>..<本 tag> 里的 feat/fix/perf —— 自动，不会漏改
+#   ② git log <上个 tag>..<main 最新> 里的 feat/fix/perf —— 自动，不会漏改
 #   ③ 模板串「猫窝 XX 版 X.Y.Z」                     —— 兜底，等于没有说明
 #
 # ★ 以前只有 ③，每次发版都用模板串覆盖 `desc`，用户在弹框里永远只看到
@@ -339,6 +339,11 @@ function Get-ChangelogSection([string]$Version) {
     只取 feat/fix/perf 三类提交，剥掉 `feat(scope):` 的 scope 与 type 前缀。
     chore/docs/test/style 不进说明——那些是内部维护，用户不关心。
 
+    范围 = **上一个发版 tag → main 最新**（用户 2026-11-19 口径）。
+    终点优先级：`refs/remotes/origin/main` → `refs/heads/main` → `HEAD`。
+    ★ 不直接写 HEAD：本地可能在特性分支/worktree 上跑，HEAD 不等于 main；
+      CI 的 sync job 虽然 checkout 了 main，但显式取 origin/main 更稳。
+
     取不到（浅克隆 / 本地无 tag）时回 $null，由调用方退到模板串。
 #>
 function Get-GitLogNotes([string]$Version) {
@@ -363,8 +368,15 @@ function Get-GitLogNotes([string]$Version) {
     } catch { return $null }
     if (-not $prev) { return $null }
 
+    # 终点 = main 最新：origin/main > 本地 main > HEAD（见函数头注释）
+    $end = 'HEAD'
+    foreach ($ref in @('refs/remotes/origin/main', 'refs/heads/main')) {
+        $sha = & git rev-parse --verify --quiet $ref 2>$null
+        if ($LASTEXITCODE -eq 0 -and $sha) { $end = $ref; break }
+    }
+
     try {
-        $range = "$($prev.Tag)..HEAD"
+        $range = "$($prev.Tag)..$end"
         $log = & git log --no-merges --pretty=format:'%s' $range 2>$null
         if (-not $log) { return $null }
     } catch { return $null }
