@@ -65,6 +65,16 @@
 | Release 资产名 | GitHub Releases 或 `deploy/scripts/sync-packages.ps1` |
 | 构建单元与产物 | `deploy/units.json` |
 
+## 引用代码的写法
+
+技术文档引用代码一律写「文件路径 + 符号名」（如 `ApiServer.java` 的 `call()`、
+`dmUpgrade.ts` 的 `isSafeDanmakuSwap`），行号最多放在括号里当辅助提示。
+
+**不要新增裸行号引用**：行号是绝对坐标，代码一改就漂。2026-11-19 全站审计里
+上百处行号引用整体偏移 290~400 行，读者按行号跳转会落到无关代码。需要定位时给一条
+`grep` 命令（如 `grep -n 'private static String call(' server/host/src/shared/ApiServer.java`），
+而不是给一个会过期的数字。
+
 ## 本地开发
 
 ```bash
