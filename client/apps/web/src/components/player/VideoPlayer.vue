@@ -44,6 +44,7 @@ import {
   setDmOffset,
 } from '@/stores/dmOffset'
 import { danmakuHeatData, danmakuHeatGradientFromCounts, heatLevel } from './dmHeat'
+import { dmQualityStats, dmQualityWarn } from './dmQuality'
 import { isDesktopShell } from '@/api/appUpdate'
 import { beginWindowDrag, toggleMaximizeOnDblClick } from '@/composables/useWindowDrag'
 import { createIdleCursor } from './idleCursor'
@@ -391,6 +392,11 @@ const dmTotal = ref(0)
 const dmHeat = ref<number[] | null>(null)
 const dmHeatMax = ref(1)
 const dmHeatBucketSec = ref(0)
+/**
+ * 弹幕质量统计（播放信息面板用）：基于**过滤后可用列表**，
+ * 与「弹幕 N 条」同口径；不能用 dmRawList（含超片长死数据，数字会对不上）。
+ */
+const dmQuality = ref<ReturnType<typeof dmQualityStats> | null>(null)
 /** 后端是否因上限截断过（X-Danmaku-Total > XML 条数），显示时给 N 加 + */
 const dmTruncated = ref(false)
 /**
@@ -1169,13 +1175,23 @@ function collectDebug() {
       autoRetryHint: props.autoRetryHint || null,
       recoverAttempts,
       maxRecoverAttempts: MAX_RECOVER_ATTEMPTS,
-      danmaku: {
-        count: dmCount.value,
-        onScreen: (dmr as any)?.active?.length ?? 0,
-        lanes: (dmr as any)?.laneCount ?? 0,
-        loading: dmLoading.value,
-        density: getPrefs().danmakuDensity,
-      },
+      danmaku: (() => {
+        const q = dmQuality.value ?? dmQualityStats([], duration.value || shownDur.value)
+        return {
+          count: dmCount.value,
+          onScreen: (dmr as any)?.active?.length ?? 0,
+          lanes: (dmr as any)?.laneCount ?? 0,
+          loading: dmLoading.value,
+          density: getPrefs().danmakuDensity,
+          source: dmSourceLabel.value || dmSource.value || '未知',
+          scroll: q.scroll,
+          top: q.top,
+          bottom: q.bottom,
+          cover: q.cover,
+          warn: dmQualityWarn(q),
+          offset: dmOffset.value,
+        }
+      })(),
       // 起播耗时：换源 → 首帧
       firstFrameMs: firstFrameMs.value,
     },
@@ -2907,6 +2923,27 @@ function onBarUp(e: PointerEvent) {
   syncDm()
 }
 
+/**
+ * 时间轴密度带：按下只记位置，松手才 seek。
+ *
+ * <p>和进度条同一策略——拖动中每像素改 currentTime 会让 hls.js 反复
+ * abort 分片，弱网下要缓好几秒。点一下 = down+up 同一位置，等价于点跳。
+ */
+function onHeatDown(e: PointerEvent) {
+  const t = timeFromEvent(e)
+  if (t == null) return
+  ;(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId)
+  dragTime.value = t
+  hoverTime.value = t
+}
+
+function onHeatUp(e: PointerEvent) {
+  const t = dragTime.value ?? timeFromEvent(e)
+  dragTime.value = null
+  hoverTime.value = null
+  if (t != null) seekTo(t)
+}
+
 function onVolumeInput(e: Event) {
   const v = video.value
   if (!v) return
@@ -3866,6 +3903,7 @@ function clearDmOverride() {
     dmHeat.value = null
     dmHeatMax.value = 1
     dmHeatBucketSec.value = 0
+    dmQuality.value = null
     dm.value?.clear()
   }
 }
@@ -4725,6 +4763,7 @@ function applyDmList(
   dmTruncated.value = totalHint > 0 && totalHint > raw.length
   const usable = filterByDuration(raw)
   dmCount.value = usable.length
+  dmQuality.value = dmQualityStats(usable, duration.value)
   const heat = danmakuHeatData(usable, duration.value)
   dmHeat.value = heat?.counts ?? null
   dmHeatMax.value = heat?.max ?? 1
@@ -4942,6 +4981,7 @@ async function loadDanmaku(
     dmHeat.value = null
     dmHeatMax.value = 1
     dmHeatBucketSec.value = 0
+    dmQuality.value = null
       dmSource.value = ''
     }
   } finally {
@@ -5653,6 +5693,7 @@ watch(
     dmHeat.value = null
     dmHeatMax.value = 1
     dmHeatBucketSec.value = 0
+    dmQuality.value = null
       dm.value?.clear()
     }
   },
@@ -5668,6 +5709,11 @@ function fmt(s: number): string {
   return h > 0
     ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
     : `${m}:${String(sec).padStart(2, '0')}`
+}
+
+/** 0–1 的比例显示成百分比；未知（0）显示 —，别把「未加载」说成 0%。 */
+function pct(v: number): string {
+  return v > 0 ? Math.round(v * 100) + '%' : '—'
 }
 
 /**
@@ -6207,6 +6253,20 @@ defineExpose({
             </span>
             <span>{{ debugSnapshot.biz.danmaku.density }}</span>
           </div>
+          <!--
+            弹幕质量（2026-11-20）：来源 / 模式分布 / 覆盖片长 / 时间轴校准。
+            聚合源时间轴错位时，这里会显示「覆盖不足」或「分布集中」，
+            不用再抓包猜是源问题还是渲染问题。
+          -->
+          <div class="mt-0.5 flex flex-wrap gap-x-3 text-ink-3">
+            <span>滚 {{ debugSnapshot.biz.danmaku.scroll }} / 顶 {{ debugSnapshot.biz.danmaku.top }} / 底 {{ debugSnapshot.biz.danmaku.bottom }}</span>
+            <span>来源 {{ debugSnapshot.biz.danmaku.source }}</span>
+            <span :class="debugSnapshot.biz.danmaku.cover > 0 && debugSnapshot.biz.danmaku.cover < 0.8 ? 'text-warn' : ''">
+              覆盖 {{ pct(debugSnapshot.biz.danmaku.cover) }}
+            </span>
+            <span v-if="debugSnapshot.biz.danmaku.warn" class="text-warn">⚠ {{ debugSnapshot.biz.danmaku.warn }}</span>
+            <span>校准 {{ debugSnapshot.biz.danmaku.offset > 0 ? '+' : '' }}{{ debugSnapshot.biz.danmaku.offset.toFixed(1) }}s</span>
+          </div>
         </div>
 
         <!-- 播放器状态 -->
@@ -6296,12 +6356,16 @@ defineExpose({
       >
         <!--
           时间轴弹幕密度：双条模式 = 进度条上方的独立峰谷图（B 站高能条同款）。
-          纯预览，不参与渲染调度；悬停条数并进下面的时间气泡。
+          点击/拖动跳到对应时间；悬停条数并进下面的时间气泡。
         -->
         <div
           v-if="showCtrl && prefs.danmakuHeat === 'bar' && dmHeat"
-          class="pointer-events-none absolute inset-x-0 top-0 flex h-3 items-end overflow-hidden"
+          class="absolute inset-x-0 top-0 flex h-3 cursor-pointer items-end overflow-hidden"
+          title="点击跳到该时间"
           aria-hidden="true"
+          @pointerdown.stop.prevent="onHeatDown"
+          @pointerup.stop="onHeatUp"
+          @pointercancel.stop="onHeatUp"
         >
           <span
             v-for="(c, i) in dmHeat"

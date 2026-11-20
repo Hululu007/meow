@@ -23,6 +23,15 @@ describe('时间轴密度带：双条 / 内嵌 / 关闭', () => {
     expect(PLAYER).not.toContain(':style="{ backgroundImage: dmHeat }"')
   })
 
+  it('双条可点击/拖动跳转，松手才 seek', () => {
+    expect(PLAYER).toContain('@pointerdown.stop.prevent="onHeatDown"')
+    expect(PLAYER).toContain('@pointerup.stop="onHeatUp"')
+    expect(PLAYER).toContain('function onHeatDown')
+    expect(PLAYER).toContain('function onHeatUp')
+    const i = PLAYER.indexOf('function onHeatUp')
+    expect(PLAYER.slice(i, i + 300)).toContain('seekTo(t)')
+  })
+
   it('内嵌模式画在进度条内部、播放/缓冲之上仍保留', () => {
     expect(PLAYER).toContain("showCtrl && prefs.danmakuHeat === 'inline' && dmHeatInline")
     const i = PLAYER.indexOf("prefs.danmakuHeat === 'inline'")
