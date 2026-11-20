@@ -29,10 +29,17 @@ import androidx.media3.exoplayer.source.MediaSource;
 import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import androidx.media3.ui.PlayerView;
 
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
+import okhttp3.Call;
+import okhttp3.Callback;
 import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
 
 /**
  * 端上原生播放页（ExoPlayer）。
@@ -63,9 +70,15 @@ public class NativePlayerActivity extends Activity {
      * {@code +/=}，绝对安全。
      */
     public static final String EXTRA_URL_B64 = "url_b64";
+    /**
+     * 弹幕 XML 地址（我方 /api/proxy/danmaku...）。可选：没有就不画弹幕。
+     * 原生播放器自己用 OkHttp 抓，不依赖 WebView。
+     */
+    public static final String EXTRA_DANMAKU_URL = "danmaku_url";
 
     private ExoPlayer player;
     private PlayerView view;
+    private DanmakuOverlay danmaku;
     private OkHttpClient http;
     private TextView hint;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -107,6 +120,16 @@ public class NativePlayerActivity extends Activity {
         view.setUseController(true);
         root.addView(view);
 
+        /*
+         * 弹幕层压在 PlayerView 之上、提示文本之下。
+         * PlayerView 的控制器在它内部，弹幕会盖住控件 —— 所以 overlay
+         * 在 draw 里探 isControllerFullyVisible()，控制栏弹出时让路。
+         */
+        danmaku = new DanmakuOverlay(this);
+        danmaku.setLayoutParams(new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        root.addView(danmaku);
+
         hint = new TextView(this);
         hint.setTextColor(Color.WHITE);
         hint.setTextSize(16f);
@@ -127,6 +150,9 @@ public class NativePlayerActivity extends Activity {
 
         player = buildPlayer(headers);
         view.setPlayer(player);
+        danmaku.bind(player, () -> view.isControllerFullyVisible());
+        String dmUrl = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_DANMAKU_URL);
+        if (!TextUtils.isEmpty(dmUrl)) loadDanmaku(dmUrl);
         player.addListener(new Player.Listener() {
             @Override
             public void onPlaybackStateChanged(int state) {
@@ -155,6 +181,63 @@ public class NativePlayerActivity extends Activity {
             }
         };
         ui.postDelayed(watchdog, 15_000);
+    }
+
+    /**
+     * 抓弹幕 XML 并交给 overlay。
+     *
+     * <p>失败静默：没有弹幕不该影响看片。XML 是 B 站格式
+     * {@code <d p="time,mode,size,color,...">text</d>}。
+     */
+    private void loadDanmaku(String url) {
+        http.newCall(new Request.Builder().url(url).build()).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                android.util.Log.w("MeowNative", "danmaku fetch failed: " + e);
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) {
+                try (Response r = response) {
+                    if (!r.isSuccessful() || r.body() == null) return;
+                    String xml = r.body().string();
+                    List<DanmakuOverlay.Item> list = parseDanmaku(xml);
+                    if (!list.isEmpty()) runOnUiThread(() -> danmaku.setItems(list));
+                } catch (Throwable t) {
+                    android.util.Log.w("MeowNative", "danmaku parse failed: " + t);
+                }
+            }
+        });
+    }
+
+    private static List<DanmakuOverlay.Item> parseDanmaku(String xml) {
+        List<DanmakuOverlay.Item> out = new ArrayList<>();
+        if (xml == null || xml.isEmpty()) return out;
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("<d p=\"([^\"]*)\"[^>]*>(.*?)</d>", java.util.regex.Pattern.DOTALL)
+                .matcher(xml);
+        while (m.find()) {
+            String[] p = m.group(1).split(",");
+            if (p.length < 4) continue;
+            try {
+                double sec = Double.parseDouble(p[0]);
+                int mode = (int) Double.parseDouble(p[1]);
+                int color = (int) Double.parseDouble(p[3]);
+                String text = unescape(m.group(2));
+                if (text.isEmpty()) continue;
+                if (color <= 0) color = Color.WHITE;
+                out.add(new DanmakuOverlay.Item((long) (sec * 1000), text, mode, color));
+            } catch (Throwable ignored) {
+            }
+        }
+        out.sort((a, b) -> Long.compare(a.timeMs, b.timeMs));
+        return out;
+    }
+
+    private static String unescape(String s) {
+        return s.replace("&lt;", "<").replace("&gt;", ">")
+                .replace("&quot;", "\"").replace("&#39;", "'")
+                .replace("&amp;", "&");
     }
 
     private ExoPlayer buildPlayer(Map<String, String> headers) {
@@ -302,6 +385,12 @@ public class NativePlayerActivity extends Activity {
 
     /** 供桥接层打开播放页；失败返回 false（调用方退回 WebView 播放）。 */
     static boolean open(Activity from, String url, String title, String headers, long posMs) {
+        return open(from, url, title, headers, posMs, null);
+    }
+
+    /** @param danmakuUrl 可选；空表示只播视频 */
+    static boolean open(Activity from, String url, String title, String headers, long posMs,
+                        String danmakuUrl) {
         if (TextUtils.isEmpty(url)) return false;
         try {
             Intent i = new Intent(from, NativePlayerActivity.class);
@@ -309,6 +398,7 @@ public class NativePlayerActivity extends Activity {
             i.putExtra(EXTRA_TITLE, title);
             i.putExtra(EXTRA_HEADERS, headers);
             i.putExtra(EXTRA_POSITION_MS, posMs);
+            if (!TextUtils.isEmpty(danmakuUrl)) i.putExtra(EXTRA_DANMAKU_URL, danmakuUrl);
             from.startActivity(i);
             return true;
         } catch (Throwable t) {

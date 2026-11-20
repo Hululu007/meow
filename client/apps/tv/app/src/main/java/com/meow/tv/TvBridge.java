@@ -131,6 +131,17 @@ public class TvBridge {
         return NativePlayerActivity.open(activity, url, title, headers, positionMs);
     }
 
+    /**
+     * 带弹幕的原生播放。单独取名而不是重载 openNative：Android 的
+     * @JavascriptInterface 按参数个数挑重载，老壳/新壳混用时容易挑错，
+     * 显式方法名 + Web 侧 feature-detect 最稳。
+     */
+    @JavascriptInterface
+    public boolean openNativeWithDanmaku(String url, String title, String headers,
+                                         long positionMs, String danmakuUrl) {
+        return NativePlayerActivity.open(activity, url, title, headers, positionMs, danmakuUrl);
+    }
+
     /** 让页面知道当前是不是 TV（用于选焦点样式、隐藏鼠标相关交互） */
     @JavascriptInterface
     public String platform() {

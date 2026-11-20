@@ -873,7 +873,8 @@ function tryNative() {
   const raw = play.value?.url
   const u = typeof raw === 'string' ? raw : ''
   if (!u) return
-  if (openNative(u, title, play.value?.header, resumePos())) {
+  // 第 5 参：弹幕地址（原生播放器自己抓 XML 自绘；老壳会忽略）
+  if (openNative(u, title, play.value?.header, resumePos(), danmakuUrl.value)) {
     error.value = ''
     autoRetryHint.value = '已改用原生播放器（ExoPlayer）'
   } else {
@@ -1143,7 +1144,13 @@ function showCastToast(text: string, ms = 2200) {
   castToastTimer = window.setTimeout(() => (castToast.value = ''), ms)
 }
 
-/** 不能投时给菜单一个禁用原因（不再直接把入口藏掉） */
+/**
+ * 不能投的原因。
+ *
+ * <p>★ 2026-11-20 起播放器右上角入口在不可投时**整颗不渲染**（用户定），
+ * 所以这里不再给按钮当 tooltip，只留给 `openCast` 的兜底提示 —— 入口虽然
+ * 没了，但代码路径（以及将来别的入口）仍要能说清楚为什么不能投。
+ */
 const castReason = computed(() => {
   if (isLibraryPlay.value) return '片库直连播放不能投屏'
   if (needsParser.value) return '该源需要专用解析器，投出去电视无法播放'
@@ -2507,7 +2514,6 @@ onBeforeUnmount(() => {
       :can-download="canDownloadCurrent"
       :can-download-all="canDownloadAll"
       :can-cast="canCastCurrent"
-      :cast-reason="castReason"
       :casting="!!castSession"
       :cache-state="cacheState"
       :cache-percent="cachePercent"

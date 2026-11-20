@@ -22,6 +22,14 @@ import { isTvEnv } from '@/compat/shell'
 interface MeowTvBridge {
   nativePlayerAvailable(): boolean
   openNative(url: string, title: string, headers: string, positionMs: number): boolean
+  /** 1.2.18+：带弹幕地址的原生播放；老壳没有这个方法 */
+  openNativeWithDanmaku?(
+    url: string,
+    title: string,
+    headers: string,
+    positionMs: number,
+    danmakuUrl: string,
+  ): boolean
   platform(): string
   appVersion(): string
   /**
@@ -235,13 +243,19 @@ export function openNative(
   title: string,
   header?: unknown,
   positionSec = 0,
+  danmakuUrl?: string,
 ): boolean {
   if (!url || !/^https?:/i.test(url)) return false
   try {
     const b = (window as unknown as { meowTv?: MeowTvBridge }).meowTv
     if (!b || typeof b.openNative !== 'function') return false
     const headers = encodeHeaders(header)
-    return b.openNative(url, title || '', headers, Math.max(0, Math.round(positionSec * 1000)))
+    const posMs = Math.max(0, Math.round(positionSec * 1000))
+    // 新壳才有 openNativeWithDanmaku；老壳直接走 4 参，不赌重载解析
+    if (danmakuUrl && typeof b.openNativeWithDanmaku === 'function') {
+      return b.openNativeWithDanmaku(url, title || '', headers, posMs, danmakuUrl)
+    }
+    return b.openNative(url, title || '', headers, posMs)
   } catch {
     return false
   }
