@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  原生播放页布局。
+
+  ★ surface_type 必须是 texture_view：SurfaceView 会打洞并被合成到窗口下层，
+    FrameLayout 里叠在它上面的普通 View（弹幕层）会被视频盖住，表现为
+    “代码跑了、日志有数据、屏幕上一根弹幕都没有”（2026-11-20 实测踩过）。
+    TextureView 走普通 View 层，弹幕/提示才能画在画面上。
+  代价是 4K 下多一次 GPU 纹理拷贝，电视盒子可接受。
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <androidx.media3.ui.PlayerView
+        android:id="@+id/native_player_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:surface_type="texture_view"
+        app:use_controller="true" />
+
+    <com.meow.tv.DanmakuOverlay
+        android:id="@+id/native_danmaku"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <TextView
+        android:id="@+id/native_hint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:padding="48dp"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp" />
+</FrameLayout>

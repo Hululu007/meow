@@ -164,14 +164,16 @@ public final class Transcode {
         for (Job o : new java.util.ArrayList<>(JOBS.values())) {
             if (o.id.equals(keepId) || !"running".equals(o.state)) continue;
             /*
-             * 正在被别人播的任务不杀（`.access` 十分钟内有写入）：家里两台设备
-             * 同时看不同集是常态，杀掉会把对方正在看的播放打断。代价是两台设备
-             * 同时转 4K 时第二台可能抢不到 VDEC → 自动退软解（比打断别人好）。
+             * ★ 严格串行：不再因为 `.access` 十分钟内有写入就放行（2026-11-20 改）。
+             *
+             * 原来那条豁免是为了"两台设备同时看不同集"不互相打断，实际后果是
+             * 串行形同虚设：OECT 上 A 刚被播放器取过分片 → 一直"最近被播"，
+             * B 起来时 A 不会被杀，两路 ffmpeg 并发各占 575MB 空转。
+             *
+             * 现在只有**新任务**能活：旧任务一律取消。两台设备同时看时，
+             * 被取消的那台下次取分片会重新触发转码（幂等），代价小于双进程
+             * 抢 VDEC/内存导致的整机卡死。
              */
-            if (recentlyPlayed(dirOf(o.id), now)) {
-                System.err.println("[transcode] keep " + o.id + " (recently played)");
-                continue;
-            }
             o.state = "cancelled";
             o.error = "";
             try {
@@ -531,6 +533,13 @@ public final class Transcode {
         j.error = "";
         // S4：起新任务前回收历史产物（保留最近 3 个；正在转/正在看的不动）
         pruneProducts();
+        /*
+         * ★ 在线源兜底也要串行（2026-11-20 OECT 实测漏点）：
+         * 原实现只有 startFfmpeg（本地/片库路径）调 stopOtherJobs，
+         * ensure() 这条远程路径完全不拦 —— 两次"播放失败→转码"就能并发出
+         * 两个 ffmpeg（各 575MB 空转）。这里补上，和本地路径同一语义。
+         */
+        stopOtherJobs(j.id);
 
         String ff = ffmpegPath();
         if (ff.isEmpty()) {
@@ -546,6 +555,8 @@ public final class Transcode {
         cmd.add("-hide_banner");
         cmd.add("-loglevel"); cmd.add("error");
         cmd.add("-y");
+        // 在线源必须有网络超时：源站半死不活时 ffmpeg 会卡在 read 上永不退出
+        addHttpInputOptions(cmd, sourceUrl);
         // 只处理到转出文件的磁盘 io：不写日志文件，避免缓存目录里混入杂物
         cmd.add("-i"); cmd.add(sourceUrl);
         // 视频统一降到 H.264：那是所有浏览器都有的解码器。
@@ -671,6 +682,13 @@ public final class Transcode {
         }
         // S4：起新任务前回收历史产物（保留最近 3 个；正在转/正在看的不动）
         pruneProducts();
+        /*
+         * ★ 在线源兜底也要串行（2026-11-20 OECT 实测漏点）：
+         * 原实现只有 startFfmpeg（本地/片库路径）调 stopOtherJobs，
+         * ensure() 这条远程路径完全不拦 —— 两次"播放失败→转码"就能并发出
+         * 两个 ffmpeg（各 575MB 空转）。这里补上，和本地路径同一语义。
+         */
+        stopOtherJobs(j.id);
         j.probeSnap = probe;
         if (probe != null) saveDuration(id, probe.duration);
         j.ffPath = ff;
@@ -907,6 +925,7 @@ public final class Transcode {
             v.add("-select_streams"); v.add("v:0");
             v.add("-show_entries"); v.add("stream=codec_name,width,height");
             v.add("-of"); v.add("csv=p=0");
+            addHttpInputOptions(v, source);
             v.add(source);
             // 设备忙（4K 转码在跑）时 ffprobe 读 SMB 会明显变慢；10 秒会误判成
             // "探测失败" → 直接退软解（4K 从 2.0x 掉到 0.025x）。给到 30 秒。
@@ -924,6 +943,7 @@ public final class Transcode {
             a.add("-select_streams"); a.add("a:0");
             a.add("-show_entries"); a.add("stream=codec_name,channels");
             a.add("-of"); a.add("csv=p=0");
+            addHttpInputOptions(a, source);
             a.add(source);
             String ao = runCapture(a, 30);
             // 总时长：pump 用它判断"exit 0 但只转了一小段"（输入被截断时会出现）
@@ -932,6 +952,7 @@ public final class Transcode {
             d.add("-v"); d.add("error");
             d.add("-show_entries"); d.add("format=duration");
             d.add("-of"); d.add("csv=p=0");
+            addHttpInputOptions(d, source);
             d.add(source);
             // 这条只影响进度条总长（UI），不值得让它拖慢起播：12 秒拿不到就用 0
             String dOut = runCapture(d, 12);
@@ -1087,6 +1108,25 @@ public final class Transcode {
         return "2M";
     }
 
+    /**
+     * http(s) 输入的公共超时/重连选项。
+     *
+     * <p>★ 为什么必须有（2026-11-20 OECT 实测）：两个在线源 ffprobe 报
+     * "TLS Error / IO error: End of file"，ffmpeg 卡在网络读上永不返回，
+     * 进程各占 ~575MB 空转、30 秒兜底也执行不到（pump 卡在 readLine）。
+     * `-rw_timeout` 让**每一次网络读写**超过 15 秒就报错退出，进程能自己死；
+     * 重连选项只在真抖动时救一次，不会把卡死变成永久重试。
+     *
+     * <p>单位是微秒（ffmpeg 的 AVIO 约定），15000000 = 15 秒。
+     */
+    private static void addHttpInputOptions(List<String> cmd, String source) {
+        if (!(source.startsWith("http://") || source.startsWith("https://"))) return;
+        cmd.add("-rw_timeout"); cmd.add("15000000");
+        cmd.add("-reconnect"); cmd.add("1");
+        cmd.add("-reconnect_streamed"); cmd.add("1");
+        cmd.add("-reconnect_delay_max"); cmd.add("5");
+    }
+
     private static List<String> hlsCommand(String ff, String id, String source, Probe p, boolean hw) {
         List<String> cmd = new ArrayList<>();
         boolean http = source.startsWith("http://") || source.startsWith("https://");
@@ -1107,6 +1147,8 @@ public final class Transcode {
              */
             cmd.add("-seekable"); cmd.add("1");
             cmd.add("-multiple_requests"); cmd.add("1");
+            // 网络读 15 秒不返回就让 ffmpeg 自己报错退出（见 addHttpInputOptions）
+            cmd.add("-rw_timeout"); cmd.add("15000000");
             cmd.add("-reconnect"); cmd.add("1");
             cmd.add("-reconnect_streamed"); cmd.add("1");
             cmd.add("-reconnect_delay_max"); cmd.add("5");
@@ -1198,47 +1240,76 @@ public final class Transcode {
         return cmd;
     }
 
-    /** 读 ffmpeg 输出（防管道写满阻塞），并在结束时判定结果。 */
+    /** 进程活着但这么久没有新分片，判定卡死（4K 软解首片实测约 100 秒）。 */
+    private static final long HANG_NO_SEGMENT_MS = 180_000L;
+
+    /**
+     * 读 ffmpeg 输出（防管道写满阻塞），并在结束时判定结果。
+     *
+     * <p>★ 读与等必须分两条线程（2026-11-20 OECT 实测）：原实现先 readLine
+     * 读到 EOF 才 waitFor(30s)，而 ffmpeg 卡在网络读时管道不关、readLine
+     * 永不返回 —— 那个"卡住 30 秒强杀"的保护永远执行不到。现在 reader
+     * 线程只负责排水；主线程按秒巡检，进程活着但 180 秒没有新分片就强杀。
+     * 网络读本身的 15 秒超时由 -rw_timeout 兜底（见 addHttpInputOptions）。
+     */
     private static void pump(Job j) {
-        StringBuilder tail = new StringBuilder();
-        try (BufferedReader r = new BufferedReader(
-                new InputStreamReader(j.proc.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = r.readLine()) != null) {
-                tail.append(line).append('\n');
-                if (tail.length() > 4000) tail.delete(0, tail.length() - 4000);
-            }
-        } catch (Exception ignored) {
-        }
-        /*
-         * 等进程真正退出再取退出码。原来只等 5 秒就 exitValue()，进程稍慢一点
-         * 就抛 IllegalThreadStateException（transcode 线程直接死掉、任务永远
-         * 停在 running），日志里那句 "process hasn't exited" 就是它。
-         */
-        int code;
-        boolean exited;
-        try {
-            exited = j.proc.waitFor(30, TimeUnit.SECONDS);
-        } catch (Exception e) {
-            exited = false;
-        }
-        if (!exited) {
-            // 已经读到 stdout EOF 还没退，基本是卡死；强杀并按失败处理
-            try {
-                j.proc.destroyForcibly();
+        final Process proc = j.proc;
+        final StringBuilder tail = new StringBuilder();
+        Thread reader = new Thread(() -> {
+            try (BufferedReader r = new BufferedReader(
+                    new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    synchronized (tail) {
+                        tail.append(line).append('\n');
+                        if (tail.length() > 4000) tail.delete(0, tail.length() - 4000);
+                    }
+                }
             } catch (Exception ignored) {
             }
-            j.state = "failed";
-            j.error = "转码进程卡住（30 秒未退出），已强制结束";
-            System.err.println("[transcode] job " + j.id + " hang -> killed");
-            return;
+        }, "transcode-log-" + j.id);
+        reader.setDaemon(true);
+        reader.start();
+
+        int lastSeg = countSegments(j.id);
+        long lastProgress = System.currentTimeMillis();
+        boolean exited = false;
+        try {
+            while (!(exited = proc.waitFor(1, TimeUnit.SECONDS))) {
+                int n = countSegments(j.id);
+                if (n > lastSeg) {
+                    lastSeg = n;
+                    lastProgress = System.currentTimeMillis();
+                } else if (System.currentTimeMillis() - lastProgress > HANG_NO_SEGMENT_MS) {
+                    try {
+                        proc.destroyForcibly();
+                    } catch (Exception ignored) {
+                    }
+                    j.state = "failed";
+                    j.error = "转码 " + (HANG_NO_SEGMENT_MS / 1000)
+                            + " 秒没有新分片（上游卡住或编码器无响应），已强制结束";
+                    System.err.println("[transcode] job " + j.id + " stall -> killed");
+                    return;
+                }
+            }
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
         }
         try {
-            code = j.proc.exitValue();
+            reader.join(2_000);
+        } catch (InterruptedException ignored) {
+        }
+        int code;
+        try {
+            code = proc.exitValue();
         } catch (Exception e) {
             code = -1;
         }
-        String tailText = tail.toString().trim();
+        String tailText;
+        synchronized (tail) {
+            tailText = tail.toString().trim();
+        }
+
         /*
          * ★ 只有正常退出才写完成标记（2026-11-17 实测踩过）：原来
          * `code == 0 || 清单存在` 就算 ready，ffmpeg 被杀/崩溃时清单里已有几片，

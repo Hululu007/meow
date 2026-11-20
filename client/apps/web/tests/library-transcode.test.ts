@@ -215,9 +215,10 @@ describe('可播判据与并发（2026-11-17 第二轮回修：播几秒就卡�
   it('完成标记 .done：只有 ffmpeg exit 0 才写（半成品不能算 ready）', () => {
     expect(s).toContain('DONE_FILE = ".done"')
     expect(s).toContain('markDone(j.id)')
-    const i = s.indexOf('String tailText = tail.toString().trim();')
+    // 2026-11-20：pump 改双线程后 tailText 由同步块赋值，改从函数体定位
+    const i = s.indexOf('private static void pump(Job j)')
     expect(i).toBeGreaterThan(-1)
-    const body = s.slice(i, i + 1400)
+    const body = s.slice(i, i + 4000)
     expect(body).toContain('if (code == 0) {')
     // 原来的"清单存在就算 ready"必须消失
     expect(body).not.toContain('|| Files.isRegularFile(playlistOf(j.id))')
@@ -335,9 +336,12 @@ describe('回归加固（2026-11-17 第三轮审计）', () => {
     expect(body).toContain('playable(id) ? "ready" : "idle"')
   })
 
-  it('串行化不杀「正在被观看」的任务（多设备同时看不同集）', () => {
-    expect(s).toContain('recentlyPlayed(dirOf(o.id), now)')
-    expect(s).toContain('keep " + o.id + " (recently played)')
+  it('严格串行：新任务取消旧任务（2026-11-20 起不再按 .access 豁免）', () => {
+    const stop = s.slice(s.indexOf('private static void stopOtherJobs'),
+      s.indexOf('private static Path dirOf'))
+    expect(stop).not.toContain('recentlyPlayed')
+    expect(stop).toContain('o.state = "cancelled"')
+    expect(stop).toContain('destroyForcibly')
   })
 
   it('启动时清掉遗留的转码 ffmpeg（孤儿会抢 VDEC 且永远不写 .done）', () => {

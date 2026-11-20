@@ -4,6 +4,7 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.util.AttributeSet;
 import android.view.View;
 
 import androidx.media3.common.Player;
@@ -82,6 +83,21 @@ public class DanmakuOverlay extends View {
 
     public DanmakuOverlay(Context context) {
         super(context);
+        init();
+    }
+
+    /** XML 里 <com.meow.tv.DanmakuOverlay> 必须走这个构造器，否则 inflate 直接崩。 */
+    public DanmakuOverlay(Context context, AttributeSet attrs) {
+        super(context, attrs);
+        init();
+    }
+
+    public DanmakuOverlay(Context context, AttributeSet attrs, int defStyleAttr) {
+        super(context, attrs, defStyleAttr);
+        init();
+    }
+
+    private void init() {
         setWillNotDraw(false);
         setClickable(false);
         setFocusable(false);

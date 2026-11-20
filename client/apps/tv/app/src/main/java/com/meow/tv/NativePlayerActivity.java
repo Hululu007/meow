@@ -111,34 +111,15 @@ public class NativePlayerActivity extends Activity {
         String title = getIntent().getStringExtra(EXTRA_TITLE);
         long startMs = getIntent().getLongExtra(EXTRA_POSITION_MS, 0L);
 
-        FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.BLACK);
-
-        view = new PlayerView(this);
-        view.setLayoutParams(new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        view.setUseController(true);
-        root.addView(view);
-
         /*
-         * 弹幕层压在 PlayerView 之上、提示文本之下。
-         * PlayerView 的控制器在它内部，弹幕会盖住控件 —— 所以 overlay
-         * 在 draw 里探 isControllerFullyVisible()，控制栏弹出时让路。
+         * 布局走 XML：PlayerView 的 surface_type 必须在构造时就是 texture_view。
+         * SurfaceView 会把弹幕层盖住（见 layout 注释），运行时改不了。
          */
-        danmaku = new DanmakuOverlay(this);
-        danmaku.setLayoutParams(new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        root.addView(danmaku);
-
-        hint = new TextView(this);
-        hint.setTextColor(Color.WHITE);
-        hint.setTextSize(16f);
-        hint.setPadding(48, 48, 48, 48);
+        setContentView(R.layout.activity_native_player);
+        view = findViewById(R.id.native_player_view);
+        danmaku = findViewById(R.id.native_danmaku);
+        hint = findViewById(R.id.native_hint);
         hint.setText(title == null ? "" : title);
-        root.addView(hint, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        setContentView(root);
 
         http = new OkHttpClient.Builder()
                 .followRedirects(true)
