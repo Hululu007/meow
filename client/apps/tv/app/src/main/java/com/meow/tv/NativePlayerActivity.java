@@ -224,7 +224,14 @@ public class NativePlayerActivity extends Activity {
                 int color = (int) Double.parseDouble(p[3]);
                 String text = unescape(m.group(2));
                 if (text.isEmpty()) continue;
+                /*
+                 * ★ XML 里的 color 是 RGB（如 16777215 = 白），不是 ARGB。
+                 * Paint.setColor 要 ARGB，直接传 0x00FFFFFF 的 alpha=0
+                 * → 填充画不出来，只剩黑色描边，用户看到的就是"弹幕全黑"
+                 * （2026-11-20 投影仪实锤）。这里补不透明 alpha。
+                 */
                 if (color <= 0) color = Color.WHITE;
+                else color = 0xFF000000 | (color & 0xFFFFFF);
                 out.add(new DanmakuOverlay.Item((long) (sec * 1000), text, mode, color));
             } catch (Throwable ignored) {
             }
