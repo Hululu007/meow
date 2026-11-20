@@ -141,7 +141,7 @@ CHANGELOG_SECTION="$(awk -v v="$APP_VER" '
   $0 ~ "^##[[:space:]]*" v "[[:space:]]*$" {on=1; next}
   on && /^##[[:space:]]/ {exit}
   on && NF {sub(/^[[:space:]]+/,""); sub(/[[:space:]]+$/,""); lines[++n]=$0}
-  END {out=""; for (i=1;i<=n;i++) out = out (i>1 ? "\\\\n" : "") lines[i]; printf "%s", out}
+  END {out=""; for (i=1;i<=n;i++) out = out (i>1 ? "\\n" : "") lines[i]; printf "%s", out}
 ' "$SRC/CHANGELOG.md")"
 if [ -n "$CHANGELOG_SECTION" ]; then
     if grep -q '^changelog[[:space:]]*=' "$PKG/manifest"; then
