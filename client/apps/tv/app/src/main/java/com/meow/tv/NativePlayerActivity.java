@@ -19,6 +19,7 @@ import androidx.annotation.OptIn;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.VideoSize;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.okhttp.OkHttpDataSource;
@@ -84,6 +85,9 @@ public class NativePlayerActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     /** 起播看门狗：15 秒还没有画面就明确报错，而不是一直转圈 */
     private Runnable watchdog;
+    /** onVideoSizeChanged 记下的分辨率；READY 时用它出示证（验收 4K 用）。 */
+    private String sizeLabel;
+    private String titleText = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -119,7 +123,8 @@ public class NativePlayerActivity extends Activity {
         view = findViewById(R.id.native_player_view);
         danmaku = findViewById(R.id.native_danmaku);
         hint = findViewById(R.id.native_hint);
-        hint.setText(title == null ? "" : title);
+        titleText = title == null ? "" : title;
+        hint.setText(titleText);
 
         http = new OkHttpClient.Builder()
                 .followRedirects(true)
@@ -139,8 +144,21 @@ public class NativePlayerActivity extends Activity {
             public void onPlaybackStateChanged(int state) {
                 if (state == Player.STATE_READY) {
                     cancelWatchdog();
-                    hint.setVisibility(View.GONE);
+                    // 尺寸回调通常早于 READY；这里再出示 4 秒，否则会被这条 GONE 吃掉
+                    if (sizeLabel != null) showSizeHint();
+                    else hint.setVisibility(View.GONE);
                 }
+            }
+
+            /**
+             * 视频尺寸一确定就报一次：4K 验收时屏幕上得能看见确实解出了 3840×2160，
+             * 否则"没黑屏"不等于"4K 解成功"（可能被 MediaCodec 降级/缩放了）。
+             */
+            @Override
+            public void onVideoSizeChanged(VideoSize size) {
+                if (size.width <= 0 || size.height <= 0) return;
+                sizeLabel = size.width + "×" + size.height;
+                showSizeHint();
             }
 
             @Override
@@ -280,6 +298,14 @@ public class NativePlayerActivity extends Activity {
         } catch (Exception e) {
             return s;
         }
+    }
+
+    private void showSizeHint() {
+        if (sizeLabel == null) return;
+        String sep = (char) 10 + "";
+        hint.setText((titleText.isEmpty() ? "" : titleText + sep) + "画面 " + sizeLabel);
+        hint.setVisibility(View.VISIBLE);
+        ui.postDelayed(() -> hint.setVisibility(View.GONE), 4_000);
     }
 
     private void showHint(String text) {
