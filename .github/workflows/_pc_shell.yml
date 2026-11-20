@@ -137,14 +137,18 @@ jobs:
 
       # MinGW 是 choco 现装的（16.2.0 解压约 53s，实测 04:35:51→04:36:44）。
       # 装完落在 C:\ProgramData\mingw64（下面探测的第一个候选），整目录缓存即可。
+      # ★ warm 且 Rust 缓存已命中时整条链不用编译，MinGW 也就用不上 —— 跳过 27s 的解压。
       - name: 恢复 MinGW
         id: mingwcache
+        if: ${{ !(inputs.warm_only && steps.pccache.outputs.cache-hit == 'true') }}
         uses: actions/cache/restore@v4
         with:
           path: C:\ProgramData\mingw64
           key: mingw-16.2.0-ucrt-posix-seh
 
       - name: 安装 MinGW（缓存未命中才装）
+        # warm 且 Rust 缓存命中时整条链不编译，装 MinGW 只是白花 53s
+        if: ${{ !(inputs.warm_only && steps.pccache.outputs.cache-hit == 'true') }}
         shell: pwsh
         run: |
           $gcc = 'C:\ProgramData\mingw64\mingw64\bin\x86_64-w64-mingw32-gcc.exe'
@@ -194,8 +198,10 @@ jobs:
           Pop-Location
 
       # warm 模式：只编译、不打 NSIS 包（缓存要的是 target/ 里的产物）
+      # ★ Rust 缓存已命中时 target/ 已经还原，再编译一遍纯浪费：
+      #   2026-11-20 实测 1.23m，且这一趟并不 save（save 条件要求 cache-hit != true）。
       - name: 编译依赖与产物（warm，不打包）
-        if: ${{ inputs.warm_only }}
+        if: ${{ inputs.warm_only && steps.pccache.outputs.cache-hit != 'true' }}
         shell: pwsh
         env:
           MEOW_SKIP_WEB_BUILD: '1'
@@ -218,7 +224,8 @@ jobs:
           key: ${{ steps.pccache.outputs.cache-primary-key }}
 
       - name: 保存 MinGW 缓存（仅 main）
-        if: ${{ github.ref == 'refs/heads/main' && steps.mingwcache.outputs.cache-hit != 'true' }}
+        # 恢复步骤被跳过时没有 primary-key，直接 save 会因 key 为空而红
+        if: ${{ github.ref == 'refs/heads/main' && steps.mingwcache.outputs.cache-hit != 'true' && !(inputs.warm_only && steps.pccache.outputs.cache-hit == 'true') }}
         uses: actions/cache/save@v4
         with:
           path: C:\ProgramData\mingw64
