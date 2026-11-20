@@ -11962,9 +11962,21 @@ public class ApiServer {
         Map<String, String> q = query(ex);
         String src = trimToEmpty(q.get("src"));
         String id = trimToEmpty(q.get("id"));
+        String delLib = trimToEmpty(q.get("lib"));
+        String delPath = trimToEmpty(q.get("path"));
 
         if ("DELETE".equalsIgnoreCase(method)) {
-            boolean ok = !id.isEmpty() && core.Transcode.cancel(id);
+            /*
+             * 也接受 src / lib+path：前端在"切集/换线/离开页面"时只知道源坐标，
+             * 拿不到后端生成的 job id。按同一套幂等键反推 id，才能真的停掉
+             * 那个已经没人等的 ffmpeg（否则它会白转到看门狗 10 分钟）。
+             */
+            String cid = id;
+            if (cid.isEmpty() && !src.isEmpty()) cid = core.Transcode.idFor(src);
+            if (cid.isEmpty() && !delLib.isEmpty() && !delPath.isEmpty()) {
+                cid = core.Transcode.idFor("lib|" + delLib + "|" + delPath);
+            }
+            boolean ok = !cid.isEmpty() && core.Transcode.cancel(cid);
             sendJson(ex, ok ? 200 : 404, new JSONObject().put("ok", ok).toString());
             return;
         }

@@ -73,6 +73,12 @@ public final class Transcode {
         public int segments;
         /** 已产出的可播时长（秒），用于前端显示"转码中 x 秒" */
         public int readySeconds;
+        /** 机器可读的失败原因：slow_4k / no_ffmpeg / source_timeout / ... */
+        public String code = "";
+        /** probe | transcode | ready | failed | cancelled（前端据此说人话） */
+        public String phase = "idle";
+        /** 最近一次分片增长的时间；前端/状态接口用它判断"是不是卡住了" */
+        public long lastSegmentAt = 0;
     }
 
     /** 转码 id：源地址的哈希。同一集重复点播复用同一份产物。 */
@@ -175,6 +181,8 @@ public final class Transcode {
              * 抢 VDEC/内存导致的整机卡死。
              */
             o.state = "cancelled";
+            o.phase = "cancelled";
+            o.code = "cancelled_by_other";
             o.error = "";
             try {
                 if (o.proc != null) {
@@ -186,7 +194,10 @@ public final class Transcode {
                 }
             } catch (Exception ignored) {
             }
-            cleanSegments(o.id);
+            /*
+             * ★ 不删已产出的分片（2026-11-20）：删了会让另一台正在看的人立刻 404。
+             * 保留后前端可以把"已转部分"当降级可播，盘上的半成品由 prune 回收。
+             */
             System.err.println("[transcode] cancelled " + o.id + " (serialize, keep=" + keepId + ")");
         }
     }
@@ -544,56 +555,56 @@ public final class Transcode {
         String ff = ffmpegPath();
         if (ff.isEmpty()) {
             j.state = "failed";
+            j.phase = "failed";
+            j.code = "no_ffmpeg";
             j.error = "找不到 ffmpeg。装一个（或在 policy.json 里配 ffmpegPath）才能播这个格式。";
             // 不打日志的话排障只剩前端的「起播超时」，真实原因永远看不到
             System.err.println("[transcode] job " + id + " ffmpeg missing -> failed");
             return j;
         }
 
-        List<String> cmd = new ArrayList<>();
-        cmd.add(ff);
-        cmd.add("-hide_banner");
-        cmd.add("-loglevel"); cmd.add("error");
-        cmd.add("-y");
-        // 在线源必须有网络超时：源站半死不活时 ffmpeg 会卡在 read 上永不退出
-        addHttpInputOptions(cmd, sourceUrl);
-        // 只处理到转出文件的磁盘 io：不写日志文件，避免缓存目录里混入杂物
-        cmd.add("-i"); cmd.add(sourceUrl);
-        // 视频统一降到 H.264：那是所有浏览器都有的解码器。
-        // veryfast 实测 6.7 倍速；更快的 ultrafast 画质掉得明显，不值得。
-        cmd.add("-c:v"); cmd.add("libx264");
-        cmd.add("-preset"); cmd.add("veryfast");
-        cmd.add("-crf"); cmd.add("23");
-        // 4K 源降到 1080p：H.264 编 4K 慢 4 倍，而浏览器端肉眼收益很小
-        cmd.add("-vf"); cmd.add("scale='min(1920,iw)':-2");
-        // 音频优先 copy（多数是 AAC/AC3→AAC 需要转，EAC3 浏览器不支持）
-        cmd.add("-c:a"); cmd.add("aac");
-        cmd.add("-b:a"); cmd.add("192k");
-        cmd.add("-ac"); cmd.add("2");
-        cmd.add("-f"); cmd.add("hls");
-        cmd.add("-hls_time"); cmd.add(String.valueOf(SEG_SECONDS));
-        cmd.add("-hls_list_size"); cmd.add("0");
-        cmd.add("-hls_flags"); cmd.add("independent_segments");
-        cmd.add("-hls_segment_filename");
-        cmd.add(dirOf(id).resolve("seg-%05d.ts").toString());
-        cmd.add(playlistOf(id).toString());
-
+        /*
+         * ★ 在线源与片库共用同一套 probe + startFfmpeg（2026-11-20 对齐）。
+         *
+         * 旧实现 here 手写一条 libx264 命令，导致点播：
+         *   - 永远软编（有 rkmpp 也不用）→ OECT 上 4K 只有 0.9fps；
+         *   - H.264 ≤1080 也重编码，而片库同样片源走 copy 只要 1–2 秒；
+         *   - 没有 hw 失败回退、没有 4K 预判、phase/看门狗语义也不一致。
+         * 现在共用 hlsCommand()，点播自动获得 copy/hw/回退/预判。
+         */
+        j.phase = "probe";
+        Probe probe = probe(ff, sourceUrl);
+        /*
+         * ★ 这里必须传**真实**的硬解能力（2026-11-20 复核修正）。
+         * 原来传死 false，等于把"RK3566 + rkmpp"也当成无硬解：4K HEVC 明明
+         * 能硬解降到 1080p（OEC 实测首片 13.6 秒），却被 slow_4k 直接拒掉。
+         * hwTranscode 内部有缓存（各 50ms 探测一次），不会给等待链加开销。
+         */
+        boolean hwCapable = probe != null && hwTranscode(ff, probe);
+        if (slow4kHopeless(probe, hwCapable)) {
+            j.state = "failed";
+            j.code = "slow_4k";
+            j.phase = "failed";
+            j.error = SLOW_4K_MSG;
+            System.err.println("[transcode] job " + id + " reject slow 4k (soft)");
+            return j;
+        }
+        if (probe != null) {
+            System.err.println("[transcode] probe " + id + ": " + probe.detail
+                    + " -> copyVideo=" + probe.copyVideo + " copyAudio=" + probe.copyAudio);
+        } else {
+            System.err.println("[transcode] probe " + id + " failed (ffprobe timeout?) -> software path");
+        }
+        j.probeSnap = probe;
+        if (probe != null) saveDuration(id, probe.duration);
+        j.ffPath = ff;
         try {
-            // ★ 必须先建输出目录：ffmpeg 不会自己创建，段文件写到不存在的目录时
-            // 整条命令以 "Failed to open file ... No such file or directory" 失败，
-            // 而且 exit code 非 0、日志里只有一行，很容易误判成"源不可达"（实测踩过）。
-            java.nio.file.Files.createDirectories(dirOf(id));
-            ProcessBuilder pb = new ProcessBuilder(cmd);
-            pb.redirectErrorStream(true);
-            j.proc = pb.start();
-            j.state = "running";
-            j.startedAt = System.currentTimeMillis();
-            Thread th = new Thread(() -> pump(j), "transcode-" + id);
-            th.setDaemon(true);
-            th.start();
+            startFfmpeg(j, ff, sourceUrl, false);
         } catch (Exception e) {
             j.state = "failed";
+            j.phase = "failed";
             j.error = "启动 ffmpeg 失败：" + e.getMessage();
+            System.err.println("[transcode] start failed " + id + ": " + e);
         }
         return j;
     }
@@ -662,6 +673,8 @@ public final class Transcode {
         String ff = ffmpegPath();
         if (ff.isEmpty()) {
             j.state = "failed";
+            j.phase = "failed";
+            j.code = "no_ffmpeg";
             j.error = "找不到 ffmpeg。装一个（或在 policy.json 里配 ffmpegPath）才能播这个格式。";
             // 不打日志的话排障只剩前端的「起播超时」，真实原因永远看不到
             System.err.println("[transcode] job " + id + " ffmpeg missing -> failed");
@@ -672,7 +685,17 @@ public final class Transcode {
          * 不重编码，只换封装（`-c copy`）。OECT 实测：416MB 1080p mp4 重编码
          * 首片要 20 秒，copy 只要 1~2 秒。探测失败一律回退全转码。
          */
+        j.phase = "probe";
         Probe probe = probe(ff, source);
+        boolean hwCapable = probe != null && hwTranscode(ff, probe);
+        if (slow4kHopeless(probe, hwCapable)) {
+            j.state = "failed";
+            j.code = "slow_4k";
+            j.phase = "failed";
+            j.error = SLOW_4K_MSG;
+            System.err.println("[transcode] job " + id + " reject slow 4k (soft)");
+            return j;
+        }
         if (probe != null) {
             System.err.println("[transcode] probe " + id + ": " + probe.detail
                     + " -> copyVideo=" + probe.copyVideo + " copyAudio=" + probe.copyAudio);
@@ -1053,8 +1076,16 @@ public final class Transcode {
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectErrorStream(true);
         j.proc = pb.start();
+        /*
+         * 上一次失败留下的 code/error 必须清掉：实测同一条 src 先 slow_4k 失败、
+         * 改配置后重试成功，状态是 ready 却还带着 code=slow_4k，前端/日志都会误读。
+         */
+        j.code = "";
+        j.error = "";
         j.state = "running";
+        j.phase = "transcode";
         j.startedAt = System.currentTimeMillis();
+        j.lastSegmentAt = j.startedAt;
         Thread th = new Thread(() -> pump(j), "transcode-" + j.id);
         th.setDaemon(true);
         th.start();
@@ -1126,6 +1157,34 @@ public final class Transcode {
         cmd.add("-reconnect_streamed"); cmd.add("1");
         cmd.add("-reconnect_delay_max"); cmd.add("5");
     }
+
+    /** 目标机是不是 ARM（OECT/RK3566、多数 NAS）。x86 桌面软转 4K 还有一线希望。 */
+    private static boolean isArmHost() {
+        String a = System.getProperty("os.arch", "").toLowerCase();
+        return a.contains("aarch64") || a.contains("arm");
+    }
+
+    /**
+     * 4K 且没有硬编时的"必死任务"预判。
+     *
+     * <p>OECT 实测：RK3566 软转 4K HEVC 只有 0.9–2.4 fps，首片要 100 秒以上，
+     * 整集永远追不上播放速度；起这种任务只会烧 CPU/写满磁盘，最后被看门狗杀。
+     * 直接在 probe 后拒绝，前端按 code=slow_4k 提示"用原生播放器/换 1080p 线路"。
+     *
+     * <p>不拦 x86（桌面/服务器多核软转可能 1x），也不拦 copyVideo（只换封装）。
+     * 调试用 meow.transcode.allowSlow4k=true 放行，rejectSlow4k=true 强制拒绝（测试）。
+     */
+    static boolean slow4kHopeless(Probe p, boolean hw) {
+        if (p == null || p.copyVideo) return false;
+        if (p.height < 2000 && p.width < 2000) return false;
+        if (hw) return false;
+        if (Boolean.getBoolean("meow.transcode.allowSlow4k")) return false;
+        return isArmHost() || Boolean.getBoolean("meow.transcode.rejectSlow4k");
+    }
+
+    private static final String SLOW_4K_MSG =
+            "这台设备没有 4K 硬编码能力，软转 4K 速度远低于播放（实测 <3 fps，首片要 100 秒以上）。"
+            + "请改用「原生播放器」（投影仪可硬解 4K），或换 1080p / H.264 线路。";
 
     private static List<String> hlsCommand(String ff, String id, String source, Probe p, boolean hw) {
         List<String> cmd = new ArrayList<>();
@@ -1286,6 +1345,8 @@ public final class Transcode {
                     } catch (Exception ignored) {
                     }
                     j.state = "failed";
+                    j.phase = "failed";
+                    j.code = "stalled";
                     j.error = "转码 " + (HANG_NO_SEGMENT_MS / 1000)
                             + " 秒没有新分片（上游卡住或编码器无响应），已强制结束";
                     System.err.println("[transcode] job " + j.id + " stall -> killed");
@@ -1327,6 +1388,8 @@ public final class Transcode {
             double gotDur = j.segments * (double) SEG_SECONDS;
             if (srcDur > 30 && gotDur < srcDur - 15) {
                 j.state = "failed";
+                j.phase = "failed";
+                j.code = "short_output";
                 j.error = "转码中断：只产出 " + (int) gotDur + " 秒（源 " + (int) srcDur + " 秒）";
                 System.err.println("[transcode] job " + j.id + " short output "
                         + (int) gotDur + "s of " + (int) srcDur + "s -> failed");
@@ -1334,6 +1397,7 @@ public final class Transcode {
             }
             markDone(j.id);
             j.state = "ready";
+            j.phase = "ready";
             return;
         }
         if ("cancelled".equals(j.state)) return;
@@ -1351,6 +1415,14 @@ public final class Transcode {
              * 第二次才退软解 —— 4K 软解只有 0.025x，能硬解就别退。
              */
             boolean retryHw = j.hwRetry == 1;
+            if (!retryHw && slow4kHopeless(j.probeSnap, false)) {
+                j.state = "failed";
+                j.phase = "failed";
+                j.code = "slow_4k";
+                j.error = SLOW_4K_MSG;
+                System.err.println("[transcode] hw failed and soft 4k hopeless -> reject " + j.id);
+                return;
+            }
             System.err.println("[transcode] hw failed, retry " + (retryHw ? "hw" : "software")
                     + ": " + j.id
                     + " | " + (tailText.length() > 200 ? tailText.substring(tailText.length() - 200) : tailText));
@@ -1371,8 +1443,25 @@ public final class Transcode {
             }
         }
         j.state = "failed";
-        j.error = tailText.isEmpty() ? ("ffmpeg 退出码 " + code)
-                : tailText.substring(Math.max(0, tailText.length() - 300));
+        j.phase = "failed";
+        String low = tailText.toLowerCase();
+        if (low.contains("error reading http response") || low.contains("-138")
+                || low.contains("connection timed out") || low.contains("etimedout")
+                || low.contains("tls error")) {
+            j.code = "source_timeout";
+            j.error = "源站连接超时/断开（15 秒无响应已停止）。换一条线路试试。";
+        } else if (low.contains("403") || low.contains("404") || low.contains("http error")) {
+            j.code = "source_http";
+            j.error = "源站拒绝访问（链接可能已过期或需要鉴权）。换一条线路试试。";
+        } else if (low.contains("invalid data") || low.contains("moov atom")
+                || low.contains("could not find codec")) {
+            j.code = "bad_source";
+            j.error = "源文件不完整或格式异常（不是有效的视频流）。换一条线路试试。";
+        } else {
+            j.code = "ffmpeg_failed";
+            j.error = tailText.isEmpty() ? ("ffmpeg 退出码 " + code)
+                    : tailText.substring(Math.max(0, tailText.length() - 300));
+        }
     }
 
     public static Job status(String id) {
@@ -1402,8 +1491,10 @@ public final class Transcode {
          * MPP 直接崩（Generic error），用户看到的就是"播几秒就卡"。
          * 状态只让 pump 改；"能不能播"由 playlist + readySeconds 表达。
          */
-        j.segments = countSegments(id);
-        j.readySeconds = j.segments * SEG_SECONDS;
+        int n = countSegments(id);
+        if (n > j.segments) j.lastSegmentAt = System.currentTimeMillis();
+        j.segments = n;
+        j.readySeconds = n * SEG_SECONDS;
         return j;
     }
 
@@ -1419,7 +1510,9 @@ public final class Transcode {
     public static boolean cancel(String id) {
         Job j = JOBS.get(id);
         if (j == null) return false;
-        j.state = "canceled";
+        j.state = "cancelled";
+        j.phase = "cancelled";
+        j.code = "cancelled";
         try {
             j.proc.destroyForcibly();
         } catch (Exception ignored) {
@@ -1441,8 +1534,7 @@ public final class Transcode {
          * 显示一个虚的「已就绪 578 秒」。
          */
         boolean hasPlaylist = Files.isRegularFile(playlistOf(j.id))
-                && !"failed".equals(j.state)
-                && !"cancelled".equals(j.state);
+                && !"failed".equals(j.state);
         double dur = durationOf(j.id);
         if (dur <= 0 && j.probeSnap != null) dur = j.probeSnap.duration;
         o.put("duration", (long) Math.round(dur));
@@ -1451,6 +1543,12 @@ public final class Transcode {
         if (hasPlaylist && ("ready".equals(j.state) || j.segments > 0)) {
             o.put("playlist", "/api/transcode/" + j.id + "/index.m3u8");
         }
+        o.put("phase", j.phase == null ? "" : j.phase);
+        o.put("hw", j.hw);
+        o.put("startedAt", j.startedAt);
+        o.put("lastSegmentAge",
+                j.lastSegmentAt > 0 ? (System.currentTimeMillis() - j.lastSegmentAt) / 1000 : -1);
+        if (j.code != null && !j.code.isEmpty()) o.put("code", j.code);
         return o;
     }
 

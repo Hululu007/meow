@@ -203,7 +203,7 @@ describe('F5 容器预判（不能播的内核直接转码，不白等 watchdog�
 
   it('预判失败/异常能让错误页显示出来（loading 必须收尾）', () => {
     const i = src.indexOf('async function tryLibraryTranscode')
-    const body = src.slice(i, i + 1400)
+    const body = src.slice(i, i + 1800)
     expect((body.match(/loading\.value = false/g) || []).length).toBeGreaterThanOrEqual(2)
   })
 })
@@ -236,7 +236,9 @@ describe('可播判据与并发（2026-11-17 第二轮回修：播几秒就卡�
     const i = s.indexOf('private static void stopOtherJobs')
     const body = s.slice(i, i + 1600)
     expect(body).toContain('destroyForcibly')
-    expect(body).toContain('cleanSegments(o.id)')
+    // 2026-11-20：取消不再删分片（删了会让另一台正在看的人 404）
+    expect(body).not.toContain('cleanSegments(o.id)')
+    expect(body).toContain('cancelled_by_other')
   })
 
   it('硬解失败先重试硬解一次（句柄未释放会瞬时崩），再退软解', () => {
@@ -263,7 +265,7 @@ describe('可播判据与并发（2026-11-17 第二轮回修：播几秒就卡�
     expect(i).toBeGreaterThan(-1)
     const body = s.slice(i, s.indexOf('private static int countSegments', i))
     expect(body).not.toContain('j.state = "ready"')
-    expect(body).toContain('j.readySeconds = j.segments * SEG_SECONDS')
+    expect(body).toContain('j.readySeconds = n * SEG_SECONDS')
   })
 
   it('复用 running 任务前要验进程还活着（否则任务永远停在 running）', () => {
@@ -315,9 +317,11 @@ describe('进度条总长：转码未完成时也要显示真实时长', () => {
     expect(play).toContain(':total-duration="libraryTotalDuration"')
   })
 
-  it('被串行化取消时立刻返回失败，不干等 600 秒', () => {
-    expect(lib).toContain("last.state === 'cancelled'")
-    expect(lib).toContain('这个文件的转码被新任务打断了')
+  it('被串行化取消：有分片就降级可播，没分片才失败', () => {
+    expect(lib).toContain("state === 'cancelled'")
+    // 已有 playlist → partial 成功（后端保留分片）
+    expect(lib).toContain('partial: true')
+    expect(lib).toContain('另一台设备刚开始转码')
   })
 
   it('转码进度每 5 秒刷新（进度条跟上），完成后停', () => {
@@ -375,8 +379,11 @@ describe('4K 首片可播性（2026-11-17 第一集播不出来的两个真因�
     expect((s.match(/force_key_frames/g) || []).length).toBeGreaterThanOrEqual(2)
   })
 
-  it('前端等待上限放宽到 600 秒（4K HEVC 10bit 软解首片要一两分钟）', () => {
-    expect(lib).toContain('timeoutMs = 600_000')
+  it('前端等待：基础 120 秒、有进展每次续 60 秒、总上限 600 秒', () => {
+    expect(lib).toContain('TRANSCODE_BASE_MS = 120_000')
+    expect(lib).toContain('TRANSCODE_EXTEND_MS = 60_000')
+    expect(lib).toContain('TRANSCODE_CAP_MS = 600_000')
+    expect(lib).toContain('deadline = Math.min(startedAt + TRANSCODE_CAP_MS')
   })
 
   it('状态里的 playlist 必须按磁盘清单判定（内存 Job 会残留 ready/分片数）', () => {

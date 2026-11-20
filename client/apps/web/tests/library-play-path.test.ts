@@ -51,7 +51,7 @@ describe('片库转码兜底：必须用 lib+path', () => {
     const code = codeOnly(PLAY)
     expect(code).toContain('async function tryLibraryTranscode')
     const i = code.indexOf('async function tryLibraryTranscode')
-    const body = code.slice(i, i + 300)
+    const body = code.slice(i, i + 600)
     expect(body).toContain('waitLibraryTranscode(lib, file')
   })
 
@@ -67,9 +67,16 @@ describe('片库转码兜底：必须用 lib+path', () => {
     const code = codeOnly(PLAY)
     const i = code.indexOf('async function tryLibraryTranscode')
     const body = code.slice(i, i + 1800)
-    expect(body).toContain('/ffmpeg/i')
+    // 2026-11-20 起文案收口到 library.ts 的 transcodeErrorMessage（按后端 code 映射），
+    // PlayView 只负责把结果渲染出来，所以这里锁"委托"而不是锁具体句子。
+    expect(body).toContain('transcodeErrorMessage(r)')
+    const lib = readFileSync(join(WEB, 'src', 'api', 'library.ts'), 'utf8')
+    const j = lib.indexOf("case 'no_ffmpeg'")
+    expect(j).toBeGreaterThan(-1)
+    const msg = lib.slice(j, j + 300)
+    expect(msg).toContain('ffmpeg')
     // 要指出"换 PC/OECT 后端"
-    expect(body).toMatch(/PC|OECT|后端/)
+    expect(msg).toMatch(/PC|OECT|后端/)
   })
 })
 

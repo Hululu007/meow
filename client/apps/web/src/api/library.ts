@@ -467,6 +467,16 @@ export interface TranscodeResult {
   /** 源真实总时长（秒）。转码未完成时 video.duration 只是已转出时长，靠它显示对的进度条 */
   duration?: number
   playlist?: string
+  /** 机器可读失败原因（slow_4k/no_ffmpeg/cancelled_by_other/stalled/...） */
+  code?: string
+  /** probe | transcode | ready | failed | cancelled */
+  phase?: string
+  /** 本次是否走硬解硬编 */
+  hw?: boolean
+  /** 距最近一次分片增长的秒数（-1 = 还没分片） */
+  lastSegmentAge?: number
+  /** 被串行化取消但已有可播分片：当降级成功处理 */
+  partial?: boolean
 }
 
 /**
@@ -500,41 +510,188 @@ export async function startLibraryTranscode(lib: string, path: string): Promise<
   return (await r.json()) as TranscodeResult
 }
 
-/** 等片库文件转码到可播。语义同 waitTranscode。 */
+/** 等待进度回调：秒数 / 阶段 / 是否停滞（停滞只在 0 秒时提示） */
+export type TranscodeProgress = (
+  seconds: number,
+  phase: 'probe' | 'transcode',
+  stalled: boolean,
+) => void
+
+interface TranscodeWaitHooks {
+  start: () => Promise<TranscodeResult>
+  poll: () => Promise<TranscodeResult>
+  onProgress?: TranscodeProgress
+}
+
+/** 基础等待：4K 软解首片可到 100 秒，120 秒留余量 */
+const TRANSCODE_BASE_MS = 120_000
+/** 只要"已就绪秒数"在涨，就再给 60 秒（总上限 10 分钟） */
+const TRANSCODE_EXTEND_MS = 60_000
+const TRANSCODE_CAP_MS = 600_000
+
+/**
+ * 失败原因 → 人话 + 可执行建议（点播/片库共用）。
+ *
+ * 后端 `code` 是 2026-11-20 加的；老后端没有该字段时退回 error 原文。
+ */
+export function transcodeErrorMessage(r: TranscodeResult): string {
+  switch (r.code) {
+    case 'slow_4k':
+      return '这台后端没有 4K 硬编码能力，软转 4K 远慢于播放。请用「原生播放器」打开（投影仪可硬解 4K），或换 1080p / H.264 线路。'
+    case 'no_ffmpeg':
+      return '这台后端没有 ffmpeg，无法转码。可以改用 PC / OECT 后端，或点「用原生播放器打开」。'
+    case 'cancelled_by_other':
+      return '另一台设备刚开始转码，本任务让路。已转好的部分还能继续看；要完整播放请稍后再点一次。'
+    case 'stalled':
+      return r.error || '转码长时间没有新分片，已停止。换一条线路试试。'
+    case 'source_timeout':
+      return '源站 15 秒没有响应，转码已停止。换一条线路试试。'
+    case 'source_http':
+      return '源站拒绝访问（链接可能过期），换一条线路试试。'
+    case 'bad_source':
+      return '源文件不完整或格式异常，换一条线路试试。'
+    case 'job_lost':
+      return '后端转码任务丢失（可能刚重启过），请重试。'
+    case 'timeout':
+      return '转码超时：等待期间一直没有可播分片。可以换一条线路，或在 TV 上用原生播放器。'
+    case 'timeout_partial':
+      return '转码太慢，只转出了前几段。可以继续看已转部分，或换一条线路。'
+    default:
+      return r.error || '转码失败'
+  }
+}
+
+/** 等待中的提示文案：读源信息 / 等待首片 / 增量 / 停滞。纯函数，有单测。 */
+export function transcodePhaseText(
+  seconds: number,
+  phase: 'probe' | 'transcode' = 'transcode',
+  stalled = false,
+): string {
+  if (stalled && seconds === 0) return '转码进度停滞（超过 45 秒没有新分片），可能卡住了…'
+  /*
+   * 已经出过分片之后再停滞，同样要提示：后端看门狗 180 秒才杀进程，
+   * 这中间界面如果一直挂"已就绪 X 秒"会让用户以为还在正常转。
+   */
+  if (stalled) return `转码进度停滞（45 秒没有新分片），已就绪 ${seconds} 秒，可能卡住了…`
+  if (seconds > 0) return `正在转码（已就绪 ${seconds} 秒，可边转边看）…`
+  if (phase === 'probe') return '正在读取源信息（约 5–30 秒）…'
+  return '转码已启动，等待首片（有进展会自动续时，最多 10 分钟）…'
+}
+
+/**
+ * 点播/片库共用的等待循环。
+ *
+ * 三个场景差异只在 start/poll，不再各写一份 90 秒/600 秒的循环：
+ * - **有进展就续命**：4K 软解首片 100 秒也能等到，不再被 90 秒误杀；
+ * - **被串行化取消但已有分片**：返回可播（partial），不直接判失败；
+ * - **任务丢失**（后端重启后 status=idle）：立刻报 job_lost，不空等。
+ */
+async function waitTranscodeCore(
+  hooks: TranscodeWaitHooks,
+  baseMs = TRANSCODE_BASE_MS,
+): Promise<TranscodeResult> {
+  const startedAt = Date.now()
+  let deadline = startedAt + Math.max(30_000, baseMs)
+  let last = await hooks.start()
+  let bestReady = last.readySeconds || 0
+  let lastProgressAt = Date.now()
+  let phase: 'probe' | 'transcode' = last.phase === 'probe' ? 'probe' : 'transcode'
+
+  while (Date.now() < deadline) {
+    const state = last.state
+    if (state === 'failed') return last
+    if (state === 'cancelled' || state === 'canceled') {
+      // 串行化取消：后端不再删分片，已转部分还能播 → 当降级成功
+      if (last.playlist && (last.readySeconds || 0) > 0) {
+        return { ...last, ok: true, partial: true }
+      }
+      return last
+    }
+    if (last.playlist) return last
+    if (state === 'idle') {
+      return {
+        ok: false,
+        state: 'failed',
+        code: 'job_lost',
+        error: '后端转码任务丢失（可能刚重启过），请重试。',
+      }
+    }
+    const ready = last.readySeconds || 0
+    if (ready > bestReady) {
+      bestReady = ready
+      lastProgressAt = Date.now()
+      // 有进展就续命：每次 +60 秒，最多到 10 分钟
+      deadline = Math.min(startedAt + TRANSCODE_CAP_MS, Date.now() + TRANSCODE_EXTEND_MS)
+    }
+    if (last.phase === 'probe') phase = 'probe'
+    else if (ready > 0 || last.phase === 'transcode') phase = 'transcode'
+    // 有无首片都要判停滞：首片后卡住同样要提示（后端 180 秒才杀）
+    const stalled = Date.now() - lastProgressAt > 45_000
+    hooks.onProgress?.(bestReady, phase, stalled)
+    await new Promise((r) => setTimeout(r, 2000))
+    try {
+      last = await hooks.poll()
+    } catch {
+      /* 单次查询失败继续等，不要因为一次抖动判死 */
+    }
+  }
+  return {
+    ok: false,
+    state: 'failed',
+    code: bestReady > 0 ? 'timeout_partial' : 'timeout',
+    error: bestReady > 0
+      ? `转码太慢：${Math.round((Date.now() - startedAt) / 1000)} 秒只转出 ${bestReady} 秒`
+      : '转码超时：一直没有可播分片',
+  }
+}
+
 export async function waitLibraryTranscode(
   lib: string,
   path: string,
-  onProgress?: (seconds: number) => void,
-  /*
-   * 600 秒（2026-11-17 从 180s 放宽）：4K HEVC 10bit 在弱设备（如 OEC/RK3566）
-   * 上软解只有 ~0.9 fps，首片（2 秒内容）也要一两分钟，180s 会把"能转出来"的
-   * 情况误判成失败。前端现在会显示"已就绪 X 秒"，用户能看到在进展。
-   */
-  timeoutMs = 600_000,
+  onProgress?: TranscodeProgress,
+  timeoutMs = TRANSCODE_BASE_MS,
 ): Promise<TranscodeResult> {
-  const deadline = Date.now() + timeoutMs
-  let last = await startLibraryTranscode(lib, path)
-  while (Date.now() < deadline) {
-    if (last.state === 'failed') return last
-    /*
-     * 被别的任务「串行化」取消了（一次只跑一个重转码）：立刻返回失败，
-     * 否则前端会一直轮询到 600 秒超时，用户看到的是"永远在转码"。
-     */
-    if (last.state === 'cancelled' || last.state === 'canceled') {
-      return { ok: false, state: 'failed', error: '这个文件的转码被新任务打断了，请再点一次播放' }
-    }
-    if (last.playlist) return last
-    if (last.readySeconds && onProgress) onProgress(last.readySeconds)
-    await new Promise((r) => setTimeout(r, 2000))
-    const q = new URLSearchParams({ lib, path, mode: 'status' })
-    try {
-      const r = await fetch(`${apiBase()}/api/transcode?${q}`)
-      if (r.ok) last = (await r.json()) as TranscodeResult
-    } catch {
-      /* 单次失败继续等 */
-    }
+  return waitTranscodeCore(
+    {
+      start: () => startLibraryTranscode(lib, path),
+      poll: async () => {
+        const q = new URLSearchParams({ lib, path, mode: 'status' })
+        const r = await fetch(`${apiBase()}/api/transcode?${q}`)
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return (await r.json()) as TranscodeResult
+      },
+      onProgress,
+    },
+    timeoutMs,
+  )
+}
+
+/**
+ * 停掉一个没人再等的转码任务。
+ *
+ * <p>可用三种坐标之一：后端 job id、点播 src、片库 lib+path。切集/换线/离开
+ * 播放页时前端拿不到 id，只能按源坐标取消——后端用同一套幂等键反推。
+ * 失败静默：取消失败最多是多烧一会儿 CPU，不该影响用户下一步操作。
+ */
+export async function cancelTranscode(t: {
+  id?: string
+  src?: string
+  lib?: string
+  path?: string
+}): Promise<boolean> {
+  const q = new URLSearchParams()
+  if (t.id) q.set('id', t.id)
+  else if (t.src) q.set('src', t.src)
+  else if (t.lib && t.path) {
+    q.set('lib', t.lib)
+    q.set('path', t.path)
+  } else return false
+  try {
+    const r = await fetch(`${apiBase()}/api/transcode?${q}`, { method: 'DELETE' })
+    return r.ok
+  } catch {
+    return false
   }
-  return { ok: false, state: 'failed', error: '转码超时（还没有可播分片）' }
 }
 
 export async function startTranscode(src: string): Promise<TranscodeResult> {
@@ -545,41 +702,26 @@ export async function startTranscode(src: string): Promise<TranscodeResult> {
 }
 
 /**
- * 等转码产出足够起播的分片。
- *
- * **为什么不能拿首次响应就判成败**：`POST /api/transcode` 只是"把任务排上"，
- * 此时 state=running 且 playlist 还是空——直接判 `!playlist` 会报"转码不可用"，
- * 而实际上几秒后就绪（实测踩过：界面显示转码不可用，后端已经 79 个分片）。
+ * 等点播源转码到可播（语义与片库完全一致，只换 start/poll）。
  */
 export async function waitTranscode(
   src: string,
-  onProgress?: (seconds: number) => void,
-  timeoutMs = 90_000,
+  onProgress?: TranscodeProgress,
+  timeoutMs = TRANSCODE_BASE_MS,
 ): Promise<TranscodeResult> {
-  const deadline = Date.now() + timeoutMs
-  // 首次调用顺带启动任务
-  let last = await startTranscode(src)
-  while (Date.now() < deadline) {
-    if (last.state === 'failed') return last
-    /*
-     * 被别的任务「串行化」取消了（一次只跑一个重转码）：立刻返回失败，
-     * 否则前端会一直轮询到 600 秒超时，用户看到的是"永远在转码"。
-     */
-    if (last.state === 'cancelled' || last.state === 'canceled') {
-      return { ok: false, state: 'failed', error: '这个文件的转码被新任务打断了，请再点一次播放' }
-    }
-    if (last.playlist) return last
-    if (last.readySeconds && onProgress) onProgress(last.readySeconds)
-    await new Promise((r) => setTimeout(r, 2000))
-    const q = new URLSearchParams({ src, mode: 'status' })
-    try {
-      const r = await fetch(`${apiBase()}/api/transcode?${q}`)
-      if (r.ok) last = (await r.json()) as TranscodeResult
-    } catch {
-      /* 单次失败继续等，不要因为一次抖动就判死 */
-    }
-  }
-  return { ok: false, state: 'failed', error: '转码超时（90 秒还没有可播分片）' }
+  return waitTranscodeCore(
+    {
+      start: () => startTranscode(src),
+      poll: async () => {
+        const q = new URLSearchParams({ src, mode: 'status' })
+        const r = await fetch(`${apiBase()}/api/transcode?${q}`)
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return (await r.json()) as TranscodeResult
+      },
+      onProgress,
+    },
+    timeoutMs,
+  )
 }
 
 /** 后端是否装了 ffmpeg（没装就别显示"转码播放"这种按钮）。 */
