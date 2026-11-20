@@ -1,7 +1,7 @@
 {
   "name": "@meow/desktop",
   "private": true,
-  "version": "1.2.19",
+  "version": "1.2.20",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "scripts": {
