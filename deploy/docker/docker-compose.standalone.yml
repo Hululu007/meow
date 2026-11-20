@@ -41,6 +41,10 @@ services:
       MEOW_DANMAKU_API: ${MEOW_DANMAKU_API-http://danmu_api:9321}
       MEOW_AUTH_TOKEN: ${MEOW_AUTH_TOKEN-}
       MEOW_CORS: ${MEOW_CORS-*}
+      # 片库「选择目录」能看到的根（冒号分隔）。不设 = 弹窗只提示未挂载，
+      # 避免用户去填 /volume1/... 这种宿主机路径然后永远读不到。
+      # 例：MEOW_LIBRARY_ROOTS=/media:/downloads（必须先 bind mount 进来）
+      MEOW_LIBRARY_ROOTS: ${MEOW_LIBRARY_ROOTS-}
       JAVA_OPTS: ${APISERVER_JAVA_OPTS:--Xms64m -Xmx512m -Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8}
     restart: unless-stopped
     networks: [meow]

@@ -1,6 +1,6 @@
 # 本地目录片库：目录树选择与授权路径接入
 
-> 状态：**设计稿，未实现**（2026-11-20）。
+> 状态：**已实现**（2026-11-20，分支 `feat/public-auth`）。落地记录与偏差见文末 §十。
 > 目标：把"添加本地目录片库"从**手打绝对路径**改成**在应用里点目录树**，
 > 并让 fpk / PC / Web-Docker / TV 四端各自只用"它真有权限的目录"。
 >
@@ -219,3 +219,85 @@ SMB/WebDAV 的目录浏览另议（见 §7）。
 | 远程挂载（FUSE） | 授权路径可能是 rclone/网盘挂载，Java 读目录可能极慢或返回 I/O 错误 → `ls` 加 3 秒超时并提示 |
 | 不做"扫描整盘" | 只列根的单层；不做递归索引（那是扫描器的事） |
 | 不做"应用内授权" | 授权入口归 fnOS，应用只消费结果；自己再实现一套会和系统设置打架 |
+
+## 十、落地记录（2026-11-20）
+
+| 项 | 落点 | 状态 |
+|---|---|---|
+| 授权路径透传 | `meowd/src/supervisor.rs`：`MEOW_ALLOWED_PATHS ← TRIM_DATA_ACCESSIBLE_PATHS`、`MEOW_SHARE_PATHS ← TRIM_DATA_SHARE_PATHS` | ✅ |
+| 三个端点 | `LibraryRoutes.handleLibrary()` 的 GET 分支（**在 lib 分支之前**）：`action=roots` / `ls` / `capabilities` | ✅ |
+| 根的来源 | `core/LibraryRoots.java`：share → authorized → mount（`MEOW_LIBRARY_ROOTS`）；本机模式额外给盘符+家目录 | ✅ |
+| 穿越防护 | `LibraryRoots.resolve()`：`normalize` 后必须仍在根内，**再**用 `toRealPath` 复核（挡符号链接逃逸） | ✅ |
+| 3 秒超时 | `LibraryRoutes.lsWithTimeout()`：守护线程池 + `Future.get(3s)`，超时回"目录读取超时" | ✅ |
+| 根去重 | `Library.saveConfigEx()`：`DUP_ROOT` 拒绝 / 父子重叠 warn；`LibraryRoutes` 用 400/500 区分输入错误与写盘失败 | ✅ |
+| 统一弹窗 | `LibraryAddDialog.vue`：`openPicker()` 先问后端 roots，拿不到再退 TV 端内桥；左栏根 + 右栏树 + 面包屑路径 | ✅ |
+| wizard 死选项 | `fpk/cmd/install_callback`：`wizard_library_mode=share` 时用 share 目录建第一个库（只在该文件不存在时写） | ✅ |
+| Docker 挂载点 | `MEOW_LIBRARY_ROOTS` 进 4 个 compose + `.env.example` | ✅ |
+
+**实测**（NAS `.34`）：
+
+```text
+GET /api/library?action=roots        → share:0 → /vol1/@appshare/meow/library（canBrowse=true）
+GET /api/library?action=capabilities → hint 指向「应用设置 → 访问权限」
+GET /api/library?action=ls&root=share:0&path=           → 200（空目录）
+GET /api/library?action=ls&root=share:0&path=../../etc  → 400 path escapes root
+POST /api/library 同根两次                              → 400 {code:DUP_ROOT, msg:"已在库「电影A」中"}
+POST /api/library 父目录+子目录                          → 200 {ok:true, warn:"与「根」重叠，会重复扫描"}
+```
+
+**ACL 实测**（§2.2 的待验项）：
+
+```text
+sudo -u meow ls /vol1/@appshare/meow/library   → 可读可写（drwx------ meow meow）
+sudo -u meow ls /vol1/1000                     → Permission denied（未授权目录确实读不了）
+$ meowd 进程 env: TRIM_DATA_SHARE_PATHS=/vol1/@appshare/meow/library
+                  TRIM_DATA_ACCESSIBLE_PATHS=（空，用户尚未在应用设置里授权）
+```
+
+结论：**授权机制是真的**（未授权读不了），但"用户授权某个 `/vol02/...` 后 meow 能否读"
+仍需要用户在 fnOS 界面里实际授权一次才能验 —— 这一步没法在命令行模拟。
+
+**与设计的偏差**
+
+1. **左栏在窄屏常显、不做折叠**：`w-28`（112px）固定宽度。TV 上就是靠它换存储卷，
+   折起来等于藏掉唯一入口。
+2. **`ls` 默认不返回 files**（规格也这么写），`includeFiles=1` 才给 —— 目录树只关心目录。
+3. **去重键含 `root`**：同一 base 下不同 root 是两个库（规格 §5 表格里的"正常"），
+   所以 `dupKey` 是 `type|归一化base|root`。
+
+**已知限制**
+
+1. **fpk 未授权时 roots 为空**（当前真机状态）：弹窗显示引导文案，不会列出 `/vol1` 这类猜测路径。
+2. **远程挂载（FUSE/网盘）可能极慢**：3 秒超时会回"目录读取超时"，但超时后后台线程可能仍在跑
+   （`cancel(true)` 对阻塞的 `listFiles()` 无效）——守护线程池保证它最多占一个线程，不会堆积。
+3. **SMB/WebDAV 的目录浏览未做**（§7 第二阶段）：它们的弹窗仍是手填 base + 「测试连接」。
+
+### 10.1 两个只有真机才暴露的坑（2026-11-20）
+
+1. **中文目录点不进去 → `Malformed input or input contains unmappable characters`**
+   - `java.nio.file.Paths.get("电影")` 用的是 **`sun.jnu.encoding`**，而 fnOS 的 `cmd/main` 不设
+     locale（`LANG` 未定义 → POSIX/C），JVM 退到 `ANSI_X3.4-1968`，中文文件名无法映射。
+   - 修法：`supervisor.rs` 起 Java 时同时给 `-Dsun.jnu.encoding=UTF-8` **和**
+     `LANG/LC_ALL=C.UTF-8`（实测 Java 21 两者都要，只给 `-D` 不够）。
+   - Docker 侧早就设了这一个（compose 的 `JAVA_OPTS`），fpk 漏了 —— 这也是为什么
+     同一个后端在 Docker 里中文正常、在 fpk 上崩。
+
+2. **左栏显示内部卷名（`1000-0-a4d36b4c`）而不是「视频」**
+   - fnOS 的「远程挂载」在 `TRIM_DATA_ACCESSIBLE_PATHS` 里给的是**挂载点路径**，
+     不是用户看到的共享名；`/proc/mounts` 里才有真名：`//192.168.1.19/视频 → /vol02/1000-0-a4d36b4c`。
+   - 修法：`LibraryRoots.labelOf()` 先查 `mountLabel()`（只对 cifs 的 `//host/share`
+     与 nfs 的 `host:/export` 取末段，本地块设备不取，否则整卷显示成 `sda1`），查不到再退回目录名。
+
+**改造后的真机验收**（`.34` 与 `.20` 两台都过）：
+
+```text
+roots → share:0(library) + authorized:0(label=视频, path=/vol02/1000-0-a4d36b4c)
+ls authorized:0                → 18NO / 其他 / 动漫 / 电影 / 电视剧
+ls authorized:0 path=电影       → 教父 / 色戒
+ls authorized:0 path=电影/教父&includeFiles=1 → 第1部.1972...mp4 (9.3GB) / 第2部.1974...mp4
+POST /api/library 建 local 库   → ok:true
+GET  /api/library              → tops 列出 教父 / 色戒
+```
+
+★ 注意 `.20`（OECT，aarch64）上的 `TRIM_DATA_ACCESSIBLE_PATHS` 与 `.34` 是**同一台**
+SMB 共享（`//192.168.1.19/视频`），两台机器的授权各自独立——授权要按机器分别做。
