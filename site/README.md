@@ -34,16 +34,16 @@
 | Release 资产名、系统要求 | `reference/downloads.md`、`dev/build-release.md` |
 | 新增或移除用户可见能力 | 首页能力卡：`site/.vitepress/theme/components/FeatureGrid.vue` 的 `features` 数组（`index.md` 只挂 `<HomePage />`，不含文案）、`guide/what-is-meow.md` 的能力表 |
 | 支持的端 / 平台（新增或取消某端） | `reference/compatibility.md` 的「端支持」、`guide/quick-start.md` 路线表、`guide/web-docker.md`、`guide/faq.md` |
-| 鉴权范围 / 令牌语义（谁能调什么） | `dev/api-contract.md` §1.2、`dev/architecture.md` §6.1、`dev/public-deployment.md` |
+| 鉴权范围 / 令牌语义（谁能调什么） | `dev/api-contract.md` §1.2、`dev/architecture.md` §6.1、`dev/public-deployment.md`、`dev/fnos-gateway-auth.md` |
 | MCP 工具、调试入口、AI skill | `guide/automation.md`、`dev/ai-assistant.md` §2.7、`dev/testing.md` |
 | 已知缺陷新增或修复 | `reference/limits.md`、`guide/faq.md` |
 | 许可条款、第三方代码 | `reference/license.md` |
 | 弹幕（渲染、默认优先级、屏蔽词） | `guide/playback.md`、`dev/danmaku.md` |
 | 直播（频道源、EPG、回看） | `guide/vod-live.md`、`dev/live.md` |
-| 片库 / 离线缓存 / 转码 | `guide/library.md`、`dev/library-cache.md`、`dev/playback.md` |
+| 片库 / 离线缓存 / 转码 | `guide/library.md`、`dev/library-cache.md`、`dev/library-local-browse.md`、`dev/playback.md` |
 | 构建与发版（版本号、资产名、CI 触发） | `deploy/README.md`、`dev/build-release.md` |
 | 数据与状态（配置落盘、迁移、清理） | `dev/data-state.md` |
-| fnOS 套件 / fpk / 应用中心 | `guide/fnos.md` |
+| fnOS 套件 / fpk / 应用中心 | `guide/fnos.md`、`dev/fnos-gateway-auth.md` |
 | 更新中心 / 版本历史 / updates 分支 | `guide/upgrade.md`、`reference/downloads.md` |
 | 端 / 设备 / 尺寸判据（四层） | `dev/device-adaptive.md`（唯一真源）、`dev/frontend.md`、涉及的 UI 页 |
 

@@ -14,6 +14,7 @@
 | [投屏](./casting.md) | A/B 两类投屏、URL 可达性、会话设计、设备矩阵 |
 | [弹幕](./danmaku.md) | 四源优先级、降级、缓存与调度 |
 | [片库与离线缓存](./library-cache.md) | WebDAV/SMB/local、Range、断点续传 |
+| [本地目录片库与目录树](./library-local-browse.md) | 授权目录接入（`TRIM_DATA_ACCESSIBLE_PATHS`）、四端选择器、根去重（**设计稿**） |
 | [直播](./live.md) | 两源聚合、跨源合并、线路池 |
 | [AI 助手](./ai-assistant.md) | 工具、编排、哑 REST 边界 |
 | [配置系统](./config-system.md) | 导入、落盘、jar 加载、站点分派 |
@@ -24,6 +25,7 @@
 | [数据与状态](./data-state.md) | 数据目录、policy.json、跨端通道 |
 | [Docker 部署](./docker.md) | 四容器、`.env`、排障、多架构 |
 | [公网部署与访问控制](./public-deployment.md) | 端口收口、令牌分层、三端影响、验收断言 |
+| [fnOS 网关身份接入](./fnos-gateway-auth.md) | 统一认证 `X-Trim-*`、三入口分工、信任边界（**设计稿**） |
 | [构建与发版](./build-release.md) | units.json、tag 与链路、清单生成 |
 | [测试与验收](./testing.md) | 单测、CI、冒烟脚本、验收清单 |
 ## 说明

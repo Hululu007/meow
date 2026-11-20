@@ -457,6 +457,14 @@ danmu-api 用同一套机制，健康端点就是一个真实弹幕查询
 - 是否随应用启动：`enabled.json` 的显式值 > manifest 的 `autostart`（原子写）。
 - `plugin_set_enabled` 要求目录里已有 `manifest.json`，否则报"未安装"；启动线程
   只处理 `installed && enabled`，工具型也进入 `start()` 但不 spawn。
+- **设置页「启动」= 启用**：点「启动」时前端先 `plugin_set_enabled(true)` 再
+  `plugin_start`，所以下次启动会自启；「停止」只停本次进程、不改 `enabled.json`
+  （要它永不自启，把行首的"随应用启动"开关关掉）。
+  <br>为什么这样定：Rust 的 `state_of()` 对运行中的插件恒返回 `enabled: true`，
+  只反映当前进程；不落盘的话开关显示"开"、下次启动却不会起（2026-11-20 用户报）。
+- 桌面端**启动后端插件时会清掉手填的后端地址**（`meow.api` / `meow.api.scope`）：
+  否则 `resolveBase()` 里非回环手填地址优先于插件地址，用户以为切回了本机、
+  实际仍连之前填的 NAS。
 - `boot_info.fatal_reason` 只在 `required && enabled && phase == failed` 时给出。
   用户主动关掉（`enabled=false`）或手动停止（`stopped`）都不算故障。
 

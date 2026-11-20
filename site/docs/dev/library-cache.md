@@ -95,9 +95,12 @@
 
 WebDAV 靠"只接受相对路径"防穿越；本地目录天生是绝对路径，必须另做校验：
 
-- 库根 `base + root` 必须 `toRealPath()` 成功且是目录（`Library.java:270-283`）。
+- 库根 `base + root` 必须 `toRealPath()` 成功且是目录（`Library.java` 的 `localRoot()`）。
 - 请求路径先 `normalize()` 消 `..`，再 `toRealPath()` 解符号链接；对不存在的文件回退到
-  「父目录 realpath + 文件名」，最后要求结果仍以库根为前缀，否则抛「路径越界」（`Library.java:285-308`）。
+  「父目录 realpath + 文件名」，最后要求结果仍以库根为前缀，否则抛「路径越界」（`Library.java` 的 `resolveLocal()`）。
+
+> **"这个根从哪来"另有一份设计**：fnOS 授权目录（`TRIM_DATA_ACCESSIBLE_PATHS`）、
+> 四端目录树选择、根去重规则见 [本地目录片库与目录树](./library-local-browse.md)（设计稿）。
 
 ### 1.6 路由与 Range
 
