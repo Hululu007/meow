@@ -30,6 +30,15 @@ interface MeowTvBridge {
     positionMs: number,
     danmakuUrl: string,
   ): boolean
+  /** 1.2.19+：带 meta（进度回传坐标 + 弹幕设置）的原生播放 */
+  openNativeFull?(
+    url: string,
+    title: string,
+    headers: string,
+    positionMs: number,
+    danmakuUrl: string,
+    metaJson: string,
+  ): boolean
   platform(): string
   appVersion(): string
   /**
@@ -244,6 +253,7 @@ export function openNative(
   header?: unknown,
   positionSec = 0,
   danmakuUrl?: string,
+  metaJson?: string,
 ): boolean {
   if (!url || !/^https?:/i.test(url)) return false
   try {
@@ -251,7 +261,10 @@ export function openNative(
     if (!b || typeof b.openNative !== 'function') return false
     const headers = encodeHeaders(header)
     const posMs = Math.max(0, Math.round(positionSec * 1000))
-    // 新壳才有 openNativeWithDanmaku；老壳直接走 4 参，不赌重载解析
+    // 1.2.19+ 才能收 meta（进度回传 + 弹幕设置）；没有就逐级退回
+    if (metaJson && typeof b.openNativeFull === 'function') {
+      return b.openNativeFull(url, title || '', headers, posMs, danmakuUrl || '', metaJson)
+    }
     if (danmakuUrl && typeof b.openNativeWithDanmaku === 'function') {
       return b.openNativeWithDanmaku(url, title || '', headers, posMs, danmakuUrl)
     }

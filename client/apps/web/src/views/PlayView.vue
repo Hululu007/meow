@@ -18,8 +18,11 @@ import {
 import {
   cacheIdFor,
   cachedPlaylist,
+  cancelTranscode,
   startTranscode,
   transcodeAvailable,
+  transcodeErrorMessage,
+  transcodePhaseText,
   waitLibraryTranscode,
   waitTranscode,
 } from '@/api/library'
@@ -31,6 +34,7 @@ import { CAUSE_LABEL, type Diagnosis } from '@/ai/diagnose'
 import { isPlayErrorPayload, shouldTranscode, type PlayErrorPayload } from '@/components/player/playError'
 import type { PlayResult } from '@/api/types'
 import { getPrefs } from '@/stores/prefs'
+import { getDmOffset } from '@/stores/dmOffset'
 import { isTvEnv, isTvShell, isWideLayout } from '@/compat/shell'
 import { isAndroid, isFirefox } from '@/compat/ua'
 import { getLinePref, setLinePref } from '@/stores/linePref'
@@ -243,6 +247,15 @@ const player = ref<InstanceType<typeof VideoPlayer>>()
 
 /** 加载态文案：解析比普通取地址慢，需要告诉用户现在在干什么 */
 const loadingText = ref('正在获取播放地址…')
+/**
+ * 转码等待是 120~600 秒的长任务。每次 load/切集自增；旧等待回来时先比对，
+ * 不是当前这一集就只取消后端任务，绝不回写 play.value/error/loadingText
+ * （否则切集后旧集的清单会把新集顶掉——2026-11-20 复核发现）。
+ */
+let playEpoch = 0
+let pendingTranscode: { src?: string; lib?: string; path?: string } | null = null
+/** 正在等转码：加载遮罩上给一个「停止等待」入口 */
+const transcodeWaiting = ref(false)
 /** 本次成功解析的解析器名（来自 /api/parse 的 from） */
 const parseFrom = ref('')
 
@@ -548,6 +561,7 @@ async function pickCachedPlaylist(): Promise<string> {
 }
 
 async function load() {
+  playEpoch++
   loading.value = true
   error.value = ''
   playError.value = ''
@@ -873,8 +887,34 @@ function tryNative() {
   const raw = play.value?.url
   const u = typeof raw === 'string' ? raw : ''
   if (!u) return
-  // 第 5 参：弹幕地址（原生播放器自己抓 XML 自绘；老壳会忽略）
-  if (openNative(u, title, play.value?.header, resumePos(), danmakuUrl.value)) {
+  /*
+   * 第 6 参 meta：原生 Activity 靠它
+   *  ① 每 12 秒回传 /api/state/progress（否则退出后网页历史停在进页位置）；
+   *  ② 套用网页弹幕设置（透明度/字号/速度/区域/屏蔽词/校准）。
+   * 老壳没有 openNativeFull 时逐级退回，不影响拉起。
+   */
+  let meta = ''
+  try {
+    meta = JSON.stringify({
+      site,
+      vod: vodId,
+      ep: epName.value,
+      flag: flag.value,
+      epUrl: rawId.value,
+      apiBase: apiBase(),
+      dm: {
+        opacity: prefs.danmakuOpacity,
+        scale: prefs.danmakuScale,
+        duration: prefs.danmakuDuration,
+        area: prefs.danmakuArea,
+        block: prefs.danmakuBlock,
+        offset: getDmOffset(title),
+      },
+    })
+  } catch {
+    meta = ''
+  }
+  if (openNative(u, title, play.value?.header, resumePos(), danmakuUrl.value, meta)) {
     error.value = ''
     autoRetryHint.value = '已改用原生播放器（ExoPlayer）'
   } else {
@@ -892,26 +932,37 @@ function tryNative() {
  * 已转好的分片是增量的：前几个分片就绪即可起播，不用等整片转完。
  */
 async function tryTranscode(src: string) {
+  const myEpoch = playEpoch
+  pendingTranscode = { src }
+  transcodeWaiting.value = true
   errorSource.value = 'play'
   hopError.value = ''
   loadingText.value = '正在准备播放（这个格式需要转码，已转部分可边看边转）…'
   error.value = ''
   try {
     // 首次响应只代表"任务已排上"，要等分片落盘到能起播
-    const r = await waitTranscode(src, (sec) => {
-      loadingText.value = `正在转码（已就绪 ${sec} 秒，可边转边看）…`
+    const r = await waitTranscode(src, (sec, ph, stalled) => {
+      if (myEpoch !== playEpoch) return
+      loadingText.value = transcodePhaseText(sec, ph, stalled)
     })
+    if (myEpoch !== playEpoch) {
+      // 已经切集/换线：后端任务没人要了，停掉（仍在跑才停，转完的留着）
+      if (r.state === 'running') void cancelTranscode({ src })
+      return
+    }
+    pendingTranscode = null
+    transcodeWaiting.value = false
     /*
      * 转码失败**不能覆盖播放器给的原因**。
      *
      * 原来这里直接 `error.value = r.error`，于是 TV 上（网关没有 ffmpeg）
      * 一次网络抖动换来的是"找不到 ffmpeg。装一个才能播这个格式"——用户
      * 看到的是一个跟影片无关的报错，真实原因被盖掉了。
-     * 现在：主文案保留播放器的原因，转码失败只作为第二行。
+     * 现在：主文案保留播放器的原因，转码失败只作为第二行（按 code 说人话）。
      */
     if (!r.ok || r.state === 'failed' || !r.playlist) {
       hopError.value = !r.playlist
-        ? '这个格式浏览器不支持，转码也没能产出可播内容'
+        ? transcodeErrorMessage(r)
         : (r.error || '转码失败')
       error.value = playError.value || '播放失败'
       loadingText.value = ''
@@ -923,16 +974,37 @@ async function tryTranscode(src: string) {
     if (r.duration && r.readySeconds && r.readySeconds < r.duration - 5) {
       pollTranscodeProgress({ src })
     }
-    transcodeHint.value = '已转码播放（源文件未改动）'
+    transcodeHint.value = r.partial
+      ? `本次只转出 ${r.readySeconds || 0} 秒（另一台设备接手了转码），看到断点会停住`
+      : '已转码播放（源文件未改动）'
     clearTimeout(lineHintTimer)
     lineHintTimer = window.setTimeout(() => (transcodeHint.value = ''), 8000)
     // 播放器直接吃后端给的清单地址；hls.js 会按需拉分片
     play.value = { url: absoluteApi(r.playlist) } as PlayResult
   } catch (e) {
+    if (myEpoch !== playEpoch) return
+    transcodeWaiting.value = false
     hopError.value = e instanceof Error ? e.message : String(e)
     error.value = playError.value || '播放失败'
     loadingText.value = ''
   }
+}
+
+/**
+ * 用户主动放弃等待：作废本次等待、停掉后端 ffmpeg、回到错误页（可重试/换线）。
+ * 与切集不同，这里明确把停止原因写给用户看，不能静默回首页。
+ */
+function cancelTranscodeWait() {
+  const t = pendingTranscode
+  playEpoch++
+  pendingTranscode = null
+  transcodeWaiting.value = false
+  if (t) void cancelTranscode(t)
+  loading.value = false
+  loadingText.value = ''
+  errorSource.value = 'play'
+  hopError.value = '已停止等待，后端转码任务已取消'
+  error.value = playError.value || '已取消转码等待'
 }
 
 /** 后端返回的是 `/api/...` 相对路径；PC 端 base 是绝对地址，要拼上。 */
@@ -987,6 +1059,9 @@ function unsupportedContainer(url: string): boolean {
  * 只有真的报错了才需要转码。
  */
 async function tryLibraryTranscode(lib: string, file: string) {
+  const myEpoch = playEpoch
+  pendingTranscode = { lib, path: file }
+  transcodeWaiting.value = true
   errorSource.value = 'play'
   // 从这一刻起不再把 query.direct 交给播放器（否则 <video> 会一直重试直连，
   // 转码好了也播不到；见 playableSrc 里的注释）
@@ -994,16 +1069,19 @@ async function tryLibraryTranscode(lib: string, file: string) {
   loadingText.value = '直连播不了，正在启动转码（可边转边看）…'
   error.value = ''
   try {
-    const r = await waitLibraryTranscode(lib, file, (sec) => {
-      loadingText.value = `正在转码（已就绪 ${sec} 秒，可边转边看）…`
+    const r = await waitLibraryTranscode(lib, file, (sec, ph, stalled) => {
+      if (myEpoch !== playEpoch) return
+      loadingText.value = transcodePhaseText(sec, ph, stalled)
     })
+    if (myEpoch !== playEpoch) {
+      if (r.state === 'running') void cancelTranscode({ lib, path: file })
+      return
+    }
+    pendingTranscode = null
+    transcodeWaiting.value = false
     if (r.state === 'failed' || !r.playlist) {
-      const why = r.error || '转码失败'
-      // 「找不到 ffmpeg」是 TV 本地网关的常态（PC 插件 / Docker 镜像里才有）。
-      // 光说"找不到 ffmpeg"用户不知道怎么办，补一句可执行的建议。
-      error.value = /ffmpeg/i.test(why)
-        ? `${why}\n\n这台设备上的后端没有 ffmpeg：可以在设置里改用 PC / OECT 后端播放，或点下面「用原生播放器打开」试试 ExoPlayer。`
-        : why
+      // 按后端 code 说人话（slow_4k / no_ffmpeg / source_timeout…）
+      error.value = transcodeErrorMessage(r)
       // 收掉整页加载遮罩：否则 error 分支会被「loading && !src」遮住，
       // 用户只看到一直转圈（F5 预判路径进这里时 loading 还是 true）
       loading.value = false
@@ -1015,12 +1093,16 @@ async function tryLibraryTranscode(lib: string, file: string) {
     if (r.duration && r.readySeconds && r.readySeconds < r.duration - 5) {
       pollTranscodeProgress({ lib, path: file })
     }
-    transcodeHint.value = '已转码播放（源文件未改动）'
+    transcodeHint.value = r.partial
+      ? `本次只转出 ${r.readySeconds || 0} 秒（另一台设备接手了转码），看到断点会停住`
+      : '已转码播放（源文件未改动）'
     clearTimeout(lineHintTimer)
     lineHintTimer = window.setTimeout(() => (transcodeHint.value = ''), 8000)
     play.value = { url: absoluteApi(r.playlist) } as PlayResult
     loading.value = false
   } catch (e) {
+    if (myEpoch !== playEpoch) return
+    transcodeWaiting.value = false
     error.value = e instanceof Error ? e.message : String(e)
     loading.value = false
   }
@@ -2248,6 +2330,9 @@ watch(error, (v) => {
 watch(
   () => route.fullPath,
   () => {
+    // 立即作废旧集的转码等待：ensurePlaylist→load 之间还有网络往返，
+    // 不能等 load() 才失效（旧等待可能在这几秒里回写）。
+    playEpoch++
     // 同一组件内切集：fullPath 变了说明父级会重建组件，
     // 但这里仍然重新解一次参数，避免复用组件时拿到旧值
     flag.value = (route.query.flag as string) || flag.value
@@ -2335,6 +2420,13 @@ document.addEventListener('keydown', onDocEscape)
  */
 ;(window as any).__playPrefetch = prefetchDiag
 onBeforeUnmount(() => {
+  // 离开播放页：还在等的转码没人要了，停掉后端 ffmpeg（别让它空转到看门狗）
+  playEpoch++
+  transcodeWaiting.value = false
+  if (pendingTranscode) {
+    void cancelTranscode(pendingTranscode)
+    pendingTranscode = null
+  }
   flushToHistory(true)
   cancelCountdown()
   clearTimeout(lineHintTimer)
@@ -2361,6 +2453,14 @@ onBeforeUnmount(() => {
       <div class="text-center">
         <div class="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-accent" />
         <p class="mt-4 text-sm text-ink-3">{{ loadingText }}</p>
+        <button
+          v-if="transcodeWaiting"
+          :data-tv-first="transcodeWaiting ? '' : null"
+          class="mt-5 rounded-full border border-white/25 px-4 py-2 text-sm text-ink-2 transition hover:border-white/40 hover:text-ink"
+          @click="cancelTranscodeWait"
+        >
+          停止等待并取消转码
+        </button>
       </div>
     </div>
 
@@ -2551,6 +2651,14 @@ onBeforeUnmount(() => {
           <div class="text-center">
             <div class="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-accent" />
             <p class="mt-4 text-sm text-ink-3">{{ loadingText }}</p>
+            <button
+              v-if="transcodeWaiting"
+              :data-tv-first="transcodeWaiting ? '' : null"
+              class="mt-5 rounded-full border border-white/25 px-4 py-2 text-sm text-ink-2 transition hover:border-white/40 hover:text-ink"
+              @click="cancelTranscodeWait"
+            >
+              停止等待并取消转码
+            </button>
           </div>
         </div>
 

@@ -142,6 +142,16 @@ public class TvBridge {
         return NativePlayerActivity.open(activity, url, title, headers, positionMs, danmakuUrl);
     }
 
+    /**
+     * 1.2.19+：带 meta 的原生播放（进度回传坐标 + 弹幕设置）。
+     * Web 侧 feature-detect；老壳没有这个方法时退回 openNativeWithDanmaku。
+     */
+    @JavascriptInterface
+    public boolean openNativeFull(String url, String title, String headers,
+                                  long positionMs, String danmakuUrl, String metaJson) {
+        return NativePlayerActivity.open(activity, url, title, headers, positionMs, danmakuUrl, metaJson);
+    }
+
     /** 让页面知道当前是不是 TV（用于选焦点样式、隐藏鼠标相关交互） */
     @JavascriptInterface
     public String platform() {

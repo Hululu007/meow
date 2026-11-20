@@ -30,6 +30,8 @@ import androidx.media3.exoplayer.source.MediaSource;
 import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import androidx.media3.ui.PlayerView;
 
+import org.json.JSONObject;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -38,8 +40,10 @@ import java.util.Map;
 
 import okhttp3.Call;
 import okhttp3.Callback;
+import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
+import okhttp3.RequestBody;
 import okhttp3.Response;
 
 /**
@@ -76,6 +80,19 @@ public class NativePlayerActivity extends Activity {
      * 原生播放器自己用 OkHttp 抓，不依赖 WebView。
      */
     public static final String EXTRA_DANMAKU_URL = "danmaku_url";
+    /**
+     * 网页侧传来的 JSON：site/vod/ep/flag/epUrl/apiBase + dm{opacity,scale,duration,area,block,offset}。
+     * 老网页没有这项时全部走默认值（进度不回传、弹幕用默认配置）。
+     */
+    public static final String EXTRA_META = "meta";
+    /**
+     * base64 的 meta JSON。与 {@link #EXTRA_URL_B64} 同理：adb shell 会剥掉
+     * JSON 里的引号（实测 {"site":...} 变成裸词，am 还会把它当成 intent URI），
+     * 验收脚本一律走 base64。
+     */
+    public static final String EXTRA_META_B64 = "meta_b64";
+    /** 验收/排障：屏上显示 items/active/pos/控制栏状态（默认关闭）。 */
+    public static final String EXTRA_DEBUG_STATS = "debug_stats";
 
     private ExoPlayer player;
     private PlayerView view;
@@ -88,6 +105,18 @@ public class NativePlayerActivity extends Activity {
     /** onVideoSizeChanged 记下的分辨率；READY 时用它出示证（验收 4K 用）。 */
     private String sizeLabel;
     private String titleText = "";
+    /* 进度回传：原生播放是独立 Activity，网页收不到 timeupdate */
+    private String pSite = "", pVod = "", pEp = "", pFlag = "", pEpUrl = "", pApiBase = "";
+    private double lastReportedPos = -1;
+    private int dmOffsetMs = 0;
+    private String dmBlock = "";
+    private final Runnable progressTick = new Runnable() {
+        @Override
+        public void run() {
+            reportProgress(false);
+            if (player != null && player.isPlaying()) ui.postDelayed(this, 12_000);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -114,6 +143,38 @@ public class NativePlayerActivity extends Activity {
         }
         String title = getIntent().getStringExtra(EXTRA_TITLE);
         long startMs = getIntent().getLongExtra(EXTRA_POSITION_MS, 0L);
+        float dmOpacity = 0.9f, dmScale = 1f, dmArea = 0.7f;
+        int dmDuration = 12;
+        String metaRaw = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_META);
+        String metaB64 = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_META_B64);
+        if (!TextUtils.isEmpty(metaB64)) {
+            try {
+                metaRaw = new String(android.util.Base64.decode(metaB64, android.util.Base64.NO_WRAP),
+                        java.nio.charset.StandardCharsets.UTF_8);
+            } catch (Throwable ignored) { /* 解码失败就用明文 meta */ }
+        }
+        if (!TextUtils.isEmpty(metaRaw)) {
+            try {
+                JSONObject meta = new JSONObject(metaRaw);
+                pSite = meta.optString("site", "");
+                pVod = meta.optString("vod", "");
+                pEp = meta.optString("ep", "");
+                pFlag = meta.optString("flag", "");
+                pEpUrl = meta.optString("epUrl", "");
+                pApiBase = meta.optString("apiBase", "");
+                JSONObject dm = meta.optJSONObject("dm");
+                if (dm != null) {
+                    dmOpacity = (float) dm.optDouble("opacity", 0.9);
+                    dmScale = (float) dm.optDouble("scale", 1);
+                    dmDuration = dm.optInt("duration", 12);
+                    dmArea = (float) dm.optDouble("area", 0.7);
+                    dmBlock = dm.optString("block", "");
+                    dmOffsetMs = (int) Math.round(dm.optDouble("offset", 0) * 1000);
+                }
+            } catch (Throwable ignored) {
+                /* 老/坏 meta 一律当没传，不影响播放 */
+            }
+        }
 
         /*
          * 布局走 XML：PlayerView 的 surface_type 必须在构造时就是 texture_view。
@@ -125,6 +186,7 @@ public class NativePlayerActivity extends Activity {
         hint = findViewById(R.id.native_hint);
         titleText = title == null ? "" : title;
         hint.setText(titleText);
+        danmaku.setOptions(dmOpacity, dmScale, dmDuration, dmArea);
 
         http = new OkHttpClient.Builder()
                 .followRedirects(true)
@@ -173,6 +235,7 @@ public class NativePlayerActivity extends Activity {
         player.prepare();
         if (startMs > 0) player.seekTo(startMs);
         player.setPlayWhenReady(true);
+        startProgressLoop();
 
         watchdog = () -> {
             if (player != null && player.getPlaybackState() != Player.STATE_READY) {
@@ -180,6 +243,35 @@ public class NativePlayerActivity extends Activity {
             }
         };
         ui.postDelayed(watchdog, 15_000);
+        if (getIntent() != null && getIntent().getBooleanExtra(EXTRA_DEBUG_STATS, false)) {
+            danmaku.setDebugDraw(true);
+            startDebugStats();
+        }
+    }
+
+    /** 验收/排障用：每秒把弹幕层内部计数与播放器位置写到屏上。 */
+    private void startDebugStats() {
+        TextView tv = findViewById(R.id.native_hint);
+        if (tv == null) return;
+        tv.setTextSize(12f);
+        tv.setPadding(24, 24, 24, 24);
+        final Runnable tick = new Runnable() {
+            @Override public void run() {
+                long pos = player == null ? -1 : player.getCurrentPosition();
+                boolean ctrl = view != null && view.isControllerFullyVisible();
+                if (tv != null) {
+                    tv.setVisibility(View.VISIBLE);
+                    String ps = player == null ? "?" : (player.isPlaying() ? "1" : "0")
+                            + "/" + (player == null ? "?" : (player.getPlayWhenReady() ? "1" : "0"))
+                            + "/" + (player == null ? "?" : player.getPlaybackState());
+                    tv.setText((danmaku == null ? "no-overlay" : danmaku.debugStats())
+                            + " pos=" + (pos / 1000) + "s play=" + ps
+                            + " ctrl=" + (ctrl ? 1 : 0));
+                }
+                ui.postDelayed(this, 1000);
+            }
+        };
+        ui.post(tick);
     }
 
     /**
@@ -193,6 +285,7 @@ public class NativePlayerActivity extends Activity {
             @Override
             public void onFailure(Call call, IOException e) {
                 android.util.Log.w("MeowNative", "danmaku fetch failed: " + e);
+                runOnUiThread(() -> showTransientHint("弹幕获取失败（不影响播放）"));
             }
 
             @Override
@@ -200,8 +293,12 @@ public class NativePlayerActivity extends Activity {
                 try (Response r = response) {
                     if (!r.isSuccessful() || r.body() == null) return;
                     String xml = r.body().string();
-                    List<DanmakuOverlay.Item> list = parseDanmaku(xml);
-                    if (!list.isEmpty()) runOnUiThread(() -> danmaku.setItems(list));
+                    List<DanmakuOverlay.Item> list = parseDanmaku(xml, dmOffsetMs, dmBlock);
+                    if (list.isEmpty()) {
+                        runOnUiThread(() -> showTransientHint("弹幕为空或解析失败（不影响播放）"));
+                    } else {
+                        runOnUiThread(() -> danmaku.setItems(list));
+                    }
                 } catch (Throwable t) {
                     android.util.Log.w("MeowNative", "danmaku parse failed: " + t);
                 }
@@ -209,13 +306,18 @@ public class NativePlayerActivity extends Activity {
         });
     }
 
-    private static List<DanmakuOverlay.Item> parseDanmaku(String xml) {
+    private static List<DanmakuOverlay.Item> parseDanmaku(String xml, int offsetMs, String blockCsv) {
         List<DanmakuOverlay.Item> out = new ArrayList<>();
         if (xml == null || xml.isEmpty()) return out;
+        int rawCount = 0;
+        String[] blocks = blockCsv == null ? new String[0]
+                : blockCsv.split("[,，\\s]+");
+        for (int i = 0; i < blocks.length; i++) blocks[i] = blocks[i].trim();
         java.util.regex.Matcher m = java.util.regex.Pattern
                 .compile("<d p=\"([^\"]*)\"[^>]*>(.*?)</d>", java.util.regex.Pattern.DOTALL)
                 .matcher(xml);
         while (m.find()) {
+            rawCount++;
             String[] p = m.group(1).split(",");
             if (p.length < 4) continue;
             try {
@@ -224,6 +326,14 @@ public class NativePlayerActivity extends Activity {
                 int color = (int) Double.parseDouble(p[3]);
                 String text = unescape(m.group(2));
                 if (text.isEmpty()) continue;
+                boolean blocked = false;
+                for (String b : blocks) {
+                    if (!b.isEmpty() && text.contains(b)) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if (blocked) continue;
                 /*
                  * ★ XML 里的 color 是 RGB（如 16777215 = 白），不是 ARGB。
                  * Paint.setColor 要 ARGB，直接传 0x00FFFFFF 的 alpha=0
@@ -232,11 +342,15 @@ public class NativePlayerActivity extends Activity {
                  */
                 if (color <= 0) color = Color.WHITE;
                 else color = 0xFF000000 | (color & 0xFFFFFF);
-                out.add(new DanmakuOverlay.Item((long) (sec * 1000), text, mode, color));
+                long t = (long) (sec * 1000) + offsetMs;
+                if (t < 0) t = 0;
+                out.add(new DanmakuOverlay.Item(t, text, mode, color));
             } catch (Throwable ignored) {
             }
         }
         out.sort((a, b) -> Long.compare(a.timeMs, b.timeMs));
+        android.util.Log.i("MeowNative", "danmaku raw=" + rawCount + " kept=" + out.size()
+                + " offsetMs=" + offsetMs + " block=" + blockCsv);
         return out;
     }
 
@@ -305,6 +419,55 @@ public class NativePlayerActivity extends Activity {
         } catch (Exception e) {
             return s;
         }
+    }
+
+    /** 原生播放的进度回传：每 12 秒一次 + 离开页面时一次。失败静默（不影响看片）。 */
+    private void startProgressLoop() {
+        if (pSite.isEmpty() || pVod.isEmpty() || pApiBase.isEmpty()) return;
+        ui.postDelayed(progressTick, 12_000);
+    }
+
+    private void reportProgress(boolean force) {
+        if (player == null || pSite.isEmpty() || pVod.isEmpty() || pApiBase.isEmpty()) return;
+        long posMs = player.getCurrentPosition();
+        if (posMs < 1000) return;
+        double pos = posMs / 1000.0;
+        if (!force && Math.abs(pos - lastReportedPos) < 2) return;
+        lastReportedPos = pos;
+        try {
+            JSONObject body = new JSONObject()
+                    .put("site", pSite)
+                    .put("vod_id", pVod)
+                    .put("pos", pos)
+                    .put("ep_at", System.currentTimeMillis());
+            long durMs = player.getDuration();
+            if (durMs > 0) body.put("dur", durMs / 1000.0);
+            if (!pFlag.isEmpty()) body.put("flag", pFlag);
+            if (!pEp.isEmpty()) body.put("ep", pEp);
+            if (!pEpUrl.isEmpty()) body.put("ep_url", pEpUrl);
+            String base = pApiBase.endsWith("/") ? pApiBase.substring(0, pApiBase.length() - 1) : pApiBase;
+            RequestBody rb = RequestBody.create(body.toString(), MediaType.parse("application/json"));
+            http.newCall(new Request.Builder().url(base + "/api/state/progress").post(rb).build())
+                    .enqueue(new Callback() {
+                        @Override
+                        public void onFailure(Call call, IOException e) {
+                            android.util.Log.w("MeowNative", "progress report failed: " + e);
+                        }
+
+                        @Override
+                        public void onResponse(Call call, Response response) {
+                            response.close();
+                        }
+                    });
+        } catch (Throwable t) {
+            android.util.Log.w("MeowNative", "progress build failed: " + t);
+        }
+    }
+
+    private void showTransientHint(String text) {
+        hint.setText(text);
+        hint.setVisibility(View.VISIBLE);
+        ui.postDelayed(() -> hint.setVisibility(View.GONE), 3_500);
     }
 
     private void showSizeHint() {
@@ -382,12 +545,15 @@ public class NativePlayerActivity extends Activity {
 
     @Override
     protected void onPause() {
+        reportProgress(true);
         super.onPause();
         if (player != null) player.setPlayWhenReady(false);
     }
 
     @Override
     protected void onDestroy() {
+        reportProgress(true);
+        ui.removeCallbacks(progressTick);
         cancelWatchdog();
         if (view != null) view.setPlayer(null);
         if (player != null) {
@@ -405,6 +571,15 @@ public class NativePlayerActivity extends Activity {
     /** @param danmakuUrl 可选；空表示只播视频 */
     static boolean open(Activity from, String url, String title, String headers, long posMs,
                         String danmakuUrl) {
+        return open(from, url, title, headers, posMs, danmakuUrl, null);
+    }
+
+    /**
+     * @param metaJson 网页传的 JSON（进度回传坐标 + 弹幕设置）。空 = 老网页，
+     *                 只播视频、不回传进度。
+     */
+    static boolean open(Activity from, String url, String title, String headers, long posMs,
+                        String danmakuUrl, String metaJson) {
         if (TextUtils.isEmpty(url)) return false;
         try {
             Intent i = new Intent(from, NativePlayerActivity.class);
@@ -413,6 +588,7 @@ public class NativePlayerActivity extends Activity {
             i.putExtra(EXTRA_HEADERS, headers);
             i.putExtra(EXTRA_POSITION_MS, posMs);
             if (!TextUtils.isEmpty(danmakuUrl)) i.putExtra(EXTRA_DANMAKU_URL, danmakuUrl);
+            if (!TextUtils.isEmpty(metaJson)) i.putExtra(EXTRA_META, metaJson);
             from.startActivity(i);
             return true;
         } catch (Throwable t) {
