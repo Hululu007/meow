@@ -42,6 +42,37 @@ PLATFORM=arm SRC=/tmp/meow-src OUT=/tmp/meow-out-arm bash client/apps/fnos/build
   `FnDepot/fnpack.json` 的 `desc` 是索引侧文案（列表/其它消费方用），发布脚本
   只写 `releases[]`，**不会同步 desc**。改一处必须顺手改另一处。
 
+## FnDepot 的来源归属：`distributor`
+
+FnDepot 判断一个已安装应用属于哪个源，看的是它自己库里的
+`installed_app_meta.distributor`，而这一行在安装时来自**包内 manifest 的
+`distributor`**（2026-11-20 实测：只改 `maintainer` 不生效，`distributor` 为空就
+永远算 manual；大小写不敏感，`chrplus` 能匹配 `CHRPLUS`）。
+
+所以 fpk 里必须写：
+
+```
+distributor=CHRPLUS
+distributor_url=https://github.com/upchr/FnDepot
+```
+
+否则即使通过 FnDepot 安装，也会被归成「手动安装」，永远不进「可更新」列表。
+注意：应用内自更新走 app-center 的 `packageSourceType=file`，**不经过 FnDepot**，
+装完仍会失去归属（见 EWEDLCM/FnDepot#53）。
+
+## 应用中心「更新详情」：`manifest.changelog`
+
+更新弹框里的「更新详情」读的是**包内 manifest 的 `changelog`**（FnDepot 调
+app-center `/update/info?packageType=path`，返回 `wizardInfo.changeLog`），
+**不是** `fnpack.json` 里 `releases[].changelog`。
+
+`build-fpk.sh` 现在按版本从 `CHANGELOG.md` 取对应小节，用字面量 `\n` 连接后写进
+manifest；打包后再逐字比对，折行/截断直接构建失败。FnDepot 的展示函数会把
+`\n`（以及 `<br>`）还原成换行。
+
+> 实测（2026-11-20）：6 条中文 changelog ≈ 500 字节可以完整进包；
+> 但 `desc`（HTML）超过 ~600 字节会被 fnpack 折行截断——两者不要混为一谈。
+
 ## 日志：用户能在共享目录里看到（2026-11-18）
 
 排障最痛的是「用户拿不到日志」。fnOS 的应用数据在 `@appdata/<app>/logs`（0700，

@@ -131,6 +131,30 @@ install -m 0755 "$OUT/meowd" "$PKG/app/bin/meowd"
 APP_VER="$(sed -n 's/^version[[:space:]]*=[[:space:]]*//p' "$PKG/manifest" | tr -d '[:space:]')"
 [ -n "$APP_VER" ] || { echo "manifest 里读不到 version" >&2; exit 1; }
 printf '%s\n' "$APP_VER" > "$PKG/app/bin/VERSION"
+
+# ★ manifest 的 changelog 按版本从 CHANGELOG.md 写入（2026-11-20）。
+#   应用中心「更新详情」读的是**包内 manifest** 的 changelog（app-center
+#   /update/info?packageType=path），不是 fnpack.json 的 releases[].changelog。
+#   以前这里是一行陈旧的固定文案，用户点更新永远看到"端口校验误报"那条。
+#   FnDepot 的归一化函数会把字面量 "\n" 换成换行，所以多条之间用 \n 连接。
+CHANGELOG_SECTION="$(awk -v v="$APP_VER" '
+  $0 ~ "^##[[:space:]]*" v "[[:space:]]*$" {on=1; next}
+  on && /^##[[:space:]]/ {exit}
+  on && NF {sub(/^[[:space:]]+/,""); sub(/[[:space:]]+$/,""); lines[++n]=$0}
+  END {out=""; for (i=1;i<=n;i++) out = out (i>1 ? "\\\\n" : "") lines[i]; printf "%s", out}
+' "$SRC/CHANGELOG.md")"
+if [ -n "$CHANGELOG_SECTION" ]; then
+    if grep -q '^changelog[[:space:]]*=' "$PKG/manifest"; then
+        CHANGELOG_SECTION="$CHANGELOG_SECTION" awk '
+            /^changelog[[:space:]]*=/ {print "changelog=" ENVIRON["CHANGELOG_SECTION"]; next}
+            {print}
+        ' "$PKG/manifest" > "$PKG/manifest.new" && mv "$PKG/manifest.new" "$PKG/manifest"
+    else
+        printf 'changelog=%s\n' "$CHANGELOG_SECTION" >> "$PKG/manifest"
+    fi
+else
+    echo "  ::warning::CHANGELOG.md 没有 $APP_VER 一节，manifest.changelog 保持原值" >&2
+fi
 test -f "$SRC/client/apps/web/dist/index.html" || {
     echo "缺少 client/apps/web/dist/index.html —— 网页没构建，打出来的包是白屏" >&2
     exit 1
@@ -259,6 +283,15 @@ fi
 if grep -qE '^# ' "$TMPX/manifest"; then
     echo "manifest 里出现以 '# ' 开头的续行 —— fnpack 折行产物，desc 会少一截" >&2
     exit 1
+fi
+# ★ changelog 也必须与 CHANGELOG.md 一致：应用中心更新弹框读的就是这个字段。
+if [ -n "$CHANGELOG_SECTION" ]; then
+    PKG_CL="$(sed -n 's/^changelog[[:space:]]*=[[:space:]]*//p' "$TMPX/manifest" | head -1)"
+    if [ "$PKG_CL" != "$CHANGELOG_SECTION" ]; then
+        echo "包内 manifest 的 changelog 与 CHANGELOG.md 不一致（fnpack 折行/截断）" >&2
+        echo "  src: ${#CHANGELOG_SECTION} 字符, pkg: ${#PKG_CL} 字符" >&2
+        exit 1
+    fi
 fi
 test -f "$TMPX/app/web/index.html" || { echo "包内缺 web/index.html" >&2; exit 1; }
 test -f "$TMPX/app/seed/apiserver/apiserver.jar" || { echo "包内缺 apiserver.jar" >&2; exit 1; }
