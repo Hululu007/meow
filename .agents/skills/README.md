@@ -9,6 +9,7 @@
 |---|---|
 | [`meow-control`](./meow-control/SKILL.md) | 驱动运行中的猫窝做验收/排障：读页面状态、截图、点按、网络与控制台、业务工具 |
 | [`meow-release`](./meow-release/SKILL.md) | 发版：版本号、更新说明、tag、CI、Publish、三索引核对、补发资产 |
+| [`issue-triage`](./issue-triage/SKILL.md) | 处理仓库 issue：核实上报、读代码/抓响应定因、记录证据与计划、简短回复、打标签 |
 
 ## 发现顺序（ZCode）
 
