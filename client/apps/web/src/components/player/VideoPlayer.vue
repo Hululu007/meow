@@ -1404,6 +1404,29 @@ function setupSource(url: string) {
    *   掐断时临时静音了，这里立刻恢复用户的音量状态，否则新源也会是哑的。
    */
   stopMedia()
+  /*
+   * ★ 换源必须把「播放位置 / 时长」的响应式值一起清零（2026-11-20 修）。
+   *
+   * 切集时本组件是复用的：App.vue 对 /play/:site 只按 route.path 做 key，
+   * 换集只改 query，PlayView 的 watch(route.fullPath) 重新 load() 后由
+   * props.src 的 watch 进来。`stopMedia()` 的 `load()` 只把**元素上**的
+   * currentTime 归零，这两个 ref 还停在上一集（实测 47:04 / 47:05）。
+   *
+   * 症状：新集 metadata 到达后 `inOutro` = 旧位置 >= 新时长 - 片尾长度
+   * 恒为真（切集前就是真，watch 等不到 false→true 的变化）；起播的 play
+   * 事件一进来 `watch(playing)` 命中片尾 → 立即跳 → 又 ended → 连跳
+   * 9/10/11 直到最后一集，最后一集停在 duration-1 的黑屏（实测）。
+   *
+   * 跳过状态一起清：否则上一集的"用户已取消"会被带到新一集上。
+   */
+  currentTime.value = 0
+  duration.value = 0
+  lastMiddleEnd = -1
+  introDismissed.value = false
+  outroDismissed.value = false
+  clearSkipTimer('intro')
+  clearSkipTimer('outro')
+
   v.volume = volume.value
   v.muted = muted.value
 
@@ -2759,6 +2782,11 @@ function onLoaded() {
    */
   if (Number.isNaN(v.duration)) return
   duration.value = v.duration || 0
+  /*
+   * 位置以引擎为准：`setupSource` 已经清过 ref，这里再按元素真实位置校准一次，
+   * 兜住任何没走 setupSource 的换源路径（否则旧位置 + 新时长会被算进片尾区间）。
+   */
+  if (Number.isFinite(v.currentTime)) currentTime.value = v.currentTime
   loadingSrc.value = false
   buffering.value = false
   // 拿到时长只说明清单解析成功，分片仍可能一片都拉不下来
@@ -6397,24 +6425,32 @@ defineExpose({
             <path :d="dmHeatPath" :fill="dmHeatFill" />
           </svg>
         </div>
-        <div class="relative h-1.5 w-full rounded-full bg-white/20 transition-all group-hover/bar:h-2">
-          <!-- 单条模式：热度压进进度条内部当底色（播放/缓冲仍在上层） -->
-          <div
-            v-if="showCtrl && prefs.danmakuHeat === 'inline' && dmHeatInline"
-            class="absolute inset-0 rounded-full opacity-80"
-            :style="{ backgroundImage: dmHeatInline }"
-            aria-hidden="true"
-          />
-          <!-- 已缓冲 -->
-          <div class="absolute inset-y-0 left-0 rounded-full bg-white/25" :style="{ width: buffered + '%' }" />
-          <!-- 已播放 -->
-          <div class="absolute inset-y-0 left-0 rounded-full bg-player" :style="{ width: shownPct + '%' }" />
-          <!-- 拖动手柄 -->
-          <div
-            class="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-player opacity-0 shadow transition-opacity group-hover/bar:opacity-100"
-            :class="dragTime != null ? 'opacity-100' : ''"
-            :style="{ left: shownPct + '%' }"
-          />
+        <!--
+          固定 8px 高度槽：悬停时只有里面的视觉条 h-1.5 → h-2 变粗。
+          直接把 h-1.5/h-2 挂在流内元素上会让整条包裹层高 2px 变化，
+          控制栏贴底布局（absolute bottom-0）于是把上方的密度峰谷图
+          顶上去又落下来 —— 鼠标在进度条上移动时"上下抖动"（2026-11-20 修）。
+        -->
+        <div class="flex h-2 w-full items-center">
+          <div class="relative h-1.5 w-full rounded-full bg-white/20 transition-all group-hover/bar:h-2">
+            <!-- 单条模式：热度压进进度条内部当底色（播放/缓冲仍在上层） -->
+            <div
+              v-if="showCtrl && prefs.danmakuHeat === 'inline' && dmHeatInline"
+              class="absolute inset-0 rounded-full opacity-80"
+              :style="{ backgroundImage: dmHeatInline }"
+              aria-hidden="true"
+            />
+            <!-- 已缓冲 -->
+            <div class="absolute inset-y-0 left-0 rounded-full bg-white/25" :style="{ width: buffered + '%' }" />
+            <!-- 已播放 -->
+            <div class="absolute inset-y-0 left-0 rounded-full bg-player" :style="{ width: shownPct + '%' }" />
+            <!-- 拖动手柄 -->
+            <div
+              class="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-player opacity-0 shadow transition-opacity group-hover/bar:opacity-100"
+              :class="dragTime != null ? 'opacity-100' : ''"
+              :style="{ left: shownPct + '%' }"
+            />
+          </div>
         </div>
         <!-- 时间气泡 -->
         <div

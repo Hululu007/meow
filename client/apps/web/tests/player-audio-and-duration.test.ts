@@ -123,9 +123,14 @@ describe('问题3：切集/切线路/返回重播后音轨重叠', () => {
 
   it('stopMedia 的静音不能把用户音量吃掉', () => {
     const code = codeOnly(PLAYER)
-    const s = code.indexOf('stopMedia()\n  v.volume')
+    // 只要求「setupSource 里先停媒体、后恢复音量」的先后关系：
+    // 中间允许插入其它换源复位代码（2026-11-20 插入位置/时长清零时踩过这条死板断言）
+    const fn = code.indexOf('function setupSource')
+    const stop = code.indexOf('stopMedia()', fn)
+    const vol = code.indexOf('v.volume = volume.value', stop)
     // 换源后要按用户偏好恢复，否则新源也是哑的
-    expect(s).toBeGreaterThan(-1)
+    expect(stop).toBeGreaterThan(fn)
+    expect(vol).toBeGreaterThan(stop)
   })
 
   it('空源触发的 durationchange 不能把时长清零', () => {
