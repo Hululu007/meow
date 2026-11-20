@@ -224,7 +224,30 @@ for (const it of logical) {
     'inset-block': ['top', 'bottom'],
     inset: ['top', 'right', 'bottom', 'left'],
   }[it.prop]
-  if (pair) emit(`${P} .${it.cls} { ${pair[0]}: ${v}; ${pair[1]}: ${v}; }`, it.media)
+  if (pair) {
+    /*
+     * margin 简写展开必须避让**同轴的显式工具类**。
+     *
+     * 层外规则恒胜 @layer 里的 utilities，所以 `-my-3` 展开出来的
+     * `margin-bottom:-.75rem` 会压掉同元素上的 `.mb-3{+.75rem}`。
+     *
+     * ★ 踩过（2026-11-20 投影仪）：首页分类胶囊
+     *   `-mx-6 mb-3 py-3 -my-3`，新内核 mb-3 写在后面赢了 → 12px 下间距；
+     *   老内核被降级层压成 -12px → hero 直接压到胶囊上（实测顶部重叠 12~13px）。
+     * 判据用属性选择器：class 里出现 mt-/mb-（ml-/mr-）就不展开该轴，
+     * 交给 utilities 自己处理 —— 与「新内核谁后写谁赢」的结果对齐。
+     */
+    const axis = { 'margin-block': ['margin-top', 'mt-'], 'margin-inline': ['margin-left', 'ml-'] }[it.prop]
+    if (axis) {
+      const [first, fcls] = axis
+      const second = pair[1]
+      const scls = fcls.replace('t-', 'b-').replace('l-', 'r-')
+      emit(`${P} .${it.cls}:not([class*="${fcls}"]) { ${first}: ${v}; }`, it.media)
+      emit(`${P} .${it.cls}:not([class*="${scls}"]) { ${second}: ${v}; }`, it.media)
+    } else {
+      emit(`${P} .${it.cls} { ${pair[0]}: ${v}; ${pair[1]}: ${v}; }`, it.media)
+    }
+  }
 }
 
 lines.push('')
@@ -360,3 +383,50 @@ if (zeroWarn.length) {
   console.error(`★ 这些类别生成了 0 条规则：${zeroWarn.join('、')}（检查注释闭合与 CLASS_RE）`)
   process.exit(1)
 }
+
+// ── 告警：aspect + 固定宽度 = padding-top 兜底算错十倍 ──────────
+/*
+ * padding-top 的百分比按**包含块宽度**解析。只有当元素宽度撑满父容器
+ * （网格卡片）时它才等于「自身宽 × 比例」；固定宽度的 flex 子项会被按
+ * 父容器宽度放大 —— 首页 hero 海报（w-20 放在 900px 宽的卡片里）被算成
+ * 1350px 高，整屏只剩一块拉爆的海报（2026-11-20 投影仪真机）。
+ *
+ * 这类元素必须在 legacy-css.css 里给**显式高度**。这里扫源码把新增的
+ * 组合喊出来，避免下一次又是真机才发现。
+ */
+function scanFixedWidthAspects() {
+  const srcRoot = join(webRoot, 'src')
+  const hits = []
+  const walk = (dir) => {
+    for (const name of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, name.name)
+      if (name.isDirectory()) walk(p)
+      else if (name.name.endsWith('.vue')) {
+        const text = readFileSync(p, 'utf8')
+        for (const m of text.matchAll(/class="([^"]*)"/g)) {
+          const cls = m[1]
+          if (!/(^|\s)aspect-/.test(cls)) continue
+          if (/(^|\s)w-full(\s|$)/.test(cls) || /(^|\s)w-auto(\s|$)/.test(cls)) continue
+          // 固定宽度档：w-20 / sm:w-28 / w-[8.5rem]
+          if (!/(^|\s|:)w-(\d|\[)/.test(cls)) continue
+          // 自带固定高（h-[...]）的已被 aspect 兜底排除，不用告警
+          if (/(^|\s)h-\[/.test(cls)) continue
+          hits.push(p.slice(webRoot.length + 1) + '：' + cls.trim().slice(0, 90))
+        }
+      }
+    }
+  }
+  walk(srcRoot)
+  return hits
+}
+
+const fixedAspect = scanFixedWidthAspects()
+if (fixedAspect.length) {
+  console.warn(
+    '\n★ 以下元素是「aspect-* + 固定宽度」：老内核的 padding-top 兜底会按父容器\n' +
+      '  宽度放大它们（实测 hero 海报 168px → 1290px）。必须在 src/styles/legacy-css.css\n' +
+      '  §11 给显式 height，并与其宽度档位（w-* / 响应式）对齐：\n' +
+      fixedAspect.map((x) => '    ' + x).join('\n') + '\n'
+  )
+}
+

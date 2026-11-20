@@ -2301,34 +2301,37 @@ html[data-tv='1'] {
  * 这些值不进 28 变量门禁（不是主题块），按 data-mode 覆盖即可。
  */
 :root {
+  /* ★ 全是 rgba() 老写法：hero 的文字/遮罩必须压在海报上可读，
+     而 rgb(r g b / a) 的空格+斜杠语法要 Chrome 65+，投影仪(66)擦边。
+     这里不值得赌，用全内核都认的逗号写法。 */
   --hero-ink: #ffffff;
-  --hero-ink-2: rgb(255 255 255 / 0.78);
-  --hero-ink-3: rgb(255 255 255 / 0.55);
-  --hero-line: rgb(255 255 255 / 0.12);
-  --hero-chip: rgb(255 255 255 / 0.1);
-  --hero-track: rgb(255 255 255 / 0.2);
+  --hero-ink-2: rgba(255, 255, 255, 0.78);
+  --hero-ink-3: rgba(255, 255, 255, 0.55);
+  --hero-line: rgba(255, 255, 255, 0.12);
+  --hero-chip: rgba(255, 255, 255, 0.1);
+  --hero-track: rgba(255, 255, 255, 0.2);
   --hero-star: #fcd34d;
   --hero-scrim: linear-gradient(
     to right,
-    rgb(0 0 0 / 0.7),
-    rgb(0 0 0 / 0.35) 55%,
-    rgb(0 0 0 / 0.6)
+    rgba(0, 0, 0, 0.7),
+    rgba(0, 0, 0, 0.35) 55%,
+    rgba(0, 0, 0, 0.6)
   );
 }
 html[data-mode='light'] {
   --hero-ink: #1d1d1f;
-  --hero-ink-2: rgb(29 29 31 / 0.78);
-  --hero-ink-3: rgb(29 29 31 / 0.55);
-  --hero-line: rgb(0 0 0 / 0.12);
-  --hero-chip: rgb(0 0 0 / 0.06);
-  --hero-track: rgb(0 0 0 / 0.12);
+  --hero-ink-2: rgba(29, 29, 31, 0.78);
+  --hero-ink-3: rgba(29, 29, 31, 0.55);
+  --hero-line: rgba(0, 0, 0, 0.12);
+  --hero-chip: rgba(0, 0, 0, 0.06);
+  --hero-track: rgba(0, 0, 0, 0.12);
   --hero-star: #b45309;
   /* 亮纱要够实：底下是任意海报的模糊版，0.84 才压得住深字对比度 */
   --hero-scrim: linear-gradient(
     to right,
-    rgb(255 255 255 / 0.95),
-    rgb(255 255 255 / 0.84) 55%,
-    rgb(255 255 255 / 0.93)
+    rgba(255, 255, 255, 0.95),
+    rgba(255, 255, 255, 0.84) 55%,
+    rgba(255, 255, 255, 0.93)
   );
 }
 
@@ -2428,8 +2431,27 @@ html[data-tv='1'] .hero-title-btn {
   margin-left: -0.45rem;
   border-radius: 0.5rem;
 }
+
+/*
+ * 右栏（剧情简介）在 TV 上原本是 `hidden lg:flex` —— 投影仪视口 <1024
+ * 永远看不到元数据。用户口径（2026-11-20）：hero 右侧的元数据也要显示。
+ *
+ * 收窄到 18rem 而不是 26rem：投影仪 902px 宽的卡片里，左栏要留够
+ * 标题/进度/按钮的宽度。staff（导演/主演）仍是 display:none，高度不变。
+ */
+html[data-tv='1'] .hero-side {
+  display: flex;
+  width: 18rem;
+  padding-left: 0.75rem;
+}
 @media (max-height: 600px) {
-  html[data-tv='1'] .hero-side,
+  html[data-tv='1'] .hero-side {
+    width: 14rem;
+    padding-left: 0.5rem;
+  }
+}
+
+@media (max-height: 600px) {
   html[data-tv='1'] .hero-progress-text {
     display: none;
   }

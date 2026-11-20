@@ -151,10 +151,8 @@ const props = withDefaults(defineProps<{
   cacheState?: '' | 'running' | 'done' | 'failed'
   /** 能不能批量下载整季（需要剧集表 + 每集都能拿到地址） */
   canDownloadAll?: boolean
-  /** 能不能投屏（片库直链/需解析器的源不行） */
+  /** 能不能投屏（片库直链/需解析器的源不行）；false 时整颗入口不渲染 */
   canCast?: boolean
-  /** 不能投时的原因（菜单里显示“不可投”，比直接隐藏入口更容易理解） */
-  castReason?: string
   /** 当前是否正在投屏（右上角图标高亮用） */
   casting?: boolean
   /** 下载进度百分比 */
@@ -5904,13 +5902,16 @@ defineExpose({
           </template>
         </div>
       </div>
-      <!-- 投屏：右上角一级入口（与左上返回同一顶栏；不挤底栏） -->
+      <!-- 投屏：右上角一级入口（与左上返回同一顶栏；不挤底栏）
+           ★ 不可用时不渲染（2026-11-20 用户定）：留一个灰按钮只会成为
+             tv-nav 初始落点的第一个可聚焦元素 —— 遥控器按 OK 落在一颗
+             按了只弹"不能投屏"的按钮上，和当年返回键的坑一模一样。 -->
       <button
-        v-if="canCast || !!castReason"
+        v-if="canCast"
         class="relative grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 backdrop-blur transition hover:bg-white/20"
-        :class="[casting ? 'text-accent' : '', canCast ? '' : 'opacity-40']"
-        :aria-label="canCast ? '投屏' : '投屏不可用'"
-        :title="canCast ? (casting ? '正在投屏' : '投屏到电视') : castReason"
+        :class="casting ? 'text-accent' : ''"
+        :aria-label="casting ? '正在投屏' : '投屏'"
+        :title="casting ? '正在投屏' : '投屏到电视'"
         @click.stop="$emit('cast', castButtonAnchor($event))"
       >
         <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -6427,11 +6428,17 @@ defineExpose({
 
       <!-- 第一层：高频项（永远显示） -->
       <div class="flex items-center gap-1.5 sm:gap-2">
-        <!-- 播放/暂停 -->
+        <!-- 播放/暂停
+             ★ data-tv-first（2026-11-20 加）：进播放页时 tv-nav 的落点优先
+               认它。此前播放页没有任何 data-tv-first，`firstContentItem()` 又
+               找不到 main/.poster-grid/[data-sec]，于是退化到「全文档第一个
+               可聚焦元素」= 顶栏右上角的投屏按钮（返回键在 TV 大屏横屏下
+               不渲染）。焦点环落在投屏上，按 OK 只会弹"不能投屏"。 -->
         <button
           class="hit-44 grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10"
           :aria-label="playing ? '暂停' : '播放'"
           data-tv-primary
+          data-tv-first
           @click="toggle"
         >
           <svg v-if="playing" class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">

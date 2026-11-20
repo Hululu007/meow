@@ -76,9 +76,9 @@ describe('TV 后端形态持久化', () => {
       join(__dirname, '..', 'src', 'views', 'SettingsView.vue'),
       'utf8',
     )
-    const at = settings.indexOf('function saveApi()')
+    const at = settings.indexOf('async function saveAndReconnect()')
     expect(at).toBeGreaterThan(-1)
-    const body = settings.slice(at, at + 1800)
+    const body = settings.slice(at, at + 2200)
     expect(body, 'TV 壳内保存没有写回 prefs，重启会被旧值覆盖').toContain('b.saveConn(url')
     // 第二个参数是配置地址，不能传空串把手填的配置源清掉
     expect(body).toContain('prev.config')

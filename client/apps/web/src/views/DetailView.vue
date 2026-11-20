@@ -608,7 +608,7 @@ onBeforeUnmount(() => {
           左栏回答"这是什么"，右栏回答"怎么看"，视线不用上下跑。
         窄屏（<lg）保持单列：手机一屏只放得下一栏。
       -->
-      <div class="flex flex-col gap-8 max-sm:gap-6 lg:flex-row lg:items-start lg:gap-10">
+      <div class="detail-cols flex flex-col gap-8 max-sm:gap-6 lg:flex-row lg:items-start lg:gap-10">
       <!-- 左栏：海报 + 信息 + 主操作 -->
       <!--
         data-tv-col：TV 上下键**只在同一列里**找目标。

@@ -151,15 +151,21 @@ describe('设置页分区归属', () => {
 describe('设置页动作形态与文案（2026-11-11）', () => {
   const src = readFileSync(SETTINGS, 'utf8')
 
-  it('重连后端是普通按钮，排在局域网发现/扫码下一行', () => {
+  it('保存与重连合成一个按钮，紧挨后端地址输入框', () => {
+    /*
+     * 2026-11-20 用户报：关掉后端插件 → 扫描到局域网后端 → 填入地址 → 点「重连」→
+     * 报无连接。原因是保存和重连是两个独立按钮，「重连」不会用输入框里新填的地址。
+     * 现在只有「保存并重连」，它就排在输入框右边；独立的「重连后端」按钮已删除。
+     */
     expect(src, '重连又变回磁贴了').not.toContain('const connectTiles')
-    const lan = src.indexOf('局域网自动发现')
-    const reconnect = src.indexOf('重连后端')
-    expect(lan).toBeGreaterThan(-1)
-    expect(reconnect, '重连按钮不在局域网/扫码之后').toBeGreaterThan(lan)
-    const block = src.slice(reconnect - 400, reconnect + 200)
-    expect(block, '重连不是普通按钮').toContain('bg-card')
-    expect(block, '重连还带磁贴的跳转箭头').not.toContain('tile')
+    expect(src, '还留着独立的「重连后端」按钮').not.toContain('重连后端')
+    const input = src.indexOf('v-model="apiUrl"')
+    const save = src.indexOf('保存并重连', input)
+    expect(input, '找不到后端地址输入框').toBeGreaterThan(-1)
+    expect(save, '保存并重连不在输入框之后').toBeGreaterThan(input)
+    const block = src.slice(input, save + 80)
+    expect(block, '保存并重连没有和输入框放在同一行').toContain('bg-accent')
+    expect(block, '保存并重连又变成磁贴了').not.toContain('tile')
   })
 
   it('纯动作磁贴不带跳转箭头（箭头只留给会打开新页面的项）', () => {

@@ -127,6 +127,31 @@ describe('构建产物：老内核（Chrome 66）兼容性', () => {
       .toMatch(/:not\(\[class\*="h-\["\]\)/)
   })
 
+  it('aspect + 固定宽度的元素必须被显式高度接管', () => {
+    /*
+     * 踩过（2026-11-20 投影仪，用户报「首页 hero 样式不对」）：
+     * hero 海报 `aspect-[2/3] w-20`(sm:w-28) 放在 900px 宽的 .hero-body 里，
+     * 生成的 padding-top:150% 按**父容器**宽度解析成 1350px →
+     * 卡片 210px 变 1332px，首屏只剩一块拉爆的模糊海报，标题/按钮全被挤出屏幕。
+     * 详情页加载骨架 `aspect-[2/3] w-56` 同理。
+     *
+     * 这类元素没有纯 CSS 的"按自身宽度算比例"，只能显式高度；
+     * 宽度档位（w-20 / sm:w-28 / TV 6rem / 投影仪 4.5rem）每档都要有。
+     */
+    const s = readFileSync(join(__dirname, '..', 'src', 'styles', 'legacy-css.css'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(s, 'hero 海报缺少 legacy 显式高度（w-20 档）')
+      .toMatch(/\.hero-poster\s*\{[^}]*height:\s*7\.5rem/)
+    expect(s, 'hero 海报缺少 sm:w-28 档高度')
+      .toMatch(/@media \(min-width: 40rem\)[\s\S]{0,260}\.hero-poster\s*\{[^}]*height:\s*10\.5rem/)
+    expect(s, 'hero 海报缺少 TV 档高度（width 6rem）')
+      .toMatch(/\[data-tv='1'\]\[data-legacy-css='1'\]\s*\.hero-poster\s*\{[^}]*height:\s*9rem/)
+    expect(s, 'hero 海报缺少投影仪档高度（max-height:600px / 4.5rem）')
+      .toMatch(/\.hero-poster\s*\{[^}]*height:\s*6\.75rem/)
+    expect(s, '详情页加载骨架缺少 legacy 显式高度（w-56）')
+      .toMatch(/\.skeleton\.aspect-[^{]*\{[^}]*height:\s*21rem/)
+  })
+
   it('降级层的每条规则都必须带 data-legacy-css 开关', () => {
     // 不带开关会在**新内核上**也生效，与原生 gap / aspect-ratio 叠加
     // （实测 Chrome 110：间距从 94px 变 102px）。
@@ -152,7 +177,15 @@ describe('构建产物：老内核（Chrome 66）兼容性', () => {
 
     const missing: string[] = []
     for (const line of rules) {
-      const m = line.match(/\s\.([^\s{]+)\s*\{/)
+      /*
+       * 只取"类名"部分：允许反斜杠转义（.sm\:px-6），遇到未转义的
+       * `:` / `[` / `{` / 空白即止。
+       *
+       * ★ 2026-11-20：margin 简写拆分后选择器带 `:not([class*="mt-"])`，
+       *   旧正则 `[^\s{]+` 把整段伪类也当成类名，产物压缩时 minifier 会
+       *   去掉属性值引号 → 字符串比对必然失败（假红）。类名才是被打包的判据。
+       */
+      const m = line.match(/\s\.((?:\\.|[^\s{:[\\])+)/)
       if (!m) continue
       // 产物用双引号（data-legacy-css="1"），选择器部分与源文件一致
       if (!css.includes('.' + m[1])) missing.push(m[1])

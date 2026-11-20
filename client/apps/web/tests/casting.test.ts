@@ -153,13 +153,24 @@ describe('投屏面板 UX：分组 / 高度 / TV 滚动 / 成功收起', () => {
     expect(play).toContain('}, 900)')
   })
 
-  it('投屏图标在右上角；不可投置灰并保留原因', () => {
-    expect(vp).toContain('castReason')
-    expect(vp).toContain('投屏不可用')
+  it('投屏图标在右上角；不可投时整颗不渲染', () => {
+    // ★ 2026-11-20 用户定：不可用就不显示。留一颗灰按钮会让它成为
+    //   tv-nav 进播放页时的第一个可聚焦元素（返回键在 TV 大屏横屏下不渲染），
+    //   遥控器按 OK 落在"只弹一句不能投屏"的按钮上。
+    expect(vp).toContain('v-if="canCast"')
+    expect(vp).not.toContain('投屏不可用')
     expect(vp).toContain('castButtonAnchor($event)')
-    expect(vp).toContain('v-if="canCast || !!castReason"')
     expect(vp).toContain('casting')
-    expect(play).toContain(':cast-reason="castReason"')
     expect(play).toContain(':casting="!!castSession"')
+    // 原因仍要能说清楚：入口没了，openCast 的兜底提示还在
+    expect(play).toContain('showCastToast(castReason.value)')
+  })
+
+  it('进播放页的 tv-nav 落点是播放/暂停，不是顶栏按钮', () => {
+    // 2026-11-20 修的回归：播放页此前没有任何 data-tv-first，
+    // firstContentItem() 也找不到 main/[data-sec]，于是落到全文档第一个
+    // 可聚焦元素 = 右上角投屏按钮。这里锁住"主控按钮带 data-tv-first"。
+    expect(vp).toContain('data-tv-primary')
+    expect(vp).toContain('data-tv-first')
   })
 })

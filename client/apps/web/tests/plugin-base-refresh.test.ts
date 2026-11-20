@@ -49,13 +49,14 @@ describe('三处插件状态变化后都要刷新地址', () => {
   })
 
   it('启动插件后也要刷新（启动时可能压根没起来）', () => {
-    const i = SETTINGS.indexOf('await callPluginStart(id)')
+    // 2026-11-20：startPlugin 收 PluginInfo（要按 required 判断是不是后端插件）
+    const i = SETTINGS.indexOf('await callPluginStart(p.id)')
     expect(i).toBeGreaterThan(-1)
     expect(SETTINGS.slice(i, i + 400)).toContain('refreshDesktopBase')
   })
 
   it('停止插件后也要刷新（端口可能释放/顺延）', () => {
-    const i = SETTINGS.indexOf('await callPluginStop(id)')
+    const i = SETTINGS.indexOf('await callPluginStop(p.id)')
     expect(i).toBeGreaterThan(-1)
     expect(SETTINGS.slice(i, i + 400)).toContain('refreshDesktopBase')
   })
