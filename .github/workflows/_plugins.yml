@@ -119,8 +119,24 @@ jobs:
           npm install --omit=dev --no-audit --no-fund
           Pop-Location
 
+      # dex2jar：apiserver 插件每次要下 ~20MB 再裁剪，实测 30.6s，占本 job 约三分之一。
+      # `build-plugin.ps1` 自带复用分支（`server/tools/dex2jar/lib` 存在就不下载），
+      # 所以这里只要缓存目录，脚本一行不用改。
+      # ★ key 只吃 fetch 脚本指纹：dex2jar 版本与裁剪白名单都在那个脚本里，与代码版本无关。
+      # ★ 不复用 fpk 的 `jar-d2j-*` 键：那个键里还含 apiserver.jar，恢复进来会往插件
+      #   输出目录塞一个旧 jar（正常路径会被覆盖，失败路径会残留）。
+      # ★ restore/save 拆分（同下面产物缓存的理由）：构建失败不留半套缓存。
+      - name: 恢复 dex2jar
+        id: d2j
+        if: ${{ steps.pcache.outputs.cache-hit != 'true' && (inputs.plugins_only == '' || contains(inputs.plugins_only, 'apiserver')) }}
+        uses: actions/cache/restore@v4
+        with:
+          path: server/tools/dex2jar
+          key: dex2jar-${{ runner.os }}-${{ hashFiles('deploy/scripts/fetch-dex2jar.ps1') }}
+
       # 插件列表读 deploy/units.json（唯一真源），不在这里写死脚本名。
       - name: 构建插件
+        id: build
         if: ${{ steps.pcache.outputs.cache-hit != 'true' }}
         shell: pwsh
         run: |
@@ -143,6 +159,14 @@ jobs:
         run: |
           echo "插件输入未变，复用缓存产物"
           ls -la "${{ runner.temp }}/plugins-out" || true
+
+      # dex2jar 只在"这次真下载且构建走完"时写缓存；下载失败会让 build 步骤抛错，自然不写。
+      - name: 保存 dex2jar（构建成功才写）
+        if: ${{ steps.d2j.outputs.cache-hit != 'true' && steps.build.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: server/tools/dex2jar
+          key: ${{ steps.d2j.outputs.cache-primary-key }}
 
       # 产物齐全才允许写缓存（原因见上面「恢复插件产物缓存」的注释）。
       # 不全时只警告、不红：可选单元（danmu/ffmpeg）失败不该阻断发版
