@@ -1753,7 +1753,7 @@ dependencies = [
 
 [[package]]
 name = "meow-player"
-version = "1.2.20"
+version = "1.2.21"
 dependencies = [
  "serde",
  "serde_json",
