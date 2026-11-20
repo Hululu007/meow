@@ -232,6 +232,16 @@ export function currentBase(): string {
 }
 
 /**
+ * 插件协商出来的本机后端地址（没有插件 / 未就绪时为空串）。
+ *
+ * 与 `currentBase()` 的区别：后者会把用户手填地址也算进去，判断"插件是否在跑
+ * 以及它占了哪个端口"必须看这个值（设置页保存回环地址时要用）。
+ */
+export function pluginBase(): string {
+  return desktopBase
+}
+
+/**
  * 重新从插件管理器取一次后端地址（**不轮询**，取到就用）。
  *
  * <p><b>为什么需要它</b>：`initBackend()` 只在启动时跑一次，而且会"提前放弃"——
@@ -249,7 +259,14 @@ export async function refreshDesktopBase(): Promise<string> {
   try {
     const info = await tauriInvoke<BootInfo>('boot_info')
     const b = info?.backend_base
-    if (b) desktopBase = String(b).replace(/\/$/, '')
+    /*
+     * ★ backend_base 变 null 时必须**跟着清空**，不能沿用旧值。
+     * 用户停掉「影视后端」后，旧实现把 desktopBase 留在了已关闭的端口上：
+     * 设置页随后填了局域网地址、点重连，resolveBase 仍拿旧端口去 ping，
+     * 报「暂时没有响应」——看起来像新填的地址没生效（2026-11-20 用户报）。
+     * 停掉就是没有本地后端，空串才会让手填地址/降级提示真正接管。
+     */
+    desktopBase = b ? String(b).replace(/\/$/, '') : ''
   } catch {
     /* 取不到就沿用旧值：调用方接着 boot() 会把失败原因显示出来 */
   }

@@ -73,7 +73,7 @@ export const useAppStore = defineStore('app', {
             this.error = `后端未连接：${where || '同源 /api'}`
           } else if (!where) {
             this.error =
-              '影视后端未就绪：插件还没安装或还没启动完成。到「设置 → 本机插件」安装并启动它。'
+              '影视后端未就绪：插件没安装、已被停止，或还没启动完成。到「设置 → 本机插件」启动它，或在「连接」里填一个可访问的后端地址。'
           } else if (isLoopbackUrl(where)) {
             // 不要直接把 Failed to fetch 甩给用户：启动窗口期内它只是还没 bind
             this.error = `本机后端（${where}）暂时没有响应。若刚启动应用请稍等几秒；仍失败请到「设置 → 本机插件」查看后端状态。`

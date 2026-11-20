@@ -16,6 +16,8 @@ import {
   fetchPolicy,
   fetchSearchCacheStats,
   isDesktop,
+  isLoopbackUrl,
+  pluginBase,
   readManualApi,
   resolveDns,
   savePolicy,
@@ -247,25 +249,97 @@ function tuneDanmaku(patch: { duration?: number; area?: number }) {
 /**
  * 桌面端的后端地址有两种来源，展示上必须区分开，否则用户会疑惑
  * "我明明装的是插件，为什么地址是空的 / 同源"：
- *   - 插件托管：地址由插件协商的端口决定，输入框显示实际地址且只读
+ *   - 插件托管：地址由插件协商的端口决定（输入框显示实际值，可改）
  *   - 手填远端：用户显式保存过地址（scope=desktop）
+ *
+ * ★ 输入框**不能只读**（2026-11-20 修）。
+ *   原来插件托管时设成 readonly 并隐藏「保存」，于是「关掉插件 → 扫描到局域网
+ *   后端 → 点结果填入 → 没有保存按钮 → 重连仍用旧地址 → 无连接」整条路断掉。
  */
 const manualApi = ref(readManualApi())
 const apiUrl = ref(manualApi.value || apiBase() || '')
 const apiPlaceholder = computed(() =>
-  desktop && !manualApi.value ? '由「影视后端」插件自动分配' : 'http://127.0.0.1:9979',
+  desktop && !manualApi.value ? '留空 = 由「影视后端」插件自动分配' : 'http://127.0.0.1:9979',
 )
 /** 桌面端没手填地址时是插件托管，改地址等于"改连远端"，需要明说 */
 const apiManagedByPlugin = computed(() => desktop && !manualApi.value)
-/** Web 端同源部署时 base 为空，展示成"同源 /api"更直观 */
-const apiShown = computed(() => {
-  if (apiManagedByPlugin.value) return apiUrl.value || '（插件启动后填充）'
-  return apiUrl.value || '同源 /api'
-})
+/** 保存/重连的结果提示（地址没变、不整页刷新时才有机会看到） */
+const apiMsg = ref('')
+const apiMsgOk = ref(true)
+const apiBusy = ref(false)
+/** 用户改过输入框但还没保存：此时不做自动同步，避免把正在敲的内容冲掉 */
+const apiDirty = ref(false)
 
-function saveApi() {
+/** 把输入框同步成「当前真正在用的地址」：手填优先，否则插件协商值 */
+function syncApiUrlFromRuntime() {
+  manualApi.value = readManualApi()
+  apiUrl.value = manualApi.value || apiBase() || ''
+  apiDirty.value = false
+}
+
+/**
+ * 插件晚于页面就绪时，把真实地址填进输入框。
+ *
+ * 只在**用户没在编辑**时同步：store.online 翻转时可能正好有人刚敲了半截地址，
+ * 无条件同步会把它冲掉。
+ */
+watch(
+  () => store.online,
+  (on) => {
+    if (on && desktop && !manualApi.value && !apiDirty.value) syncApiUrlFromRuntime()
+  },
+)
+
+/**
+ * 后端插件启动/启用后调用：清掉手填的外部地址。
+ *
+ * 不清理的后果是"看着连本机、实际连远端"：resolveBase 里非回环手填地址的
+ * 优先级高于插件地址，用户点了「启动」以为切回本机，请求却仍打到之前填的 NAS。
+ */
+function clearManualApiForPlugin() {
+  if (!readManualApi()) return
+  setRuntimeBase(null)
+  manualApi.value = ''
+}
+
+/** 探一下目标后端的 /api/health（4s 超时），用于保存前拦掉死地址 */
+async function probeBackendHealth(url: string): Promise<boolean> {
+  const ctrl = new AbortController()
+  const timer = window.setTimeout(() => ctrl.abort(), 4000)
+  try {
+    const r = await fetch(url.replace(/\/$/, '') + '/api/health', {
+      signal: ctrl.signal,
+      cache: 'no-store',
+    })
+    if (!r.ok) return false
+    const j = (await r.json()) as { ok?: boolean }
+    return j?.ok === true
+  } catch {
+    return false
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
+/**
+ * 保存地址并重连 —— **保存与重连合成一个按钮**（2026-11-20）。
+ *
+ * 原来「保存」在输入框右边、重连按钮在下面一行，两者互不相干：用户填完
+ * 地址直接点重连，用的仍是旧 base，报「无连接」。现在点这个按钮一定
+ * 先把当前输入写进去，再连。
+ *
+ * 地址真的变了才整页刷新：后端级设置（policy/缓存配额等）是 onMounted 从
+ * 上一个后端读的，不刷新会出现"显示 A、改的是 B"（见 switchToGateway）。
+ * 地址没变就只重连，避免白白丢页面状态；死地址在刷新前先探活，免得用户
+ * 连扫描结果都一起丢掉。
+ */
+async function saveAndReconnect() {
+  apiMsg.value = ''
   const v = apiUrl.value.trim()
   const url = v && v !== '同源 /api' ? v : ''
+  const unchanged = url === (manualApi.value || '')
+  // 插件托管且没改：只重连，不把手填地址写进去（否则会变成"手连本机"）
+  const keepPlugin = desktop && !manualApi.value && (!url || url === apiBase())
 
   /*
    * ★ TV 壳的后端地址**真源是 prefs[K_API]**，不是 localStorage。
@@ -303,16 +377,65 @@ function saveApi() {
     }
   }
 
-  // 统一走 setRuntimeBase：它会顺带写 scope 标记，避免手填地址在
-  // 桌面端/Web 端之间互相污染（实测被 30011 的残留劫持过）
-  if (url) setRuntimeBase(url)
-  else setRuntimeBase(null)
-  location.reload()
+  if (!keepPlugin && !unchanged) {
+    /*
+     * 插件在跑时，回环地址会被插件协商的端口覆盖（resolveBase 的既有规则）。
+     * 直接保存会让用户看到"地址换了、实际没换"，所以先说明并让他停插件。
+     */
+    if (desktop && url && isLoopbackUrl(url) && pluginBase() && pluginBase() !== url) {
+      apiMsgOk.value = false
+      apiMsg.value = `本机「影视后端」插件正在运行（${pluginBase()}），回环地址会被它接管；要连 ${url}，请先在「本机插件」里停止它`
+      return
+    }
+    // 保存前先探活：死地址一旦刷新，用户刚扫描到的列表也一起没了
+    if (url && !tvMode) {
+      apiBusy.value = true
+      try {
+        if (!(await probeBackendHealth(url))) {
+          apiMsgOk.value = false
+          apiMsg.value = `连不上 ${url}：检查端口、防火墙，或确认那台机器上的猫窝后端已启动`
+          return
+        }
+      } finally {
+        apiBusy.value = false
+      }
+    }
+    // 统一走 setRuntimeBase：它会顺带写 scope 标记，避免手填地址在
+    // 桌面端/Web 端之间互相污染（实测被 30011 的残留劫持过）
+    setRuntimeBase(url || null)
+    manualApi.value = url
+    apiDirty.value = false
+    // 切后端必须整页刷新，让从旧后端读来的设置跟着换
+    if (tvMode) {
+      const b = bridge()
+      if (b && typeof b.reloadApp === 'function') b.reloadApp()
+      else location.reload()
+    } else {
+      location.reload()
+    }
+    return
+  }
+
+  // 地址没变：只重连（插件可能刚起来 / 刚重启过）
+  apiBusy.value = true
+  try {
+    await refreshDesktopBase()
+    await store.boot()
+    apiDirty.value = false
+    // 插件托管时把输入框回填成实际地址（用户刚清空过也能看到在用哪个）
+    if (desktop && !manualApi.value) syncApiUrlFromRuntime()
+    apiMsgOk.value = store.online
+    apiMsg.value = store.online ? '已连接' : store.error || '未连接'
+  } finally {
+    apiBusy.value = false
+  }
 }
 
 /** 恢复"由插件托管"：清掉手填地址，重启后重新问插件要端口 */
 function usePluginBackend() {
   setRuntimeBase(null)
+  manualApi.value = ''
+  // 换后端要重读设置，整页刷新（理由同 saveAndReconnect）
   location.reload()
 }
 
@@ -503,13 +626,33 @@ function pickFound(f: { url: string; label?: string; version?: string }) {
 //
 // TV 的「局域网自动发现」走原生 LanScan（socket 探测）；Web / PC 没有那个
 // 桥，这里用页面 fetch 探各 IP 的 /api/health（端口 30010 / 9979，与
-// LanScan 的常扫端口对齐）。命中后只**填**地址框，保存仍走「保存」按钮——
-// 与 TV 弹层"点结果只是选中"的行为一致，避免误连。
+// LanScan 的常扫端口对齐）。
+//
+// ★ PC 也做成**弹框**（2026-11-20 用户要求，对齐 TV 的连接弹层）：
+//   原来的结果胶囊直接铺在设置页里，扫描期间用户滚走了就再也看不见结果；
+//   弹框里"扫描 → 选中 → 保存并重连"是一条完整的动作链，不会和页面其它
+//   控件互相挤。
 const webScan = reactive({
+  open: false,
   scanning: false,
   found: [] as LanHit[],
   msg: '',
+  /** 弹框里的地址输入框（默认带出当前地址） */
+  api: '',
 })
+
+/** 打开 PC/Web 扫描弹框：带出当前地址并立即开扫 */
+function openWebScanDialog() {
+  webScan.open = true
+  webScan.found = []
+  webScan.msg = ''
+  webScan.api = apiUrl.value || ''
+  void startWebScan()
+}
+
+function closeWebScanDialog() {
+  webScan.open = false
+}
 
 async function startWebScan() {
   if (webScan.scanning) return
@@ -522,7 +665,7 @@ async function startWebScan() {
       webScan.msg = '当前是 https 页面，浏览器会拦掉所有 http 探测；请用 http 地址打开后再扫'
     } else if (r.hits.length) {
       webScan.found = r.hits
-      webScan.msg = `找到 ${r.hits.length} 个后端，点一下填入地址框，再点「保存」`
+      webScan.msg = `找到 ${r.hits.length} 个后端，点一下填入地址，再点「保存并重连」`
     } else {
       webScan.msg = '没找到。可直接手填地址（如 http://192.168.1.10:30010）'
     }
@@ -533,10 +676,19 @@ async function startWebScan() {
   }
 }
 
-/** 点 Web 扫描结果：只填地址框（不直接保存） */
+/** 点扫描结果：只填弹框里的地址（不直接保存，避免误连） */
 function pickWebFound(f: LanHit) {
-  apiUrl.value = f.url
-  webScan.msg = '已选中 ' + f.url + '，点上方「保存」生效'
+  webScan.api = f.url
+  webScan.msg = '已选中 ' + f.url + '，点下方「保存并重连」'
+}
+
+/** 弹框里保存：把选中地址带到输入框并走统一的保存+重连 */
+async function saveWebScan() {
+  apiUrl.value = webScan.api.trim()
+  await saveAndReconnect()
+  // 地址变了会整页刷新（弹框自然消失）；没变时才走到这里
+  if (apiMsg.value && apiMsgOk.value) webScan.open = false
+  else if (apiMsg.value) webScan.msg = apiMsg.value
 }
 
 /**
@@ -3527,7 +3679,7 @@ function switchToGateway() {
    * onMounted 里从**上一个后端**读的（loadPolicy）。不刷新的话，切到网关后
    * 显示的还是旧后端的值，而之后任何修改都 POST 到 9978（新后端）——
    * "看着是 A、改的是 B"，用户会以为设置丢了/改了没用。
-   * 手填地址路径本来就 reload（见 saveApi），这里对齐，而不是逐个重拉
+   * 手填地址路径本来就 reload（见 saveAndReconnect），这里对齐，而不是逐个重拉
    * 十几个分区（漏一个就又是错位）。
    */
   location.reload()
@@ -3575,6 +3727,25 @@ async function importLocalConfig() {
 }
 const plugins = ref<PluginInfo[]>([])
 const busy = ref('')
+
+/**
+ * 本机后端插件（manifest 里 required=true 的那个）。
+ *
+ * 没有它就无法区分「没装插件」「装了但用户停了」「正在启动」三种状态，
+ * 顶栏只能一律显示"等待插件启动"——用户关掉后端后仍以为在等它启动。
+ */
+const backendPlugin = computed(() => plugins.value.find((p) => p.required))
+
+/** 顶栏「未连接」时到底在等什么：插件没装 / 被停 / 在启动 / 手填地址无响应 */
+const offlineHint = computed(() => {
+  if (!desktop) return '请填写后端地址'
+  if (manualApi.value) return `手填地址无响应 · ${manualApi.value}`
+  const p = backendPlugin.value
+  if (!p || !p.installed) return '未安装「影视后端」插件'
+  if (p.phase === 'stopped') return '本机后端已停止'
+  if (p.phase === 'failed') return '本机后端启动失败'
+  return '等待插件启动'
+})
 
 // 远端索引与已安装记录
 const remoteIndex = ref<PluginIndex | null>(null)
@@ -4063,9 +4234,13 @@ async function install(id: string) {
     await installPlugin(id, appVersion.value)
     await refreshPlugins()
     await loadIndex(true)
+    // 装完会自动启动；如果装的是后端插件，「启用」同样要清掉手填的外部地址
+    const justInstalled = plugins.value.find((p) => p.id === id)
+    if (justInstalled?.required && justInstalled.phase === 'ready') clearManualApiForPlugin()
     // ★ 启动时 initBackend 可能已经"提前放弃"（插件没装/没启动），
     //   desktopBase 还是空串。这里不重新取一次，装完照样 Failed to fetch。
     await refreshDesktopBase()
+    syncApiUrlFromRuntime()
     await store.boot()
   } catch (e: any) {
     const msg = e?.message || String(e)
@@ -4096,6 +4271,10 @@ async function pickAndImport() {
     const id = await importPluginZip(picked)
     await refreshPlugins()
     await loadIndex(true)
+    const imported = plugins.value.find((p) => p.id === id)
+    if (imported?.required && imported.phase === 'ready') clearManualApiForPlugin()
+    await refreshDesktopBase()
+    syncApiUrlFromRuntime()
     await store.boot()
     console.info('[plugin] imported', id)
   } catch (e: any) {
@@ -4143,13 +4322,24 @@ async function removePlugin(id: string) {
   }
 }
 
-async function startPlugin(id: string) {
-  busy.value = id
+async function startPlugin(p: PluginInfo) {
+  busy.value = p.id
   try {
-    await callPluginStart(id)
+    /*
+     * 「启动」=「启用」（2026-11-20）。
+     *
+     * Rust 的 state_of() 对运行中的插件恒返回 enabled=true，但那份标记只活在
+     * 当前进程里：不写 enabled.json 的话，页面开关显示"开"、下次启动却不会
+     * 自启，用户看到的就是"点了启动，重启又没了"。这里启动前先把开关落盘。
+     */
+    await setPluginEnabled(p.id, true)
+    await callPluginStart(p.id)
+    // 启用本机后端 = 用户要连本机：清掉之前手填的外部地址，否则仍连远端
+    if (p.required) clearManualApiForPlugin()
     await refreshPlugins()
     // 启动时插件可能没起来（desktopBase 空），先取一次地址再重连
     await refreshDesktopBase()
+    syncApiUrlFromRuntime()
     // 后端刚起来时站点表可能还是空的，重连一次
     await store.boot()
   } catch (e: any) {
@@ -4159,13 +4349,14 @@ async function startPlugin(id: string) {
   }
 }
 
-async function stopPlugin(id: string) {
-  busy.value = id
+async function stopPlugin(p: PluginInfo) {
+  busy.value = p.id
   try {
-    await callPluginStop(id)
+    await callPluginStop(p.id)
     await refreshPlugins()
-    // 停掉后地址可能变了（端口释放/顺延），取一次再 boot 让 UI 进降级态
+    // 停掉后 backend_base 变 null，refreshDesktopBase 会把陈旧端口清掉
     await refreshDesktopBase()
+    syncApiUrlFromRuntime()
     await store.boot()
   } catch (e: any) {
     await alertDialog(e?.message || String(e))
@@ -4187,10 +4378,14 @@ async function toggleEnabled(p: PluginInfo) {
     await setPluginEnabled(p.id, next)
     if (next && p.phase !== 'ready' && p.installed) {
       await callPluginStart(p.id)
+      // 开着开关就等于启用本机后端：清掉手填的外部地址（同 startPlugin）
+      if (p.required) clearManualApiForPlugin()
     } else if (!next && p.phase === 'ready') {
       await callPluginStop(p.id)
     }
     await refreshPlugins()
+    await refreshDesktopBase()
+    syncApiUrlFromRuntime()
     await store.boot()
   } catch (e: any) {
     await alertDialog(e?.message || String(e))
@@ -4244,6 +4439,8 @@ onMounted(async () => {
   // 插件状态：首刷 + 每 3s 轮询（用户可能在别处手动启停）
   await refreshPlugins()
   if (desktop) {
+    // 插件可能晚于页面就绪：把输入框对齐到真实在用的地址
+    syncApiUrlFromRuntime()
     pluginTimer = window.setInterval(refreshPlugins, 3000)
     // 插件源跟随应用更新源（默认开；已有自定义源时不抢当前选择）
     void syncPluginAppSource().then(() => loadIndex())
@@ -5060,31 +5257,36 @@ onBeforeUnmount(() => {
                 · {{ unsupportedCount }} 待配置</template><template v-if="skippedCount">
                 · {{ skippedCount }} 搜索时跳过</template>
             </template>
-            <template v-else-if="desktop">等待插件启动</template>
-            <template v-else>请填写后端地址</template>
+            <template v-else>{{ offlineHint }}</template>
           </span>
         </span>
       </div>
 
       <div class="flex flex-wrap items-center gap-2.5">
         <span class="w-20 shrink-0 text-xs text-ink-3">后端地址</span>
+        <!--
+          输入框始终可编辑：插件托管时也允许改（改完点右边按钮就切到远端）。
+          原来这里 readonly + 隐藏保存，扫描到的地址填进来却没法保存（2026-11-20 修）。
+        -->
         <input
           v-model="apiUrl"
           :placeholder="apiPlaceholder"
-          :readonly="apiManagedByPlugin"
-          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent read-only:text-ink-2"
+          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
           :title="
             apiManagedByPlugin
-              ? '由「影视后端」插件启动时协商的端口自动填充，不用手改'
+              ? '当前由「影视后端」插件自动分配；填入别的地址即切到远端'
               : '手填的后端地址；点右侧「用插件」可恢复自动'
           "
+          @input="apiDirty = true"
+          @keyup.enter="saveAndReconnect"
         />
+        <!-- 保存与重连合成一个动作：只点「重连」不会用上新填的地址（旧行为） -->
         <button
-          v-if="!apiManagedByPlugin"
-          class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent/60"
-          @click="saveApi"
+          class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition hover:bg-accent-dim disabled:opacity-40"
+          :disabled="apiBusy"
+          @click="saveAndReconnect"
         >
-          保存
+          {{ apiBusy ? '连接中…' : '保存并重连' }}
         </button>
         <button
           v-if="desktop && manualApi"
@@ -5095,6 +5297,24 @@ onBeforeUnmount(() => {
           用插件
         </button>
       </div>
+      <p
+        v-if="apiMsg"
+        class="mt-1.5 text-[11px]"
+        :class="apiMsgOk ? 'text-ok' : 'text-hot'"
+      >
+        {{ apiMsg }}
+      </p>
+      <!--
+        同时存在「本机插件在跑」与「手填远端」时，resolveBase 用手填值。
+        这本身是合法形态（临时连 NAS 调试），但不说清楚用户会以为用的是插件。
+      -->
+      <p
+        v-if="desktop && manualApi && backendPlugin && backendPlugin.phase === 'ready'"
+        class="mt-1.5 text-[11px] text-ink-2"
+      >
+        手填地址优先：本机插件虽然在运行（{{ backendPlugin.base }}），请求仍走
+        {{ manualApi }}。要改用本机，点「用插件」。
+      </p>
 
       <div class="mt-2 flex flex-wrap items-center gap-2.5">
         <span class="w-20 shrink-0 text-xs text-ink-3">写操作令牌</span>
@@ -5122,7 +5342,8 @@ onBeforeUnmount(() => {
       </p>
       <!-- PC 端：地址由插件决定，强调不要写死 -->
       <p v-else-if="apiManagedByPlugin" class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
-        地址由插件自动分配，端口冲突会顺延，不用手改。要连别的机器，直接填上面的地址。
+        留空时地址由「影视后端」插件自动分配，端口冲突会顺延；要连别的机器（NAS /
+        Docker），扫描或直接填上面的地址再点「保存并重连」。
       </p>
 
       <!-- TV：遥控器打字太痛苦，给两个"不用打字"的入口 -->
@@ -5149,45 +5370,22 @@ onBeforeUnmount(() => {
       <!--
         Web / PC：没有原生 LanScan，用页面 fetch 探 /api/health（2026-11-15 修5，
         对齐 TV 的自动发现）。https 页面拦 http 探测，工具里会给出对应提示。
+
+        ★ 改成弹框（2026-11-20）：结果不再铺在设置页里，避免"扫完滚走了就找不到"；
+          弹框内是「扫描 → 选中 → 保存并重连」的完整动作链，与 TV 连接弹层一致。
       -->
       <div v-if="!tvMode" class="mt-3 flex flex-wrap items-center gap-2">
         <button
           class="rounded-md bg-card px-3 py-1.5 text-xs font-medium transition hover:bg-card-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent/60"
-          :disabled="webScan.scanning"
-          @click="startWebScan()"
+          @click="openWebScanDialog()"
         >
-          {{ webScan.scanning ? '扫描中…' : '扫描局域网' }}
+          扫描局域网
         </button>
         <span class="text-[11px] text-ink-3">
-          {{ webScan.msg || '扫同网段 30010 / 9979 端口的后端，点结果填进地址框' }}
+          扫同网段 30010 / 9979 端口的后端，弹框里选中后一键保存并重连
         </span>
       </div>
-      <div v-if="webScan.found.length" class="mt-2 flex flex-wrap gap-2">
-        <button
-          v-for="f in webScan.found"
-          :key="f.url"
-          class="rounded-full bg-card px-3 py-1.5 text-xs text-ink-2 transition hover:bg-card-hover hover:text-ink"
-          :title="`版本 ${f.version} · ${f.sites} 个站点，点击填入地址框`"
-          @click="pickWebFound(f)"
-        >
-          {{ f.url }} <span class="ml-1 text-[10px] opacity-60">v{{ f.version }}</span>
-        </button>
-      </div>
 
-      <!--
-        重连是即时动作，不是跳转页面：用普通按钮，不用带箭头的磁贴。
-        放在「局域网自动发现 / 扫码填写」下一行，避免三种入口挤成一排。
-      -->
-      <div class="mt-2 flex flex-wrap items-center gap-2">
-        <button
-          class="rounded-md bg-card px-3 py-1.5 text-xs font-medium transition hover:bg-card-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent/60"
-          @click="store.boot()"
-        >
-          重连后端
-        </button>
-        <span class="text-[11px] text-ink-3">重新探测地址并拉站点表</span>
-      </div>
-    
       </template>
       </section>
 
@@ -5201,7 +5399,7 @@ onBeforeUnmount(() => {
       <div class="set-head">
         <h2 class="set-title">本机插件</h2>
         <span class="text-[11px] text-ink-3">
-          按需下载 · 开关决定是否随应用启动 · 退出应用会自动关闭
+          按需下载 · 开关 = 是否随应用启动 · 点「启动」会同时打开开关 · 退出应用会自动关闭
         </span>
         <span class="flex-1" />
         <button
@@ -5486,7 +5684,7 @@ onBeforeUnmount(() => {
             v-if="p.phase === 'ready'"
             class="set-btn"
             :disabled="busy === p.id || !!progress"
-            @click="stopPlugin(p.id)"
+            @click="stopPlugin(p)"
           >
             停止
           </button>
@@ -5494,7 +5692,7 @@ onBeforeUnmount(() => {
             v-else
             class="set-btn"
             :disabled="!p.installed || busy === p.id || !!progress"
-            @click="startPlugin(p.id)"
+            @click="startPlugin(p)"
           >
             {{ busy === p.id ? '启动中…' : '启动' }}
           </button>
@@ -8178,6 +8376,99 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+
+    <!-- ══════════ PC / Web 扫描局域网弹框 ══════════
+      ★ 必须 Teleport 到 body：本弹层在 App.vue 的 `<main class="relative z-10">`
+        内部，顶栏是 `sticky z-30` 且在外面，不跳出去会被顶栏压住
+        （扫码弹层踩过，见下方注释）。
+
+      ★ 与 TV 连接弹层同构：扫描列表 → 选中填入 → 「保存并重连」。
+        区别只在探测通道（这里是页面 fetch，TV 是原生 socket）。
+    -->
+    <Teleport to="body">
+      <div
+        v-if="webScan.open"
+        class="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-6"
+        @click.self="closeWebScanDialog()"
+      >
+        <div
+          class="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-xl border border-line bg-base p-1.5"
+          style="box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.75)"
+        >
+          <div class="set-head shrink-0 px-2.5 pt-2.5">
+            <h2 class="set-title">连接后端</h2>
+            <span class="set-hint">扫描局域网 · 手填地址</span>
+            <span class="flex-1" />
+            <button
+              class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover"
+              @click="closeWebScanDialog()"
+            >
+              关闭
+            </button>
+          </div>
+
+          <div
+            class="min-h-0 flex-1 overflow-y-auto px-2.5 pb-2.5"
+            style="max-height: calc(100vh - 9rem)"
+          >
+            <div class="flex items-center justify-between">
+              <span class="text-xs text-ink-2">局域网里的猫窝服务</span>
+              <button
+                class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover disabled:opacity-40"
+                :disabled="webScan.scanning"
+                @click="startWebScan()"
+              >
+                {{ webScan.scanning ? '扫描中…' : '重新扫描' }}
+              </button>
+            </div>
+
+            <div class="mt-1.5 flex flex-col gap-1">
+              <button
+                v-for="f in webScan.found"
+                :key="f.url"
+                class="w-full rounded-md border border-line bg-card px-3 py-2 text-left text-xs transition hover:border-accent/50 hover:bg-card-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                :title="`版本 ${f.version} · ${f.sites} 个站点，点击填入地址`"
+                @click="pickWebFound(f)"
+              >
+                <span class="font-mono">{{ f.url }}</span>
+                <span class="ml-2 text-[11px] text-ink-3">
+                  v{{ f.version }} · {{ f.sites }} 站点
+                </span>
+              </button>
+              <p v-if="webScan.scanning" class="text-[11px] text-ink-3">扫描中，请稍候…</p>
+              <p v-else-if="webScan.msg" class="text-[11px] text-ink-3">{{ webScan.msg }}</p>
+            </div>
+
+            <div class="mt-4">
+              <span class="mb-1 block text-[11px] text-ink-3">后端地址</span>
+              <input
+                v-model="webScan.api"
+                class="w-full rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
+                placeholder="http://192.168.1.10:30010"
+                @keyup.enter="saveWebScan()"
+              />
+              <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+                {{
+                  desktop
+                    ? '留空表示由「影视后端」插件自动分配；填了就切到那台后端。'
+                    : '留空 = 同源 /api；填了就切到那台后端。'
+                }}
+              </p>
+            </div>
+          </div>
+
+          <div class="shrink-0 border-t border-line px-4 py-3">
+            <button
+              class="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-on-accent hover:bg-accent-dim disabled:opacity-40"
+              :disabled="apiBusy"
+              @click="saveWebScan()"
+            >
+              {{ apiBusy ? '连接中…' : '保存并重连' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- ══════════ 扫码填写弹层 ══════════
       ★ 左码右清单的双栏布局。
