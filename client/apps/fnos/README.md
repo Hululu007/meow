@@ -31,8 +31,16 @@ PLATFORM=arm SRC=/tmp/meow-src OUT=/tmp/meow-out-arm bash client/apps/fnos/build
 比一整行纯文本好读得多。改的时候注意：
 
 - 整行必须**单行**（`key = value` 格式，不能换行）；
-- 链接带 `target='_blank' rel='noopener'`；
+- **`desc` 整行必须 < 600 字节**（源文件里 < 576）。fnpack 1.2.3 会把超长值折行，
+  折出来的续行以 `#` 开头（HTML 里正好有 `color:#2dd4bf`），飞牛按注释忽略 →
+  描述从折行处被静默截断。**1.2.17 / 1.2.18 的「使用说明 / 项目主页」链接就是
+  这样丢的**：FnDepot 详情页只显示 4 条 bullet，看起来像"简介没更新"。
+  `build-fpk.sh` 现在有长度闸门 + 打包后逐字比对 `desc`，超长直接构建失败。
+- 链接带 `target='_blank' rel='noopener'`（字节不够时先省行内 `style=`）；
 - 不要引第三方统计/追踪资源。
+- **两处文案要一起改**：真正显示在商店详情页的是**包内 manifest** 的 `desc`；
+  `FnDepot/fnpack.json` 的 `desc` 是索引侧文案（列表/其它消费方用），发布脚本
+  只写 `releases[]`，**不会同步 desc**。改一处必须顺手改另一处。
 
 ## 日志：用户能在共享目录里看到（2026-11-18）
 

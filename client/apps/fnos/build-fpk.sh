@@ -110,6 +110,18 @@ sed -i "s/^platform=.*/platform=$PLATFORM/" "$PKG/manifest"
 if [ -n "$VERSION" ]; then
     sed -i "s/^version=.*/version=$VERSION/" "$PKG/manifest"
 fi
+# ★ desc 长度闸门（2026-11-20 实测）：
+#   fnpack 1.2.3 会把超过 600 字节的 manifest 行折行，续行以 "#" 开头。
+#   HTML 富文本 desc 里正好有 `color:#2dd4bf`，折行点落在 # 前 → 续行被飞牛
+#   当注释忽略，商店里 desc 从那里被静默截断（1.2.17 / 1.2.18 的「使用说明 /
+#   项目主页」链接就是这样丢的，看起来像"描述没更新"）。
+#   fnpack 会把 key 对齐成 27 列（比源文件的 `desc=` 多 24 字节），所以源行要 <576。
+DESC_BYTES="$(grep '^desc=' "$PKG/manifest" | LC_ALL=C wc -c | tr -d '[:space:]')"
+if [ "${DESC_BYTES:-0}" -gt 575 ]; then
+    echo "manifest desc 行 ${DESC_BYTES} 字节（含换行）> 575：fnpack 会折行并截断。" >&2
+    echo "把 desc 压到 576 字节以内（去掉行内 style / target 最省），或把长文挪进 README。" >&2
+    exit 1
+fi
 # 包内 app/ 的内容会落到 $TRIM_APPDEST
 mkdir -p "$PKG/app/bin" "$PKG/app/web" "$PKG/app/seed/apiserver" "$PKG/app/plugins"
 install -m 0755 "$OUT/meowd" "$PKG/app/bin/meowd"
@@ -233,6 +245,21 @@ tar -xzf "$FPK" -C "$TMPX" manifest app.tgz
 tar -xzf "$TMPX/app.tgz" -C "$TMPX/app"
 grep -qE "^version[[:space:]]*=[[:space:]]*$VER" "$TMPX/manifest" || { echo "manifest version 写错" >&2; exit 1; }
 grep -qE "^platform[[:space:]]*=[[:space:]]*$PLATFORM" "$TMPX/manifest" || { echo "manifest platform 写错" >&2; exit 1; }
+# ★ desc 必须逐字节与源一致（2026-11-20）。
+#   长度闸门只能防"太长"，防不了 fnpack 版本换算法；这里直接拿解包结果比对：
+#   折行后 sed 只能取到前半截，比较必然不等 → 构建失败而不是悄悄发一个截断描述。
+SRC_DESC="$(sed -n 's/^desc[[:space:]]*=[[:space:]]*//p' "$SRC/client/apps/fnos/fpk/manifest")"
+PKG_DESC="$(sed -n 's/^desc[[:space:]]*=[[:space:]]*//p' "$TMPX/manifest" | head -1)"
+if [ "$SRC_DESC" != "$PKG_DESC" ]; then
+    echo "包内 manifest 的 desc 与源不一致（fnpack 折行/截断）：" >&2
+    echo "  src: ${#SRC_DESC} 字符" >&2
+    echo "  pkg: ${#PKG_DESC} 字符" >&2
+    exit 1
+fi
+if grep -qE '^# ' "$TMPX/manifest"; then
+    echo "manifest 里出现以 '# ' 开头的续行 —— fnpack 折行产物，desc 会少一截" >&2
+    exit 1
+fi
 test -f "$TMPX/app/web/index.html" || { echo "包内缺 web/index.html" >&2; exit 1; }
 test -f "$TMPX/app/seed/apiserver/apiserver.jar" || { echo "包内缺 apiserver.jar" >&2; exit 1; }
 # 后端版本文件必须存在且与 manifest 一致：ApiServer 运行时就靠它报 /api/health 的 version
