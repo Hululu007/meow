@@ -43,7 +43,7 @@ import {
   resetDmOffset,
   setDmOffset,
 } from '@/stores/dmOffset'
-import { danmakuHeatData, danmakuHeatGradientFromCounts, heatLevel } from './dmHeat'
+import { HEAT_RGB, danmakuHeatData, danmakuHeatGradientFromCounts, danmakuHeatPath } from './dmHeat'
 import { dmQualityStats, dmQualityWarn } from './dmQuality'
 import { isDesktopShell } from '@/api/appUpdate'
 import { beginWindowDrag, toggleMaximizeOnDblClick } from '@/composables/useWindowDrag'
@@ -390,7 +390,7 @@ const dmCount = ref(0)
 const dmTotal = ref(0)
 /** 时间轴热度：每桶条数 / 峰值 / 桶宽（秒）；null=不渲染 */
 const dmHeat = ref<number[] | null>(null)
-const dmHeatMax = ref(1)
+const dmHeatRef = ref(1)
 const dmHeatBucketSec = ref(0)
 /**
  * 弹幕质量统计（播放信息面板用）：基于**过滤后可用列表**，
@@ -2854,7 +2854,7 @@ const shownPct = computed(() =>
 
 /** 悬停/拖动时显示的时间提示 */
 const dmHeatInline = computed(() =>
-  dmHeat.value?.length ? danmakuHeatGradientFromCounts(dmHeat.value, dmHeatMax.value) : '',
+  dmHeat.value?.length ? danmakuHeatGradientFromCounts(dmHeat.value, dmHeatRef.value) : '',
 )
 /** 悬停时间点的桶条数（并进现有时间气泡，不额外做浮层） */
 const dmHeatTipCount = computed(() => {
@@ -2864,10 +2864,12 @@ const dmHeatTipCount = computed(() => {
   const i = Math.min(c.length - 1, Math.floor(t / dmHeatBucketSec.value))
   return c[i] ?? 0
 })
-/** 峰谷图柱高：1px 基线 + 最高 11px（12px 条带内），sqrt 归一化 */
-function heatBarPx(c: number): string {
-  return (1 + 10 * heatLevel(c, dmHeatMax.value)).toFixed(1) + 'px'
-}
+/** 峰谷面积路径（连续山形，对齐参考图；不是一根根竖条） */
+const dmHeatPath = computed(() =>
+  dmHeat.value?.length ? danmakuHeatPath(dmHeat.value, dmHeatRef.value) : '',
+)
+/** 面积填充色与内嵌渐变同源（HEAT_RGB） */
+const dmHeatFill = computed(() => `rgba(${HEAT_RGB},0.9)`)
 const tipTime = computed(() => dragTime.value ?? hoverTime.value)
 const tipLeft = computed(() => {
   if (tipTime.value == null || !shownDur.value) return 0
@@ -2941,6 +2943,17 @@ function onHeatUp(e: PointerEvent) {
   const t = dragTime.value ?? timeFromEvent(e)
   dragTime.value = null
   hoverTime.value = null
+  if (t != null) seekTo(t)
+}
+
+/**
+ * 老内核 / Android WebView 的触摸可能只合成 click、不派发 pointerdown
+ * （投影仪 Chromium 66 实测：点热度条没反应）。click 兜底点跳；
+ * 拖动路径仍走 pointerup，click 时 dragTime 已清空，不会重复 seek。
+ */
+function onHeatClick(e: MouseEvent) {
+  if (dragTime.value != null) return
+  const t = timeFromEvent(e)
   if (t != null) seekTo(t)
 }
 
@@ -3901,7 +3914,7 @@ function clearDmOverride() {
     dmTruncated.value = false
     dmRawList = []
     dmHeat.value = null
-    dmHeatMax.value = 1
+    dmHeatRef.value = 1
     dmHeatBucketSec.value = 0
     dmQuality.value = null
     dm.value?.clear()
@@ -4764,9 +4777,13 @@ function applyDmList(
   const usable = filterByDuration(raw)
   dmCount.value = usable.length
   dmQuality.value = dmQualityStats(usable, duration.value)
-  const heat = danmakuHeatData(usable, duration.value)
+  /*
+   * 150 桶而不是 300：45 分钟片 = 18 秒/桶，单桶约 180 条。
+   * 300 桶（9 秒/桶）会把分布平均掉，峰谷几乎等高（用户 2026-11-20 反馈）。
+   */
+  const heat = danmakuHeatData(usable, duration.value, 150)
   dmHeat.value = heat?.counts ?? null
-  dmHeatMax.value = heat?.max ?? 1
+  dmHeatRef.value = heat?.ref ?? 1
   dmHeatBucketSec.value = heat?.bucketSec ?? 0
   const filtered = filterDanmaku(usable)
   /*
@@ -4979,7 +4996,7 @@ async function loadDanmaku(
     dmTruncated.value = false
     dmRawList = []
     dmHeat.value = null
-    dmHeatMax.value = 1
+    dmHeatRef.value = 1
     dmHeatBucketSec.value = 0
     dmQuality.value = null
       dmSource.value = ''
@@ -5691,7 +5708,7 @@ watch(
     dmTruncated.value = false
     dmRawList = []
     dmHeat.value = null
-    dmHeatMax.value = 1
+    dmHeatRef.value = 1
     dmHeatBucketSec.value = 0
     dmQuality.value = null
       dm.value?.clear()
@@ -6347,7 +6364,7 @@ defineExpose({
     >
       <!-- 进度条：悬停显示时间，按下拖动只改视觉，松手才 seek -->
       <div
-        class="group/bar relative mb-2.5 cursor-pointer pb-2 pt-3"
+        class="group/bar relative mb-2.5 cursor-pointer pb-2 pt-5"
         @pointerdown="onBarDown"
         @pointermove="onBarMove"
         @pointerup="onBarUp"
@@ -6360,19 +6377,24 @@ defineExpose({
         -->
         <div
           v-if="showCtrl && prefs.danmakuHeat === 'bar' && dmHeat"
-          class="absolute inset-x-0 top-0 flex h-3 cursor-pointer items-end overflow-hidden"
+          class="absolute inset-x-0 top-0 h-5 cursor-pointer overflow-hidden"
           title="点击跳到该时间"
           aria-hidden="true"
-          @pointerdown.stop.prevent="onHeatDown"
+          @pointerdown.stop="onHeatDown"
           @pointerup.stop="onHeatUp"
           @pointercancel.stop="onHeatUp"
+          @click.stop="onHeatClick"
         >
-          <span
-            v-for="(c, i) in dmHeat"
-            :key="i"
-            class="min-w-0 flex-1 bg-sky-300/80"
-            :style="{ height: heatBarPx(c) }"
-          />
+          <!-- 连续山形面积（参考图同款）：柱状竖条会读成横脉冲 -->
+          <svg
+            class="absolute inset-0 h-full w-full"
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <rect width="100" height="100" fill="rgba(0,0,0,0.25)" />
+            <path :d="dmHeatPath" :fill="dmHeatFill" />
+          </svg>
         </div>
         <div class="relative h-1.5 w-full rounded-full bg-white/20 transition-all group-hover/bar:h-2">
           <!-- 单条模式：热度压进进度条内部当底色（播放/缓冲仍在上层） -->

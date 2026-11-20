@@ -1875,7 +1875,17 @@
        * 才退回派发 Enter（全屏时播放器靠它切暂停/播放）。
        */
       if (action === 'enter') {
-        var fb = markedEl()
+        /*
+         * ★ 用 currentFocus() 而不是裸 markedEl()。
+         *
+         * 踩过（2026-11-20 投影仪实测）：弹幕设置面板里焦点框明明停在
+         * 「内嵌」上，按 OK 却变成播放/暂停、面板还被关掉。原因是页面
+         * 状态更新（wake / prefs 变化）触发 Vue 重渲染，把 className 整体
+         * 重写，注入的 meow-tv-focus 被抹掉；markedEl() 只查 DOM，返回 null，
+         * 于是 enter 退回「派发 Enter keydown」→ 播放器当成暂停键。
+         * currentFocus() 会用 lastFocused 把标记补回来，再 click 真按钮。
+         */
+        var fb = currentFocus()
         var ae0 = document.activeElement
         var tgt = fb || ae0
         if (tgt && tgt !== document.body && typeof tgt.click === 'function') {

@@ -16,19 +16,32 @@ describe('时间轴密度带：双条 / 内嵌 / 关闭', () => {
     expect(PREFS).toContain("!['bar', 'inline', 'off'].includes(out.danmakuHeat)")
   })
 
-  it('双条模式是进度条上方的独立峰谷图', () => {
+  it('双条模式是进度条上方的连续山形面积（不是竖条）', () => {
     expect(PLAYER).toContain("showCtrl && prefs.danmakuHeat === 'bar' && dmHeat")
-    expect(PLAYER).toContain('heatBarPx(c)')
+    // 2026-11-20：用户反馈竖条读成「横脉冲」，改 SVG 面积
+    expect(PLAYER).toContain('dmHeatPath')
+    expect(PLAYER).toContain('preserveAspectRatio="none"')
+    // 20px 条带 + pt-5：TV 远距离可读，且不压进度条
+    expect(PLAYER).toContain('h-5 cursor-pointer overflow-hidden')
+    expect(PLAYER).toContain('pb-2 pt-5')
+    expect(PLAYER).toContain(':fill="dmHeatFill"')
+    expect(PLAYER).toContain('HEAT_RGB')
+    expect(PLAYER).not.toContain('heatBarPx')
     // 不能再退回等高色条
     expect(PLAYER).not.toContain(':style="{ backgroundImage: dmHeat }"')
+    // 150 桶（18 秒/桶）而不是 300：300 会平均掉峰谷
+    expect(PLAYER).toContain('danmakuHeatData(usable, duration.value, 150)')
   })
 
   it('双条可点击/拖动跳转，松手才 seek', () => {
-    expect(PLAYER).toContain('@pointerdown.stop.prevent="onHeatDown"')
+    expect(PLAYER).toContain('@pointerdown.stop="onHeatDown"')
     expect(PLAYER).toContain('@pointerup.stop="onHeatUp"')
+    // 投影仪 Chromium 66 只合成 click、不派发 pointerdown，必须留 click 兜底
+    expect(PLAYER).toContain('@click.stop="onHeatClick"')
     expect(PLAYER).toContain('function onHeatDown')
     expect(PLAYER).toContain('function onHeatUp')
-    const i = PLAYER.indexOf('function onHeatUp')
+    expect(PLAYER).toContain('function onHeatClick')
+    const i = PLAYER.indexOf('function onHeatClick')
     expect(PLAYER.slice(i, i + 300)).toContain('seekTo(t)')
   })
 

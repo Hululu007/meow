@@ -151,9 +151,9 @@ describe('自动播放的降级顺序可配（danmakuOrder）', () => {
     // 1.2 倍门槛：7978 → 8100 这种差异不值得换一次缓存
     expect(body).toContain('1.2')
     // 后台线程必须是 daemon，不能拖住 JVM 退出
-    // 窗口 7000：函数里加了 shutdown 注释后 setDaemon 在 5158 字符处，
-    // 5000 的旧窗口会假红（断言本身仍要求 daemon，没有放宽语义）。
-    const auto = region('private static String fetchDanmakuAuto0', 7000)
+    // 窗口 8000：函数变长后 setDaemon 在 7054 字符处（按 CRLF 计），
+    // 7000 的旧窗口会假红（断言本身仍要求 daemon，没有放宽语义）。
+    const auto = region('private static String fetchDanmakuAuto0', 8000)
     expect(auto).toContain('setDaemon(true)')
     // 线程池必须在提交后 shutdown，否则 core 线程永不退出（本轮 A/B 验证）
     expect(auto).toContain('pool.shutdown()')
