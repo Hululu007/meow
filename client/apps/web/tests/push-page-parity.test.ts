@@ -47,6 +47,8 @@ const EXEMPT: Record<string, string> = {
   rate: '播放态，不是配置项；设置页也没有 UI',
   // 设置页本身没有 UI
   cacheDays: '设置页没有暴露，属历史遗留字段',
+  // TV 专属：AC3/DTS 无声时切原生播放器，手机推给 TV 没有意义
+  nativeOnSilent: 'TV 壳专属行为（设备 Dolby 解码），手机侧推送无意义',
 }
 
 function settingsFields(): Set<string> {

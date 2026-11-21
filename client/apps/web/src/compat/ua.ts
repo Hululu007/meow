@@ -56,3 +56,14 @@ export function isAndroid(): boolean {
 export function chromeMajor(): string {
   return (ua().match(/Chrome\/([0-9]+)/) || [])[1] || ''
 }
+
+/**
+ * Apple WebKit 内核（Safari / iOS WebView）：带 Dolby 授权，AC3/E-AC3 可直解。
+ * Chromium 全家（Chrome/Edge/WebView2/Android WebView）都没有 —— 播放分配
+ * （utils/playRoute）用它决定音频超纲文件的走向（2026-11-21 清单③）。
+ * UA 判据按纪律收敛在 compat/，业务层只消费这里的布尔值。
+ */
+export function isAppleWebkit(): boolean {
+  const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent
+  return /Safari\//.test(ua) && !/Chrome|Chromium|Edg\//.test(ua)
+}

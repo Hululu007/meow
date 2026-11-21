@@ -16,6 +16,7 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import android.view.WindowManager;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -115,6 +116,12 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE_CHOOSER = 0x4D11;
 
     private WebView web;
+    /**
+     * O12（2026-11-21）：同页内嵌原生播放层（ExoPlayer）。WebView 之上、
+     * addContentView 追加到最顶 —— 不需要 WebView 透明 hack；GONE 时网页
+     * 完全正常，VISIBLE 时整层盖住（自带 PlayerView 控制条）。
+     */
+    private EmbedPlayerHost embed;
 
     /**
      * 正在等待结果的 {@code <input type=file>} 回调。
@@ -987,6 +994,10 @@ public class MainActivity extends Activity {
          */
         installPointerAutoHide();
         setContentView(web);
+        // O12：内嵌原生播放层（懒挂也行，这里一次性挂上、GONE 待命）
+        embed = new EmbedPlayerHost(this);
+        addContentView(embed, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         failed = false;
         // 重试/重新进入时探针的重试预算也要归零，否则"错误页 → 重试"永远不会再探一次
         auditRetried = false;
@@ -1486,8 +1497,49 @@ public class MainActivity extends Activity {
      * 因为是异步，不能直接同步拿结果，所以用「延后一拍再决定」：
      * 页面同步返回 false 时立刻走原逻辑，返回 true 就什么都不做。
      */
+    /**
+     * O12：同页内嵌原生播放（网页 silentHint「用原生播放」经桥调用）。
+     * 视频由原生层渲染（设备解码 AC3/DTS/H265），网页整层被盖住；
+     * 返回键 / 桥 embedClose 收起并回调网页。
+     */
+    public boolean embedShow(String url, String headers, long posMs, String metaJson) {
+        if (web == null) return false;
+        if (embed == null) {
+            embed = new EmbedPlayerHost(this);
+            addContentView(embed, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        }
+        embed.show(url, headers, posMs, metaJson, this::onEmbedClosed);
+        return true;
+    }
+
+    public boolean embedHide() {
+        if (embed == null) return false;
+        embed.close();
+        return true;
+    }
+
+    public boolean embedShowing() {
+        return embed != null && embed.isShowing();
+    }
+
+    /** 原生层关闭（返回键/出错）→ 回网页：焦点还给 WebView + 通知前端恢复 UI。 */
+    private void onEmbedClosed() {
+        if (web != null) {
+            web.requestFocus();
+            web.evaluateJavascript(
+                    "(function(){try{window.dispatchEvent(new Event('meow-embed-closed'))}catch(e){}})()",
+                    null);
+        }
+    }
+
     @Override
     public void onBackPressed() {
+        // O12：内嵌原生层在前时，返回键只收起它，回网页继续（不退出应用）
+        if (embed != null && embed.isShowing()) {
+            embed.close();
+            return;
+        }
         if (web == null) {
             /*
              * 没有 WebView（还没建起来 / 已被回收）→ 直接退出应用。
@@ -1615,6 +1667,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        if (embed != null && embed.isShowing()) embed.flushProgress();
         if (web != null) {
             web.evaluateJavascript(
                     "(function(){try{window.__meowWebviewPause&&window.__meowWebviewPause()}catch(e){}})()",

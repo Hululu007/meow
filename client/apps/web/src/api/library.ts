@@ -166,6 +166,44 @@ async function reqMsg<T>(path: string): Promise<T> {
   return parsed as T
 }
 
+/** 文件编码探测结果（后端 ffprobe 一次，内存缓存）。超纲音频（AC3/DTS）由此预判。 */
+export interface MediaProbeResult {
+  ok: boolean
+  vcodec?: string
+  acodec?: string
+  channels?: number
+  width?: number
+  height?: number
+  duration?: number
+}
+
+const probeCache = new Map<string, MediaProbeResult>()
+
+/**
+ * 探测某个片库文件的音/视频编码。失败（老后端无此端点、ffprobe 缺失）
+ * 返回 {ok:false} —— 前端降级为直连+运行时检测，行为与旧版一致。
+ */
+export async function fetchMediaProbe(lib: string, path: string): Promise<MediaProbeResult> {
+  const key = `${lib}|${path}`
+  const hit = probeCache.get(key)
+  if (hit) return hit
+  const q = new URLSearchParams({ action: 'probe', lib, path })
+  let out: MediaProbeResult = { ok: false }
+  try {
+    const r = await fetch(`${apiBase()}/api/library?${q}`)
+    if (r.ok) {
+      const j = (await r.json()) as MediaProbeResult
+      if (j?.ok) {
+        out = j
+        probeCache.set(key, j)
+      }
+    }
+  } catch {
+    /* 网络/老后端：按未探测处理 */
+  }
+  return out
+}
+
 export function fetchLibraryRoots(): Promise<LibraryRootsResult> {
   return reqMsg<LibraryRootsResult>('/api/library?action=roots')
 }

@@ -26,6 +26,24 @@ function codeOnly(s: string): string {
     .replace(/^\s*\/\/.*$/gm, '')
 }
 
+describe('无声兜底：no-audio 命中后的转码分流（2026-11-21）', () => {
+  const playSrc = PLAY // PLAY 已是 PlayView.vue 的内容（文件头 readFileSync 过）
+
+  it('① 点播直链 no-audio → 能力预检后走 src 式转码', () => {
+    expect(playSrc).toContain('void ensureTranscodeProbe().then((ok) =>')
+    expect(playSrc).toContain('void tryTranscode(u)')
+  })
+
+  it('② WebDAV 片库（direct 是外网 src）→ 回退点播式 src 转码', () => {
+    expect(playSrc).toContain("!direct.includes('/api/library/stream')")
+    expect(playSrc).toContain('void tryTranscode(direct)')
+  })
+
+  it('③ Safari 能力表（AC3/E-AC3 可直解）进决策', () => {
+    expect(playSrc).toContain('webviewAudioCodecs()')
+  })
+})
+
 describe('片库播放：先直连，失败才转码', () => {
   it('片库页的 playOrTranscode 不再按扩展名拦截', () => {
     const code = codeOnly(LIB)

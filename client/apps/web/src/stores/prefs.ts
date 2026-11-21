@@ -136,6 +136,8 @@ export interface Prefs {
    * 直接吞掉一段正片。只有用户明确打开才生效。
    */
   skipMiddle: boolean
+  /** TV 壳：检测到「音频零解码」（AC3/DTS）时自动切原生播放器（默认关=提示式） */
+  nativeOnSilent: boolean
   /**
    * 「跳过片头/片尾」提示的倒计时秒数：到点自动跳。
    *
@@ -278,6 +280,7 @@ export const DEFAULTS: Prefs = {
   skipIntro: 0,
   skipOutro: 0,
   skipMiddle: false,
+  nativeOnSilent: false,
   skipCountdown: 5,
   showTimeBadge: false,
   showMiniProgress: false,

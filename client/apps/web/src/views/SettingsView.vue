@@ -6773,6 +6773,18 @@ onBeforeUnmount(() => {
           @update:model-value="(v) => update('skipMiddle', v === 'on')"
         />
         <!--
+          O3（2026-11-21）：AC3/DTS 音轨 WebView 解不了（Dolby 授权），
+          片库直连会"有画面没声音"。TV 壳有原生播放器（设备 Dolby 解码），
+          检测到无声时可以自动切过去；默认关——只提示、不自动打断看片。
+        -->
+        <TileSelect
+          v-if="tvMode"
+          :model-value="prefs.nativeOnSilent ? 'on' : 'off'"
+          label="无声自动用原生播放"
+          :options="onOff"
+          @update:model-value="(v) => update('nativeOnSilent', v === 'on')"
+        />
+        <!--
           TV 上控制栏会自动隐藏，想知道播到哪只能按键唤出。
           这两个开关给"想一直看到位置"的人用，默认关（不挡画面）。
         -->

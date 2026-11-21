@@ -91,6 +91,39 @@ function themePayload(): string {
 }
 
 /** 当前是否跑在 TV 壳里（有原生桥） */
+/**
+ * O12（2026-11-21）：TV 壳是否支持「同页内嵌原生播放」（embed 桥）。
+ * 老壳没有这三个方法 → 回退 openNative（独立 Activity）。
+ */
+export function hasEmbedPlayer(): boolean {
+  return hasNativePlayer() && embedBridge() != null
+}
+
+function embedBridge(): { embedPlay(url: unknown, h: unknown, pos: unknown, meta: unknown): boolean; embedClose(): boolean } | null {
+  // 桥对象名是 window.meowTv（addJavascriptInterface 注入）——__meowTv 不存在
+  const b = (window as unknown as { meowTv?: Record<string, unknown> }).meowTv
+  if (!b || typeof b !== 'object') return null
+  if (typeof b.embedPlay !== 'function' || typeof b.embedClose !== 'function') return null
+  return b as never
+}
+
+/** 同页内嵌：原生层接管视频；成功后网页 video 应 pause、UI 被原生层盖住。 */
+export function embedPlay(
+  url: string,
+  headers: string,
+  posMs: number,
+  metaJson: string,
+): boolean {
+  const b = embedBridge()
+  if (!b) return false
+  return !!b.embedPlay(url, headers, posMs, metaJson)
+}
+
+export function embedClose(): boolean {
+  const b = embedBridge()
+  return !!b && !!b.embedClose()
+}
+
 export function hasNativePlayer(): boolean {
   try {
     const b = (window as unknown as { meowTv?: MeowTvBridge }).meowTv

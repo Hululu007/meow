@@ -152,6 +152,31 @@ public class TvBridge {
         return NativePlayerActivity.open(activity, url, title, headers, positionMs, danmakuUrl, metaJson);
     }
 
+    // ---------------------------------------------------------------- O12（2026-11-21）
+    //
+    // 同页内嵌原生播放：网页不跳去 NativePlayerActivity 就能拿到设备级解码
+    // （AC3/E-AC3/DTS/H265）。feature-detect 与 openNativeFull 同一套口径 ——
+    // 网页侧 hasEmbedPlayer() 为 true 才会走这条，老壳自动回退 openNative。
+
+    /** 同页内嵌：原生层接管视频（自带控制条），网页保持在前、被盖住。 */
+    @JavascriptInterface
+    public boolean embedPlay(String url, String headers, long positionMs, String metaJson) {
+        if (!(activity instanceof MainActivity)) return false;
+        return ((MainActivity) activity).embedShow(url, headers, positionMs, metaJson);
+    }
+
+    @JavascriptInterface
+    public boolean embedClose() {
+        if (!(activity instanceof MainActivity)) return false;
+        return ((MainActivity) activity).embedHide();
+    }
+
+    @JavascriptInterface
+    public boolean embedActive() {
+        if (!(activity instanceof MainActivity)) return false;
+        return ((MainActivity) activity).embedShowing();
+    }
+
     /** 让页面知道当前是不是 TV（用于选焦点样式、隐藏鼠标相关交互） */
     @JavascriptInterface
     public String platform() {

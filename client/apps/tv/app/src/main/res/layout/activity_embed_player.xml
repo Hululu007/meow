@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  O12（2026-11-21）：同页混合渲染 —— ExoPlayer 层叠在 WebView 之内（MainActivity
+  的 addContentView），网页不用跳去原生播放器页就能获得设备级解码（AC3/DTS/H265）。
+
+  ★ surface_type 必须是 texture_view（同 activity_native_player 的注释：
+    SurfaceView 打洞会被合成到窗口下层，WebView/弹幕层会被视频盖住）。
+  v0 边界：只有 ExoPlayer 自带控制条，没有弹幕层 —— 弹幕要接原生
+  DanmakuOverlay + 网页 meta 链路，列在 D1 完整版。
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <androidx.media3.ui.PlayerView
+        android:id="@+id/embed_player_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:surface_type="texture_view"
+        app:use_controller="true" />
+
+    <TextView
+        android:id="@+id/embed_hint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:padding="40dp"
+        android:textColor="#FFFFFF"
+        android:textSize="15sp" />
+</FrameLayout>

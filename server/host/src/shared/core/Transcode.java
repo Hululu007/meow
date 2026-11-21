@@ -66,6 +66,8 @@ public final class Transcode {
         boolean hw = false;
         /** 已回退过几次（只回退一次，避免来回折腾）。 */
         int hwRetry = 0;
+        /** 短产出自动重试次数（回环流断开会让 ffmpeg 正常退出但只转出一段）。 */
+        int shortRetry = 0;
         /** 启动本次任务用的 ffmpeg 路径与探测结果（pump 回退重试用）。 */
         String ffPath = "";
         Probe probeSnap;
@@ -812,6 +814,8 @@ public final class Transcode {
         boolean copyAudio;
         /** 源视频编码（h264/hevc/av1…），用于挑对应的 rkmpp 硬件解码器。 */
         String vcodec = "";
+        /** 源音频编码（aac/ac3/eac3/dts…）：播放分配（直连/原生/转码）的判定输入。 */
+        String acodec = "";
         /** 源宽高：硬解硬编走 RGA 缩放时才需要（4K 必须降到 1080p，见 hw 分支）。 */
         int width;
         int height;
@@ -938,6 +942,36 @@ public final class Transcode {
      * </ul>
      * 探测失败（没有 ffprobe、超时、解析不了）返回 null = 按原逻辑全转码。
      */
+    /** 片库播放分配用的编码探测缓存（key=转码 source；进程内，重启即清）。 */
+    private static final Map<String, Probe> PROBE_CACHE = new ConcurrentHashMap<>();
+
+    /**
+     * 片库播放分配的编码探测（O5，2026-11-21）：ffprobe 一次、进程内缓存，
+     * 供 {@code /api/library?action=probe} 下发 —— 前端拿 vcodec/acodec 做
+     * 「直连/原生/转码」预判，不用等运行时无声/黑屏才发现。
+     *
+     * <p>缓存 key 用转码 source（回环流 URL / 本地路径），同一文件不同表述
+     * 会各探一次，量级可接受。探测失败不缓存（网络抖动下次还能成）。
+     */
+    public static JSONObject probeMedia(String source) throws org.json.JSONException {
+        JSONObject out = new JSONObject();
+        if (source == null || source.isEmpty()) return out.put("ok", false);
+        Probe cached = PROBE_CACHE.get(source);
+        if (cached == null) {
+            String ff = ffmpegPath();
+            if (ff.isEmpty()) return out.put("ok", false);
+            cached = probe(ff, source);
+            if (cached == null) return out.put("ok", false);
+            PROBE_CACHE.put(source, cached);
+        }
+        return out.put("ok", true)
+                .put("vcodec", cached.vcodec == null ? "" : cached.vcodec)
+                .put("acodec", cached.acodec == null ? "" : cached.acodec)
+                .put("width", cached.width)
+                .put("height", cached.height)
+                .put("duration", (long) Math.round(cached.duration));
+    }
+
     private static Probe probe(String ff, String source) {
         String fp = ffprobeOf(ff);
         if (fp.isEmpty()) return null;
@@ -996,6 +1030,7 @@ public final class Transcode {
 
             Probe p = new Probe();
             p.vcodec = vcodec;
+            p.acodec = acodec;
             p.copyVideo = "h264".equals(vcodec) && w > 0 && h > 0 && w <= 1920 && h <= 1080;
             p.width = w;
             p.height = h;
@@ -1387,6 +1422,30 @@ public final class Transcode {
             double srcDur = j.probeSnap != null ? j.probeSnap.duration : 0;
             double gotDur = j.segments * (double) SEG_SECONDS;
             if (srcDur > 30 && gotDur < srcDur - 15) {
+                /*
+                 * ★ 短产出自动重试（2026-11-21 OECT 实测）：SMB 回环流被对端
+                 *   提前关闭时，ffmpeg 会把已转部分正常写出并以 0 退出 ——
+                 *   表现就是"转码中断：只产出 922 秒（源 2723 秒）"。HLS 分段
+                 *   无法从中间续转（段号/时间轴要整体重排），所以重试 = 从头
+                 *   再转一遍；重试仍短才判 failed（由前端给"用原生播放"出路）。
+                 */
+                if (j.shortRetry < 1) {
+                    j.shortRetry++;
+                    j.state = "running";
+                    j.phase = "running";
+                    j.code = "";
+                    j.error = "";
+                    System.err.println("[transcode] job " + j.id + " short output "
+                            + (int) gotDur + "s of " + (int) srcDur + "s -> retry "
+                            + j.shortRetry);
+                    cleanSegments(j.id);
+                    try {
+                        startFfmpeg(j, j.ffPath, j.source, false);
+                    } catch (Exception e) {
+                        System.err.println("[transcode] short-output retry failed to start: " + e);
+                    }
+                    return;
+                }
                 j.state = "failed";
                 j.phase = "failed";
                 j.code = "short_output";

@@ -203,6 +203,54 @@ public final class LibraryRoutes {
          * 放到后面会被"没指定库 → 返回配置"吃掉，弹窗永远只能拿到 libs。
          */
         String action = Api.trimToEmpty(q.get("action")).toLowerCase();
+        if ("probe".equals(action)) {
+            /*
+             * O5（2026-11-21）：片库文件的音/视频编码探测 —— 前端播放分配
+             * （直连/原生/转码）的输入。SMB 库走内部回环流（与转码同源），
+             * 本地库直接给绝对路径；探测一次、进程内缓存（Transcode.probeMedia）。
+             *
+             * ★ 变量名刻意不与既有窗口守卫重合：tests/library-picker 与
+             *   tests/library-transcode 用「字面量位置窗口」锁分支顺序
+             *   （libId/type/int p ...），这里换名（probeLib/ptype/gwPort）
+             *   避免把窗口顶歪 —— 不要"统一命名"。
+             */
+            String probeLib = Api.trimToEmpty(q.get("lib"));
+            String rel = Api.trimToEmpty(q.get("path"));
+            JSONObject plib;
+            try {
+                plib = core.Library.findLib(probeLib);
+            } catch (Exception e) {
+                plib = null;
+            }
+            if (plib == null) {
+                Api.sendJson(ex, 404, "{\"code\":-1,\"msg\":\"unknown library\"}");
+                return;
+            }
+            String ptype = plib.optString("type", "webdav");
+            String source;
+            if ("local".equals(ptype)) {
+                try {
+                    source = core.Library.resolveLocalForStream(plib, rel).toString();
+                } catch (Exception e) {
+                    Api.sendJson(ex, 403, "{\"code\":-1,\"msg\":" + JSONObject.quote(String.valueOf(e)) + "}");
+                    return;
+                }
+            } else if ("smb".equals(ptype)) {
+                int gwPort = core.Transcode.apiPort;
+                if (gwPort <= 0) {
+                    Api.sendJson(ex, 502, "{\"code\":-1,\"msg\":\"api port unknown\"}");
+                    return;
+                }
+                source = "http://127.0.0.1:" + gwPort + "/api/library/stream?lib="
+                        + urlEnc(probeLib) + "&path=" + urlEnc(rel);
+            } else {
+                Api.sendJson(ex, 400,
+                        "{\"code\":-1,\"msg\":\"WebDAV 片库请直接用 src 传流地址\"}");
+                return;
+            }
+            Api.sendJson(ex, 200, core.Transcode.probeMedia(source).toString());
+            return;
+        }
         if ("roots".equals(action)) {
             Api.sendJson(ex, 200, new JSONObject().put("ok", true)
                     .put("roots", core.LibraryRoots.all()).toString());
