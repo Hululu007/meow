@@ -90,7 +90,10 @@ describe('片库播放参数必须响应式（同路由只变 query）', () => {
   })
 
   it('★ computed 在脚本里必须 .value（TS 不会报"恒为真"这类错）', () => {
-    const code = codeOnly(PLAY)
+    // 只看 <script setup> 段：模板里的引用本来就不带 .value（2026-11-21，
+    // 播放器新增 :no-audio-fallback="isLibraryPlay" 时这条断言被模板误伤）
+    const script = PLAY.match(/<script setup[^>]*>([\s\S]*?)<\/script>/)?.[1] ?? ''
+    const code = codeOnly(script)
     // 除定义行外，所有 isLibraryPlay 引用都必须带 .value
     const refs = code.match(/isLibraryPlay(?!\.value)/g) || []
     // 只允许出现在定义处（const isLibraryPlay = computed...）

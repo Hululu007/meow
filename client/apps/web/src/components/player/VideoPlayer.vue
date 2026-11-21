@@ -164,6 +164,14 @@ const props = withDefaults(defineProps<{
    * 播放器不该自己去 localStorage 抓——那会让"设置改了但正在播的这集不生效"。
    */
   dmBlockWords?: string
+  /**
+   * 直连源允许做「音频零解码」检测并在命中时 emit no-audio。
+   *
+   * <p>只给片库直连开：点播走 hls.js（MSE），音频是 AAC；片库 mkv 在
+   * Android 上先直连，AC3/DTS 音轨会"有画面没声音"（2026-11-21 实报）。
+   * 父组件收到 no-audio 后落转码兜底（见 PlayView.onNoAudio）。
+   */
+  noAudioFallback?: boolean
 }>(),
   // ★ autoPlay 必须显式给 true：Boolean prop 的类型默认值是 false，
   //   不写这一行的话 `props.autoPlay !== false` 永远不成立（实测踩过）。
@@ -201,6 +209,11 @@ const emit = defineEmits<{
   (e: 'cast', anchor?: { left: number }): void
   /** 有声自动播放被浏览器拦下，已自动改静音起播（接收页据此提示「开启声音」） */
   (e: 'autoplay-muted'): void
+  /**
+   * 直连源起播后音频解码字节数持续为 0：内核没有这条音轨的解码器
+   * （AC3/E-AC3/DTS…），画面正常但永远无声。父组件据此落转码兜底。
+   */
+  (e: 'no-audio'): void
 }>()
 
 /** 是否可切集（至少两集且知道当前位置） */
@@ -937,6 +950,214 @@ function skipIntroNow() {
   seekBy(skipIntro.value - currentTime.value)
 }
 
+// ---------------------------------------------------------------- 无声检测
+//
+// Android WebView（TV 壳）对片库文件是**先直连**：容器预判只看扩展名
+// （unsupportedContainer），音轨编码不在预判里 —— AC3 / E-AC3 / DTS 这类
+// Chromium 全家都不带解码器的音轨，画面（H264/H265 该硬解硬解）一切正常、
+// 音频却**静默失败**：不报 MediaError、logcat 里连 AudioTrack 都不会出现
+// （2026-11-21 投影仪实报《武林外传》：h264+AC3 直连，dumpsys audio 全程
+// 没有 meow.tv 的播放器登记）。用户看到的正是"有画面没声音，原生播放有音"。
+//
+// 两条判据（都要求非静音 —— muted 时 Chromium 会跳过音频解码，0 是正常的）：
+//   ① `webkitAudioDecodedByteCount`：视频字节在涨、音频计数恒 0 = 内核没有
+//      为这条音轨建解码器。PC WebView2 实测有效（AC3 mp4 恒 0 / AAC 递增）。
+//   ② 计数器缺席（部分 Android WebView，MuMu .76 实测 Chromium 110 无此
+//      属性）→ WebAudio 采样：元素经 createMediaElementSource 接 analyser，
+//      两拍 RMS 全 0 且画面在走 = 没有可解码的音频。**前提**是媒体以 CORS
+//      模式加载 —— 所以 noAudioFallback 模式下给 <video> 设 crossorigin，
+//      片库流后端带 Access-Control-Allow-Origin:*，跨源污染不存在；
+//      若后端没带该头，媒体加载直接报错，走「直连失败 → 转码」旧兜底，
+//      行为依旧收敛。
+let noAudioStreak = 0
+let noAudioFired = false
+let noAudioTimer: number | undefined
+/** WebAudio 通道的状态（计数器缺席的内核才建） */
+let noAudioCtx: AudioContext | undefined
+let noAudioTapEl: HTMLMediaElement | undefined
+let noAudioAnalyser: AnalyserNode | undefined
+
+function clearNoAudioWatch() {
+  if (noAudioTimer) {
+    window.clearTimeout(noAudioTimer)
+    noAudioTimer = undefined
+  }
+  noAudioFired = false
+  noAudioStreak = 0
+}
+
+/**
+ * 直连源（片库）以 CORS 模式加载：WebAudio 探测（判据②）要求媒体不是
+ * 跨源污染的，而片库流响应带 ACAO:*，crossorigin=anonymous 恰好成立。
+ *
+ * <p>只在这一个 prop 下设置 —— 点播走 hls.js（MSE blob 同源），设置了反而
+ * 会让直连 mp4 的请求多出一步 CORS 校验，没有必要冒这个险。
+ */
+function applyNoAudioCrossOrigin() {
+  const v = video.value
+  if (!v) return
+  if (props.noAudioFallback && !hls.value && !dash.value) {
+    if (v.crossOrigin !== 'anonymous') v.crossOrigin = 'anonymous'
+  } else if (v.crossOrigin) {
+    v.crossOrigin = null
+  }
+}
+
+/** 采样一拍 WebAudio 能量；返回 null = 通道不可用/元素不在播 */
+function sampleNoAudioEnergy(): number | null {
+  const v = video.value
+  if (!v || !noAudioCtx || !noAudioAnalyser) return null
+  if (v.paused || v.muted || v.volume <= 0) return null
+  if (noAudioCtx.state === 'suspended') {
+    // 用户点过「立即播放」就算 activation，resume 应该能成；兜底再试一次
+    void noAudioCtx.resume()
+  }
+  const buf = new Float32Array(noAudioAnalyser.fftSize)
+  noAudioAnalyser.getFloatTimeDomainData(buf)
+  let peak = 0
+  for (const x of buf) {
+    const a = Math.abs(x)
+    if (a > peak) peak = a
+  }
+  return peak
+}
+
+async function armWebAudioProbe() {
+  const v = video.value
+  if (!v) return
+  // 同一个 <video> 只能绑一次 MediaElementSource；切集/换线路复用元素时
+  // 直接沿用上一条通道。换集=页面重建（新元素）才会新建。
+  if (noAudioCtx && noAudioTapEl === v) {
+    void noAudioCtx.resume()
+    startWebAudioSampling()
+    return
+  }
+  try {
+    const AC = window.AudioContext || (window as any).webkitAudioContext
+    if (typeof AC !== 'function') {
+      noAudioFired = true // 没有任何检测手段可用的极端内核：退化为旧行为
+      return
+    }
+    const ctx = new AC()
+    /*
+     * ★ 绑定是不可撤销的：createMediaElementSource 之后元素音频**只能**
+     *   走这条图。所以必须先确认 AudioContext 真的能跑（autoplay 政策/
+     *   内核限制下可能永远 suspended），起不来就放弃探测 —— 否则会把
+     *   本来有声的 AAC 直连也变成哑巴（比不修更糟，2026-11-21 自查）。
+     */
+    try {
+      await ctx.resume()
+    } catch {
+      /* 某些内核 resume 返回 rejected，看 state 说话 */
+    }
+    if (ctx.state !== 'running' || video.value !== v) {
+      noAudioFired = true // 起不来 / 元素已被换源：放弃探测，保持旧行为
+      return
+    }
+    const src = ctx.createMediaElementSource(v)
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 2048
+    src.connect(analyser)
+    // 必须连回 destination：绑定后元素音频只走这条图，不连就永久哑
+    analyser.connect(ctx.destination)
+    noAudioCtx = ctx
+    noAudioAnalyser = analyser
+    noAudioTapEl = v
+  } catch {
+    noAudioFired = true // 绑定失败（已绑过/内核差异）：不判，保持旧行为
+    return
+  }
+  startWebAudioSampling()
+}
+
+/** WebAudio 通道的两拍采样（绑定成功后才跑）：全 0 且画面在走 = 无声 */
+function startWebAudioSampling() {
+  if (noAudioFired || noAudioTimer || !props.noAudioFallback) return
+  const scheduleNoAudio = () => {
+    if (noAudioFired || noAudioTimer || !props.noAudioFallback) return
+    noAudioTimer = window.setTimeout(step, noAudioStreak === 0 ? 5000 : 2500)
+  }
+  const step = () => {
+    noAudioTimer = undefined
+    const el = video.value
+    if (!el || !props.noAudioFallback || noAudioFired) return
+    if (el.readyState < 3 || (el.currentTime || 0) < 3) {
+      scheduleNoAudio()
+      return
+    }
+    const peak = sampleNoAudioEnergy()
+    if (peak === null) {
+      scheduleNoAudio()
+      return
+    }
+    if (peak > 0.001) {
+      noAudioFired = true // 有声音能量，收工
+      return
+    }
+    noAudioStreak += 1
+    if (noAudioStreak >= 2) {
+      noAudioFired = true
+      emit('no-audio')
+      return
+    }
+    scheduleNoAudio()
+  }
+  scheduleNoAudio()
+}
+
+/**
+ * metadata 就绪后挂上检测（onLoaded 调）。只在原生渐进 src 上跑：
+ * hls/dash 走 MSE，音频是后端转码出来的 AAC，不需要也不该检测。
+ */
+function armNoAudioWatch() {
+  if (!props.noAudioFallback || noAudioFired || noAudioTimer) return
+  if (hls.value || dash.value) return
+  const scheduleNoAudio = () => {
+    if (noAudioFired || noAudioTimer || !props.noAudioFallback) return
+    noAudioTimer = window.setTimeout(step, noAudioStreak === 0 ? 4000 : 2500)
+  }
+  const step = () => {
+    noAudioTimer = undefined
+    const v = video.value
+    if (!v || !props.noAudioFallback || noAudioFired) return
+    const audio = (v as unknown as { webkitAudioDecodedByteCount?: number })
+      .webkitAudioDecodedByteCount
+    // 计数器缺席（部分 Android WebView）→ 换 WebAudio 通道（判据②）
+    if (typeof audio !== 'number') {
+      armWebAudioProbe()
+      return
+    }
+    // 静音/零音量时 Chromium 会跳过音频解码，计数 0 是正常的，不能判
+    if (v.muted || v.volume <= 0) {
+      scheduleNoAudio()
+      return
+    }
+    if (v.readyState < 3 || (v.currentTime || 0) < 3) {
+      scheduleNoAudio()
+      return
+    }
+    if (audio > 0) {
+      noAudioFired = true // 音频解码正常，收工不再采样
+      return
+    }
+    const videoBytes = (v as unknown as { webkitVideoDecodedByteCount?: number })
+      .webkitVideoDecodedByteCount
+    // 视频也没在解（卡住/网络慢）→ 样本无效，往后等，不急着判
+    if (typeof videoBytes !== 'number' || videoBytes <= 0) {
+      scheduleNoAudio()
+      return
+    }
+    noAudioStreak += 1
+    if (noAudioStreak >= 2) {
+      noAudioFired = true
+      emit('no-audio')
+      return
+    }
+    scheduleNoAudio()
+  }
+  scheduleNoAudio()
+}
+
 /**
  * 跳过片尾 —— **直接当作本集播完**，而不是 seek 到 `duration - 1` 等它自然结束。
  *
@@ -1426,9 +1647,13 @@ function setupSource(url: string) {
   outroDismissed.value = false
   clearSkipTimer('intro')
   clearSkipTimer('outro')
+  // 无声检测也跟着新源重来（见 armNoAudioWatch 的注释）
+  clearNoAudioWatch()
 
   v.volume = volume.value
   v.muted = muted.value
+  // 片库直连以 CORS 模式加载（WebAudio 无声探测的前提），见 applyNoAudioCrossOrigin
+  applyNoAudioCrossOrigin()
 
   // 起播看门狗：有些源能返回地址但分片一直卡着（实测荐片 VIP线路 TLS 握手失败），
   // 播放器既不出 error 也不 readyState，界面就永远转圈。等够时间主动判死，
@@ -2803,6 +3028,9 @@ function onLoaded() {
   v.muted = muted.value
   // 通知父组件可以安全 seek 了（续播恢复挂在这里）
   emit('loaded', { duration: duration.value })
+  // 直连源的「音频零解码」检测挂在这里：metadata 已到、hls/dash 有没有走
+  // 已确定，起播后再按采样点判（见 armNoAudioWatch 的注释）
+  armNoAudioWatch()
   /*
    * 刷新/重试的续播（用户口径 2026-11-18：⟳ 应该续播）。
    * 父组件 applyResume 有一次性守卫（resumeApplied），第二次 loaded 不会 seek，
@@ -5159,6 +5387,9 @@ onMounted(() => {
     dm.value?.start()
     dm.value?.sync(v.currentTime)
     wake()
+    // WebAudio 探测通道建立后元素音频走这条图：后台节流可能把 ctx 打回
+    // suspended（表现就是整页哑），每次起播兜底拉一次
+    void noAudioCtx?.resume()
   })
   v?.addEventListener('pause', () => {
     playing.value = false
@@ -5504,6 +5735,12 @@ onBeforeUnmount(() => {
   // 卸载前补一次（切集时 App.vue 会重建整页，这是最后一次机会）
   flushProgress(true)
   clearStartupWatchdog()
+  clearNoAudioWatch()
+  // WebAudio 探测通道随组件销毁（不关的话每进一次播放页泄漏一个 AudioContext）
+  void noAudioCtx?.close()
+  noAudioCtx = undefined
+  noAudioTapEl = undefined
+  noAudioAnalyser = undefined
   destroyHls()
   /*
    * ★ 必须显式停掉媒体元素，不能只靠"节点被移除"

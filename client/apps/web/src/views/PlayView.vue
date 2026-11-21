@@ -1108,6 +1108,24 @@ async function tryLibraryTranscode(lib: string, file: string) {
   }
 }
 
+/**
+ * 直连「有画面、零音频」——音轨编码是内核没有解码器的（AC3/E-AC3/DTS）。
+ *
+ * <p>错误兜底接不到这种情况：起播全程无 MediaError，播放器一切正常，
+ * 用户只是听不到（2026-11-21 投影仪实报《武林外传》h264+AC3：TV WebView
+ * 直连，画面正常、dumpsys 里连播放器登记都没有）。这类文件的唯一出路
+ * 与直连失败一样：转码。
+ *
+ * <p>只在片库直连启用（no-audio-fallback 只传了 isLibraryPlay）：
+ * 点播走 hls.js/MSE，音频本来就是 AAC，不存在这条路径。
+ */
+function onNoAudio() {
+  if (transcodeTried || libraryNoDirect.value) return
+  if (!isLibraryPlay.value || !libraryLib.value || !libraryFile.value) return
+  transcodeTried = true
+  void tryLibraryTranscode(libraryLib.value, libraryFile.value)
+}
+
 async function onPlayerError(payload: PlayErrorPayload | string) {
   autoRetryHint.value = ''
   // 已有失败记录说明这次换过来也没成，先把当前线路也记上
@@ -2352,6 +2370,9 @@ watch(
     offlinePlay.value = false
     // 换集/换片要重新允许直连：上一集可能因为容器不支持走了转码
     libraryNoDirect.value = false
+    // 转码机会也按集重置：上一集转过/无声检测触发过，下一集是另一个文件，
+    // 音轨编码可能完全不同（AAC 直连有声、AC3 无声），不能沿用旧结论
+    transcodeTried = false
     libraryReadyCap.value = 0
     libraryTotalDuration.value = 0
     libraryAhead.value = 0
@@ -2611,6 +2632,8 @@ onBeforeUnmount(() => {
       :middles="spiderSkip.middles"
       :subs="playSubs"
       :dm-block-words="dmBlockWords"
+      :no-audio-fallback="isLibraryPlay"
+      @no-audio="onNoAudio"
       :can-download="canDownloadCurrent"
       :can-download-all="canDownloadAll"
       :can-cast="canCastCurrent"
