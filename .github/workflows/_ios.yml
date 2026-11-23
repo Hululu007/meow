@@ -62,7 +62,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: client/apps/ios/build/jvm
-          key: ios-hostjar-${{ hashFiles('server/host/src/**', 'client/apps/ios/host-stub/**', 'client/apps/ios/scripts/build-host.sh') }}
+          key: ios-hostjar-${{ hashFiles('server/host/src/**', 'client/apps/ios/host-stub/**', 'client/apps/ios/vendor/dex2jar/**', 'server/host/libs/**', 'client/apps/ios/scripts/build-host.sh') }}
 
       - name: Build iOS host jar
         if: steps.hostjar.outputs.cache-hit != 'true'

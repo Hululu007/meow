@@ -1,9 +1,11 @@
 name: _ios_verify
 
-# Runner 侧端到端验证（同一份 ApiServer/web，PC 宿主 + dex2jar）：
-#   1) 豆瓣 native 源：/api/Douban/home + category，截图
+# Runner 侧端到端验证（**IPA 内的同一份 host.jar**，端内 dex2jar 模式）：
+#   1) 豆瓣 native 源：/api/Douban/category，截图
 #   2) 导入 http://肥猫.net/tv：配置解码、dex→class、站点表
 #   3) jar 爬虫：搜索 → 详情 → 播放 URL
+# host.jar 由 client/apps/ios/scripts/build-host.sh 产出，与 IPA 打包用的完全一致；
+# 运行时加 -Dmeow.dex2jar.inprocess=true，所以这里不需要外部 dex2jar/exec。
 # 注意：这是 macOS JDK 上的宿主验证；IPA 内嵌 JDK9 静态库的真机启动仍需 iPhone。
 on:
   push:
@@ -54,34 +56,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Build real host (Dex2Jvm enabled)
+      - name: Build iOS host (in-process dex2jar)
         run: |
           set -euo pipefail
-          cd server/host
-          find src -name '*.java' > /tmp/verify-sources.txt
-          rm -rf /tmp/verify-classes && mkdir -p /tmp/verify-classes
-          javac -encoding UTF-8 -cp "libs/*" -d /tmp/verify-classes @/tmp/verify-sources.txt
-          jar --create --file /tmp/verify-host.jar -C /tmp/verify-classes .
-          ls -lh /tmp/verify-host.jar
-
-      - name: Cache dex2jar
-        id: dex2jar
-        uses: actions/cache@v4
-        with:
-          path: client/apps/ios/build/dex-tools
-          key: dex-tools-2.4
-
-      - name: Download dex2jar
-        if: steps.dex2jar.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          mkdir -p client/apps/ios/build
-          curl -fL --retry 3 -o /tmp/dex-tools.zip \
-            https://github.com/pxb1988/dex2jar/releases/download/v2.4/dex-tools-v2.4.zip
-          rm -rf client/apps/ios/build/dex-tools
-          mkdir -p client/apps/ios/build/dex-tools
-          unzip -q /tmp/dex-tools.zip -d client/apps/ios/build/dex-tools
-          test -d client/apps/ios/build/dex-tools/dex-tools-v2.4/lib
+          bash client/apps/ios/scripts/build-host.sh
+          ls -lh client/apps/ios/build/jvm/host.jar client/apps/ios/build/jvm/libs | head
 
       - name: Start mock + host + web
         run: |
@@ -91,9 +70,8 @@ jobs:
           nohup python3 client/apps/ios/scripts/mock_cms.py --port 8099 \
             > "$RUNNER_TEMP/mock.log" 2>&1 &
           MEOW_BIND=127.0.0.1 \
-          MEOW_DEX2JAR="$PWD/client/apps/ios/build/dex-tools/dex-tools-v2.4" \
-            nohup java -Dfile.encoding=UTF-8 \
-              -cp "/tmp/verify-host.jar:server/host/libs/*" \
+            nohup java -Dfile.encoding=UTF-8 -Dmeow.dex2jar.inprocess=true \
+              -cp "client/apps/ios/build/jvm/host.jar:client/apps/ios/build/jvm/libs/*" \
               ApiServer --port=9978 --data-dir="$RUNNER_TEMP/meow-data" \
               > "$RUNNER_TEMP/host.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/host.pid"
@@ -142,9 +120,16 @@ jobs:
           curl -s --max-time 30 http://127.0.0.1:9978/api/sites -o artifacts/feimao-sites.json
           python3 - <<'PY'
           import json
+          imp = json.load(open('artifacts/feimao-import.json', encoding='utf-8'))
+          d2j = imp.get('dex2jvm') or {}
+          print('DEX2JVM', json.dumps(d2j, ensure_ascii=False))
+          assert d2j.get('enabled'), 'dex2jvm not enabled (in-process flag missing?)'
+          assert d2j.get('converted', 0) >= 1, 'dex2jvm converted nothing'
+          assert d2j.get('failed', 0) == 0, 'dex2jvm failed'
           d = json.load(open('artifacts/feimao-sites.json', encoding='utf-8'))
           sites = d.get('sites') or []
           print('FEIMAO_SITES', len(sites))
+          assert len(sites) >= 30, 'too few sites imported'
           keys = [s.get('key') for s in sites]
           print('KEYS', keys[:20])
           open('artifacts/feimao-keys.txt','w').write('\n'.join(keys))
@@ -155,7 +140,7 @@ jobs:
           set -euo pipefail
           python3 client/apps/ios/scripts/verify_search_play.py \
             http://127.0.0.1:9978 'AppDrama2#2' '庆余年' \
-            2>&1 | tee artifacts/search-play.log || true
+            2>&1 | tee artifacts/search-play.log
 
       - name: Stop host
         if: always()

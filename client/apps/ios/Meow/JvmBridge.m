@@ -96,6 +96,8 @@ void *MeowEmbeddedDlopen(const char *path, int mode) {
                 @"-Duser.language=zh",
                 @"-Duser.country=CN",
                 @"-Djava.security.egd=file:/dev/urandom",
+                // iOS 无 fork/exec：dex→class 走端内 dex2jar 库（vendor/dex2jar）。
+                @"-Dmeow.dex2jar.inprocess=true",
                 @"--add-modules=ALL-SYSTEM",
                 @"-Xint",
                 @"-Xms64m",
