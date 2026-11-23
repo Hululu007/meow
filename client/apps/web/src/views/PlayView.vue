@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import VideoPlayer from '@/components/player/VideoPlayer.vue'
 import {
@@ -9,6 +9,7 @@ import {
   fetchParse,
   fetchPlay,
   fetchPolicy,
+  fetchStateProgress,
   parsePlayLines,
   prefetchDanmaku,
   proxyDanmaku,
@@ -20,6 +21,8 @@ import {
   cachedPlaylist,
   cancelTranscode,
   fetchMediaProbe,
+  libraryStream,
+  peekMediaProbe,
   startTranscode,
   transcodeAvailable,
   transcodeErrorMessage,
@@ -29,6 +32,7 @@ import {
 } from '@/api/library'
 import { skipWindowFrom, startAtFrom, subTracksFrom } from '@/api/playExtras'
 import { resolvePlaybackRoute, webviewAudioCodecs } from '@/utils/playRoute'
+import { transcodeBadge, transcodeMediaInfo, type MediaSourceInfo } from '@/utils/mediaInfo'
 import type { MediaProbeResult } from '@/api/library'
 import { embedPlay, hasEmbedPlayer, hasNativePlayer, openNative } from '@/api/nativeBridge'
 import { meowDiagnose } from '@/ai/tools'
@@ -36,7 +40,7 @@ import { explainDiagnosis } from '@/ai/llm'
 import { CAUSE_LABEL, type Diagnosis } from '@/ai/diagnose'
 import { isPlayErrorPayload, shouldTranscode, type PlayErrorPayload } from '@/components/player/playError'
 import type { PlayResult } from '@/api/types'
-import { getPrefs } from '@/stores/prefs'
+import { getPrefs, setPref } from '@/stores/prefs'
 import { getDmOffset } from '@/stores/dmOffset'
 import { isTvEnv, isTvShell, isWideLayout } from '@/compat/shell'
 import { isAndroid, isFirefox } from '@/compat/ua'
@@ -75,6 +79,12 @@ const mediaProbe = ref<MediaProbeResult | null>(null)
 /** 「音频零解码」出路提示条；带原生按钮时不清计时 */
 const silentHint = ref('')
 const silentHintNative = ref(false)
+/**
+ * 提示条上的「转码播放」按钮（2026-11-23 实报）：设备没有 Dolby 解码
+ * （模拟器 / 无授权的盒子）时原生播放也没音，转码（AAC）是唯一有声路径 ——
+ * 不能只给「原生播放」一条死路。
+ */
+const silentHintTranscode = ref(false)
 let silentHintTimer: number | undefined
 /** WebView 解码能力表（分配决策的输入；按端差异收敛在这里） */
 const WEBVIEW_VIDEO_CODECS_TV = ['h264', 'hevc']
@@ -106,6 +116,17 @@ const site = route.params.site as string
  */
 const libraryDirect = computed(() => (route.query.direct as string) || '')
 const isLibraryPlay = computed(() => !!libraryDirect.value)
+/** TEMP 诊断（localStorage meow.debug=1 打开）：记录分配层关键决策。定案后删。 */
+const dbg = (...a: unknown[]) => {
+  try {
+    if (localStorage.getItem('meow.debug') !== '1') return
+    const w = window as unknown as { __dbg?: string[] }
+    if (!w.__dbg) w.__dbg = []
+    w.__dbg.push(a.map(String).join(' '))
+  } catch {
+    /* 忽略 */
+  }
+}
 /**
  * 片库播放的原始坐标（lib id + 相对路径）。
  *
@@ -265,6 +286,39 @@ const loadingText = ref('正在获取播放地址…')
  * （否则切集后旧集的清单会把新集顶掉——2026-11-20 复核发现）。
  */
 let playEpoch = 0
+/** 当前播放源的编码信息（转码/原生回传），面板与提示条用 */
+const mediaInfo = ref<MediaSourceInfo | null>(null)
+/** token 过期换新地址后续播的位置（秒）；播放器应用后清零 */
+const refreshSeekAt = ref(0)
+let staleRefreshBusy = false
+
+/**
+ * 源地址中途过期（403）→ 重新调 play 拿新 token，在原位置续播。
+ *
+ * 只在"已经成功播过分片后遇到 403"时由播放器触发（见 VideoPlayer 的 stale-src），
+ * 每条源一次；刷新失败就落回原来的换线/报错流程。
+ */
+async function onStaleSrc(p: { at: number; http: number }) {
+  if (staleRefreshBusy || !site || !rawId.value) return
+  staleRefreshBusy = true
+  try {
+    const r = await fetchPlay(site, flag.value, rawId.value)
+    if (!r || typeof r.url !== 'string' || !r.url) throw new Error('empty url')
+    refreshSeekAt.value = p.at > 1 ? p.at : 0
+    // 换源交给播放器（它监听 src 变化重建 hls；onLoaded 时按 seekAt 回到原位置）
+    play.value = r
+    autoRetryHint.value = '播放地址已刷新，继续播放'
+    window.setTimeout(() => {
+      if (autoRetryHint.value === '播放地址已刷新，继续播放') autoRetryHint.value = ''
+    }, 6000)
+  } catch {
+    /* 刷新失败：不打断，交给原错误流程换线 */
+  } finally {
+    window.setTimeout(() => {
+      staleRefreshBusy = false
+    }, 10_000)
+  }
+}
 let pendingTranscode: { src?: string; lib?: string; path?: string } | null = null
 /** 正在等转码：加载遮罩上给一个「停止等待」入口 */
 const transcodeWaiting = ref(false)
@@ -574,6 +628,9 @@ async function pickCachedPlaylist(): Promise<string> {
 
 async function load() {
   playEpoch++
+  mediaInfo.value = null
+  refreshSeekAt.value = 0
+  dbg('load', location.hash.slice(0, 50))
   loading.value = true
   error.value = ''
   playError.value = ''
@@ -606,6 +663,34 @@ async function load() {
       loadingText.value = '这个格式当前浏览器不支持，正在转码（可边转边看，4K 首次可能几分钟）…'
       void tryLibraryTranscode(libraryLib.value, libraryFile.value)
       return
+    }
+    dbg('library-direct-branch', 'precheck=' + cantPlayContainerDirectly())
+    /*
+     * 10-bit（Hi10P）直连必崩（实测 PIPELINE_ERROR_DECODE：video decoder
+     * reinitialization failed）。探测结果已缓存时不再让 <video> 白试一遍，
+     * 否则用户先看到错误页、再被自动转码。首次访问没有缓存，仍走
+     * 直连→解码失败→自动转码兜底一次；之后每次都在这里拦下。
+     */
+    const known = peekMediaProbe(libraryLib.value!, libraryFile.value!)
+    if (known?.ok) {
+      const pf = (known.pixfmt || '').toLowerCase()
+      const highBit = /p0?(?:10|12|16)(?:le|be)?$/.test(pf)
+      const ac = (known.acodec || '').toLowerCase()
+      const audioBad = !!ac && !webviewAudioCodecs().includes(ac)
+      const remembered = getPrefs().silentAction
+      /*
+       * 探测结果已知 + 用户已做过选择 → **不要先直连**（2026-11-23 实报：
+       * 先播两秒无声再切转码，用户看到"闪一下才重新开始"）。直接按选择分流。
+       * 只有「每次询问」(ask) 才保留直连 + 提示条的行为。
+       */
+      if (highBit || (audioBad && remembered !== 'ask')) {
+        mediaProbe.value = known
+        // 组件跨集复用：没有新 src 时旧片的 HLS 会继续在后台播，先停掉
+        player.value?.stop?.()
+        loadingText.value = highBit ? '10-bit 片源，正在准备转码…' : '正在准备转码…'
+        onNoAudio()
+        return
+      }
     }
     play.value = { url: libraryDirect.value } as PlayResult
     loading.value = false
@@ -708,8 +793,10 @@ async function load() {
 /** 当前集在播放列表里的下标；找不到为 -1 */
 const currentIndex = computed(() => {
   if (!playlist.value.length) return -1
-  // 源站签名地址会变（从历史回来时基本对不上），按集名再试一次
-  const byUrl = playlist.value.findIndex((x) => x.url === rawId.value)
+  // 源站签名地址会变（从历史回来时基本对不上），按集名再试一次。
+  // 片库的"源坐标"是相对文件路径（存在 query.file），rawId 恒为空。
+  const cur = isLibraryPlay.value ? libraryFile.value : rawId.value
+  const byUrl = playlist.value.findIndex((x) => x.url === cur)
   if (byUrl >= 0) return byUrl
   if (!epName.value) return -1
   return playlist.value.findIndex((x) => x.name === epName.value)
@@ -743,6 +830,27 @@ function switchEpisode(i: number) {
   }
   // 换集前把当前进度写进去（App.vue 用 fullPath 做 key，页面会整个重建）
   flushToHistory(true)
+  /*
+   * 片库：站点是 __library__，没有 spider 可调，换集不能复用 fetchPlay。
+   * 集坐标是相对文件路径，直接重算流地址并把 name/ep/list 一起带过去，
+   * 播放页的 load() 走 library 分支（isLibraryPlay = 有 direct）。
+   */
+  if (isLibraryPlay.value && libraryLib.value) {
+    const file = target.url
+    void router.replace({
+      name: 'play',
+      params: { site },
+      query: {
+        library: libraryLib.value,
+        file,
+        direct: file ? libraryStream(libraryLib.value, file) : undefined,
+        name: title,
+        ep: target.name,
+        list: playlist.value.length ? JSON.stringify(playlist.value) : undefined,
+      },
+    })
+    return
+  }
   router.replace({
     name: 'play',
     params: { site },
@@ -897,6 +1005,19 @@ function resumePos(): number {
   return it && Number.isFinite(it.pos) ? it.pos : 0
 }
 
+/**
+ * 播放器切换的交接位置（网页 ↔ 原生，2026-11-23 实报「进度没带过去」）。
+ *
+ * 只用 resumePos() 是错的：那是**历史里存的**续播点，边看边切时它停在
+ * 上一次落盘的位置（常常是这一集开头）。优先取当前播放器的实时位置，
+ * 拿不到（刚起播/换源中）才回退历史。
+ */
+function handoffPos(): number {
+  const t = player.value?.getTime?.()
+  if (typeof t === 'number' && Number.isFinite(t) && t > 1) return t
+  return resumePos()
+}
+
 /** 原生播放的 meta（进度回传坐标 + 弹幕设置），openNative 与 embed 共用。 */
 function buildNativeMeta(): string {
   try {
@@ -933,7 +1054,7 @@ function switchToNativePlayer() {
   if (!u) return
   const meta = buildNativeMeta()
   if (hasEmbedPlayer()) {
-    const ok = embedPlay(u, String(play.value?.header || ''), Math.round(resumePos() * 1000), meta)
+    const ok = embedPlay(u, String(play.value?.header || ''), Math.round(handoffPos() * 1000), meta)
     if (ok) {
       showSilentHint('已切到原生解码播放（返回键回到网页）', false)
       return
@@ -954,7 +1075,7 @@ function tryNative() {
    * 老壳没有 openNativeFull 时逐级退回，不影响拉起。
    */
   const meta = buildNativeMeta()
-  if (openNative(u, title, play.value?.header, resumePos(), danmakuUrl.value, meta)) {
+  if (openNative(u, title, play.value?.header, handoffPos(), danmakuUrl.value, meta)) {
     error.value = ''
     autoRetryHint.value = '已改用原生播放器（ExoPlayer）'
   } else {
@@ -981,10 +1102,18 @@ async function tryTranscode(src: string) {
   error.value = ''
   try {
     // 首次响应只代表"任务已排上"，要等分片落盘到能起播
-    const r = await waitTranscode(src, (sec, ph, stalled) => {
-      if (myEpoch !== playEpoch) return
-      loadingText.value = transcodePhaseText(sec, ph, stalled)
-    })
+    // 头必须带上：很多线路的 m3u8 校验 UA/Referer，转码由后端拉流（2026-11-23 咕噜4K 实测）
+    const hdr = play.value?.header
+    const headerStr = typeof hdr === 'string' ? hdr : hdr ? JSON.stringify(hdr) : ''
+    const r = await waitTranscode(
+      src,
+      (sec, ph, stalled) => {
+        if (myEpoch !== playEpoch) return
+        loadingText.value = transcodePhaseText(sec, ph, stalled)
+      },
+      undefined,
+      headerStr,
+    )
     if (myEpoch !== playEpoch) {
       // 已经切集/换线：后端任务没人要了，停掉（仍在跑才停，转完的留着）
       if (r.state === 'running') void cancelTranscode({ src })
@@ -1014,9 +1143,14 @@ async function tryTranscode(src: string) {
     if (r.duration && r.readySeconds && r.readySeconds < r.duration - 5) {
       pollTranscodeProgress({ src })
     }
+    mediaInfo.value = transcodeMediaInfo(r)
+    // 提示条压在单行里：HEVC 10-bit 4K → H.264 1080p（拿不到编码就退回原文案）
+    const badge = transcodeBadge(mediaInfo.value)
     transcodeHint.value = r.partial
       ? `本次只转出 ${r.readySeconds || 0} 秒（另一台设备接手了转码），看到断点会停住`
-      : '已转码播放（源文件未改动）'
+      : badge
+        ? `已转码播放（${badge}）`
+        : '已转码播放（源文件未改动）'
     clearTimeout(lineHintTimer)
     lineHintTimer = window.setTimeout(() => (transcodeHint.value = ''), 8000)
     // 播放器直接吃后端给的清单地址；hls.js 会按需拉分片
@@ -1099,6 +1233,9 @@ function unsupportedContainer(url: string): boolean {
  * 只有真的报错了才需要转码。
  */
 async function tryLibraryTranscode(lib: string, file: string) {
+  dbg('startTranscode', file)
+  // 转码一旦开始，之前那条错误页要收掉（否则错误页盖着、用户在等转码却看着报错）
+  playError.value = ''
   const myEpoch = playEpoch
   pendingTranscode = { lib, path: file }
   transcodeWaiting.value = true
@@ -1133,9 +1270,14 @@ async function tryLibraryTranscode(lib: string, file: string) {
     if (r.duration && r.readySeconds && r.readySeconds < r.duration - 5) {
       pollTranscodeProgress({ lib, path: file })
     }
+    mediaInfo.value = transcodeMediaInfo(r)
+    // 提示条压在单行里：HEVC 10-bit 4K → H.264 1080p（拿不到编码就退回原文案）
+    const badge = transcodeBadge(mediaInfo.value)
     transcodeHint.value = r.partial
       ? `本次只转出 ${r.readySeconds || 0} 秒（另一台设备接手了转码），看到断点会停住`
-      : '已转码播放（源文件未改动）'
+      : badge
+        ? `已转码播放（${badge}）`
+        : '已转码播放（源文件未改动）'
     clearTimeout(lineHintTimer)
     lineHintTimer = window.setTimeout(() => (transcodeHint.value = ''), 8000)
     play.value = { url: absoluteApi(r.playlist) } as PlayResult
@@ -1167,9 +1309,17 @@ async function tryLibraryTranscode(lib: string, file: string) {
  *   · 其余（PC/网页）→ 后端转码（能力预检后），预检失败也落到原生提示
  */
 function onNoAudio() {
+  dbg('onNoAudio', 'tt=' + transcodeTried, 'nd=' + libraryNoDirect.value, 'native=' + hasNativePlayer())
   if (transcodeTried || libraryNoDirect.value) {
-    // 已经在转/已决定不转：只补一条用户能看到的提示
-    if (!libraryNoDirect.value) showSilentHint('该文件音轨网页解不了（AC3/DTS），建议用原生播放')
+    /*
+     * 已经在转/已决定不转：只补一条提示。
+     * ★ 但**不能覆盖已有的按钮提示**（2026-11-23 实测踩过）：检测是周期性的，
+     *   第二次回调会把「原生/转码」按钮条换成无按钮文本条，8 秒后自清 ——
+     *   用户刚看到按钮就没了，点不到。已有提示时直接忽略。
+     */
+    if (!libraryNoDirect.value && !silentHint.value) {
+      showSilentHint('该文件音轨网页解不了（AC3/DTS），建议用原生播放')
+    }
     return
   }
   if (!isLibraryPlay.value) {
@@ -1203,25 +1353,61 @@ function onNoAudio() {
     preferNativeOnSilent: getPrefs().nativeOnSilent === true,
     transcodeAvailable: transcodeOk.value,
   })
-  if (route === 'native') {
+  /*
+   * 记忆化选择（2026-11-23 实报「每次进都弹提示」）：用户点过一次提示条上的
+   * 按钮就按记忆直接执行，不再每集重复询问 —— 设备能力不会变。
+   */
+  const remembered = getPrefs().silentAction
+  const effective: typeof route =
+    route === 'native-hint' && remembered === 'native'
+      ? 'native'
+      : route === 'native-hint' && remembered === 'transcode'
+        ? 'transcode'
+        : route
+  if (effective === 'native') {
     transcodeTried = true
     player.value?.pause()
     switchToNativePlayer()
     return
   }
-  if (route === 'native-hint') {
+  dbg('route', route, 'eff=' + effective, 'remembered=' + String(remembered))
+  if (effective === 'native-hint') {
     transcodeTried = true
     showSilentHint(
       `该文件音轨（${(mediaProbe.value?.acodec || 'AC3').toUpperCase()}）网页解不了，建议用原生播放`,
       true,
+      true,
     )
     return
+  }
+  /*
+   * 10-bit（Hi10P）片源：转码是唯一出路，但 RK3566 软解+软编实测 0.34x，
+   * 播 1 秒要转 3 秒 —— **边转边看必然卡死**（表现为 0:00 起播超时/网络超时）。
+   * 与其自动起一个永远追不上的任务，不如把话说明白，让人自己决定换片源。
+   */
+  if (effective === 'transcode') {
+    const pix = (mediaProbe.value?.pixfmt || '').toLowerCase()
+    const highBit = /p0?(?:10|12|16)(?:le|be)?$/.test(pix)
+    // 10-bit 是"这集文件"的属性，不是一次性选择：每次都提示（按钮仍可强行转码）
+    if (highBit) {
+      transcodeTried = true
+      // 起播前拦截的路径不会有播放器加载遮罩收尾，这里手动收掉
+      loading.value = false
+      error.value = ''
+      playError.value = ''
+      // ★ 直连必崩（PIPELINE_ERROR_DECODE）：立刻停掉 <video>，否则解码错误
+      //   会把错误页盖在提示条下面（2026-11-23 实测：冷探测第一次进必现）
+      libraryNoDirect.value = true
+      player.value?.stop?.()
+      showSilentHint('10-bit 片源，转码约 0.3 倍速，建议换 8-bit 源', false, true)
+      return
+    }
   }
   // transcode：能力预检后再起转（TV 本机执行模式没有 ffmpeg，直接给原生引导）
   transcodeTried = true
   void ensureTranscodeProbe().then((ok) => {
     if (!ok) {
-      showSilentHint('后端不支持转码；该文件音轨网页解不了，建议用原生播放', hasNativePlayer())
+      showSilentHint('后端不支持转码，建议用原生播放', hasNativePlayer())
       return
     }
     /*
@@ -1238,12 +1424,46 @@ function onNoAudio() {
   })
 }
 
-/** 常驻性最短的出路提示条（top 圆角位，8 秒自清；带按钮时不清） */
-function showSilentHint(text: string, withNative = false) {
+/**
+ * TV 遥控：把焦点打到提示条的主按钮上（2026-11-23 实报：不聚焦就得先按方向键找过去）。
+ * tv-nav 的焦点模型是 `.meow-tv-focus` 类（不是 DOM activeElement），
+ * 所以这里调壳注入的 __meowTvFocus(el, pin=true)。Vue 重渲染会重写 className，
+ * 连打三拍（nextTick / 150ms / 400ms）保证最终生效。
+ */
+function focusSilentHint() {
+  dbg('focusHint', 'tv=' + isTvEnv(), 'fn=' + typeof (window as unknown as { __meowTvFocus?: unknown }).__meowTvFocus)
+  if (!isTvEnv()) return
+  const apply = () => {
+    const el = document.querySelector('[data-silent-hint] button[data-tv-first]') as HTMLElement | null
+    dbg('focusApply', 'el=' + !!el)
+    if (!el) return
+    const focus = (window as unknown as { __meowTvFocus?: (e: HTMLElement, pin?: boolean) => void }).__meowTvFocus
+    focus?.(el, true)
+  }
+  void nextTick(apply)
+  window.setTimeout(apply, 150)
+  window.setTimeout(apply, 400)
+}
+
+/**
+ * 常驻性最短的出路提示条（top 圆角位，8 秒自清；带按钮时不清）。
+ *
+ * @param withNative    带「用原生播放」（TV 壳且桥可用）
+ * @param withTranscode 带「转码播放」（片库 + 后端有 ffmpeg；设备没有
+ *                      Dolby 解码时这是唯一有声路径，2026-11-23 实报）
+ */
+function showSilentHint(text: string, withNative = false, withTranscode = false) {
   silentHint.value = text
   silentHintNative.value = withNative && hasNativePlayer()
+  silentHintTranscode.value =
+    withTranscode && isLibraryPlay.value && !!libraryLib.value && !!libraryFile.value
   clearTimeout(silentHintTimer)
-  if (!withNative) silentHintTimer = window.setTimeout(() => (silentHint.value = ''), 8000)
+  if (!silentHintNative.value && !silentHintTranscode.value) {
+    silentHintTimer = window.setTimeout(() => (silentHint.value = ''), 8000)
+  } else {
+    // 带按钮的提示：TV 上直接把焦点送过去，遥控器不用先找
+    focusSilentHint()
+  }
 }
 
 /** 提示条上的「原生播放」：先把无声直连停掉，避免两边同时响 */
@@ -1251,9 +1471,49 @@ function useNativeFromHint() {
   clearTimeout(silentHintTimer)
   silentHint.value = ''
   silentHintNative.value = false
+  silentHintTranscode.value = false
+  // 记住选择：下集不再重复问（设备能力不会变）
+  setPref('silentAction', 'native')
   if (isLibraryPlay.value) libraryNoDirect.value = true
   player.value?.pause()
   switchToNativePlayer()
+}
+
+/**
+ * 提示条上的「转码播放」（2026-11-23）：
+ * 设备没有 Dolby 解码时原生也没音，转码出 AAC 才有声。与 onNoAudio 的
+ * transcode 分支同一链路：能力预检 → WebDAV 直链走 src 式、其余走 lib+path。
+ */
+function useTranscodeFromHint() {
+  dbg('clickTranscode')
+  clearTimeout(silentHintTimer)
+  silentHint.value = ''
+  silentHintNative.value = false
+  silentHintTranscode.value = false
+  // ★ 不能用 transcodeTried 当守卫（2026-11-23 实测踩过）：提示条由
+  //   onNoAudio 的 native-hint 分支弹出，那个分支已经把 transcodeTried
+  //   置真（防重复分配），于是按钮点了直接 return —— 表现就是"点了没反应"。
+  //   按钮是用户显式选择，必须放行。
+  if (!isLibraryPlay.value) return
+  if (!libraryLib.value || !libraryFile.value) return
+  transcodeTried = true
+  // 记住选择：下集直接转码，不再弹提示（设备没有 Dolby 时这就是最优路径）
+  setPref('silentAction', 'transcode')
+  libraryNoDirect.value = true
+  player.value?.pause()
+  void ensureTranscodeProbe().then((ok) => {
+    if (!ok) {
+      transcodeTried = false
+      showSilentHint('后端不支持转码；该文件音轨网页解不了，建议用原生播放', hasNativePlayer())
+      return
+    }
+    const direct = libraryDirect.value
+    if (/^https?:/i.test(direct) && !direct.includes('/api/library/stream')) {
+      void tryTranscode(direct)
+      return
+    }
+    void tryLibraryTranscode(libraryLib.value, libraryFile.value)
+  })
 }
 
 /**
@@ -1261,11 +1521,17 @@ function useNativeFromHint() {
  * 命中超纲不等运行时检测，直接进分配（TV 原生 / 转码）。
  */
 async function fetchProbeRoute() {
-  const myEpoch = playEpoch
   if (!isLibraryPlay.value || !libraryLib.value || !libraryFile.value) return
-  const p = await fetchMediaProbe(libraryLib.value, libraryFile.value)
-  if (!p?.ok || playEpoch !== myEpoch) return
+  // ★ 用「还是同一个 lib+file」判定结果是否作废，不用 epoch（2026-11-23 实测：
+  //   挂载期的重复 load 会抬 epoch，把首个 probe 结果丢掉 → 预判形同虚设，
+  //   只能等 ~10 秒后的运行时检测，用户看到的就是"提示条姗姗来迟"）
+  const lib = libraryLib.value
+  const file = libraryFile.value
+  const p = await fetchMediaProbe(lib, file)
+  if (!p?.ok) return
+  if (!isLibraryPlay.value || libraryLib.value !== lib || libraryFile.value !== file) return
   mediaProbe.value = p
+  dbg('probe', JSON.stringify({ a: p.acodec, v: p.vcodec, pf: p.pixfmt }))
   if (transcodeTried || libraryNoDirect.value) return
   const route = resolvePlaybackRoute({
     probe: p,
@@ -1282,6 +1548,21 @@ async function fetchProbeRoute() {
 }
 
 async function onPlayerError(payload: PlayErrorPayload | string) {
+  dbg('playerError', JSON.stringify(payload).slice(0, 120))
+  /*
+   * 10-bit（Hi10P）直连必然解码失败（PIPELINE_ERROR_DECODE），这是**预期**：
+   * 提示条已经给出「转码播放」，不能再把错误页盖上去（2026-11-23 实测：
+   * 冷探测时 probe 先到、错误后到，先清 playError 会被它重新写回来）。
+   */
+  if (
+    isLibraryPlay.value &&
+    (libraryNoDirect.value ||
+      /p0?(?:10|12|16)(?:le|be)?$/.test((mediaProbe.value?.pixfmt || '').toLowerCase()))
+  ) {
+    // 已经决定不走直连（转码/原生/10-bit）：直连元素残余的解码错误不应再弹错误页
+    playError.value = ''
+    return
+  }
   autoRetryHint.value = ''
   // 已有失败记录说明这次换过来也没成，先把当前线路也记上
   addFailedLine(flag.value)
@@ -1306,7 +1587,12 @@ async function onPlayerError(payload: PlayErrorPayload | string) {
   //
   // ★ 片库播放走另一条兜底（2026-11-02）：直链失败时按 lib+path 让后端
   //   自己读文件转码。片库没有"换线路"的概念，转码是唯一出路。
-  if (!transcodeTried && isLibraryPlay.value) {
+  //
+  // ★ 但只对**格式类失败**生效（2026-11-23 实测修正）：原来任何错误
+  //   （包括一次网络抖动、以及播放器换源时的无 MediaError 伪错误）都会
+  //   把整集送去转码，用户看到的就是"一进去就自己转码 / 弹转码失败"。
+  //   网络类交给播放器自身重连和错误页的「重试」。
+  if (!transcodeTried && isLibraryPlay.value && shouldTranscode(kind)) {
     transcodeTried = true
     if (libraryLib.value && libraryFile.value) {
       void tryLibraryTranscode(libraryLib.value, libraryFile.value)
@@ -1724,13 +2010,86 @@ function fmtSec(sec: number) {
 
 // 离开播放页不停止投屏（电视继续放）；只停本地轮询。
 onMounted(restoreCastSession)
-// O12：原生内嵌层关闭时壳会调这个钩子 —— 回网页后给用户一句状态说明
-// （直连继续无声播放；此时重进分配或点提示条可再切）。
+
+/**
+ * 原生播放器退出时回传选中轨道编码（桥 meowTv.nativeTracks(key)）。
+ *
+ * 原生解的是真 4K/HEVC，网页侧拿不到这些信息：面板要能区分
+ * 「原生直出 4K」和「后端转码 1080p」，否则用户会把两者混为一谈。
+ * 老壳没有这个桥 → 静默跳过，不影响播放。
+ */
+function syncNativeTracks() {
+  try {
+    const w = window as unknown as {
+      meowTv?: { nativeTracks?: (key: string) => string }
+    }
+    const bridge = w.meowTv
+    if (!bridge || typeof bridge.nativeTracks !== 'function') return
+    const key = [site, vodId, epName.value].filter(Boolean).join('|')
+    const raw = bridge.nativeTracks(key)
+    if (!raw) return
+    const j = JSON.parse(raw) as {
+      vcodec?: string
+      acodec?: string
+      pixfmt?: string
+      width?: number
+      height?: number
+    }
+    mediaInfo.value = {
+      via: 'native',
+      srcVcodec: j.vcodec || '',
+      srcAcodec: j.acodec || '',
+      srcPixfmt: j.pixfmt || '',
+      srcWidth: j.width || 0,
+      srcHeight: j.height || 0,
+    }
+  } catch {
+    /* 桥返回坏 JSON / 老壳没有：都不影响播放 */
+  }
+}
+
+/**
+ * 从原生层回到网页时把进度带回来（2026-11-23 实报「退回来进度不带回」）。
+ *
+ * 原生播放器每 12 秒 + 退出时把进度 POST 到 /api/state/progress；网页层
+ * 还停在切换前的旧位置。这里拉一次后端进度，取「本站点 + 本片」最新一条，
+ * 若属于当前这一集就 seek 过去并继续播（用户退出原生时本来就在播）。
+ * 失败静默：同步不上最多是回到旧位置，不能因此打断观看。
+ */
+async function syncProgressFromNative() {
+  syncNativeTracks()
+  if (!vodId || !site) return
+  try {
+    const items = await fetchStateProgress()
+    const mine = items.filter((x) => x.site === site && String(x.vod_id) === String(vodId))
+    if (!mine.length) return
+    const latest = mine.reduce((a, b) => ((a.ep_at || 0) >= (b.ep_at || 0) ? a : b))
+    // 后端进度是"这一片最新一集"的：集名对不上说明看的是别的集，别乱跳
+    if (latest.ep && epName.value && latest.ep !== epName.value) return
+    const pos = Number(latest.pos)
+    if (!Number.isFinite(pos) || pos <= 0) return
+    const cur = player.value?.getTime?.() ?? 0
+    if (Math.abs(pos - cur) < 3) return
+    player.value?.seekTo(pos)
+    player.value?.play()
+  } catch {
+    /* 进度同步失败不影响观看 */
+  }
+}
+
+/** 原生内嵌层关闭：壳会调这个钩子 —— 回网页后同步原生播放到的位置 */
 const onEmbedClosed = () => {
   showSilentHint('已回到网页播放（该文件音轨网页解不了，仍无声）', false)
+  void syncProgressFromNative()
 }
 window.addEventListener('meow-embed-closed', onEmbedClosed)
 onBeforeUnmount(() => window.removeEventListener('meow-embed-closed', onEmbedClosed))
+// 独立原生播放页（openNative 整页）返回时不会有 embed 钩子：页面重新可见就同步
+const onVisibilityChange = () => {
+  if (document.visibilityState === 'visible') void syncProgressFromNative()
+}
+document.addEventListener('visibilitychange', onVisibilityChange)
+onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibilityChange))
 onBeforeUnmount(stopCastPoll)
 
 /** 打开投屏面板并开始发现设备。anchor 是触发按钮在播放器内的左偏移（宽屏锚定用）。 */
@@ -2255,6 +2614,24 @@ function maybePrefetchNextPlay(pos: number) {
 }
 
 function maybePrefetchNextDanmaku(pos: number, dur: number) {
+  // 诊断通道（同 __meowDm 口径）：MCP/面板可读，判断"为什么没预取"
+  /*
+   * ★ 总时长要用"真实时长"：转码中的 HLS 清单只到已转出的边缘，
+   *   video.duration 是边缘值（例如 106 秒），拿它算触发点会永远不到，
+   *   下一集弹幕预取等于失效（2026-11-23 片库 10-bit/AC3 实报）。
+   *   libraryTotalDuration 由转码结果/真实 duration 提供。
+   */
+  const total = libraryTotalDuration.value > 0 ? libraryTotalDuration.value : dur
+  ;(window as unknown as { __meowPrefetch?: unknown }).__meowPrefetch = {
+    on: prefetchOn.value,
+    lead: prefetchLead.value,
+    idx: currentIndex.value,
+    len: playlist.value.length,
+    pos: Math.round(pos),
+    dur: Math.round(dur),
+    total: Math.round(total),
+    next: playlist.value[currentIndex.value + 1]?.name || '',
+  }
   if (!prefetchOn.value) return
   if (!Number.isFinite(pos) || !Number.isFinite(dur) || dur <= 0) return
   const i = currentIndex.value
@@ -2272,8 +2649,8 @@ function maybePrefetchNextDanmaku(pos: number, dur: number) {
    */
   const mark = spiderSkip.value.endingStart > 0
     ? spiderSkip.value.endingStart
-    : dur
-  const triggerAt = Math.min(mark, dur) - prefetchLead.value
+    : total
+  const triggerAt = Math.min(mark, total) - prefetchLead.value
   // 短片（时长 < 提前量）不预取：triggerAt 可能是负数，一进来就抓，没意义
   if (triggerAt <= 0 || pos < triggerAt) return
 
@@ -2536,6 +2913,7 @@ watch(
     mediaProbe.value = null
     silentHint.value = ''
     silentHintNative.value = false
+    silentHintTranscode.value = false
     clearTimeout(silentHintTimer)
     // 转码机会也按集重置：上一集转过/无声检测触发过，下一集是另一个文件，
     // 音轨编码可能完全不同（AAC 直连有声、AC3 无声），不能沿用旧结论
@@ -2795,6 +3173,8 @@ onBeforeUnmount(() => {
       :auto-retry-hint="autoRetryHint"
       :site="site"
       :vod-id="vodId"
+      :media-info="mediaInfo"
+      :seek-at="refreshSeekAt"
       :spider-intro="spiderSkip.openingEnd"
       :spider-outro-at="spiderSkip.endingStart"
       :middles="spiderSkip.middles"
@@ -2809,6 +3189,8 @@ onBeforeUnmount(() => {
       :cache-state="cacheState"
       :cache-percent="cachePercent"
       @loaded="applyResume"
+      @seek-applied="refreshSeekAt = 0"
+      @stale-src="onStaleSrc"
       @ended="onEnded"
       @progress="onProgress"
       @error="onPlayerError"
@@ -3010,7 +3392,7 @@ onBeforeUnmount(() => {
     <!-- 缓存进度/结果提示 -->
     <div
       v-if="cacheHint"
-      class="absolute left-1/2 top-24 z-40 -translate-x-1/2 rounded-full bg-black/85 px-4 py-1.5 text-xs text-ink shadow-2xl backdrop-blur"
+      class="absolute bottom-28 left-1/2 z-40 -translate-x-1/2 rounded-full bg-black/85 px-4 py-1.5 text-xs text-ink shadow-2xl backdrop-blur"
     >
       {{ cacheHint }}
     </div>
@@ -3018,7 +3400,7 @@ onBeforeUnmount(() => {
     <!-- 自动换源的轻提示 -->
     <div
       v-if="lineHint"
-      class="absolute left-1/2 top-16 z-40 -translate-x-1/2 rounded-full bg-black/85 px-4 py-1.5 text-xs text-ink shadow-2xl backdrop-blur"
+      class="absolute bottom-28 left-1/2 z-40 -translate-x-1/2 rounded-full bg-black/85 px-4 py-1.5 text-xs text-ink shadow-2xl backdrop-blur"
     >
       {{ lineHint }}
     </div>
@@ -3026,7 +3408,7 @@ onBeforeUnmount(() => {
     <!-- 转码提示：用户要知道"为什么画面晚了几秒才出来"以及源文件没被动过 -->
     <div
       v-if="transcodeHint"
-      class="absolute left-1/2 top-24 z-40 -translate-x-1/2 rounded-full bg-black/85 px-4 py-1.5 text-xs text-ink shadow-2xl backdrop-blur"
+      class="absolute bottom-28 left-1/2 z-40 -translate-x-1/2 rounded-full bg-black/85 px-4 py-1.5 text-xs text-ink shadow-2xl backdrop-blur"
     >
       {{ transcodeHint }}
     </div>
@@ -3039,19 +3421,28 @@ onBeforeUnmount(() => {
     <div
       v-if="silentHint"
       data-silent-hint
-      class="absolute left-1/2 top-36 z-40 flex -translate-x-1/2 items-center gap-3 rounded-xl border border-white/10 bg-black/88 px-4 py-2.5 text-sm text-ink shadow-2xl backdrop-blur-xl"
+      class="absolute bottom-28 left-1/2 z-40 flex max-w-[94%] -translate-x-1/2 items-center gap-3 whitespace-nowrap rounded-xl border border-white/10 bg-black/88 px-4 py-2.5 text-sm text-ink shadow-2xl backdrop-blur-xl"
     >
-      <span class="text-ink-2">{{ silentHint }}</span>
+      <span class="min-w-0 text-ink-2">{{ silentHint }}</span>
       <button
         v-if="silentHintNative"
-        class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition hover:bg-accent-dim"
+        class="shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-medium whitespace-nowrap text-on-accent transition hover:bg-accent-dim"
+        data-tv-first
         @click="useNativeFromHint"
       >
         用原生播放
       </button>
       <button
-        class="text-xs text-ink-3 transition hover:text-ink"
-        @click="silentHint = ''; silentHintNative = false"
+        v-if="silentHintTranscode"
+        class="shrink-0 rounded-md bg-accent/15 px-3 py-1.5 text-xs font-medium whitespace-nowrap text-accent transition hover:bg-accent/25"
+        data-tv-first
+        @click="useTranscodeFromHint"
+      >
+        转码播放
+      </button>
+      <button
+        class="shrink-0 text-xs text-ink-3 transition hover:text-ink"
+        @click="silentHint = ''; silentHintNative = false; silentHintTranscode = false"
       >
         ✕
       </button>

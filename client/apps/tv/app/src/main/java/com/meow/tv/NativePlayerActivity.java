@@ -223,6 +223,18 @@ public class NativePlayerActivity extends Activity {
                 showSizeHint();
             }
 
+            /**
+             * 选中轨道确定/切换时记一份编码信息，退出后由 TvBridge.nativeTracks()
+             * 回传给网页（面板显示「原生直出 4K HEVC 10-bit」）。
+             *
+             * 只写 SharedPreferences，不参与播放逻辑；任何异常都吞掉——
+             * 轨道信息拿不到最多是面板显示未知，不能因此影响播放。
+             */
+            @Override
+            public void onTracksChanged(androidx.media3.common.Tracks tracks) {
+                saveTracks(tracks);
+            }
+
             @Override
             public void onPlayerError(PlaybackException error) {
                 cancelWatchdog();
@@ -246,6 +258,55 @@ public class NativePlayerActivity extends Activity {
         if (getIntent() != null && getIntent().getBooleanExtra(EXTRA_DEBUG_STATS, false)) {
             danmaku.setDebugDraw(true);
             startDebugStats();
+        }
+    }
+
+    /** 把选中轨道的编码/分辨率写进 SharedPreferences（见 onTracksChanged）。 */
+    private void saveTracks(androidx.media3.common.Tracks tracks) {
+        try {
+            String vcodec = "";
+            String codecs = "";
+            String acodec = "";
+            int vw = 0;
+            int vh = 0;
+            int vbr = 0;
+            int ach = 0;
+            int asr = 0;
+            for (androidx.media3.common.Tracks.Group g : tracks.getGroups()) {
+                if (!g.isSelected()) continue;
+                androidx.media3.common.Format f = g.getTrackFormat(0);
+                if (g.getType() == androidx.media3.common.C.TRACK_TYPE_VIDEO) {
+                    vcodec = f.sampleMimeType == null ? "" : f.sampleMimeType;
+                    codecs = f.codecs == null ? "" : f.codecs;
+                    vw = f.width;
+                    vh = f.height;
+                    vbr = f.bitrate;
+                } else if (g.getType() == androidx.media3.common.C.TRACK_TYPE_AUDIO) {
+                    acodec = f.sampleMimeType == null ? "" : f.sampleMimeType;
+                    ach = f.channelCount;
+                    asr = f.sampleRate;
+                }
+            }
+            if (vcodec.isEmpty() && acodec.isEmpty()) return;
+            org.json.JSONObject j = new org.json.JSONObject();
+            j.put("vcodec", vcodec);
+            j.put("codecs", codecs);
+            j.put("width", vw);
+            j.put("height", vh);
+            j.put("bitrate", vbr);
+            j.put("acodec", acodec);
+            j.put("channels", ach);
+            j.put("sampleRate", asr);
+            j.put("at", System.currentTimeMillis());
+            String json = j.toString();
+            String key = pSite + "|" + pVod + "|" + pEp;
+            getSharedPreferences("meow_native_tracks", MODE_PRIVATE)
+                    .edit()
+                    .putString("k:" + key, json)
+                    .putString("last", json)
+                    .apply();
+        } catch (Throwable ignored) {
+            /* 轨道信息只是展示用 */
         }
     }
 

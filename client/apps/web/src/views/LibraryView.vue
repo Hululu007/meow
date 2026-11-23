@@ -38,6 +38,8 @@ import {
   fetchLibrary,
   fmtSize,
   groupByTitle,
+  libraryDanmakuTitle,
+  libraryEpisodeLabel,
   libraryStream,
   parseFolderName,
   posterUrl,
@@ -1008,13 +1010,26 @@ function absoluteApiUrl(p: string): string {
 
 function play(filePath: string) {
   const u = playUrl(filePath)
-  // 交给播放页：片库地址是 http(s)，但**不能**让它被包成 /api/proxy/stream
-  // （那个端点拒绝回环、且只认任意 URL）。播放页按 query 里的 library 标记分流。
-  void router.push({
-    name: 'play',
-    params: { site: '__library__' },
-    query: { library: currentLib.value, file: filePath, direct: u },
-  })
+  const g = activeGroup.value
+  /*
+   * 交给播放页：片库地址是 http(s)，但**不能**让它被包成 /api/proxy/stream
+   * （那个端点拒绝回环、且只认任意 URL）。播放页按 query 里的 library 标记分流。
+   *
+   * ★ 2026-11-23：把片名/集名/剧集表一起带过去 —— 播放页靠 `name`+`ep` 加载弹幕，
+   *   靠 `list` 做连播与下一集弹幕预取；片库以前三个都没传，进播放页弹幕恒 0 条。
+   */
+  const query: Record<string, string> = {
+    library: currentLib.value,
+    file: filePath,
+    direct: u,
+  }
+  if (g) {
+    query.name = libraryDanmakuTitle(scrapeTitleOf(g) || g.title, trail.value.map((t) => t.name))
+    const cur = g.files.find((x) => x.path === filePath)
+    if (cur) query.ep = libraryEpisodeLabel(cur)
+    query.list = JSON.stringify(g.files.map((x) => ({ name: libraryEpisodeLabel(x), url: x.path })))
+  }
+  void router.push({ name: 'play', params: { site: '__library__' }, query })
 }
 
 function groupKey(g: TitleGroup): string {

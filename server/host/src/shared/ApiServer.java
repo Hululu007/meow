@@ -1754,6 +1754,11 @@ public class ApiServer {
                 routes.StateRoutes.handleStatePrefs(ex);
                 return;
             }
+            // 播放器诊断事件（缓冲空洞/卡死/token 过期）：JSONL 落盘 + 聚合查询
+            if ("/api/state/player-events".equals(path)) {
+                routes.StateRoutes.handlePlayerEvents(ex);
+                return;
+            }
             // /api/state 是保留前缀：拼错的子路径必须在这里 404，否则会掉进
             // 下面的站点兜底被当成 site="state"，报出 "cannot load spider state:
             // ClassNotFoundException" 这种误导人的 500（实测）。
@@ -1790,7 +1795,16 @@ public class ApiServer {
             t.printStackTrace(new PrintWriter(sw));
             System.err.println("[api] " + path + " failed: " + t);
             System.err.println(sw);
-            sendJson(ex, 500, "{\"code\":-1,\"msg\":" + JSONObject.quote(String.valueOf(t)) + "}");
+            /*
+             * 回给前端的必须是**剥掉反射包装之后**的那句原因。
+             *
+             * 踩过（2026-11-23 加密源）：详情接口只回 "java.lang.reflect.InvocationTargetException"，
+             * 而日志里才有 "瓜子业务错误 code=300" —— 用户和客服都看不出是源站拒了。
+             */
+            Throwable root = unwrap(t);
+            String reason = root.getMessage() == null || root.getMessage().trim().isEmpty()
+                    ? root.getClass().getSimpleName() : root.getMessage();
+            sendJson(ex, 500, "{\"code\":-1,\"msg\":" + JSONObject.quote(reason) + "}");
         }
     }
 
@@ -2367,6 +2381,125 @@ public class ApiServer {
     /** 按站点分段的创建锁；只包住"建实例"这一段。 */
     private static final Map<String, Object> INSTANCE_LOCKS = new ConcurrentHashMap<>();
 
+    /**
+     * 给 spider 自己的 {@code Init} 单例塞一个 Application。
+     *
+     * <p>踩过（2026-11-23「干饭源全是空」）：AppDrama2 系列（干饭/行动/再来/一碗）
+     * 在 init 里走 {@code Init.context().getContentResolver()} 读设备标识 —— JVM 宿主
+     * 从不初始化这个单例，于是 init 内部 NPE（它自己吞掉，不冒到调用方），domain
+     * 字段留空，home/search 恒返回空结构。**源站是好的**（直调同一份 jar 能拿到
+     * 9 个分类和搜索结果），所以症状看起来像"这个源失效了"。
+     *
+     * <p>★ 必须用**站点类自己的 ClassLoader** 去找 Init：外部 jar 里的 AppDrama2 由
+     * Jars 的 URLClassLoader 加载，Init 也在同一个 jar 里；而
+     * {@code crawler.Spider} 桩里那段 seed 用 {@code Class.forName}（App loader），
+     * 看不到 jar 内的 Init，只会静默失败 —— 这就是桩的 seed 没兜住的原因。
+     *
+     * <p>Android 上这一步已由壳（TV 的 {@code LocalSpiderHost.seedJarInit}）做过，
+     * 这里判空跳过；jar 里没有 Init 的包同样直接返回。
+     */
+    private static void seedSpiderInit(Class<?> siteClass) {
+        try {
+            ClassLoader cl = siteClass.getClassLoader();
+            Class<?> ic = cl.loadClass("com.github.catvod.spider.Init");
+            Object inst = ic.getMethod("get").invoke(null);
+            if (inst == null) return;
+            java.lang.reflect.Field f = ic.getDeclaredField("c");
+            f.setAccessible(true);
+            if (f.get(inst) != null) return;
+            // Application 也走反射：直接 new 会让 ApiServer 编译期依赖 android stub
+            // （见上面 init 调用处同一理由）。
+            Object app = cl.loadClass("android.app.Application")
+                    .getDeclaredConstructor().newInstance();
+            f.set(inst, app);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * Android 端：在**实例化站点之前**给 jar 内的 {@code Init} 注入真实 Context。
+     *
+     * <p>踩过（2026-11-23，aiwex 加密源）：{{@code *}Guard} 系列在构造时就触发
+     * {@code DexNative.<clinit>} —— 它用 {@code Init.context()} 拿 Application →
+     * {@code getCacheDir()}，再把 jar 内 {@code assets/wexguard_v8.so} 落到缓存并
+     * {@code System.load}，最后由这个 native 库解密 {@code wexshinidie.guard}。
+     * 拿不到 Application 就 {@code ExceptionInInitializerError}，之后所有 Guard
+     * 一律 {@code NoClassDefFoundError: DexNative}（看着像"缺类"，其实是静态初始化失败）。
+     *
+     * <p>为什么不能复用 {@link #seedSpiderInit(Class)}：那个在**构造之后**才执行，
+     * 且字段名写死 {@code c}、还反射 new 一个 Application 空实例。加密 jar 的三个
+     * 字段全是混淆名（{@code oOoOoOoOoOoOoO0o} 等），必然 {@code NoSuchFieldException}，
+     * 注入静默失败。
+     *
+     * <p>优先调公开静态 {@code Init.init(Context)}：它内部同时设置 Application 与
+     * {@code DexNative.getLoader(ctx)}（loader 由 {@code Init.<init>} 自动指向 jar 的
+     * ClassLoader）。只在有真实平台 Context 时执行；JVM 端 {@code Bridge.context()}
+     * 为 null 直接跳过（JVM 也加载不了 Android .so，见 issue #10）。
+     */
+    private static void seedJarInitBeforeInstance(Class<?> siteClass) {
+        try {
+            Object ctx = platform.Bridge.context();
+            if (ctx == null) return;
+            Class<?> ctxCls = Class.forName("android.content.Context");
+            if (!ctxCls.isInstance(ctx)) return;
+            Class<?> ic = siteClass.getClassLoader().loadClass("com.github.catvod.spider.Init");
+            try {
+                if (ic.getMethod("context").invoke(null) != null) return;   // 已注入过
+            } catch (Throwable ignored) {
+            }
+            ic.getMethod("init", ctxCls).invoke(null, ctx);
+            /*
+             * exec 模式下第一次 getLoader 可能拿不到（Go 代理刚起来）：loader 为空时
+             * 再给一次机会。仍为空就交给 createInstance 的 jarInitReady 拦住，
+             * 绝不让 native 拿到 null 去 abort 进程。
+             */
+            try {
+                if (ic.getMethod("loader").invoke(null) == null) {
+                    Thread.sleep(800);
+                    ic.getMethod("init", ctxCls).invoke(null, ctx);
+                }
+            } catch (NoSuchMethodException ignored) {
+            }
+            platform.Bridge.log("[spider] seed jar Init <- Context");
+        } catch (Throwable t) {
+            // 普通 jar 没有 Init；加密 jar 的 .so 也可能因架构/宿主校验失败。
+            // 真正原因会在 newInstance 处以 NoClassDefFoundError 呈现，这里只留一行。
+            platform.Bridge.log("[spider] seed jar Init skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * JVM 端的 spider 类别名：jar 里同名类在纯 JVM 下用不了时的替代实现。
+     *
+     * <p>踩过（2026-11-23）：jar 内的 {@code AppDrama} 无论给哪组 ext，init 都抛
+     * {@code NullPointerException: String.getBytes(Charset) because "<parameter2>" is null}
+     * —— 与 ext 无关，是类本身只按 Android 环境写的（6 组 ext 实测全空）。
+     * 而 {@code AppDrama2} 与它**ext 字段完全一致、底层协议相同**：用肥猫仓
+     * （sun.json 解开后）的 4 组新 ext 实测，3 组 home+search 正常、橘汁 search 正常。
+     *
+     * <p>因此把 {@code csp_AppDrama} 的站点在 JVM 上交给 {@code AppDrama2}。
+     * 别名目标不存在时（老 jar 没有 AppDrama2）自动回退原类，不会把站点弄坏。
+     *
+     * <p>★ 换 jar 后要复核：若新 jar 的 AppDrama 自身能跑，删掉这条别名。
+     */
+    private static final Map<String, String> SPIDER_CLASS_ALIAS = new java.util.HashMap<>();
+
+    static {
+        SPIDER_CLASS_ALIAS.put("AppDrama", "AppDrama2");
+    }
+
+    /** 加载站点类；命中别名且别名类存在时用别名（见 {@link #SPIDER_CLASS_ALIAS}）。 */
+    private static Class<?> loadSpiderClass(String cls) throws ClassNotFoundException {
+        String alias = SPIDER_CLASS_ALIAS.get(cls);
+        if (alias != null) {
+            try {
+                return platform.Bridge.loadClass("com.github.catvod.spider." + alias);
+            } catch (Throwable ignored) {
+            }
+        }
+        return platform.Bridge.loadClass("com.github.catvod.spider." + cls);
+    }
+
     private static Object createInstance(String k) {
         {
             try {
@@ -2377,8 +2510,54 @@ public class ApiServer {
                 if (hash > 0) cls = k.substring(0, hash);
                 // 走平台钩子：JVM 是 Class.forName（spider 在类路径里），
                 // Android 是 DexClassLoader（spider 在 codeCacheDir 的 classes.dex 里）。
-                Class<?> c = platform.Bridge.loadClass("com.github.catvod.spider." + cls);
+                Class<?> c = loadSpiderClass(cls);
+                /*
+                 * ★ 必须在 newInstance() 之前注入 Context（2026-11-23 aiwex 实测）。
+                 * 加密类 jar 的 Guard 在构造时就触发 DexNative.<clinit>：它要
+                 * Init.context() 才能把 jar 内 assets/wexguard_*.so 落到缓存并
+                 * System.load；注入晚了（原 seedSpiderInit 在构造之后）会永久
+                 * ExceptionInInitializerError，之后所有 Guard 都报
+                 * NoClassDefFoundError: DexNative（看着像缺类）。
+                 */
+                // 测试（2026-11-23）：影视仓从不调 jar 的 Init.init，guard 自己通过
+                // ActivityThread 拿 Application 并完成初始化。先关掉我们的预注入验证。
+                // seedJarInitBeforeInstance(c);
+                /*
+                 * ★ 但实测（同日，.77 arm64）：不调 Init.init 时 Guard 连类初始化都过不了
+                 * （DexNative clinit 失败），所以影视仓是在 jar 载入时调了
+                 * `Init.init(Application)`（见其 r1/b.java 的 a()）。这里恢复预注入。
+                 */
+                seedJarInitBeforeInstance(c);
+                /*
+                 * ★ loader 没就绪时**绝不能** newInstance。
+                 *
+                 * 踩过（2026-11-23 .77，targetSdk 28 的 exec 模式）：Init.init 里
+                 * DexNative.getLoader 没拿到代理时返回 null，紧接着 BaseSpiderGuard.<init>
+                 * 调 Init.getSpider → native 里对 null 调 CallObjectMethodV →
+                 * **JNI abort，整个进程 SIGABRT**（不是异常，宿主拦不住）。
+                 */
+                if (!jarInitReady(c)) {
+                    throw new RuntimeException("jar 初始化未完成（Init.loader 为空）");
+                }
+                /*
+                 * JVM 侧同样要放在构造前：MiSou / PanSou 这类在 <init> 里就读 Init.context()，
+                 * 构造后再 seed 已经晚了（构造函数里的 NPE 被吞，之后所有调用都拿空结果）。
+                 * 构造后再调一次是幂等的。
+                 */
+                seedSpiderInit(c);
                 Object o = c.getDeclaredConstructor().newInstance();
+                /*
+                 * ★ TVBox 契约：Spider.siteKey 由宿主注入，取值是**配置里的 key**
+                 * （如 "玩偶" / "WexAiDuBoKu"），不是类名。
+                 *
+                 * 踩过（2026-11-23 aiwex Guard 系）：不设 siteKey 时 search 恒返回空、
+                 * detail 只回空骨架 —— 这类 jar 按 siteKey 找自己的配置/凭据分区
+                 * （catvod 的 Net/NetStore 也是按 siteKey 存 cookie）。
+                 * 影视仓能搜能播，靠的就是这一步。
+                 */
+                String cfgKey = configKeyFor(cls);
+                setSiteKey(o, cfgKey.isEmpty() ? k : cfgKey);
+                seedSpiderInit(c);
                 try {
                     // Context 用反射拿而不是直接引用：写成 new android.content.Context()
                     // 会让整个类依赖 android stub 参与编译，只编译 ApiServer/SpiderHost
@@ -2391,6 +2570,11 @@ public class ApiServer {
                     Object ctx = platform.Bridge.context();
                     Class<?> ctxCls = Class.forName("android.content.Context");
                     if (ctx == null) ctx = ctxCls.getDeclaredConstructor().newInstance();
+                    /*
+                     * ext 用 getOrDefault(""), 不要传 null：实测（2026-11-23 .77）
+                     * 传 null 会让 Guard 的启动链跳过 Go 代理，DexNative.getLoader
+                     * 转去扫 127.0.0.1:9560-9566（每个 15s 超时）最后整体失败。
+                     */
                     c.getMethod("init", ctxCls, String.class)
                             .invoke(o, ctx, EXT.getOrDefault(k, ""));
                 } catch (NoSuchMethodException ignored) {
@@ -2399,6 +2583,58 @@ public class ApiServer {
             } catch (Exception e) {
                 throw new RuntimeException("cannot load spider " + k + ": " + e, e);
             }
+        }
+    }
+
+    /**
+     * jar 内 {@code Init.loader()} 是否可用。
+     *
+     * <p>不可用时 {@code BaseSpiderGuard.<init>} 会调 {@code Init.getSpider} →
+     * native 对 null 调 CallObjectMethodV → <b>JNI abort（SIGABRT，进程直接死）</b>，
+     * 宿主拦不住。所以这里先判一次，没就绪就当"该源不可用"返回。
+     *
+     * <p>普通 jar 没有 Init / 没有 loader()：视为就绪，保持原行为。
+     */
+    private static boolean jarInitReady(Class<?> siteClass) {
+        try {
+            Class<?> ic = siteClass.getClassLoader().loadClass("com.github.catvod.spider.Init");
+            try {
+                return ic.getMethod("loader").invoke(null) != null;
+            } catch (NoSuchMethodException e) {
+                return true;
+            }
+        } catch (ClassNotFoundException e) {
+            return true;
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    /** 该类名在配置里对应的原始 key（TVBox 的 siteKey，如 "玩偶" / "WexAiDuBoKu"）。 */
+    private static String configKeyFor(String cls) {
+        try {
+            JSONArray arr = loadConfigSites().optJSONArray("sites");
+            if (arr == null) return "";
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject s = arr.optJSONObject(i);
+                if (s == null) continue;
+                if (("csp_" + cls).equals(s.optString("api", ""))) {
+                    return s.optString("key", "");
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return "";
+    }
+
+    /** 把站点 key 注入 {@code Spider.siteKey}（TVBox 契约，见 createInstance）。 */
+    private static void setSiteKey(Object spider, String key) {
+        if (spider == null || key == null || key.isEmpty()) return;
+        try {
+            java.lang.reflect.Field f = spider.getClass().getField("siteKey");
+            f.set(spider, key);
+        } catch (Throwable ignored) {
+            // 老 jar 没有这个字段：不影响其它站点
         }
     }
 
@@ -4236,6 +4472,35 @@ public class ApiServer {
             // 2 参有内容就优先用它；否则保留 3 参的原始返回（可能是带分页信息的空结构）
             if (two != null && !two.trim().isEmpty() && !isEmptyList(two)) return two;
             if (out != null && !out.trim().isEmpty()) return out;
+            /*
+             * ★ 快搜通道（quick=true）必须补一次。
+             *
+             * 踩过（2026-11-23 aiwex 加密源）：它的 searchContent 在 quick=false 时
+             * 直接返回空，**0.02 秒、一个网络请求都不发**；同一份 jar 在 TVBox /
+             * 影视仓里能搜到，因为它们的聚合搜索默认就是 quick=true。
+             * 我们原来只试 false，于是"首页正常、搜索永远空、也不报错"。
+             */
+            try {
+                String quick = str(method(spider, "searchContent", String.class, boolean.class)
+                        .invoke(spider, wd, true));
+                System.out.println("[search] 2-arg(quick) len="
+                        + (quick == null ? -1 : quick.length()));
+                if (quick != null && !quick.trim().isEmpty() && !isEmptyList(quick)) return quick;
+            } catch (Throwable ignored) {
+                // 没有这个重载或执行异常：保持原来的空结果
+            }
+            /*
+             * 3 参 + quick=true：TVBox 的"快速搜索"走的就是这个重载。
+             * 有些源把快/慢两条链路分开实现，只补 2 参仍然拿不到（实测 aiwex Wex 系）。
+             */
+            try {
+                String q3 = str(method(spider, "searchContent", String.class, boolean.class, String.class)
+                        .invoke(spider, wd, true, pg));
+                System.out.println("[search] 3-arg(quick) len="
+                        + (q3 == null ? -1 : q3.length()));
+                if (q3 != null && !q3.trim().isEmpty() && !isEmptyList(q3)) return q3;
+            } catch (Throwable ignored) {
+            }
             return two == null ? "" : two;
         } catch (Throwable t) {
             // ★ 只记 t.toString() 得到的是 "java.lang.reflect.InvocationTargetException"，
@@ -11961,6 +12226,11 @@ public class ApiServer {
         String method = ex.getRequestMethod();
         Map<String, String> q = query(ex);
         String src = trimToEmpty(q.get("src"));
+        /*
+         * 源站请求头（JSON）。点播线路大量依赖 UA/Referer，转码由后端自己拉流，
+         * 不带这份头就是"浏览器能播、转码 404"（2026-11-23 咕噜4K 实报）。
+         */
+        String srcHeader = trimToEmpty(q.get("header"));
         String id = trimToEmpty(q.get("id"));
         String delLib = trimToEmpty(q.get("lib"));
         String delPath = trimToEmpty(q.get("path"));
@@ -12020,7 +12290,7 @@ public class ApiServer {
             sendJson(ex, 200, core.Transcode.toJson(j).toString());
             return;
         }
-        core.Transcode.Job j = core.Transcode.ensure(src, false);
+        core.Transcode.Job j = core.Transcode.ensure(src, false, srcHeader);
         sendJson(ex, 200, core.Transcode.toJson(j).toString());
     }
 

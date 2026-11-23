@@ -50,6 +50,54 @@ export type PlayErrorKind =
 - 片库没有"线路"概念：失败时传 `lib + path` 让后端自己读文件转码。不能把 `127.0.0.1`
   的流（被 SSRF 防线拒）或 SMB 地址交给 ffmpeg。
 
+### 转码入口的两个硬约束（2026-11-23 咕噜4K 实报）
+
+后端拉流的是**另一个进程**，前端能播不等于 ffmpeg 能拉。两件事必须随请求带上：
+
+1. **源站请求头**：`/api/transcode?src=…&header=…`（`Transcode.ensure(src, false, headerJson)`）。
+   点播线路常校验 UA/Referer；ffmpeg 侧转成 `-user_agent` / `-headers`。
+   前端在 `PlayView.vue` 的 `tryTranscode()` 里从 `play.value.header` 透传。
+2. **伪装扩展名的 HLS**：部分源把 TS 分片写成 `.png`（响应 `image/png`）。ffmpeg 7 起
+   `extension_picky` 默认 true 会直接拒；按 major 给 `-extension_picky 0`（≥7）或
+   `-allowed_extensions ALL`（≤6）。**参数名互不兼容**，传错会让 ffmpeg 以
+   `Option not found` 不启动，所以要版本门控（`addHttpInputOptions`）。
+
+实测（OECT RK3566）：4K HEVC 10-bit → 1080p H.264/AAC，`rkmpp` 硬解硬编 **1.6–1.8 倍速**，
+首片约 15 秒，ffmpeg 单进程约 27% CPU / 66MB RSS。
+
+### 播放中卡缓冲：先判"洞"，不要转码（2026-11-23 用户实报）
+
+现象是「同一集某一段很顺、某一段直接不动」，面板里 `lastError=bufferStalledError`。
+**不是网络抖动**：抖动是瞬时的，而这是播放点落进了缓冲区空洞或后续分片不再增长。
+
+| 成因 | 判据 | 处理 |
+|---|---|---|
+| 分片时间戳不连续留下空洞 | `bufferStalledError` + 前后分片都正常 | hls.js 只处理 `maxBufferHole=0.5` 内的空隙；更大要自己跳 |
+| 源站 token 中途过期 | 后续分片 403、`frags` 停在某一片 | 4xx 走换线（已有） |
+| 转码任务被抢占/空闲取消 | 后端 job `cancelled`、清单停止增长 | 换线或重试；轮询状态能暴露 |
+| 解码/性能跟不上 | `currentTime` 不走但 `bufferedAhead` 很大 | 降档/换线路，转码救不了 |
+
+现在播放器有三层自愈：非致命 `bufferStalledError` 主动跳洞（≤10 秒，每源最多 3 次）→
+播放进度看门狗（2 秒一次，5 秒不动就先跳洞、再重拉取流两次）→ 报 `stall` 交给换线。
+**`bufferStalledError` 绝不能归成 `media`**：那会把已经能播的流送去做一次无意义的转码。
+
+三处补充（2026-11-23）：
+
+- **token 中途过期**：已播过分片后遇 403/401 → 播放器发 `stale-src`，父组件重新调
+  `/api/{site}/play` 拿新地址，`seekAt` 回到原位置续播（每源一次，失败落回换线）。
+- **事件上报**：`buffer_hole` / `buffer_stall` / `token_stale` 节流上报到
+  `POST /api/state/player-events`（JSONL 落盘、2MB 轮转、只存 host 不存 URL）；
+  `GET` 同一路径返回 `total / byKind / bySite / recent 20`，用来找"哪个源容易出洞"。
+- **跳片尾**：不再把 `currentTime` 拉到 `duration-1`（用户看到的是"先跳最后一秒"），
+  直接发 `ended`，最终进度用 `pos=duration` 上报 → 父组件清掉续播点。
+
+### 两台设备抢 4K：拒绝而不是杀掉正在看的
+
+`stopOtherJobs` 的硬件抢占加了保护：30 秒内有分片访问（播放器 5 秒一轮询）的任务
+视为"真的在看"，新硬件任务不杀它，直接返回 `hw_busy`。前端文案：
+「另一台设备正在转码这部 4K 片源，请稍后再试，或换 1080p / H.264 线路」。
+软件任务仍按原规则（不打断正在观看的旧任务）。
+
 ## 三、两级错误展示
 
 失败页的**主文案**是播放器/源站原因（没有才用兜底文案），**括号**里是兜底这一跳失败的原因

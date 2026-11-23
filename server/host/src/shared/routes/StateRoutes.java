@@ -443,4 +443,142 @@ public final class StateRoutes {
     public static void putIfNotEmpty(JSONObject o, String key, String v) throws Exception {
         if (v != null && !v.isEmpty()) o.put(key, v);
     }
+
+    // ------------------------------------------------------------ 播放器事件
+
+    /**
+     * 播放器诊断事件（缓冲空洞/卡死/token 过期）。
+     *
+     * <p>为什么落盘而不是只写日志：日志环形缓冲 2000 条，播一集就被分片请求冲掉；
+     * 这些事件量很小（每集最多几条），JSONL 追加 + 2MB 轮转足够回溯"哪个源
+     * 哪个时间点容易出洞"。
+     *
+     * <p>只收白名单字段（不存 URL 全量、不存 token）：kind/site/vod/ep/pos/gap/
+     * codec/pixfmt/host/msg/ts。
+     */
+    public static final String PLAYER_EVENTS_FILE = "diag/player-events.jsonl";
+    private static final Object EVENTS_LOCK = new Object();
+    private static final long EVENTS_MAX_BYTES = 2L * 1024 * 1024;
+
+    public static void handlePlayerEvents(HttpExchange ex) throws Exception {
+        String method = ex.getRequestMethod();
+        if ("OPTIONS".equalsIgnoreCase(method)) {
+            Api.cors(ex);
+            ex.sendResponseHeaders(204, -1);
+            ex.close();
+            return;
+        }
+        if ("GET".equalsIgnoreCase(method)) {
+            sendPlayerEventStats(ex);
+            return;
+        }
+        if (!"POST".equalsIgnoreCase(method)) {
+            Api.sendJson(ex, 405, "{\"code\":-1,\"msg\":\"method not allowed\"}");
+            return;
+        }
+        String raw = Api.read(ex.getRequestBody());
+        JSONObject in;
+        try {
+            in = raw == null || raw.trim().isEmpty() ? new JSONObject() : new JSONObject(raw);
+        } catch (Exception e) {
+            Api.sendJson(ex, 400, "{\"code\":-1,\"msg\":\"bad json body\"}");
+            return;
+        }
+        String kind = clip(in.optString("kind", ""), 40);
+        if (kind.isEmpty()) {
+            Api.sendJson(ex, 400, "{\"code\":-1,\"msg\":\"kind required\"}");
+            return;
+        }
+        JSONObject rec = new JSONObject();
+        rec.put("ts", in.optLong("ts", System.currentTimeMillis()));
+        rec.put("kind", kind);
+        rec.put("site", clip(in.optString("site", ""), 40));
+        rec.put("vod", clip(in.optString("vod", ""), 60));
+        rec.put("ep", clip(in.optString("ep", ""), 60));
+        rec.put("pos", Math.round(in.optDouble("pos", 0) * 10) / 10.0);
+        rec.put("gap", Math.round(in.optDouble("gap", 0) * 100) / 100.0);
+        rec.put("codec", clip(in.optString("codec", ""), 24));
+        rec.put("pixfmt", clip(in.optString("pixfmt", ""), 24));
+        rec.put("host", clip(in.optString("host", ""), 80));
+        rec.put("msg", clip(in.optString("msg", ""), 200));
+        synchronized (EVENTS_LOCK) {
+            appendEventLine(rec.toString());
+        }
+        Api.sendJson(ex, 200, "{\"ok\":true}");
+    }
+
+    private static String clip(String v, int max) {
+        if (v == null) return "";
+        String t = v.trim();
+        return t.length() <= max ? t : t.substring(0, max);
+    }
+
+    private static void appendEventLine(String line) {
+        try {
+            java.nio.file.Path f = core.DataPaths.file(PLAYER_EVENTS_FILE).toPath();
+            java.nio.file.Files.createDirectories(f.getParent());
+            try {
+                if (java.nio.file.Files.isRegularFile(f)
+                        && java.nio.file.Files.size(f) > EVENTS_MAX_BYTES) {
+                    java.nio.file.Path old = f.resolveSibling(f.getFileName() + ".1");
+                    java.nio.file.Files.deleteIfExists(old);
+                    java.nio.file.Files.move(f, old,
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+            } catch (Exception ignored) {
+            }
+            java.nio.file.Files.write(f,
+                    (line + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.APPEND);
+        } catch (Exception e) {
+            System.err.println("[diag] player-event append failed: " + e.getMessage());
+        }
+    }
+
+    /** GET：按 kind/site 聚合 + 最近 20 条（文件最多 2MB，直接读够用）。 */
+    private static void sendPlayerEventStats(HttpExchange ex) throws Exception {
+        java.util.List<JSONObject> keep = new java.util.ArrayList<>();
+        JSONObject byKind = new JSONObject();
+        JSONObject bySite = new JSONObject();
+        int total = 0;
+        String raw = "";
+        try {
+            java.nio.file.Path f = core.DataPaths.file(PLAYER_EVENTS_FILE).toPath();
+            if (java.nio.file.Files.isRegularFile(f)) {
+                raw = new String(java.nio.file.Files.readAllBytes(f),
+                        java.nio.charset.StandardCharsets.UTF_8);
+            }
+        } catch (Exception ignored) {
+        }
+        String[] lines = raw.split("\r?\n");
+        // 最多分析最后 5000 条：2MB 小行可能上万条，没必要全解析
+        int start = Math.max(0, lines.length - 5000);
+        for (int li = start; li < lines.length; li++) {
+            String line = lines[li];
+            if (line == null || line.trim().isEmpty()) continue;
+            JSONObject o;
+            try {
+                o = new JSONObject(line);
+            } catch (Exception e) {
+                continue;
+            }
+            total++;
+            String kind = o.optString("kind", "");
+            String site = o.optString("site", "");
+            if (!kind.isEmpty()) byKind.put(kind, byKind.optInt(kind, 0) + 1);
+            if (!site.isEmpty()) bySite.put(site, bySite.optInt(site, 0) + 1);
+            keep.add(o);
+            if (keep.size() > 20) keep.remove(0);
+        }
+        JSONArray recent = new JSONArray();
+        for (JSONObject o : keep) recent.put(o);
+        Api.sendJson(ex, 200, new JSONObject()
+                .put("ok", true)
+                .put("total", total)
+                .put("byKind", byKind)
+                .put("bySite", bySite)
+                .put("recent", recent)
+                .toString());
+    }
 }

@@ -108,6 +108,26 @@ public class TvBridge {
     }
 
     /**
+     * 原生播放器最近一次选中的轨道编码（面板显示「原生直出 4K HEVC」）。
+     *
+     * <p>只读本地 SharedPreferences，无副作用；返回空串 = 还没播过/还没探到轨道，
+     * 页面按"未知"处理。key 为 {@code site|vod|ep}，对不上时退回最近一次。
+     */
+    @JavascriptInterface
+    public String nativeTracks(String key) {
+        if (!trustedOrigin()) return "";
+        try {
+            android.content.SharedPreferences sp = activity.getSharedPreferences(
+                    "meow_native_tracks", android.content.Context.MODE_PRIVATE);
+            String v = key == null || key.isEmpty() ? "" : sp.getString("k:" + key, "");
+            if (v == null || v.isEmpty()) v = sp.getString("last", "");
+            return v == null ? "" : v;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
      * 首投确认框（页面里的 confirmDialog）的结果回填。
      *
      * <p>接收端 HTTP 线程在 {@link CastReceiverBridge#confirm} 里等这个结果；

@@ -50,6 +50,12 @@ public final class Transcode {
     public static final class Job {
         public String id = "";
         public String source = "";
+        /**
+         * 源站要求的请求头（JSON：{"User-Agent":"…","Referer":"…"}）。
+         * 点播线路大量依赖 UA/Referer（2026-11-23 实报：咕噜4K 无 UA 直接 404），
+         * 转码是后端自己拉流，必须替前端把这份头带上，否则"浏览器能播、转码 404"。
+         */
+        String header = "";
         public String state = "idle"; // idle|running|ready|failed|canceled
         public String error = "";
         public long startedAt = System.currentTimeMillis();
@@ -167,10 +173,93 @@ public final class Transcode {
      * 而且用户切集后旧任务还在白烧 CPU。被停掉的任务顺手把半成品清掉，
      * 下次进来自动重转（没有 .done 就不算完成）。
      */
-    private static void stopOtherJobs(String keepId) {
+    /**
+     * 空闲自动取消：任务在跑但超过这个时长没有任何分片/清单访问 → 判为"没人看"。
+     * 2026-11-23 用户要求：退出播放页后后端别空转（10-bit 一集要转两小时）。
+     * 120 秒是折中：短暂退出再回来仍能续看，长期不白烧 CPU。
+     */
+    private static final long IDLE_CANCEL_MS = 120_000L;
+    private static final java.util.concurrent.atomic.AtomicBoolean IDLE_WATCH =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
+    /** 起一次守护线程（幂等）：每 15 秒扫一遍运行中的任务，超时就取消。 */
+    private static void armIdleWatcher() {
+        if (!IDLE_WATCH.compareAndSet(false, true)) return;
+        Thread t = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(15_000L);
+                    long now = System.currentTimeMillis();
+                    for (Job j : new java.util.ArrayList<>(JOBS.values())) {
+                        if (!"running".equals(j.state)) continue;
+                        long last = Math.max(j.lastAccess, j.startedAt);
+                        if (now - last <= IDLE_CANCEL_MS) continue;
+                        j.state = "cancelled";
+                        j.phase = "cancelled";
+                        j.code = "idle_timeout";
+                        j.error = "";
+                        try {
+                            if (j.proc != null) j.proc.destroyForcibly();
+                        } catch (Exception ignored) {
+                        }
+                        System.err.println("[transcode] cancelled " + j.id
+                                + " (idle " + ((now - last) / 1000) + "s)");
+                    }
+                } catch (InterruptedException e) {
+                    return;
+                } catch (Throwable ignored) {
+                    // 守护线程绝不能被单次异常打死
+                }
+            }
+        }, "transcode-idle-watch");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private static boolean stopOtherJobs(String keepId, boolean newNeedsHw) {
         long now = System.currentTimeMillis();
+        /*
+         * 抢占保护（2026-11-23 用户要求）：另一台设备正在看 4K 硬转时，
+         * 新来的硬件任务不再"无条件杀掉它"——被杀的那台会立刻 404 卡死。
+         * 30 秒内有分片访问 = 真的在看（播放器 5 秒一轮询）；此时拒绝新任务，
+         * 由前端明确提示「另一台设备正在转码」。
+         */
+        if (newNeedsHw) {
+            for (Job o : new java.util.ArrayList<>(JOBS.values())) {
+                if (o.id.equals(keepId) || !"running".equals(o.state)) continue;
+                /*
+                 * 只有**硬件**任务占 VDEC；copy（-c:v copy）和软编不吃硬解通道。
+                 * 把它们也算成"忙"会误伤：片库 8-bit 的 copy 任务在跑时点开 4K，
+                 * 立刻被 hw_busy 挡住（实测踩过）。
+                 */
+                if (!o.hw) continue;
+                if (now - o.lastAccess < 30_000L) {
+                    System.err.println("[transcode] busy: " + o.id
+                            + " watched, reject new hw job " + keepId);
+                    return false;
+                }
+            }
+        }
         for (Job o : new java.util.ArrayList<>(JOBS.values())) {
             if (o.id.equals(keepId) || !"running".equals(o.state)) continue;
+            // 新硬件任务只跟硬件任务抢 VDEC；copy/软编任务继续跑，不打断观看
+            if (newNeedsHw && !o.hw) continue;
+            /*
+             * ★ 有人正在看（60 秒内取过分片）就不抢：2026-11-23 实报。
+             *
+             * 原实现"只有新任务能活"是为了防两路硬件转码抢 VDEC 崩库。但实际
+             * 打脸场景是：用户在放 8-bit 片（copy 视频，几乎不吃 CPU），一个
+             * 诊断请求/第二台设备点开别的集 → 新任务直接把正在看的任务杀掉 →
+             * 播放器拿 404 → 前端弹「转码失败」，退出再进也报错。
+             *
+             * 现在只在**新任务要用硬件解码**时才无条件停旧的（VDEC 通道有限，
+             * 这个理由仍然成立）；软件任务并发只是分 CPU，打断观看的代价更大。
+             */
+            if (!newNeedsHw && now - o.lastAccess < 60_000L) {
+                System.err.println("[transcode] keep " + o.id + " (watched, new job is software, keep=" + keepId + ")");
+                continue;
+            }
+            o.state = "cancelled";
             /*
              * ★ 严格串行：不再因为 `.access` 十分钟内有写入就放行（2026-11-20 改）。
              *
@@ -202,6 +291,7 @@ public final class Transcode {
              */
             System.err.println("[transcode] cancelled " + o.id + " (serialize, keep=" + keepId + ")");
         }
+        return true;
     }
 
     private static Path dirOf(String id) {
@@ -488,17 +578,25 @@ public final class Transcode {
      * @param sourceUrl 可被 ffmpeg 直接读到的地址（http/https）
      */
     public static Job ensure(String sourceUrl, boolean forceVideo) {
+        return ensure(sourceUrl, forceVideo, "");
+    }
+
+    /**
+     * 带源站请求头的版本：点播线路常要求 UA/Referer（见 {@link Job#header}）。
+     * 幂等键仍只取 URL —— 同一集换头重来应当复用同一份产物。
+     */
+    public static Job ensure(String sourceUrl, boolean forceVideo, String headerJson) {
         String id = idFor(sourceUrl);
         /*
          * 单集锁（S1，2026-11-17）：前端 start 请求与 2 秒一次的轮询可能
          * 同时进来，"检查状态 → 起 ffmpeg"必须串行，否则会起两个进程写同一目录。
          */
         synchronized (lockFor(id)) {
-            return ensure0(sourceUrl, forceVideo, id);
+            return ensure0(sourceUrl, forceVideo, id, headerJson == null ? "" : headerJson);
         }
     }
 
-    private static Job ensure0(String sourceUrl, boolean forceVideo, String id) {
+    private static Job ensure0(String sourceUrl, boolean forceVideo, String id, String headerJson) {
         Job found = JOBS.get(id);
         if (found != null) {
             if ("running".equals(found.state)) {
@@ -532,6 +630,8 @@ public final class Transcode {
         } else {
             j = found;
         }
+        // 每次启动前都按最新请求覆盖：同一 URL 的头可能被源站轮换，旧头拉不到就白转
+        j.header = headerJson;
         // 已经转完的直接复用（**必须有完成标记**，半成品不算）
         if (playable(id) && !forceVideo) {
             j.state = "ready";
@@ -547,12 +647,10 @@ public final class Transcode {
         // S4：起新任务前回收历史产物（保留最近 3 个；正在转/正在看的不动）
         pruneProducts();
         /*
-         * ★ 在线源兜底也要串行（2026-11-20 OECT 实测漏点）：
-         * 原实现只有 startFfmpeg（本地/片库路径）调 stopOtherJobs，
-         * ensure() 这条远程路径完全不拦 —— 两次"播放失败→转码"就能并发出
-         * 两个 ffmpeg（各 575MB 空转）。这里补上，和本地路径同一语义。
+         * 串行决策挪到 probe 之后（见下方 stopOtherJobs(hwCapable)）：
+         * 此刻还不知道新任务是硬件还是软件 —— 提前停会把"正在被观看的
+         * 便宜任务"误杀（2026-11-23 实报「转码失败」的根因之一）。
          */
-        stopOtherJobs(j.id);
 
         String ff = ffmpegPath();
         if (ff.isEmpty()) {
@@ -575,7 +673,7 @@ public final class Transcode {
          * 现在共用 hlsCommand()，点播自动获得 copy/hw/回退/预判。
          */
         j.phase = "probe";
-        Probe probe = probe(ff, sourceUrl);
+        Probe probe = probe(ff, sourceUrl, headerJson);
         /*
          * ★ 这里必须传**真实**的硬解能力（2026-11-20 复核修正）。
          * 原来传死 false，等于把"RK3566 + rkmpp"也当成无硬解：4K HEVC 明明
@@ -707,13 +805,8 @@ public final class Transcode {
         }
         // S4：起新任务前回收历史产物（保留最近 3 个；正在转/正在看的不动）
         pruneProducts();
-        /*
-         * ★ 在线源兜底也要串行（2026-11-20 OECT 实测漏点）：
-         * 原实现只有 startFfmpeg（本地/片库路径）调 stopOtherJobs，
-         * ensure() 这条远程路径完全不拦 —— 两次"播放失败→转码"就能并发出
-         * 两个 ffmpeg（各 575MB 空转）。这里补上，和本地路径同一语义。
-         */
-        stopOtherJobs(j.id);
+        // 硬解任务才无条件抢通道；软件任务不打断正在被观看的旧任务（见 stopOtherJobs）
+        stopOtherJobs(j.id, hwCapable);
         j.probeSnap = probe;
         if (probe != null) saveDuration(id, probe.duration);
         j.ffPath = ff;
@@ -814,6 +907,11 @@ public final class Transcode {
         boolean copyAudio;
         /** 源视频编码（h264/hevc/av1…），用于挑对应的 rkmpp 硬件解码器。 */
         String vcodec = "";
+        /**
+         * 源像素格式（yuv420p / yuv420p10le…）。copy 与硬解只对 8-bit 4:2:0
+         * 成立 —— Hi10P 是 2026-11-23 片库"解码失败"的实报根因。
+         */
+        String pixFmt = "";
         /** 源音频编码（aac/ac3/eac3/dts…）：播放分配（直连/原生/转码）的判定输入。 */
         String acodec = "";
         /** 源宽高：硬解硬编走 RGA 缩放时才需要（4K 必须降到 1080p，见 hw 分支）。 */
@@ -905,7 +1003,23 @@ public final class Transcode {
     private static boolean hwTranscode(String ff, Probe p) {
         if (p == null || p.vcodec.isEmpty()) return false;
         if (!hwEnabled()) return false;
+        // H.264 Hi10P（10-bit）rkmpp 解不了，硬解只会产出空分片 → 软解兜底
+        // （HEVC 10-bit 不受影响：RK3566 的 hevc_rkmpp 支持 Main10）
+        if ("h264".equals(p.vcodec) && !is8BitPix(p.pixFmt)) return false;
         return rkmppDecoders(ff).contains(p.vcodec + "_rkmpp") && rkmppEncoder(ff);
+    }
+
+    /**
+     * 8-bit 4:2:0 判定（2026-11-23 片库 10-bit 实报）。
+     *
+     * <p>高比特深（Hi10P）是浏览器和盒子硬解的共同盲区：Chromium 只带
+     * 8-bit H.264 解码器，rkmpp 的 h264 解码器同样只吃 8-bit —— 碰到
+     * yuv420p10le 只能软件重编码。pix_fmt 探不到时按"不可 copy"处理
+     * （多转一次码比把坏流交给播放器便宜）。
+     */
+    private static boolean is8BitPix(String pixFmt) {
+        if (pixFmt == null || pixFmt.isEmpty()) return false;
+        return "yuv420p".equalsIgnoreCase(pixFmt) || "yuvj420p".equalsIgnoreCase(pixFmt);
     }
 
     /** ffmpeg 同目录的 ffprobe（PC 插件/系统/镜像里都是成对安装的）。 */
@@ -967,12 +1081,17 @@ public final class Transcode {
         return out.put("ok", true)
                 .put("vcodec", cached.vcodec == null ? "" : cached.vcodec)
                 .put("acodec", cached.acodec == null ? "" : cached.acodec)
+                .put("pixfmt", cached.pixFmt == null ? "" : cached.pixFmt)
                 .put("width", cached.width)
                 .put("height", cached.height)
                 .put("duration", (long) Math.round(cached.duration));
     }
 
     private static Probe probe(String ff, String source) {
+        return probe(ff, source, "");
+    }
+
+    private static Probe probe(String ff, String source, String header) {
         String fp = ffprobeOf(ff);
         if (fp.isEmpty()) return null;
         try {
@@ -980,9 +1099,13 @@ public final class Transcode {
             v.add(fp);
             v.add("-v"); v.add("error");
             v.add("-select_streams"); v.add("v:0");
-            v.add("-show_entries"); v.add("stream=codec_name,width,height");
+            // pix_fmt 必须一起探（2026-11-23 片库 10-bit 实报）：csv=p=0 的输出
+            // 顺序是 codec_name,width,height,pix_fmt（不是请求顺序，实测过），
+            // 所以只按位置取前 4 段；不要顺手加 profile——它排在 width 前面，
+            // 会把解析顶歪（`h264,High 10,1396,866,...`）。
+            v.add("-show_entries"); v.add("stream=codec_name,width,height,pix_fmt");
             v.add("-of"); v.add("csv=p=0");
-            addHttpInputOptions(v, source);
+            addHttpInputOptions(v, source, header);
             v.add(source);
             // 设备忙（4K 转码在跑）时 ffprobe 读 SMB 会明显变慢；10 秒会误判成
             // "探测失败" → 直接退软解（4K 从 2.0x 掉到 0.025x）。给到 30 秒。
@@ -993,6 +1116,7 @@ public final class Transcode {
             String vcodec = vf[0];
             int w = parseIntSafe(vf[1], 0);
             int h = parseIntSafe(vf[2], 0);
+            String pixFmt = vf.length > 3 ? vf[3] : "";
 
             List<String> a = new ArrayList<>();
             a.add(fp);
@@ -1000,7 +1124,7 @@ public final class Transcode {
             a.add("-select_streams"); a.add("a:0");
             a.add("-show_entries"); a.add("stream=codec_name,channels");
             a.add("-of"); a.add("csv=p=0");
-            addHttpInputOptions(a, source);
+            addHttpInputOptions(a, source, header);
             a.add(source);
             String ao = runCapture(a, 30);
             // 总时长：pump 用它判断"exit 0 但只转了一小段"（输入被截断时会出现）
@@ -1009,7 +1133,7 @@ public final class Transcode {
             d.add("-v"); d.add("error");
             d.add("-show_entries"); d.add("format=duration");
             d.add("-of"); d.add("csv=p=0");
-            addHttpInputOptions(d, source);
+            addHttpInputOptions(d, source, header);
             d.add(source);
             // 这条只影响进度条总长（UI），不值得让它拖慢起播：12 秒拿不到就用 0
             String dOut = runCapture(d, 12);
@@ -1030,13 +1154,22 @@ public final class Transcode {
 
             Probe p = new Probe();
             p.vcodec = vcodec;
+            p.pixFmt = pixFmt;
             p.acodec = acodec;
-            p.copyVideo = "h264".equals(vcodec) && w > 0 && h > 0 && w <= 1920 && h <= 1080;
+            /*
+             * copy 只对 8-bit 4:2:0 成立（2026-11-23 片库 10-bit 实报）：
+             * Hi10P（yuv420p10le）浏览器解不了、rkmpp 也解不了，原样 copy
+             * 进 HLS 等于把"解码失败"原样复制过去（实测：copyVideo=true 的
+             * 转码产物照样黑屏报错）。pix_fmt 探不到时也不赌 —— 宁可重编码。
+             */
+            p.copyVideo = "h264".equals(vcodec) && w > 0 && h > 0 && w <= 1920 && h <= 1080
+                    && is8BitPix(pixFmt);
             p.width = w;
             p.height = h;
             p.duration = dur;
             p.copyAudio = "aac".equals(acodec) && ch > 0 && ch <= 2;
-            p.detail = vcodec + " " + w + "x" + h + " / " + acodec + " " + ch + "ch";
+            p.detail = vcodec + " " + w + "x" + h + (pixFmt.isEmpty() ? "" : " " + pixFmt)
+                    + " / " + acodec + " " + ch + "ch";
             return p;
         } catch (Exception e) {
             return null;
@@ -1098,15 +1231,24 @@ public final class Transcode {
      * <p>{@code forceSw=true} 用于「硬解失败后的软解重试」。
      */
     private static void startFfmpeg(Job j, String ff, String source, boolean forceSw) throws Exception {
-        // 一次只跑一个重转码（VDEC 通道有限；被放弃的旧任务要停）
-        stopOtherJobs(j.id);
-        // 从零开始转：清掉可能残留的半成品与完成标记，否则清单会指向不存在的分片
-        cleanSegments(j.id);
+        armIdleWatcher();
         Probe p = j.probeSnap;
         boolean hw = !forceSw && p != null && !p.copyVideo && hwTranscode(ff, p);
+        // 一次只跑一个**硬件**转码（VDEC 通道有限；被放弃的旧任务要停）。
+        // 软件任务不抢正在被观看的旧任务（2026-11-23 实报「转码失败」根因）
+        if (!stopOtherJobs(j.id, hw)) {
+            j.state = "failed";
+            j.phase = "failed";
+            j.code = "hw_busy";
+            j.error = "有播放任务正在转码这部 4K 片源（本机或另一台设备），请稍后再试，或换 1080p / H.264 线路。";
+            System.err.println("[transcode] job " + j.id + " rejected: hw_busy");
+            return;
+        }
+        // 从零开始转：清掉可能残留的半成品与完成标记，否则清单会指向不存在的分片
+        cleanSegments(j.id);
         j.hw = hw;
         j.ffPath = ff;
-        List<String> cmd = hlsCommand(ff, j.id, source, p, hw);
+        List<String> cmd = hlsCommand(ff, j.id, source, p, hw, j.header);
         java.nio.file.Files.createDirectories(dirOf(j.id));
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectErrorStream(true);
@@ -1185,12 +1327,80 @@ public final class Transcode {
      *
      * <p>单位是微秒（ffmpeg 的 AVIO 约定），15000000 = 15 秒。
      */
+    /** ffmpeg major（0 = 没探测到）。只探一次：版本不会中途变，probe/转码都要用。 */
+    private static volatile int FFMPEG_MAJOR = -1;
+
+    private static int ffmpegMajor() {
+        if (FFMPEG_MAJOR >= 0) return FFMPEG_MAJOR;
+        int major = 0;
+        try {
+            String ff = ffmpegPath();
+            if (!ff.isEmpty()) {
+                String v = runCapture(new ArrayList<>(List.of(ff, "-version")), 5);
+                if (v != null) {
+                    java.util.regex.Matcher m = java.util.regex.Pattern
+                            .compile("version\\s+n?(\\d+)\\.").matcher(v);
+                    if (m.find()) major = Integer.parseInt(m.group(1));
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        FFMPEG_MAJOR = major;
+        return major;
+    }
+
     private static void addHttpInputOptions(List<String> cmd, String source) {
+        addHttpInputOptions(cmd, source, "");
+    }
+
+    private static void addHttpInputOptions(List<String> cmd, String source, String headerJson) {
         if (!(source.startsWith("http://") || source.startsWith("https://"))) return;
         cmd.add("-rw_timeout"); cmd.add("15000000");
         cmd.add("-reconnect"); cmd.add("1");
         cmd.add("-reconnect_streamed"); cmd.add("1");
         cmd.add("-reconnect_delay_max"); cmd.add("5");
+        /*
+         * 伪装扩展名的 HLS：2026-11-23 实报「咕噜4K」把 TS 分片写成 .png
+         * （Content-Type: image/png）。ffmpeg 7 起 extension_picky 默认 true，
+         * 直接报 "not in allowed_segment_extensions" 并以 Invalid data 退出
+         * → probe 失败、4K 线路判死。6 及更早是 hls 的 allowed_extensions。
+         * 参数名不兼容：传错会让 ffmpeg 以 "Option not found" 直接不启动，
+         * 所以按 major 只挑一个；版本探测不到（0）就都不传，保持旧行为。
+         */
+        int major = ffmpegMajor();
+        if (major >= 7) {
+            cmd.add("-extension_picky"); cmd.add("0");
+        } else if (major >= 1) {
+            cmd.add("-allowed_extensions"); cmd.add("ALL");
+        }
+        /*
+         * 源站要求的请求头：点播线路大量依赖 UA/Referer（2026-11-23 实测：
+         * 咕噜4K 无 UA 取清单直接 404，浏览器能播是因为播放器带了头）。
+         * ffmpeg 只认两种形态：User-Agent 单列一个 -user_agent，其余走
+         * -headers（每行 "Key: value\r\n"）。
+         */
+        if (headerJson == null || headerJson.trim().isEmpty()) return;
+        try {
+            JSONObject h = new JSONObject(headerJson);
+            StringBuilder rest = new StringBuilder();
+            // 用 keys() 迭代：仓库里的 org.json 版本没有 keySet()（编译期实测）
+            java.util.Iterator<String> it = h.keys();
+            while (it.hasNext()) {
+                String k = it.next();
+                String v = h.optString(k, "");
+                if (v.isEmpty()) continue;
+                if ("User-Agent".equalsIgnoreCase(k) || "user-agent".equalsIgnoreCase(k)) {
+                    cmd.add("-user_agent"); cmd.add(v);
+                    continue;
+                }
+                rest.append(k).append(": ").append(v).append("\r\n");
+            }
+            if (rest.length() > 0) {
+                cmd.add("-headers"); cmd.add(rest.toString());
+            }
+        } catch (Throwable ignored) {
+            // 头不是合法 JSON 就当没有：宁可按无头拉，也不要让 ffmpeg 起不来
+        }
     }
 
     /** 目标机是不是 ARM（OECT/RK3566、多数 NAS）。x86 桌面软转 4K 还有一线希望。 */
@@ -1221,7 +1431,7 @@ public final class Transcode {
             "这台设备没有 4K 硬编码能力，软转 4K 速度远低于播放（实测 <3 fps，首片要 100 秒以上）。"
             + "请改用「原生播放器」（投影仪可硬解 4K），或换 1080p / H.264 线路。";
 
-    private static List<String> hlsCommand(String ff, String id, String source, Probe p, boolean hw) {
+    private static List<String> hlsCommand(String ff, String id, String source, Probe p, boolean hw, String header) {
         List<String> cmd = new ArrayList<>();
         boolean http = source.startsWith("http://") || source.startsWith("https://");
         cmd.add(ff);
@@ -1241,11 +1451,8 @@ public final class Transcode {
              */
             cmd.add("-seekable"); cmd.add("1");
             cmd.add("-multiple_requests"); cmd.add("1");
-            // 网络读 15 秒不返回就让 ffmpeg 自己报错退出（见 addHttpInputOptions）
-            cmd.add("-rw_timeout"); cmd.add("15000000");
-            cmd.add("-reconnect"); cmd.add("1");
-            cmd.add("-reconnect_streamed"); cmd.add("1");
-            cmd.add("-reconnect_delay_max"); cmd.add("5");
+            // 超时/重连/伪装扩展名/源站请求头统一在 addHttpInputOptions 里给
+            addHttpInputOptions(cmd, source, header);
         }
         /*
          * 硬解走通用 hwaccel 路径，帧格式必须显式声明 drm_prime：
@@ -1305,6 +1512,13 @@ public final class Transcode {
             cmd.add("-c:v"); cmd.add("libx264");
             cmd.add("-preset"); cmd.add("veryfast");
             cmd.add("-crf"); cmd.add("23");
+            /*
+             * ★ 必须显式钉 8-bit（2026-11-23 实测踩过）：ffmpeg 的 libx264
+             * 在 10-bit 输入下会**沿用源位深**（输出 yuv420p10le / High 10），
+             * 转出来的 HLS 浏览器照样解不了 —— 转码等于白转。钉死 yuv420p
+             * 后 High10 源会被降位深重编码。
+             */
+            cmd.add("-pix_fmt"); cmd.add("yuv420p");
             /*
              * ★ 强制按 SEG_SECONDS 插关键帧（2026-11-17 实测踩过）：
              * -hls_time 只是「最小片长」，实际切点看源关键帧。这批 mkv 的 GOP
@@ -1550,6 +1764,12 @@ public final class Transcode {
          * MPP 直接崩（Generic error），用户看到的就是"播几秒就卡"。
          * 状态只让 pump 改；"能不能播"由 playlist + readySeconds 表达。
          */
+        /*
+         * ★ 状态轮询也算"有人关心"（2026-11-23）：播放器暂停时不再拉分片，
+         *   但前端每 5 秒还在轮询进度；不刷新 lastAccess 的话，暂停两分钟
+         *   就会被空闲看门狗误杀。退出播放页后轮询停止 → 才会真的超时取消。
+         */
+        j.lastAccess = System.currentTimeMillis();
         int n = countSegments(id);
         if (n > j.segments) j.lastSegmentAt = System.currentTimeMillis();
         j.segments = n;
@@ -1605,6 +1825,33 @@ public final class Transcode {
         o.put("phase", j.phase == null ? "" : j.phase);
         o.put("hw", j.hw);
         o.put("startedAt", j.startedAt);
+        /*
+         * 源/输出编码（2026-11-23 用户要求面板显示）：
+         * 转码后 videoWidth 是输出分辨率，用户会把「4K 变 1080p」误读成
+         * "4K 没生效"；必须把 **源** 与 **输出** 分开给。
+         * 输出规则按 hlsCommand 的三条分支写死：
+         *   copyVideo → 原编码原分辨率
+         *   hw / 软编 → h264 + yuv420p，高度封顶 1080
+         */
+        if (j.probeSnap != null) {
+            Probe p = j.probeSnap;
+            o.put("srcVcodec", p.vcodec);
+            o.put("srcAcodec", p.acodec);
+            o.put("srcPixfmt", p.pixFmt);
+            o.put("srcWidth", p.width);
+            o.put("srcHeight", p.height);
+            o.put("copyVideo", p.copyVideo);
+            o.put("copyAudio", p.copyAudio);
+            if (p.copyVideo) {
+                o.put("outVcodec", p.vcodec);
+                o.put("outPixfmt", p.pixFmt);
+                o.put("outHeight", p.height);
+            } else {
+                o.put("outVcodec", "h264");
+                o.put("outPixfmt", "yuv420p");
+                o.put("outHeight", p.height > 0 ? Math.min(p.height, 1080) : 0);
+            }
+        }
         o.put("lastSegmentAge",
                 j.lastSegmentAt > 0 ? (System.currentTimeMillis() - j.lastSegmentAt) / 1000 : -1);
         if (j.code != null && !j.code.isEmpty()) o.put("code", j.code);

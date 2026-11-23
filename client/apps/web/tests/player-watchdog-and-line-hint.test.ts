@@ -131,14 +131,14 @@ describe('片库文案：先直连，播不了才转码', () => {
 describe('4xx 快速判死：不能误杀正在播的流', () => {
   const code = codeOnly(PLAYER)
 
-  it('★ 4xx 判断必须在 `if (!data.fatal) return` 之前', () => {
+  it('★ 4xx 判断必须在非致命分支返回之前', () => {
     // hls.js 的 404 是先发非致命错误 + 指数退避重试，fatal 要 20 秒后才到。
     // 写在 fatal 之后等于永远等不到（第一版就是这个问题，真机实测 20 秒才报错）。
     const i = code.indexOf('h.on(Hls.Events.ERROR')
     expect(i).toBeGreaterThan(-1)
     const body = code.slice(i, i + 2600)
     const fastIdx = body.indexOf('httpCode >= 400')
-    const fatalIdx = body.indexOf('if (!data.fatal) return')
+    const fatalIdx = body.indexOf('if (!data.fatal) {')
     expect(fastIdx).toBeGreaterThan(-1)
     expect(fatalIdx).toBeGreaterThan(-1)
     expect(fastIdx).toBeLessThan(fatalIdx)
@@ -161,7 +161,7 @@ describe('4xx 快速判死：不能误杀正在播的流', () => {
 describe('HLS 假死的判据必须用分片计数（readyState 恒 0）', () => {
   it('stallTimer 的 HLS 分支检查 fragLoadedCount', () => {
     const code = codeOnly(PLAYER)
-    const i = code.indexOf('stallTimer = window.setTimeout')
+    const i = code.indexOf('function onStallTimeout')
     const body = code.slice(i, i + 900)
     expect(body).toContain('if (hls.value)')
     expect(body).toContain('fragLoadedCount > 0')

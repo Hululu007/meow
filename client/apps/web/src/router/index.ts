@@ -8,6 +8,14 @@ const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     { path: '/', name: 'home', component: () => import('@/views/HomeView.vue') },
+    /*
+     * 兜底（2026-11-23 实报「页面黑屏、点 logo 才恢复」）：
+     * 顶栏是 App 外壳、始终渲染；路由没匹配时 <router-view> 是空的，
+     * 于是整块内容区空白。常见触发：自动化脚本/旧书签用了 `#/home`（真实路径是 `/`）。
+     * /home 显式重定向 + 未知路径一律回首页，宁可回首页也不要白屏。
+     */
+    { path: '/home', redirect: '/' },
+    { path: '/:pathMatch(.*)*', redirect: '/' },
     {
       path: '/category/:site',
       name: 'category',

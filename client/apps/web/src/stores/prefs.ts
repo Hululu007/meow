@@ -139,6 +139,13 @@ export interface Prefs {
   /** TV 壳：检测到「音频零解码」（AC3/DTS）时自动切原生播放器（默认关=提示式） */
   nativeOnSilent: boolean
   /**
+   * 超纲音轨（AC3/DTS）的**记忆化选择**（2026-11-23 实报：「每次进都弹提示」）。
+   *
+   * ask = 每次提示（默认）；native = 直接切原生；transcode = 直接转码。
+   * 点过一次提示条上的按钮就记住，下集不再重复问 —— 设备能力不会变。
+   */
+  silentAction: 'ask' | 'native' | 'transcode'
+  /**
    * 「跳过片头/片尾」提示的倒计时秒数：到点自动跳。
    *
    * 0 = 直接跳（不给反悔机会，老行为）；
@@ -281,6 +288,7 @@ export const DEFAULTS: Prefs = {
   skipOutro: 0,
   skipMiddle: false,
   nativeOnSilent: false,
+  silentAction: 'ask',
   skipCountdown: 5,
   showTimeBadge: false,
   showMiniProgress: false,

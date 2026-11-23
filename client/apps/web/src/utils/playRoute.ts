@@ -19,6 +19,15 @@
 export interface MediaProbe {
   acodec?: string
   vcodec?: string
+  /**
+   * 源像素格式（yuv420p / yuv420p10le / p010le…）。
+   *
+   * 10-bit H.264（Hi10P）是浏览器与盒子硬解的共同盲区：Chromium 只带
+   * 8-bit 解码器，rkmpp/电视硬解也只吃 8-bit。命中时**直连和原生都不成立**，
+   * 只有转码一条路（2026-11-23 片库实报：10-bit 集数直连"解码失败"，
+   * copyVideo 转出来的 HLS 也照样黑屏 —— 判定必须早于 copy 决策）。
+   */
+  pixfmt?: string
 }
 
 export interface PlaybackRouteInput {
@@ -50,17 +59,29 @@ export function webviewAudioCodecs(isAppleWebkit = false): string[] {
   return isAppleWebkit ? [...base, 'ac3', 'eac3'] : base
 }
 
+/**
+ * pix_fmt 是否高位深（10/12/16-bit）。只认 `…p10le / p010le / p016le` 这类
+ * 8-bit 以外的格式；`nv12`（8-bit 4:2:0）里虽然含 "12" 但不是高位深，别误判。
+ */
+function isHighBitDepth(pixFmt: string): boolean {
+  return /p0?(?:10|12|16)(?:le|be)?$/.test(pixFmt)
+}
+
 export function resolvePlaybackRoute(i: PlaybackRouteInput): PlaybackRoute {
   const p = i.probe
   if (!p) return 'direct'
   const audio = (p.acodec || '').toLowerCase()
   const video = (p.vcodec || '').toLowerCase()
+  const highBit = isHighBitDepth((p.pixfmt || '').toLowerCase())
   // 探测失败的维度按"可解"算：缺信息不该把用户赶去转码
   const audioOk = audio === '' || i.audioCodecs.includes(audio)
   const videoOk = video === '' || i.videoCodecs.includes(video)
-  if (audioOk && videoOk) return 'direct'
+  if (audioOk && videoOk && !highBit) return 'direct'
 
   const canTranscode = i.transcodeAvailable !== false
+  // 10-bit H.264（Hi10P）：直连和原生桥都救不了（浏览器只带 8-bit 解码器，
+  // 电视硬解同样只吃 8-bit）→ 转码是唯一出路；连转码都没有才提示原生
+  if (highBit) return canTranscode ? 'transcode' : 'native-hint'
   if (i.hasNative && i.preferNativeOnSilent) return 'native'
   if (i.hasNative) return 'native-hint'
   return canTranscode ? 'transcode' : 'native-hint'

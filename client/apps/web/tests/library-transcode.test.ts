@@ -203,7 +203,8 @@ describe('F5 容器预判（不能播的内核直接转码，不白等 watchdog�
 
   it('预判失败/异常能让错误页显示出来（loading 必须收尾）', () => {
     const i = src.indexOf('async function tryLibraryTranscode')
-    const body = src.slice(i, i + 1800)
+    // 2400：函数里还要算编码信息与提示文案（2026-11-23），窗口给足但仍只覆盖这一个函数
+    const body = src.slice(i, i + 2400)
     expect((body.match(/loading\.value = false/g) || []).length).toBeGreaterThanOrEqual(2)
   })
 })
@@ -231,14 +232,18 @@ describe('可播判据与并发（2026-11-17 第二轮回修：播几秒就卡�
   })
 
   it('一次只跑一个重转码（RK VDEC 通道有限，并发必崩一个）', () => {
-    expect(s).toContain('stopOtherJobs(j.id)')
+    // 2026-11-23：串行带"是否要硬解"参数 —— 软件任务不打断正在被观看的旧任务
+    expect(s).toMatch(/stopOtherJobs\(j\.id, (hw|hwCapable|true|false)\)/)
     expect(s).toContain('"cancelled"')
-    const i = s.indexOf('private static void stopOtherJobs')
-    const body = s.slice(i, i + 1600)
+    const i = s.indexOf('private static boolean stopOtherJobs')
+    // 3000：函数里新增了「正在看的硬件任务不被抢占」的前置检查（2026-11-23）
+    const body = s.slice(i, i + 3000)
     expect(body).toContain('destroyForcibly')
     // 2026-11-20：取消不再删分片（删了会让另一台正在看的人 404）
     expect(body).not.toContain('cleanSegments(o.id)')
     expect(body).toContain('cancelled_by_other')
+    // 观看中的任务不因软件新任务被打断（2026-11-23 实报「转码失败」根因）
+    expect(body).toContain('newNeedsHw')
   })
 
   it('硬解失败先重试硬解一次（句柄未释放会瞬时崩），再退软解', () => {
@@ -341,7 +346,7 @@ describe('回归加固（2026-11-17 第三轮审计）', () => {
   })
 
   it('严格串行：新任务取消旧任务（2026-11-20 起不再按 .access 豁免）', () => {
-    const stop = s.slice(s.indexOf('private static void stopOtherJobs'),
+    const stop = s.slice(s.indexOf('private static boolean stopOtherJobs'),
       s.indexOf('private static Path dirOf'))
     expect(stop).not.toContain('recentlyPlayed')
     expect(stop).toContain('o.state = "cancelled"')

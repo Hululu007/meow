@@ -171,6 +171,9 @@ export interface MediaProbeResult {
   ok: boolean
   vcodec?: string
   acodec?: string
+  /** 源像素格式（yuv420p / yuv420p10le…）：10-bit H.264（Hi10P）是浏览器与
+   *  多数盒子硬解的共同盲区，分配层据此直接走转码（2026-11-23 片库实报）。 */
+  pixfmt?: string
   channels?: number
   width?: number
   height?: number
@@ -178,6 +181,39 @@ export interface MediaProbeResult {
 }
 
 const probeCache = new Map<string, MediaProbeResult>()
+const PROBE_LS_KEY = 'meow.probe'
+
+/*
+ * 探测结果同时落 localStorage（2026-11-23）：10-bit 的"起播前拦截"要靠它。
+ * 只存在内存里的话，每次冷启动第一次进 10-bit 集都要先闪一次解码错误页。
+ * 条目很小（每条约 120 字节），上限 300 条，超出丢最旧的。
+ */
+function saveProbePersist(key: string, v: MediaProbeResult) {
+  try {
+    const all = JSON.parse(localStorage.getItem(PROBE_LS_KEY) || '{}') as Record<string, MediaProbeResult>
+    all[key] = v
+    const keys = Object.keys(all)
+    if (keys.length > 300) for (const k of keys.slice(0, keys.length - 300)) delete all[k]
+    localStorage.setItem(PROBE_LS_KEY, JSON.stringify(all))
+  } catch {
+    /* 存储满/隐私模式：只影响"冷启动预判"，不影响播放 */
+  }
+}
+
+function loadProbePersist(key: string): MediaProbeResult | null {
+  try {
+    const all = JSON.parse(localStorage.getItem(PROBE_LS_KEY) || '{}') as Record<string, MediaProbeResult>
+    return all[key] || null
+  } catch {
+    return null
+  }
+}
+
+/** 同步取缓存里的探测结果（未探测过返回 null）——起播前预判 10-bit 用。 */
+export function peekMediaProbe(lib: string, path: string): MediaProbeResult | null {
+  const key = `${lib}|${path}`
+  return probeCache.get(key) || loadProbePersist(key)
+}
 
 /**
  * 探测某个片库文件的音/视频编码。失败（老后端无此端点、ffprobe 缺失）
@@ -196,6 +232,7 @@ export async function fetchMediaProbe(lib: string, path: string): Promise<MediaP
       if (j?.ok) {
         out = j
         probeCache.set(key, j)
+        saveProbePersist(key, j)
       }
     }
   } catch {
@@ -474,6 +511,31 @@ export function groupByTitle(files: LibraryEntry[], folderName = '', parentName 
   return Array.from(map.values()).sort((a, b) => a.title.localeCompare(b.title))
 }
 
+/**
+ * 片库 → 弹幕检索用的剧名（2026-11-23）。
+ *
+ * <p>路径结构不固定：`剧名/集.mkv`、`剧名/S01/集.mkv`、`毛骗/毛骗S01/集.mkv`
+ * 都存在。季从目录链里找，有季就拼「某某 第一季」——弹幕源对带季的名字更准。
+ *
+ * @param base  分组名（刮削名优先，`教父 第1部` 这种已剥成 `教父`）
+ * @param names 从库根到当前目录的名字链
+ */
+export function libraryDanmakuTitle(base: string, names: string[]): string {
+  const b = (base || '').trim()
+  for (let i = names.length - 1; i >= 0; i--) {
+    const p = parseFolderName(names[i])
+    if (p.season > 0) return seasonTitle(p.title || b, p.season) || b
+  }
+  return b
+}
+
+/** 片库集标签：与播放页/弹幕接口的「第N集」口径一致（电影按部，其余去扩展名） */
+export function libraryEpisodeLabel(f: { episode: number; part: number; name: string }): string {
+  if (f.episode > 0) return `第${f.episode}集`
+  if (f.part > 0) return `第${f.part}部`
+  return f.name.replace(/\.[^.]+$/, '')
+}
+
 export function fmtSize(bytes: number): string {
   if (!bytes) return ''
   const gb = bytes / 1024 / 1024 / 1024
@@ -592,6 +654,18 @@ export interface TranscodeResult {
   lastSegmentAge?: number
   /** 被串行化取消但已有可播分片：当降级成功处理 */
   partial?: boolean
+  /** 源编码（后端 probe）：面板/提示条解释"4K 为什么变 1080p"（2026-11-23） */
+  srcVcodec?: string
+  srcAcodec?: string
+  srcPixfmt?: string
+  srcWidth?: number
+  srcHeight?: number
+  copyVideo?: boolean
+  copyAudio?: boolean
+  /** 输出编码（按 hlsCommand 分支给出：copy 原样 / hw·软编 h264+1080 封顶） */
+  outVcodec?: string
+  outPixfmt?: string
+  outHeight?: number
 }
 
 /**
@@ -655,6 +729,8 @@ export function transcodeErrorMessage(r: TranscodeResult): string {
       return '这台后端没有 4K 硬编码能力，软转 4K 远慢于播放。请用「原生播放器」打开（投影仪可硬解 4K），或换 1080p / H.264 线路。'
     case 'no_ffmpeg':
       return '这台后端没有 ffmpeg，无法转码。可以改用 PC / OECT 后端，或点「用原生播放器打开」。'
+    case 'hw_busy':
+      return '有播放任务正在转码这部 4K 片源（本机或另一台设备），请稍后再试，或换 1080p / H.264 线路。'
     case 'cancelled_by_other':
       return '另一台设备刚开始转码，本任务让路。已转好的部分还能继续看；要完整播放请稍后再点一次。'
     case 'stalled':
@@ -809,8 +885,10 @@ export async function cancelTranscode(t: {
   }
 }
 
-export async function startTranscode(src: string): Promise<TranscodeResult> {
+export async function startTranscode(src: string, header = ''): Promise<TranscodeResult> {
   const q = new URLSearchParams({ src })
+  // 源站要求的 UA/Referer：转码是后端自己拉流，不带就是 404（咕噜4K 实测）
+  if (header) q.set('header', header)
   const r = await fetch(`${apiBase()}/api/transcode?${q}`)
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   return (await r.json()) as TranscodeResult
@@ -823,10 +901,11 @@ export async function waitTranscode(
   src: string,
   onProgress?: TranscodeProgress,
   timeoutMs = TRANSCODE_BASE_MS,
+  header = '',
 ): Promise<TranscodeResult> {
   return waitTranscodeCore(
     {
-      start: () => startTranscode(src),
+      start: () => startTranscode(src, header),
       poll: async () => {
         const q = new URLSearchParams({ src, mode: 'status' })
         const r = await fetch(`${apiBase()}/api/transcode?${q}`)

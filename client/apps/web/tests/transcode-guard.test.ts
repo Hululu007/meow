@@ -43,11 +43,34 @@ describe('转码不再卡死/并发', () => {
     expect(T).not.toContain('exited = j.proc.waitFor(30, TimeUnit.SECONDS);')
   })
 
-  it('在线源 ensure() 也串行，且不再用 recentlyPlayed 放行旧任务', () => {
+  it('串行由 startFfmpeg 统一执行（硬件任务抢占，软件任务不打断观看者）', () => {
+    // 2026-11-23：ensure() 的串行决策下沉到 startFfmpeg（probe 之后才知道要不要硬解）
     const ensure = T.slice(T.indexOf('public static Job ensure('), T.indexOf('public static Job ensureLocal('))
-    expect(ensure).toContain('stopOtherJobs(j.id)')
-    const stop = T.slice(T.indexOf('private static void stopOtherJobs'), T.indexOf('private static Path dirOf'))
+    expect(ensure).toContain('startFfmpeg(j, ff, sourceUrl, false)')
+    const start = T.slice(T.indexOf('private static void startFfmpeg'), T.indexOf('private static void pump'))
+    expect(start).toContain('stopOtherJobs(j.id, hw)')
+    const stop = T.slice(T.indexOf('private static boolean stopOtherJobs'), T.indexOf('private static Path dirOf'))
+    // 不再按"最近播放"永久放行（旧事故根因），但"正在被观看 + 新任务是软件任务"要放行
     expect(stop).not.toContain('recentlyPlayed')
+    expect(stop).toContain('newNeedsHw')
+    expect(stop).toContain('lastAccess')
+  })
+
+  it('两台设备抢 4K：正在看的硬件任务不被杀，新任务明确报 hw_busy', () => {
+    // 2026-11-23 用户点单：第二台设备不能把第一台正在看的 4K 硬转杀掉
+    const stop = T.slice(T.indexOf('private static boolean stopOtherJobs'), T.indexOf('private static Path dirOf'))
+    expect(stop).toContain('reject new hw job')
+    expect(stop).toContain('return false')
+    expect(T).toContain('hw_busy')
+  })
+
+  it('4K 点播源能进 ffmpeg：伪装分片扩展名 + 源站 UA/Referer', () => {
+    // 2026-11-23 咕噜4K 实报：TS 分片写成 .png；m3u8 无 UA 直接 404。
+    // 两条都必须出现在输入参数里，否则 probe 失败 → 4K 线路被判死。
+    expect(T).toContain('-extension_picky')
+    expect(T).toContain('-user_agent')
+    expect(T).toContain('-headers')
+    expect(T).toContain('addHttpInputOptions(cmd, source, header)')
   })
 })
 

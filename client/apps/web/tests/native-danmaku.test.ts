@@ -40,7 +40,10 @@ describe('TV 原生播放器弹幕接线', () => {
   })
 
   it('PlayView 把弹幕地址交给原生播放器', () => {
-    expect(PLAY_VIEW).toContain('openNative(u, title, play.value?.header, resumePos(), danmakuUrl.value, meta)')
+    // 2026-11-23：交接位置改用 handoffPos()（当前播放位置优先，历史兜底）
+    expect(PLAY_VIEW).toContain(
+      'openNative(u, title, play.value?.header, handoffPos(), danmakuUrl.value, meta)',
+    )
   })
 
   it('桥与 Activity 的 EXTRA 名字一致', () => {
@@ -62,7 +65,10 @@ describe('TV 原生播放器弹幕接线', () => {
 
 describe('原生弹幕：设置/进度/分道（2026-11-20）', () => {
   it('网页把弹幕设置与进度坐标通过 meta 传进原生', () => {
-    expect(PLAY_VIEW).toContain('openNative(u, title, play.value?.header, resumePos(), danmakuUrl.value, meta)')
+    // 2026-11-23：进度坐标走 handoffPos()（当前播放位置），不再只读历史
+    expect(PLAY_VIEW).toContain(
+      'openNative(u, title, play.value?.header, handoffPos(), danmakuUrl.value, meta)',
+    )
     expect(NATIVE_BRIDGE).toContain('openNativeFull')
     expect(PLAY_VIEW).toContain('opacity: prefs.danmakuOpacity')
     expect(PLAY_VIEW).toContain('block: prefs.danmakuBlock')

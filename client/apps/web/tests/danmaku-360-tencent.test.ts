@@ -225,8 +225,10 @@ describe('下集弹幕预取（片尾前）', () => {
     )
     expect(P).toContain('maybePrefetchNextDanmaku')
     expect(P).toContain('prefetchedEp')
-    // 公式：min(片尾标记, 时长) - 提前量（用户定的写法）
-    expect(P).toMatch(/Math\.min\(mark, dur\)\s*-\s*prefetchLead\.value/)
+    // 公式：min(片尾标记, 真实总时长) - 提前量。
+    // 用 total 而不是 video.duration：转码中的 duration 只是"已转出边缘"，
+    // 拿它算触发点永远到不了（2026-11-23 片库实报）。
+    expect(P).toMatch(/Math\.min\(mark, total\)\s*-\s*prefetchLead\.value/)
     // 开关与提前量都要能配
     expect(P).toContain('prefetchOn')
     expect(P).toContain('prefetchLead')

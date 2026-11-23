@@ -49,6 +49,8 @@ const EXEMPT: Record<string, string> = {
   cacheDays: '设置页没有暴露，属历史遗留字段',
   // TV 专属：AC3/DTS 无声时切原生播放器，手机推给 TV 没有意义
   nativeOnSilent: 'TV 壳专属行为（设备 Dolby 解码），手机侧推送无意义',
+  // 设备能力记忆：点过提示条按钮才写，设置页不暴露（换设备应重新问）
+  silentAction: '设备能力记忆（原生/转码），设置页没有 UI，换设备应重新询问',
 }
 
 function settingsFields(): Set<string> {

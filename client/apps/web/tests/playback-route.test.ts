@@ -95,6 +95,31 @@ describe('③ Safari 能力表（AC3/E-AC3 可直解）', () => {
   })
 })
 
+describe('播放分配：10-bit H.264（Hi10P，2026-11-23 片库实报）', () => {
+  const HI10P = { acodec: 'aac', vcodec: 'h264', pixfmt: 'yuv420p10le' }
+  it('TV 有原生桥也走转码：电视硬解同样只吃 8-bit', () => {
+    expect(tv({ probe: HI10P })).toBe('transcode')
+    expect(tv({ probe: HI10P, preferNativeOnSilent: true })).toBe('transcode')
+  })
+  it('PC → 转码', () => {
+    expect(pc({ probe: HI10P })).toBe('transcode')
+  })
+  it('连转码都没有 → 提示原生（最后一条路）', () => {
+    expect(tv({ probe: HI10P, transcodeAvailable: false })).toBe('native-hint')
+  })
+  it('8-bit yuv420p 不受影响 → 直连', () => {
+    expect(tv({ probe: { ...AAC, pixfmt: 'yuv420p' } })).toBe('direct')
+    expect(pc({ probe: { ...AAC, pixfmt: 'yuv420p' } })).toBe('direct')
+  })
+  it('nv12 是 8-bit（名字含 12 不算高位深）→ 直连', () => {
+    expect(tv({ probe: { ...AAC, pixfmt: 'nv12' } })).toBe('direct')
+  })
+  it('p010le / yuv420p12le 都识别为高位深', () => {
+    expect(tv({ probe: { ...AAC, pixfmt: 'p010le' } })).toBe('transcode')
+    expect(pc({ probe: { ...AAC, pixfmt: 'yuv420p12le' } })).toBe('transcode')
+  })
+})
+
 describe('播放分配：探测失败按可解算', () => {
   it('acodec 缺失（probe 半残）→ direct，不把用户赶去转码', () => {
     expect(tv({ probe: { vcodec: 'h264' } })).toBe('direct')

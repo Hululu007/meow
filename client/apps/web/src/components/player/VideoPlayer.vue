@@ -18,6 +18,8 @@ import { isTvEnv } from '@/composables/useCardCols'
 import { isIosPhone } from '@/compat/ua'
 import { hasFinePointer, isTvShell } from '@/compat/shell'
 import { cleanDmTitle, epBadgeOf } from '@/utils/dmTitle'
+import { panelMediaLine, type MediaSourceInfo } from '@/utils/mediaInfo'
+import { reportPlayerEvent } from '@/api/playerEvents'
 import { assToVtt, srtToVtt, subtitleFormat, type MiddleSegment, type SubTrack } from '@/api/playExtras'
 import {
   hasSystemSleep,
@@ -136,6 +138,16 @@ const props = withDefaults(defineProps<{
   site?: string
   vodId?: string
   /**
+   * 当前源的编码信息（后端转码结果 / 原生播放器回传）。
+   * 直连时为空 —— 面板改用清单里的 CODECS。
+   */
+  mediaInfo?: MediaSourceInfo | null
+  /**
+   * 外部要求起播后跳到的位置（秒）。用于"token 过期 → 父组件换新地址"，
+   * 应用后 emit('seek-applied') 让父组件清零，避免下次换集又跳。
+   */
+  seekAt?: number
+  /**
    * 源站给的片头结束秒数 / 片尾开始秒数（已由 `api/playExtras.skipWindowFrom`
    * 从毫秒换算好）。手动画的标记优先于它，它又优先于设置页的全局默认值。
    */
@@ -201,6 +213,10 @@ const emit = defineEmits<{
   (e: 'progress', payload: { pos: number; dur: number; final: boolean; watched: number }): void
   /** 元数据就绪（可以安全 seek 了）。续播恢复挂在这里 */
   (e: 'loaded', payload: { duration: number }): void
+  /** 分片中途 403/401（token 过期）：父组件应重新取 play 地址并在原位置续播 */
+  (e: 'stale-src', payload: { at: number; http: number }): void
+  /** seekAt 已应用，父组件可清零 */
+  (e: 'seek-applied'): void
   /** 用户点了「下载到本机」，真正抓分片由父组件负责 */
   (e: 'download'): void
   /** 用户点了「下载整季」 */
@@ -665,6 +681,15 @@ function seekBy(sec: number) {
  *   outro = 片尾开始的"距结尾秒数"（位置 >= duration - outro 时提示跳过）
  */
 const marks = ref<SkipMarks>({ intro: 0, outro: 0, at: 0 })
+/**
+ * 播放位置是否已经可信（metadata 到手、刷新续播 seek 已落地）。
+ *
+ * <p>为什么需要：⟳ 刷新会回到 0 秒等 metadata，而片头标记在手 →
+ * `inIntro` 立刻为真，右下角「跳过片头」会在加载阶段闪一下；等续播
+ * seek 落到 20 分钟又突然消失（2026-11-23 实报）。片头提示只该在
+ * 位置可信之后出现，否则看起来像"每刷新一次都从头开始"。
+ */
+const posReady = ref(false)
 
 function reloadMarks() {
   if (!props.site || !props.vodId) {
@@ -696,7 +721,7 @@ const outroAt = computed(() => {
 
 /** 在片头区间内 */
 const inIntro = computed(
-  () => skipIntro.value > 0 && currentTime.value < skipIntro.value,
+  () => posReady.value && skipIntro.value > 0 && currentTime.value < skipIntro.value,
 )
 /** 进入片尾区间 */
 const inOutro = computed(() => outroAt.value > 0 && currentTime.value >= outroAt.value)
@@ -893,6 +918,9 @@ function doSkipIntro() {
 }
 function doSkipOutro() {
   clearSkipTimer('outro')
+  // 跳完片尾画面还停在片尾区间（没有 seek 到末尾），提示条要主动收掉，
+  // 否则父组件的连播倒计时期间它还挂在右下角，像"点了没生效"。
+  outroDismissed.value = true
   skipOutroNow()
 }
 
@@ -1175,19 +1203,17 @@ function armNoAudioWatch() {
  * 语义上也比"再等 1 秒"更准确。
  */
 function skipOutroNow() {
-  const v = video.value
-  // 先落到末尾附近，让画面与进度条停在该停的位置（不指望它再触发 ended）
-  if (v && duration.value) {
-    try {
-      v.currentTime = Math.max(0, duration.value - 1)
-    } catch {
-      /* seek 失败不影响下面的收尾 */
-    }
-  }
-  // 打过这一枪之后，1 秒后的自然 ended 不许再发（见 endedSent 的注释）
+  /*
+   * ★ 不要把 currentTime 拉到 duration-1（2026-11-23 用户实报「跳片尾会先定位到
+   *   最后一秒再跳」）。原来那样做是为了"画面停在末尾"，但用户看到的是一次
+   *   突兀的跳转；而 ended 语义本来就不依赖真实播放位置。
+   *
+   * 现在：直接发 ended（父组件换集/倒计时），进度按"已看完"上报（pos=duration），
+   * 父组件据此清掉续播点；画面停在用户点跳过的位置，不再先跳到最后一秒。
+   */
   endedSent = true
   emit('ended')
-  flushProgress(true)
+  flushProgress(true, true, duration.value || video.value?.duration || 0)
 }
 
 /**
@@ -1377,6 +1403,8 @@ function collectDebug() {
       ? {
           level: cur,
           levelCount: levels.length,
+          // 清单里的 CODECS（avc1.640028 / hvc1.2.4.L153…）：直连时浏览器唯一能拿到的编码
+          codecs: (cur >= 0 ? ((levels[cur] as unknown as { attrs?: { CODECS?: string } })?.attrs?.CODECS || '') : ''),
           // 码率：当前档位实际比特率 / 各档列表
           bitrate: cur >= 0 && levels[cur] ? levels[cur].bitrate : null,
           // 倍速联动降档的生效值（-1=不限）——排查"1.25x 卡"时先看它
@@ -1391,6 +1419,8 @@ function collectDebug() {
     // ---- 业务层 ----
     biz: {
       line: props.lineName || '默认',
+      // 源/输出编码（转码或原生回传；直连为空）
+      media: props.mediaInfo ? panelMediaLine(props.mediaInfo) : '',
       autoRetryHint: props.autoRetryHint || null,
       recoverAttempts,
       maxRecoverAttempts: MAX_RECOVER_ATTEMPTS,
@@ -1494,6 +1524,7 @@ function clearStartupWatchdog() {
     clearTimeout(stallTimer)
     stallTimer = null
   }
+  clearProgressWatchdog()
 }
 
 /** 起播预算是否已经因为"清单已到"放宽过一次 */
@@ -1529,6 +1560,131 @@ function extendStallForFragment() {
   if (rest <= 2_000) return
   if (stallTimer !== null) clearTimeout(stallTimer)
   stallTimer = window.setTimeout(onStallTimeout, rest)
+}
+
+/** 源地址的 host（上报用，不带 query/token） */
+function srcHost(): string {
+  try {
+    return new URL(props.src).host
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 播放点落进缓冲区空洞 → 跳到下一段可播范围。
+ *
+ * <p>为什么需要：hls.js 的 `maxBufferHole` 只处理 0.5s 以内的空隙；源分片
+ * 时间戳不连续（变长分片、录制源、token 中途失效后重连）会留下更大的洞。
+ * 播放点卡在洞里时画面永远不动，而 ERROR 是**非致命**的
+ * `bufferStalledError` —— 以前只记录不处理，用户看到的就是
+ * 「某一段之后一直缓冲，也不是网络抖动」。
+ *
+ * <p>只跳 ≤10 秒的洞：更大的洞说明流本身断了，交给换线。
+ */
+function tryNudgeOverHole(): boolean {
+  const v = video.value
+  if (!v) return false
+  if (holeNudges >= 3) return false
+  const b = v.buffered
+  const t = v.currentTime
+  let target = -1
+  for (let i = 0; i < b.length; i++) {
+    const s0 = b.start(i)
+    const e0 = b.end(i)
+    if (t >= s0 - 0.05 && t < e0 - 0.05) {
+      // 在区间内：只有贴着末端才考虑下一段（否则是解码/性能问题，不是洞）
+      if (e0 - t <= 0.3 && i + 1 < b.length) target = b.start(i + 1)
+      break
+    }
+    if (s0 > t + 0.05) {
+      target = s0
+      break
+    }
+  }
+  if (target < 0) return false
+  const gap = target - t
+  if (gap <= 0 || gap > 10) return false
+  holeNudges++
+  try {
+    v.currentTime = target + 0.05
+  } catch {
+    return false
+  }
+  try {
+    hls.value?.startLoad()
+  } catch {
+    /* 引擎销毁中 */
+  }
+  lastHlsError.value = `跳过缓冲空洞 ${gap.toFixed(1)}s（${holeNudges}/3）`
+  reportPlayerEvent({
+    kind: 'buffer_hole',
+    site: props.site,
+    vod: props.vodId,
+    ep: props.title,
+    pos: t,
+    gap,
+    host: srcHost(),
+  })
+  return true
+}
+
+/** 播放中进度看门狗：暂停/后台/未就绪时都不判。 */
+function armProgressWatchdog() {
+  clearProgressWatchdog()
+  lastProgressAt = 0
+  lastProgressTime = 0
+  stallRetries = 0
+  progressTimer = window.setInterval(() => {
+    const v = video.value
+    if (!v || v.paused || v.readyState < 2 || endedSent) return
+    if (document.visibilityState === 'hidden') return
+    const now = performance.now()
+    if (Math.abs(v.currentTime - lastProgressTime) > 0.25) {
+      lastProgressTime = v.currentTime
+      lastProgressAt = now
+      stallRetries = 0
+      return
+    }
+    if (!lastProgressAt) {
+      lastProgressAt = now
+      return
+    }
+    if (now - lastProgressAt < 5_000) return
+    if (tryNudgeOverHole()) {
+      lastProgressAt = now
+      return
+    }
+    // 没有可跳的洞：再拉一次取流，留一个 5 秒窗口；仍不动才报停滞。
+    // 报 stall（不是 media）→ 父组件换线，绝不会拿它去触发转码。
+    if (stallRetries < 2) {
+      stallRetries++
+      try {
+        hls.value?.startLoad()
+      } catch {
+        /* 引擎销毁中 */
+      }
+      lastProgressAt = now
+      return
+    }
+    reportPlayerEvent({
+      kind: 'buffer_stall',
+      site: props.site,
+      vod: props.vodId,
+      ep: props.title,
+      pos: video.value?.currentTime || 0,
+      msg: lastHlsError.value,
+      host: srcHost(),
+    })
+    failPlay('播放卡住了：画面 5 秒没有前进（缓冲/分片断流），换一条线路试试', 'stall')
+  }, 2_000)
+}
+
+function clearProgressWatchdog() {
+  if (progressTimer !== null) {
+    clearInterval(progressTimer)
+    progressTimer = null
+  }
 }
 
 /**
@@ -1590,6 +1746,7 @@ function armWatchdogs() {
   if (stallTimer !== null) clearTimeout(stallTimer)
   startupTimer = window.setTimeout(onStartupTimeout, 20_000)
   stallTimer = window.setTimeout(onStallTimeout, 12_000)
+  armProgressWatchdog()
 }
 
 function setupSource(url: string) {
@@ -1602,6 +1759,8 @@ function setupSource(url: string) {
   endedSent = false
   // 新源要重新自动起播（见 onLoaded 里 didAutoStart 的注释）
   didAutoStart = false
+  // 位置可信要等 onLoaded（metadata + 刷新续播 seek）：之前不弹片头提示
+  posReady.value = false
   // 换源时缓冲冻结状态必须复位：否则上一集残留的"冻结中"会让新源起播后
   // 的自愈判据基于旧时间点，引擎要么白开一次、要么一直冻着
   dmFrozenForBuffer = false
@@ -1615,6 +1774,9 @@ function setupSource(url: string) {
   // 每次换源/重试都从零开始计次
   recoverAttempts = 0
   fragLoadedCount = 0
+  holeNudges = 0
+  stallRetries = 0
+  staleTried = false
   // 观看时长也是每集重新计（父组件看到数值回落会把基准一起重置）
   watchedSec = 0
   watchedTickAt = 0
@@ -1808,12 +1970,39 @@ function setupSource(url: string) {
        *     否则会把"能播的流"误杀。
        */
       const httpCode = data.response?.code || 0
+      /*
+       * 403/401 且已经成功播过分片 = 中途 token 过期（不是地址写错）。
+       * 让父组件重新调 play 拿新 token，并在原位置续播；每条源只试一次，
+       * 刷新失败就落回原来的 4xx/网络失败流程（换线）。
+       */
+      if ((httpCode === 403 || httpCode === 401) && fragLoadedCount > 0 && !staleTried) {
+        staleTried = true
+        lastHlsError.value = '地址已过期（403），正在刷新播放地址…'
+        const at = video.value?.currentTime || currentTime.value
+        reportPlayerEvent({
+          kind: 'token_stale',
+          site: props.site,
+          vod: props.vodId,
+          ep: props.title,
+          pos: at,
+          host: srcHost(),
+        })
+        emit('stale-src', { at, http: httpCode })
+        return
+      }
       if (!data.fatal && httpCode >= 400 && httpCode < 500 && httpCode !== 403
           && fragLoadedCount === 0) {
         failPlay(`无法播放：${data.details} (${httpCode})\n（源站返回 ${httpCode}，地址可能已失效）`, 'http')
         return
       }
-      if (!data.fatal) return
+      if (!data.fatal) {
+        /*
+         * bufferStalledError 是非致命的：hls.js 只是"发现播放点不动了"，
+         * 不会自己跳过较大的洞。这里主动跳；跳不了就等进度看门狗兜底。
+         */
+        if (data.details === 'bufferStalledError') tryNudgeOverHole()
+        return
+      }
       /*
        * 502 且由我们的代理发出 → 上游把视频分片换成了图片（"假流"）。
        *
@@ -1852,6 +2041,15 @@ function setupSource(url: string) {
         failPlay(`网络错误：${data.details}`, 'network')
         return
       }
+      /*
+       * 致命 bufferStalledError 仍然不是"解不了编码"：先跳洞；
+       * 跳不了按 stall 报错 → 父组件换线（转码对空洞无效）。
+       */
+      if (data.details === 'bufferStalledError') {
+        if (tryNudgeOverHole()) return
+        failPlay('播放卡住了：缓冲区出现断层（不是网络抖动），换一条线路试试', 'stall')
+        return
+      }
       if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
         if (++recoverAttempts <= MAX_RECOVER_ATTEMPTS) {
           h.recoverMediaError()
@@ -1880,6 +2078,16 @@ let recoverAttempts = 0
  * 只能看这个计数。换源时在 setupSource 归零。
  */
 let fragLoadedCount = 0
+/** 缓冲区空洞自动跳过次数（每条源最多 3 次，防止在坏源上空转） */
+let holeNudges = 0
+/** 中途 403 已请求父组件刷新地址（每条源只试一次） */
+let staleTried = false
+/** 停滞后已重拉取流的次数（跳洞跳不下去时的第二级兜底） */
+let stallRetries = 0
+/** 播放进度看门狗（2 秒一次）：播放中 currentTime 长期不动 → 跳洞/重拉/报停滞 */
+let progressTimer: number | null = null
+let lastProgressAt = 0
+let lastProgressTime = 0
 
 /**
  * 从 hls.js 的错误串里猜出失败类别。
@@ -1897,7 +2105,8 @@ function classifyHlsDetail(detail: string): PlayErrorKind {
     if (code >= 400 && code < 500) return 'http'
     if (code >= 500) return 'network'
   }
-  if (/bufferappend|bufferstalled|decode|remux|append/.test(s)) return 'media'
+  if (/bufferstalled|stalled/.test(s)) return 'stall'
+  if (/bufferappend|decode|remux|append/.test(s)) return 'media'
   return 'network'
 }
 
@@ -1983,6 +2192,13 @@ function destroyHls() {
  * 三步缺一不可：muted（立刻听不到）→ 摘 src（丢弃 MSE 引用）→
  * load()（让解码管线收尾，只摘 src 不 load 仍可能继续出声）。
  */
+/** 彻底停播：hls.js 实例也要销毁，否则它还会往旧 MediaSource 里塞分片。 */
+function stopPlayback() {
+  destroyHls()
+  stopMedia()
+  errorMsg.value = ''
+}
+
 function stopMedia() {
   const v = video.value
   if (!v) return
@@ -2903,10 +3119,16 @@ let watchedTickAt = 0
  */
 let endedSent = false
 
-function flushProgress(final = false, force = false) {
+function flushProgress(final = false, force = false, posOverride?: number) {
   const v = video.value
   if (!v) return
-  const pos = v.currentTime
+  /*
+   * 已经发过 ended（跳过片尾/自然播完）之后，5 秒心跳不能再写进度：
+   * 父组件已在 onEnded 里清掉进度，心跳会把片尾位置又写回去，
+   * 下次进来就从片尾续播。
+   */
+  if (endedSent && !final) return
+  const pos = posOverride ?? v.currentTime
   const dur = v.duration
   if (!Number.isFinite(pos) || pos < 0) return
   /*
@@ -3042,6 +3264,22 @@ function onLoaded() {
     const cap = duration.value > 1 ? duration.value - 1 : at
     if (at <= cap) v.currentTime = at
   }
+  /*
+   * 父组件要求的外部跳转（token 过期换新地址后续播）：
+   * resumeAfterReload 是"刷新按钮"自己的位置，两者不叠加。
+   */
+  if (props.seekAt && props.seekAt > 1 && resumeAfterReload <= 0) {
+    const want = props.seekAt
+    const cap = duration.value > 1 ? duration.value - 0.5 : want
+    try {
+      v.currentTime = Math.min(want, cap)
+    } catch {
+      /* seek 失败不影响播放 */
+    }
+    emit('seek-applied')
+  }
+  // 到这里位置才可信：刷新续播已经 seek 完，片头提示不会误闪
+  posReady.value = true
   // ★ 自动起播。
   //
   //   原来完全没有这一步：<video> 上没写 autoplay，也没人调 play()，
@@ -3810,6 +4048,8 @@ function focusDmCurrentEp() {
 function openDmSearch() {
   openPanel(null)
   showDmSearch.value = true
+  // 兜底：片名是后到的（路由 query 更新）或之前为空时，打开面板即填好片名
+  if (!dmKeyword.value.trim()) dmKeyword.value = showName.value
   /*
    * 已有上一次搜索结果时，打开面板直接定位到当前集（2026-11-09）。
    * 否则长番切集后打开面板仍停在上一集的滚动位置，用户还得自己翻。
@@ -3887,7 +4127,24 @@ function closeDmSearch() {
   if (typeof w.__meowTvScopeClosed === 'function') w.__meowTvScopeClosed()
 }
 
-const dmKeyword = ref(props.title?.split(' · ')[0] || '')
+/**
+ * 手动搜索弹幕的默认关键词 = 片名（`title` 是「片名 · 第N集」，去掉集名）。
+ *
+ * <p>片库这条以前是空串（进播放页没传 name），用户每次都要自己敲片名；
+ * 现在片库也会带 name（见 LibraryView.play），这里跟着片名自动填。
+ *
+ * <p>只在"用户没改过"时跟随：`dmKeywordAuto` 记住上一次自动填的值，
+ * 用户手敲过就不再覆盖，避免切集/切片把他输入的关键词冲掉。
+ */
+const showName = computed(() => (props.title || '').split(' · ')[0].trim())
+const dmKeyword = ref(showName.value)
+let dmKeywordAuto = dmKeyword.value
+watch(showName, (n) => {
+  if (!n) return
+  const cur = dmKeyword.value.trim()
+  if (!cur || cur === dmKeywordAuto) dmKeyword.value = n
+  dmKeywordAuto = n
+})
 const dmResults = ref<DanmakuCandidate[]>([])
 const dmSearching = ref(false)
 const dmSearchError = ref('')
@@ -5511,6 +5768,25 @@ onMounted(() => {
     if (!v.currentSrc && !v.src) return
     if (errorMsg.value) return
     const code = v.error?.code
+    try {
+      if (localStorage.getItem('meow.debug') === '1') {
+        const w = window as unknown as { __dbg?: string[] }
+        ;(w.__dbg || (w.__dbg = [])).push(
+          'mediaError code=' + code + ' net=' + v.networkState + ' ready=' + v.readyState +
+          ' co=' + String(v.crossOrigin) + ' src=' + v.currentSrc.slice(0, 70) + ' err=' + String(v.error && v.error.message).slice(0, 60),
+        )
+      }
+    } catch {
+      /* 忽略 */
+    }
+    /*
+     * ★ 没有 MediaError 的 error 事件是伪错误（2026-11-23 实测踩过）：
+     *   给 <video> 改 crossOrigin / 从 MediaSource 回退直连时会补发一个
+     *   error 事件，此时 v.error 仍为 null。原来当成失败 → 片库直连一加载
+     *   就"播放失败：媒体错误 未知" → 自动转码（用户看到"一进就报错/自己转码"）。
+     *   真正的失败（网络/解码/格式）都带 MediaError，交给下面按 code 分类。
+     */
+    if (code === undefined || code === null) return
     const map: Record<number, string> = {
       1: '加载被中断',
       2: '网络错误',
@@ -6040,6 +6316,8 @@ defineExpose({
   isPaused,
   getDuration,
   unmute,
+  /** 停掉并清空当前源（片库决定不走直连时用，避免旧片在后台继续播） */
+  stop: stopPlayback,
 })
 </script>
 
@@ -6474,6 +6752,7 @@ defineExpose({
           <div class="text-[10px] text-ink-3">内核</div>
           <div class="flex flex-wrap gap-x-3">
             <span>解析 {{ debugSnapshot.video.resolution }}</span>
+            <span v-if="debugSnapshot.hls?.codecs">编码 {{ debugSnapshot.hls.codecs }}</span>
             <span
               :class="debugSnapshot.video.readyState >= 3 ? 'text-ok' : 'text-warn'"
             >rs={{ debugSnapshot.video.readyState }}</span>
@@ -6525,6 +6804,7 @@ defineExpose({
           <div class="flex flex-wrap gap-x-3">
             <span>线路 {{ debugSnapshot.biz.line }}</span>
             <span>起播 {{ debugSnapshot.biz.firstFrameMs ?? '—' }}ms</span>
+            <span v-if="debugSnapshot.biz.media">{{ debugSnapshot.biz.media }}</span>
             <span
               :class="debugSnapshot.biz.recoverAttempts > 0 ? 'text-warn' : ''"
             >重试 {{ debugSnapshot.biz.recoverAttempts }}/{{ debugSnapshot.biz.maxRecoverAttempts }}</span>
