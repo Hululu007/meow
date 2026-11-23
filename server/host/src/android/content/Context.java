@@ -33,6 +33,24 @@ public class Context {
     return null;
   }
   public String getPackageName() { return "com.github.tvbox.osc"; }
+
+  /*
+   * 缓存/文件目录：jar 里的网盘类（PanSou / AiPan / PanQuark 等）init 时就调
+   * getFilesDir() 建索引目录，stub 缺这个方法直接 NoSuchMethodError →
+   * 「该源在当前构建不可用」。JVM 上没有 App 私有目录，落系统临时目录即可；
+   * 目录必须真实可写（这些类会往里写缓存文件）。
+   */
+  public java.io.File getFilesDir() { return stubDir("files"); }
+
+  public java.io.File getCacheDir() { return stubDir("cache"); }
+
+  public java.io.File getExternalFilesDir(String type) { return stubDir("files"); }
+
+  private java.io.File stubDir(String name) {
+    java.io.File f = new java.io.File(System.getProperty("java.io.tmpdir"), "meow-android/" + name);
+    if (!f.exists()) f.mkdirs();
+    return f;
+  }
   public Context getApplicationContext() { return this; }
 
   private android.content.res.Resources resources;

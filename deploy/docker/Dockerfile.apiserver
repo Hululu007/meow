@@ -142,4 +142,4 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=5 \
 # ApiServer 监听 0.0.0.0，其他容器可经服务名访问。
 # 首次启动把站点配置播种到数据目录；已存在则不覆盖，用户的导入结果优先。
 # 有真实配置用真实配置（私有全量构建），否则回退 example（公开空壳）。
-ENTRYPOINT ["sh", "-c", "[ -f \"$MEOW_DATA/config.sites.json\" ] || { if [ -f /app/seed/config.sites.json ]; then cp /app/seed/config.sites.json \"$MEOW_DATA/config.sites.json\"; else cp /app/seed/config.sites.example.json \"$MEOW_DATA/config.sites.json\"; fi; }; exec java $JAVA_OPTS -cp 'classes:libs/*' ApiServer \"$MEOW_PORT\""]
+ENTRYPOINT ["sh", "-c", "[ -f \"$MEOW_DATA/config.sites.json\" ] || { if [ -f /app/seed/config.sites.json ]; then cp /app/seed/config.sites.json \"$MEOW_DATA/config.sites.json\"; else cp /app/seed/config.sites.example.json \"$MEOW_DATA/config.sites.json\"; fi; }; exec java $JAVA_OPTS -XX:+UnlockDiagnosticVMOptions -XX:-BytecodeVerificationRemote -cp 'classes:libs/*' ApiServer \"$MEOW_PORT\""]

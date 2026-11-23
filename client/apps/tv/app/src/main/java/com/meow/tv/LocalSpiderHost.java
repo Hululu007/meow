@@ -178,6 +178,12 @@ public final class LocalSpiderHost {
                     ctx.getClassLoader());
             LOADERS.put(jarUrl, loader);
             if (hash != null && !hash.isEmpty()) BY_HASH.put(hash, loader);
+            /*
+             * 与影视仓保持一致：**jar 一载入就 Init.init(app)**（其 r1/b.java 的 d() 里
+             * new DexClassLoader 之后立刻调 a()）。放这里而不是每次实例化前，Guard 的
+             * Go 代理/解密器在第一次用到站点前就绪，后续 getSpider 不再等 15s×N 的端口扫描。
+             */
+            seedJarInitFor(loader, ctx);
             lastError = "";
             return true;
         } catch (Throwable t) {
@@ -208,6 +214,18 @@ public final class LocalSpiderHost {
         String cls = api.startsWith("csp_") ? api.substring(4) : api;
         try {
             Class<?> c = loader.loadClass("com.github.catvod.spider." + cls);
+            /*
+             * ★ 必须在 newInstance() 之前注入 Application（2026-11-23 实测 aiwex）。
+             *
+             * 加密类 jar 的 Guard 在**构造时**就会触发 DexNative.<clinit>：它要用
+             * Init.context() 拿 Application → getCacheDir()，再把 jar 内
+             * assets/wexguard_v8.so 落到缓存并 System.load。拿不到 Application 就
+             * NPE → 之后所有 Guard 一律 NoClassDefFoundError: DexNative（看着像"缺类"，
+             * 其实是静态初始化失败）。
+             *
+             * 原来的 seedJarInit 放在构造之后，对这种 jar 永远来不及。
+             */
+            seedJarInitFor(loader, ctx);
             Object o = c.getDeclaredConstructor().newInstance();
             if (!(o instanceof Spider)) {
                 lastError = cls + " 不是 Spider 子类";
@@ -422,27 +440,74 @@ public final class LocalSpiderHost {
      *
      * <p><b>为什么必须在 init 之后调</b>：jar 的 {@code Init.get()} 可能自己
      * 先建了实例，我们必须往它那个实例的字段里写，而不是另建一个。
-     * 所以顺序是 get() → 取 {@code c} 字段 → 空才填。
+     * 所以顺序是 get() → 取字段 → 空才填。
      *
-     * <p><b>为什么是反射</b>：{@code Init} 与字段名 {@code c} 都在 dex 里且被混淆，
-     * 编译期没有这个类可引用（TV 工程不编译 jar 源码）。
+     * <p><b>字段名不能写死</b>：普通 jar 叫 {@code c}，加密 jar（实测 aiwex）
+     * 三个字段全是混淆名（{@code oOoOoOoOoOoOoO0o} 等）。按名字取会
+     * {@code NoSuchFieldException}，注入静默失败。改为优先调公开静态
+     * {@code Init.init(Context)}，没有这个方法时按**字段类型**（Application）找。
+     *
+     * <p>这个方法只负责"把已加载的 jar 都补一遍"，真正的注入在
+     * {@link #seedJarInitFor(ClassLoader, Context)}；后者也会在实例化站点**之前**
+     * 调用一次（Guard 的 clinit 在构造时就跑，晚了来不及）。
      */
     private static void seedJarInit(Context ctx) {
         if (ctx == null) return;
+        for (DexClassLoader l : LOADERS.values()) {
+            seedJarInitFor(l, ctx);
+        }
+    }
+
+    /**
+     * 用指定 loader 给 jar 内 {@code com.github.catvod.spider.Init} 注入 Application。
+     *
+     * <p>两条路径，按顺序：
+     * <ol>
+     *   <li>公开静态 {@code Init.init(Context)} —— 它内部会设置 Application，并调用
+     *       {@code DexNative.getLoader(ctx)} 建 DexClassLoader（loader 由 {@code Init.<init>}
+     *       自动指向 jar 自己的 ClassLoader）。这是加密 jar 能跑起来的关键一步。</li>
+     *   <li>没有 init 方法时退回反射：{@code Init.get()} 拿单例，找**类型为 Application**
+     *       的私有字段填进去（不按字段名）。</li>
+     * </ol>
+     *
+     * <p>失败只记录：普通 jar 根本没有 Init，属于正常情况。
+     */
+    private static void seedJarInitFor(ClassLoader loader, Context ctx) {
+        if (loader == null || ctx == null) return;
+        Context app = ctx.getApplicationContext() != null ? ctx.getApplicationContext() : ctx;
         try {
-            Class<?> ic = loadClassFromJars("com.github.catvod.spider.Init");
+            Class<?> ic;
+            try {
+                ic = loader.loadClass("com.github.catvod.spider.Init");
+            } catch (ClassNotFoundException e) {
+                return; // 普通 jar：没有 Init，不需要注入
+            }
+            try {
+                ic.getMethod("init", Context.class).invoke(null, app);
+                return;
+            } catch (NoSuchMethodException ignored) {
+                // 老版本 jar 没有 init(Context)，走字段注入
+            }
             Object inst = ic.getMethod("get").invoke(null);
             if (inst == null) return;
-            java.lang.reflect.Field f = ic.getDeclaredField("c");
-            f.setAccessible(true);
-            if (f.get(inst) == null) {
-                f.set(inst, ctx.getApplicationContext());
-                Log.i(TAG, "seedJarInit: Init.c <- Application");
+            for (java.lang.reflect.Field f : ic.getDeclaredFields()) {
+                if (android.app.Application.class.isAssignableFrom(f.getType())) {
+                    f.setAccessible(true);
+                    if (f.get(inst) == null) {
+                        f.set(inst, app);
+                        Log.i(TAG, "seedJarInitFor: Application <- " + f.getName());
+                    }
+                    return;
+                }
             }
         } catch (Throwable t) {
-            // 不同版本 jar 的字段名可能不同：拿不到就只记录，不改主流程。
-            // 但要注意——不成功时 WangPan 那类站点仍可能崩进程，见上面的堆栈。
-            Log.w(TAG, "seedJarInit failed: " + t.getClass().getSimpleName());
+            /*
+             * 加密 jar 的 Init.init 会触发 DexNative.<clinit>（解压并 load jar 内 .so）。
+             * 这一步可能因为架构不符 / 宿主校验失败而抛，记录但要继续——
+             * 真正的失败原因会在 newInstance 时以 NoClassDefFoundError 呈现。
+             */
+            Log.w(TAG, "seedJarInitFor failed: " + t.getClass().getSimpleName()
+                    + (t.getMessage() == null ? "" : "（" + t.getMessage() + "）"));
         }
     }
 

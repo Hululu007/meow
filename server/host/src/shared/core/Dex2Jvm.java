@@ -205,6 +205,52 @@ public final class Dex2Jvm {
         }
     }
 
+    /**
+     * 给 {@link Jars} 用：本地**站点级** dex jar 在 JVM 上挂载前先转成 class jar。
+     *
+     * <p>导入流程会调 {@link #rewrite}（把 spider / 站点 jar 都转掉），但有两种情况
+     * 不走导入、也拿不到转换结果：直接改 {@code config.sites.json}，或站点 jar 从
+     * 源服务拉下来就是 dex（实测 Jable 的 {@code spider-ext-dex.jar}）。不转的话
+     * URLClassLoader 读 dex 直接失败，表现为「该源在当前构建不可用」。
+     *
+     * <p>返回：不是 dex / 非 JVM / 工具缺失 / 转换失败 → 原文件（与改动前一致）；
+     * 转换成功 → class jar。缓存键与 {@link #convert} 相同（sha256 + 转换器指纹）。
+     */
+    public static File convertLocal(File src) {
+        if (!Jars.isJvm() || src == null || !src.isFile()) return src;
+        File tool = resolveTool();
+        if (tool == null) return src;
+        try {
+            JarInfo info = inspect(src);
+            if (info.hasSpiderClass || info.hasNative || !info.hasDex) return src;
+            String sha = sha256(src);
+            String toolTag = toolTag(tool);
+            File dir = DataPaths.dir("jars/converted").toFile();
+            if (!dir.exists() && !dir.mkdirs()) return src;
+            File out = new File(dir, sha + "-" + toolTag + "-jvm.jar");
+            File cached = validCache(out);
+            if (cached == null) cached = findAltCache(dir, out.getName());
+            if (cached != null) return cached;
+            File tmp = Files.createTempFile(dir.toPath(), out.getName() + ".", ".part").toFile();
+            try {
+                ProcessResult pr = run(tool, src, tmp);
+                if (!pr.ok || !tmp.isFile() || tmp.length() == 0) return src;
+                Files.move(tmp.toPath(), out.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } finally {
+                tmp.delete();
+            }
+            if (validate(out) != null) {
+                out.delete();
+                return src;
+            }
+            return out;
+        } catch (Throwable t) {
+            return src;
+        }
+    }
+
     private static File validCache(File f) {
         if (!f.isFile() || f.length() == 0) return null;
         return validate(f) == null ? f : null;

@@ -1,8 +1,14 @@
 package com.github.catvod.crawler;
+import android.app.Activity;
 import android.content.Context;
 import java.util.*;
 import okhttp3.Dns;
 public abstract class Spider {
+  /**
+   * 站点 key。Android 端 Spider 基类一直有它，部分 jar（含肥猫那批）直接读这个
+   * 字段拼 proxy 参数，缺了就是 NoSuchFieldError。
+   */
+  public String siteKey;
   public void init(Context ctx) throws Exception {}
   public void init(Context ctx, String extend) throws Exception {
     init(ctx);
@@ -28,5 +34,28 @@ public abstract class Spider {
   public boolean isVideoFormat(String url) throws Exception { return false; }
   public String action(String action) throws Exception { return ""; }
   public void destroy() {}
-  public Dns safeDns() { return null; }
+
+  /*
+   * ↓↓↓ 下面这几项是**肥猫那批 jar 的基类 ABI**（Android 端 Spider 一直是这么写的）。
+   *
+   * 缺它们的后果是 IncompatibleClassChangeError：实测 ShortQimao / KuLe 报
+   * "Expected static method 'okhttp3.Dns ...Spider.safeDns()'" —— 它们按 static 调用，
+   * 而 JVM 桩一直是实例方法。「导入肥猫配置后 APP 系源全空/报错」不是源坏了，
+   * 是我们这边的基类签名对不上。
+   *
+   * safeDns 必须返回非 null：返回 null 会让 okhttp 的 Builder().dns(null) 抛 NPE。
+   * 这里给 Dns.SYSTEM，DoH 由宿主自己的 OkHttp 配置负责。
+   *
+   * JVM 没有 Activity / jar 内 proxy 端点，getActivity/getProxyUrl/proxy 返回 null 或
+   * 空串：先把 ABI 对上让类能加载，需要 proxy 的播放路径再单独接。
+   */
+  public static Dns safeDns() { return Dns.SYSTEM; }
+
+  public Activity getActivity() { return null; }
+
+  public String getProxyUrl() { return ""; }
+
+  public String getProxyUrl(Map<String, String> params) { return ""; }
+
+  public Object[] proxy(Map<String, String> params) throws Exception { return null; }
 }

@@ -206,6 +206,19 @@ fn spawn_api(cfg: &Config, java: &Path) -> anyhow::Result<Child> {
         .arg("-Xmx512m")
         .arg("-Dfile.encoding=UTF-8")
         /*
+         * 关掉 jar 内类的字节码校验（只影响远程类，JDK 自带类照校验）。
+         *
+         * 需要它的原因：用户导入的外部源包（如肥猫那套）里的类由 dex2jar 转成
+         * class，stackmap 不完整，默认校验直接 VerifyError：
+         *   Expecting a stackmap frame at branch target ... (@ merge/c/c.i)
+         * 关闭后实测 114 个源里 53 个可用，且没有出现 JVM 崩溃。
+         *
+         * 与本条同时要满足的是 Spider 基类的 ABI（static safeDns），见
+         * server/host/src/com/github/catvod/crawler/Spider.java。
+         */
+        .arg("-XX:+UnlockDiagnosticVMOptions")
+        .arg("-XX:-BytecodeVerificationRemote")
+        /*
          * ★ 必须同时设 sun.jnu.encoding：它才是 java.nio.file.Paths 把 String
          * 转成文件名字节时用的字符集。fnOS 的 cmd/main 起进程时不带 locale
          * （LANG 未设 → POSIX/C），JVM 会退到 ANSI_X3.4-1968，于是

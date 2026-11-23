@@ -168,6 +168,13 @@ public final class Jars {
             try {
                 File f = prepare(spec);
                 if (f == null) continue;
+                /*
+                 * 站点级 dex jar（实测 Jable 的 spider-ext-dex.jar）在这条路径上
+                 * 不会经过导入流程的 Dex2Jvm.rewrite —— 直接挂 dex 会让
+                 * URLClassLoader 加载失败，表现是「该源在当前构建不可用」。
+                 * 已经是 class jar / 非 JVM / 工具缺失时原样返回。
+                 */
+                f = Dex2Jvm.convertLocal(f);
                 LOADERS.add(new URLClassLoader(new URL[]{f.toURI().toURL()}, Jars.class.getClassLoader()));
                 LogBuffer.info("jar", "已挂载 " + f.getName() + "（" + f.length() + "B）");
             } catch (Throwable t) {
