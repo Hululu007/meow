@@ -46,7 +46,7 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: Meow/Meow-Bridging-Header.h
         HEADER_SEARCH_PATHS:
           - "$(SRCROOT)/build/jni/include"
-          - "$(SRCROOT)/build/jni/include/darwin"
+          - "$(SRCROOT)/build/jni/include/ios"
         OTHER_LDFLAGS: "$(inherited) -Wl,-all_load $(SRCROOT)/build/libOpenJDK.a -Wl,-export_dynamic -lc++ -lz -framework Foundation -framework UIKit -framework WebKit -framework Network -framework Security"
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
