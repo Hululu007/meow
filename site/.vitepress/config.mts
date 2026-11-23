@@ -96,12 +96,17 @@ const guideSidebar = [
     ],
   },
   {
-    text: '安装与导入',
+    text: '安装',
     items: [
       { text: 'Web / Docker', link: '/guide/web-docker' },
       { text: 'PC 桌面端', link: '/guide/pc' },
       { text: 'TV / 投影仪 / 手机', link: '/guide/tv' },
       { text: '飞牛 fnOS', link: '/guide/fnos' },
+    ],
+  },
+  {
+    text: '源导入',
+    items: [
       { text: '导入源包', link: '/guide/source-pack' },
     ],
   },
