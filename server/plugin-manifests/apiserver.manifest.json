@@ -13,6 +13,8 @@
     "-Xms64m",
     "-Xmx768m",
     "-Dfile.encoding=UTF-8",
+    "-XX:+UnlockDiagnosticVMOptions",
+    "-XX:-BytecodeVerificationRemote",
     "-cp",
     "apiserver.jar;dist/spider.jar",
     "ApiServer",
