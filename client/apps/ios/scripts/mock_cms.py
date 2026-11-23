@@ -50,7 +50,7 @@ for i, title in enumerate(TITLES, start=1):
             "vod_name": title,
             "type_id": TYPES[(i - 1) % len(TYPES)][0],
             "type_name": TYPES[(i - 1) % len(TYPES)][1],
-            "vod_pic": f"http://127.0.0.1:{PORT}/poster/{i}.png",
+            "vod_pic": "https://raw.githubusercontent.com/upchr/meow/main/client/apps/web/public/icon-192.png",
             "vod_remarks": f"第 {i} 集",
             "vod_year": "2026",
             "vod_area": "CN",

@@ -32,7 +32,7 @@ tar xzf "$FFI_TAR" -C "$OUT/tmp/ffi"
 
 SRC="$(find "$OUT/tmp/tree" -maxdepth 6 -type d -name 'openjdk-9-internal' | sed -n '1p')"
 [ -n "$SRC" ] || { echo "[ios-runtime] 压缩包里找不到 openjdk-9-internal" >&2; exit 2; }
-LIBFFI="$(find "$OUT/tmp/ffi" -type f -name 'libffi.a' | sed -n '1p')"
+LIBFFI="$(find "$OUT/tmp/ffi" -type f -name 'libffi*.a' | sed -n '1p')"
 
 LIBS=(
   "$SRC/lib/server/libjvm.a"
