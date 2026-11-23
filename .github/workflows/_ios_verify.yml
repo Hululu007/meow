@@ -71,6 +71,7 @@ jobs:
             > "$RUNNER_TEMP/mock.log" 2>&1 &
           MEOW_BIND=127.0.0.1 \
             nohup java -Dfile.encoding=UTF-8 -Dmeow.dex2jar.inprocess=true \
+              -XX:+UnlockDiagnosticVMOptions -XX:-BytecodeVerificationRemote \
               -cp "client/apps/ios/build/jvm/host.jar:client/apps/ios/build/jvm/libs/*" \
               ApiServer --port=9978 --data-dir="$RUNNER_TEMP/meow-data" \
               > "$RUNNER_TEMP/host.log" 2>&1 &

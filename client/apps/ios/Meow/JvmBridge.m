@@ -83,6 +83,13 @@ void *MeowEmbeddedDlopen(const char *path, int mode) {
             NSString *tmp = NSTemporaryDirectory();
             NSString *trustStore = [javaHome stringByAppendingPathComponent:@"lib/security/cacerts"];
             NSArray<NSString *> *options = @[
+                // 外部源包（dex2jar / 其他工具转出的 class）stackmap 常不完整，
+                // 默认校验会 VerifyError: Expecting a stackmap frame at branch target。
+                // 只关非 boot 类的校验，JDK 自带类照校验；与 PC 插件 / Docker / fpk 一致。
+                // 实测：OECT 源服务的 spiderJvm 里 AppDrama/Bili 不关就整类加载失败，
+                // AppRJ 搜索报 VerifyError — 关了全部正常。
+                @"-XX:+UnlockDiagnosticVMOptions",
+                @"-XX:-BytecodeVerificationRemote",
                 [@"-Djava.home=" stringByAppendingString:javaHome],
                 [@"-Djava.class.path=" stringByAppendingString:classPath],
                 [@"-Duser.dir=" stringByAppendingString:dataDir],
