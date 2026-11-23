@@ -32,7 +32,6 @@ tar xzf "$FFI_TAR" -C "$OUT/tmp/ffi"
 
 SRC="$(find "$OUT/tmp/tree" -maxdepth 6 -type d -name 'openjdk-9-internal' | sed -n '1p')"
 [ -n "$SRC" ] || { echo "[ios-runtime] 压缩包里找不到 openjdk-9-internal" >&2; exit 2; }
-LIBFFI="$(find "$OUT/tmp/ffi" -type f -name 'libffi*.a' | sed -n '1p')"
 
 LIBS=(
   "$SRC/lib/server/libjvm.a"
@@ -48,7 +47,8 @@ LIBS=(
   "$SRC/lib/libmanagement.a"
   "$SRC/lib/librmi.a"
 )
-[ -n "$LIBFFI" ] && LIBS+=("$LIBFFI")
+FFI_OBJS=($(find "$OUT/tmp/ffi" -type f -name '*.o' | sort))
+[ ${#FFI_OBJS[@]} -gt 0 ] && LIBS+=("${FFI_OBJS[@]}")
 
 for f in "${LIBS[@]}"; do
   [ -f "$f" ] || { echo "[ios-runtime] 缺静态库: $f" >&2; exit 2; }
