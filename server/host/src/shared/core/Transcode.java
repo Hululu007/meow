@@ -1016,7 +1016,7 @@ public final class Transcode {
             double dur = 0;
             if (dOut != null) {
                 try {
-                    dur = Double.parseDouble(dOut.trim().split("[,\s]+")[0]);
+                    dur = Double.parseDouble(dOut.trim().split("[,\\s]+")[0]);
                 } catch (Exception ignored) {
                 }
             }
@@ -1072,7 +1072,7 @@ public final class Transcode {
             }
             reader.join(1500);
             if (p.exitValue() != 0) return null;
-            return bos.toString(StandardCharsets.UTF_8);
+            return new String(bos.toByteArray(), StandardCharsets.UTF_8);
         } catch (Exception e) {
             if (p != null) {
                 try {

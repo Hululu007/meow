@@ -1,0 +1,80 @@
+name: Meow
+options:
+  bundleIdPrefix: com.meow.player
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    CLANG_ENABLE_OBJC_ARC: YES
+    GENERATE_INFOPLIST_FILE: NO
+    ENABLE_DEBUG_DYLIB: NO
+    DEAD_CODE_STRIPPING: NO
+    TARGETED_DEVICE_FAMILY: "1,2"
+
+targets:
+  # 真机包：带 OpenJDK 9 Zero（静态 libjvm.a）与端内 Java 宿主。
+  Meow:
+    type: application
+    scheme:
+      testTargets: []
+    platform: iOS
+    sources:
+      - path: Meow
+        excludes:
+          - Info.plist
+      - path: build/web
+        type: folder
+        buildPhase: resources
+      - path: build/openjdk
+        type: folder
+        buildPhase: resources
+      - path: build/jvm
+        type: folder
+        buildPhase: resources
+      - path: build/config.sites.example.json
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_NAME: Meow
+        PRODUCT_BUNDLE_IDENTIFIER: com.meow.player.ios
+        INFOPLIST_FILE: Meow/Info.plist
+        SUPPORTED_PLATFORMS: iphoneos
+        SDKROOT: iphoneos
+        SWIFT_OBJC_BRIDGING_HEADER: Meow/Meow-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/build/jni/include"
+          - "$(SRCROOT)/build/jni/include/darwin"
+        OTHER_LDFLAGS: "$(inherited) -Wl,-all_load $(SRCROOT)/build/libOpenJDK.a -Wl,-export_dynamic -lc++ -lz -framework Foundation -framework UIKit -framework WebKit -framework Network -framework Security"
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+
+  # 模拟器包：只带 web 前端 + 静态文件服务；用 --api-base 连 macOS 上的
+  # ApiServer 做 UI 验证与截图（真机包才内嵌 JVM）。
+  MeowSim:
+    type: application
+    scheme:
+      testTargets: []
+    platform: iOS
+    sources:
+      - path: Meow
+        excludes:
+          - Info.plist
+      - path: build/web
+        type: folder
+        buildPhase: resources
+      - path: build/config.sites.example.json
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_NAME: MeowSim
+        PRODUCT_BUNDLE_IDENTIFIER: com.meow.player.ios.sim
+        INFOPLIST_FILE: Meow/Info.plist
+        SUPPORTED_PLATFORMS: iphonesimulator
+        SDKROOT: iphonesimulator
+        SWIFT_OBJC_BRIDGING_HEADER: Meow/Meow-Bridging-Header.h
+        OTHER_LDFLAGS: "$(inherited) -framework Foundation -framework UIKit -framework WebKit -framework Network -framework Security"
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO

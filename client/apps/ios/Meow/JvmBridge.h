@@ -1,0 +1,23 @@
+#import <Foundation/Foundation.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+/// 端内 JVM 桥。
+///
+/// 真机上把静态链接的 OpenJDK 9 Zero 起在 App 进程内，然后反射调用
+/// `ApiServer.main(["--port=9978", "--data-dir=..."])`；模拟器上没有
+/// arm64-device 的静态库，`isAvailable` 恒为 NO，UI 走 `--api-base`
+/// 连 macOS 上的宿主做验证。
+@interface JvmBridge : NSObject
+
++ (BOOL)isAvailable;
+
++ (void)startWithJavaHome:(NSString *)javaHome
+                classPath:(NSString *)classPath
+                  dataDir:(NSString *)dataDir
+                     port:(int)port
+               completion:(void (^)(BOOL ok, NSString * _Nullable message))completion;
+
+@end
+
+NS_ASSUME_NONNULL_END

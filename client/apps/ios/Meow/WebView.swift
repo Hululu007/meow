@@ -1,0 +1,71 @@
+import SwiftUI
+import WebKit
+
+struct WebView: UIViewRepresentable {
+    let url: URL
+    let script: String
+    var onReady: () -> Void = {}
+    var onError: (String) -> Void = { _ in }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
+        config.preferences.javaScriptCanOpenWindowsAutomatically = true
+        config.websiteDataStore = .default()
+
+        let controller = WKUserContentController()
+        if !script.isEmpty {
+            controller.addUserScript(WKUserScript(source: script,
+                                                  injectionTime: .atDocumentStart,
+                                                  forMainFrameOnly: false))
+        }
+        config.userContentController = controller
+
+        let view = WKWebView(frame: .zero, configuration: config)
+        view.navigationDelegate = context.coordinator
+        view.uiDelegate = context.coordinator
+        view.isOpaque = false
+        view.backgroundColor = .black
+        view.scrollView.backgroundColor = .black
+        view.scrollView.contentInsetAdjustmentBehavior = .never
+        view.allowsBackForwardNavigationGestures = false
+        view.load(URLRequest(url: url))
+        return view
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        // webURL 变化会重建视图；这里不重复 load，避免打断播放页。
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        private let parent: WebView
+
+        init(_ parent: WebView) {
+            self.parent = parent
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            parent.onReady()
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            parent.onError(error.localizedDescription)
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            parent.onError(error.localizedDescription)
+        }
+
+        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                     for navigationAction: WKNavigationAction,
+                     windowFeatures: WKWindowFeatures) -> WKWebView? {
+            if navigationAction.targetFrame == nil {
+                webView.load(navigationAction.request)
+            }
+            return nil
+        }
+    }
+}

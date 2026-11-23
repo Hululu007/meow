@@ -1,0 +1,146 @@
+name: _ios
+
+# 只在 iOS 分支上触发：构建真机未签名 IPA（内嵌 OpenJDK 9 Zero + ApiServer），
+# 并在模拟器上跑 UI（连 macOS 上的同一个 ApiServer）截图。
+on:
+  push:
+    branches: [feat/ios-jvm]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: Build web dist
+        run: |
+          set -euo pipefail
+          cd client
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Cache OpenJDK runtime tarballs
+        uses: actions/cache@v4
+        with:
+          path: client/apps/ios/build/cache
+          key: ios-jdk9-bundle-v1
+
+      - name: Prepare OpenJDK 9 Zero + web + libOpenJDK.a
+        run: bash client/apps/ios/scripts/prepare-runtime.sh
+
+      - name: Build iOS host jar (Java 9 target)
+        run: bash client/apps/ios/scripts/build-host.sh
+
+      - name: Generate Xcode project
+        run: |
+          set -euo pipefail
+          cd client/apps/ios
+          xcodegen generate
+
+      - name: Build simulator app
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cd client/apps/ios
+          xcodebuild -project Meow.xcodeproj -scheme MeowSim -configuration Debug \
+            -sdk iphonesimulator -derivedDataPath build/dd-sim \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild-sim.log" | tail -40
+
+      - name: Start macOS ApiServer
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/meow-data"
+          cp server/host/config.sites.example.json "$RUNNER_TEMP/meow-data/config.sites.json"
+          nohup java -cp "client/apps/ios/build/jvm/host.jar:client/apps/ios/build/jvm/libs/*" \
+            ApiServer --port=9978 --data-dir="$RUNNER_TEMP/meow-data" \
+            > "$RUNNER_TEMP/host.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/host.pid"
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:9978/api/health > "$RUNNER_TEMP/health.json" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/health.json" | head -c 400 || true
+
+      - name: Boot simulator, install, launch, screenshot
+        run: |
+          set -euo pipefail
+          UDID=$(python3 - <<'PY'
+          import json, subprocess
+          data = json.loads(subprocess.check_output(['xcrun','simctl','list','devices','available','-j']))
+          for runtime, devices in data.get('devices', {}).items():
+              if 'iOS' not in runtime:
+                  continue
+              for d in devices:
+                  if d.get('isAvailable') and d['name'].startswith('iPhone'):
+                      print(d['udid'])
+                      raise SystemExit
+          raise SystemExit('no iPhone simulator')
+          PY
+          )
+          echo "simulator=$UDID"
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b
+          APP=$(find client/apps/ios/build/dd-sim/Build/Products/Debug-iphonesimulator -maxdepth 2 -name 'MeowSim.app' | head -1)
+          test -n "$APP"
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl launch "$UDID" com.meow.player.ios.sim --api-base=http://127.0.0.1:9978
+          sleep 15
+          xcrun simctl io "$UDID" screenshot artifacts/ios-home.png
+          xcrun simctl spawn "$UDID" log show --last 3m --predicate 'process == "MeowSim"' \
+            > artifacts/simulator.log 2>/dev/null || true
+
+      - name: Build unsigned device IPA
+        run: |
+          set -euo pipefail
+          cd client/apps/ios
+          xcodebuild -project Meow.xcodeproj -scheme Meow -configuration Release \
+            -sdk iphoneos -derivedDataPath build/dd-device \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild-device.log" | tail -40
+          APP=$(find build/dd-device/Build/Products/Release-iphoneos -maxdepth 1 -name 'Meow.app' | head -1)
+          test -n "$APP"
+          rm -rf build/ipa && mkdir -p build/ipa/Payload
+          cp -R "$APP" build/ipa/Payload/
+          (cd build/ipa && zip -qry "$GITHUB_WORKSPACE/artifacts/Meow-unsigned.ipa" Payload)
+          ls -lh "$GITHUB_WORKSPACE/artifacts/Meow-unsigned.ipa"
+          du -sh "$APP" || true
+
+      - name: Stop host
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/host.pid" ]; then kill "$(cat "$RUNNER_TEMP/host.pid")" 2>/dev/null || true; fi
+          cp "$RUNNER_TEMP/host.log" artifacts/host.log 2>/dev/null || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa-${{ github.run_number }}
+          path: artifacts/**
+          retention-days: 14
