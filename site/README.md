@@ -32,13 +32,14 @@
 | 导入选项（`mode` / `onConflict` / `replaceSpider`） | `guide/source-pack.md` |
 | 插件清单字段（fnpack / manifest） | `ecosystem/plugin-manifest.md`、`ecosystem/plugin-source.md` |
 | Release 资产名、系统要求 | `reference/downloads.md`、`dev/build-release.md` |
-| 新增或移除用户可见能力 | 首页能力卡：`site/.vitepress/theme/components/FeatureGrid.vue` 的 `features` 数组（`index.md` 只挂 `<HomePage />`，不含文案）、`guide/what-is-meow.md` 的能力表 |
+| 新增或移除用户可见能力 | 首页能力卡：`site/.vitepress/theme/components/FeatureGrid.vue` 的 `features` 数组（`index.md` 只挂 `<HomePage />`，不含文案）、指南能力卡：`CapabilityGrid.vue` 的 `items` 数组（`guide/what-is-meow.md` 里挂 `<CapabilityGrid />`） |
 | 支持的端 / 平台（新增或取消某端） | `reference/compatibility.md` 的「端支持」、`guide/quick-start.md` 路线表、`guide/web-docker.md`、`guide/faq.md` |
 | 鉴权范围 / 令牌语义（谁能调什么） | `dev/api-contract.md` §1.2、`dev/architecture.md` §6.1、`dev/public-deployment.md`、`dev/fnos-gateway-auth.md` |
 | MCP 工具、调试入口、AI skill | `guide/automation.md`、`dev/ai-assistant.md` §2.7、`dev/testing.md` |
 | 已知缺陷新增或修复 | `reference/limits.md`、`guide/faq.md` |
 | 许可条款、第三方代码 | `reference/license.md` |
 | 弹幕（渲染、默认优先级、屏蔽词） | `guide/playback.md`、`dev/danmaku.md` |
+| 倒计时电源动作（关机 / 休眠 / 退出应用） | `guide/playback.md`、`dev/power-actions.md`、`dev/tv-integration.md` |
 | 直播（频道源、EPG、回看） | `guide/vod-live.md`、`dev/live.md` |
 | 片库 / 离线缓存 / 转码 | `guide/library.md`、`dev/library-cache.md`、`dev/library-local-browse.md`、`dev/playback.md` |
 | 构建与发版（版本号、资产名、CI 触发） | `deploy/README.md`、`dev/build-release.md` |
@@ -95,6 +96,9 @@ pnpm run preview    # 本地预览产物
 ```
 
 构建会检查死链：指向不存在页面的相对链接会直接失败。
+构建末尾还会跑 `scripts/check-anchors.mjs` 校验**站内 `#片段`**（`vitepress` 自己不查）：
+标题里的中文标点会进 id（`## 一、Docker（最省事）` → `一、docker-最省事`），链接写错也能构建通过，
+只会在点击时不跳。坏一个锚点即 exit 1；单独跑用 `pnpm run check:anchors`。
 
 技术文档里引用其他技术文档用站内相对路径（`./api-contract.md`）；引用仓库里的其他文件
 （如 `deploy/README.md`）要写 GitHub 绝对地址——**迁移后不再有自动改写**。
@@ -122,6 +126,23 @@ pnpm run preview    # 本地预览产物
 ```bash
 gh api -X POST repos/upchr/meow/pages -f build_type=workflow
 ```
+
+## 折叠口径（guide）
+
+同一份指南里，**读者要照着做的内容不折叠，查表和进阶内容才折叠**：
+
+| 处理 | 内容 |
+|---|---|
+| 展开（h2/h3，进本页目录） | 主路径的安装与导入步骤；二选一的首装路径（TV 方式一/方式二、fnOS 方式一/方式二、Web 两种取文件方式）；连接与令牌；排障表；「接下来做什么」 |
+| 折叠（`::: details`） | 平台特例（飞牛远程挂载片库）；全量变量表 / 清单 / 体积；快捷键；失败兜底分支；装好之后的进阶变更（改用远端后端）；附加组件（TV 运行时模块） |
+
+三条硬规则：
+
+1. **同一层级的并列项要么都展开、要么都折叠**，不许一半一半（2026-11-23 之前 fnOS 只有「方式二」是折叠的）。
+2. 折叠标题要写清「点开能拿到什么」，不要只写「更多」。
+3. **平台特例默认折叠**：例如片库页的「飞牛 NAS：远程挂载」用 `::: details`，前提条件写进标题
+   （「网盘 / 共享目录已挂在飞牛上时看这里」）；它不占本页目录，也不和「选存盘类型」抢层级。
+   折叠块里不要再套 `::: tip` 容器——连续两个 `:::` 结尾会渲染出字面量。
 
 ## 新增一个页面
 

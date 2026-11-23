@@ -134,6 +134,8 @@ body {
 
 .vp-doc img {
   border-radius: 10px;
+  /* 点击放大（ImageZoom.vue）；被链接包住或太小的图不接管 */
+  cursor: zoom-in;
 }
 
 /* 竖屏手机截图：限制宽度并居中，避免按内容宽度铺满 */

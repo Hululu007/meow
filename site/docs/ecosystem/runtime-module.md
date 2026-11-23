@@ -3,7 +3,7 @@
 TV 端的 `.js` 源与弹幕聚合需要一个 Node 运行时。它**不是**塞进主包的 `.so`，
 而是一个独立安装的 APK，由宿主动态加载。
 
-## 为什么必须是独立 APK
+::: details 为什么必须是独立 APK（开发者）
 
 Android 10+ 禁止从可写目录 `dlopen`。装成 APK 后，`.so` 位于只读的
 `/data/app/.../base.apk!/lib/<abi>/`，动态链接器才肯加载。
@@ -19,6 +19,8 @@ new DexClassLoader(moduleApk, odexDir, moduleApk + "!/lib/" + abi, hostLoader)
 
 这也是为什么模块不需要与主应用同签名：`DexClassLoader` 不校验签名，
 但安装包本身要走系统安装流程。
+
+:::
 
 ## 模块提供什么
 
@@ -91,7 +93,7 @@ ABI 对应关系：
 | 装完没重启 | 需要先 stop 再 start（应用会自动做，失败时手动重开） |
 | 弹幕还是单源 | 模块已装但未启用，或 `policy.json` 里 `danmakuApi` 被手填地址占着 |
 
-## 构建（开发者）
+::: details 构建步骤（开发者）
 
 ```bash
 # 1. 放预编译 libnode.so（nodejs-mobile 18.20.4）
@@ -103,6 +105,8 @@ gradle :runtime-node:assembleRelease
 ```
 
 三个 ABI 都要出包；`abiFilters` 只留一个时，其他架构的设备会装不上。
+
+:::
 
 ## 相关文档
 

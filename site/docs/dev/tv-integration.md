@@ -1,4 +1,4 @@
-# TV 端接入
+# TV 接入与 Fongmi
 
 TV 有两条并存路线：**兼容上游**（Fongmi / TVBox 系客户端直接吃我们的 `/config.json`
 + spider jar，零改动）与**自研壳**（`client/apps/tv`，Android WebView 壳 +

@@ -14,6 +14,7 @@ data/config.sites.json          ← 站点表、parses、lives、rules…
       ↓  启动 / 导入后触发
 Jars.reload()（启动，JVM 专用）/ Jars.prepareForImport()（导入期，配合 Dex2Jvm）
                                 ← 读 spider / spiderJvm，下载 + md5 校验 + 缓存
+                                ← 挂载前 Dex2Jvm.convertLocal() 把站点级 dex 转 class
       ↓
 Bridge.installClassLoaderIfAbsent()   ← 装 URLClassLoader（JVM）或 DexClassLoader（TV）
       ↓

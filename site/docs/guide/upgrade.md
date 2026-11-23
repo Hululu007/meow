@@ -29,7 +29,7 @@ docker compose pull
 docker compose up -d
 ```
 
-- **升级要先换版本号**：镜像 tag 由 `MEOW_VERSION` 决定，`.env` 与下载的编排里都是钉死的具体版本——不改的话 `pull` 拉到的还是同一个 tag，版本不变。先把 `.env` 的 `MEOW_VERSION` 改成新版本（或重新下载最新编排）再 `pull`
+- **默认跟随 `latest`**：`pull && up -d` 就是升级。只有在 `.env` 里钉了具体版本时，才需要先把 `MEOW_VERSION` 改成新 tag 再 pull（否则拉到的是旧版本）
 - `data/` 是挂载目录，升级不覆盖
 - 升级后 `docker compose ps` 四个容器都应是 `Up`，接口 503 说明 apiserver 没起来
 
@@ -73,7 +73,9 @@ adb install -r meow-TV-<版本>.apk
 
 ## 从「内置源」的旧安装迁移
 
-如果你之前用的是自带站点配置与 spider jar 的完整版，换成公开壳（或换新源包）时，
+这一节只影响从「自带源包的全量版」换到公开壳的用户；新装用户可以跳过。类名看不懂没关系，照着步骤做即可。
+
+如果你之前用的是自带站点配置与爬虫包的完整版，换成公开壳（或换新源包）时，
 这一步最容易踩：
 
 ### 症状
@@ -99,10 +101,10 @@ adb install -r meow-TV-<版本>.apk
 
 ### 迁移后核对四步
 
-1. **站点数**与「带 ext」数量是否和源包声称的一致
+1. **站点数**与「N 个扩展」的数量是否和源包声称的一致
 2. 搜索一个常见片名，能出结果
 3. 点进详情，有线路与集数
-4. 播一集，`readyState` 到 4、时间在走
+4. 播一集，能出画面、进度条在走
 
 哪一步断了，见 [常见问题](/guide/faq) 与 [诊断手册](/reference/diagnostics)。
 
@@ -129,7 +131,7 @@ adb install -r meow-TV-<版本>.apk
 
 | 端 | 做法 | 注意 |
 |---|---|---|
-| Docker | `.env` 改 `MEOW_VERSION` 后 `up -d` | 镜像 tag 必须存在 |
+| Docker | `.env` 钉回旧版本 tag 后 `pull && up -d` | 镜像 tag 必须存在 |
 | PC | 卸载后装旧安装包 | 卸载默认保留 `%APPDATA%\com.meow.player` |
 | TV | `adb install -d <旧 apk>` | `-d` 允许降级；签名必须一致 |
 | fnOS | 先卸载再装旧 fpk | 卸载向导选「保留数据」，选删除才会清空 |
@@ -137,6 +139,21 @@ adb install -r meow-TV-<版本>.apk
 降级到不认 dex2jvm 的旧 JVM 时，`config.all.json` 里的 dex 不会被转换：
 改用 `config.jvm.json`（顶层 `spider` 指向 class jar），或把 `spider` 指回 class jar。
 `spiderJvm` 这类未知字段会被旧版忽略。
+
+## 卸载与彻底清理
+
+卸载本身不会删数据，**要清干净得自己删目录**。要留一份就先看 [备份与恢复](/guide/backup)。
+
+| 端 | 怎么卸载 | 数据在哪 / 怎么清 |
+|---|---|---|
+| Web / Docker | `docker compose down`（**不要加 `-v`**，本项目用 bind mount，`down` 本来就不动数据） | 数据在编排文件旁的 `./data`（仓库版在仓库根 `data/`）；删掉这个目录才算清干净。镜像另用 `docker rmi` 删 |
+| PC | Windows「设置 → 应用 → 已安装的应用」卸载，或重跑安装包选卸载 | `%APPDATA%\com.meow.player` 默认**保留**（含 `data/` 与 `plugins/`）；要彻底清就手动删这个目录 |
+| TV | 系统里卸载应用 | 应用私有目录随卸载清空（壳声明了 `allowBackup=false`，卸载即丢）；重装要重新导入源包 |
+| 飞牛 fnOS | 应用中心 → 猫窝 → 卸载 | 卸载向导**默认保留数据**；要彻底清得显式选「删除数据」 |
+
+只清某一部分时：`data/config.sites.json` 是站点配置、`data/policy.json` 是运行时策略、
+`data/poster*` 与 `data/cache` 可重建；收藏与观看进度的权威在各端 localStorage，
+清后端数据不会删掉浏览器或客户端里的那份。
 
 ## 升级后自检
 
@@ -159,3 +176,8 @@ adb install -r meow-TV-<版本>.apk
 | 升级后端口变了 | 插件端口协商顺延 | 设置页看实际端口，别写死 |
 | fnOS 升级后版本没变 | 应用中心与内置更新源短暂不同步 | 隔几分钟重试，或回应用中心升 |
 | 覆盖安装后配置没了 | 装成了「卸载再装」而不是覆盖 | 从备份恢复 |
+## 相关
+
+- 升级前备份：[备份与恢复](/guide/backup)
+- 按症状排查：[常见问题](/guide/faq)
+- 源包格式：[源包与配置格式](/ecosystem/source-format)

@@ -5,12 +5,13 @@
 > 弹幕用官方镜像，没有自己的 Dockerfile；源服务镜像只在私仓构建。
 > **公开壳不带 spider.jar**：镜像播种 `config.sites.example.json`（`sites` / `lives` /
 > `parses` 都是空数组），jar 站由用户导入源包恢复。统一入口 `config.all.json`，dex
-> 为主；Fongmi/TV 直接加载，JVM 由 `Dex2Jvm` 导入期转换。规则见
+> 为主；Fongmi/TV 直接加载，JVM 由 `Dex2Jvm` 转换（导入期 `rewrite` + 挂载前
+> `convertLocal`）。规则见
 > [`deploy/source-pack/`](https://github.com/upchr/meow/blob/main/deploy/source-pack/README.md)，
 > 部署见 [`SOURCE_PACK.md`](https://github.com/upchr/meow/blob/main/deploy/SOURCE_PACK.md)。
 > **源服务**不在主 compose：`.yml` / `.build.yml` 不含 sources，`.with-sources.yml`
-> 是主栈 + sources，`.sources.yml` 只起源服务。镜像 `chrplus/meow-sources:1.2.0` 自带
-> 主爬虫 + Jable + 41 站默认源，`Dockerfile.sources` 等只在私仓维护。
+> 是主栈 + sources，`.sources.yml` 只起源服务。镜像 `chrplus/meow-sources:latest` 自带
+> 主爬虫 + Jable + 54 站默认源，`Dockerfile.sources` 等只在私仓维护。
 
 > **★ 所有 `docker compose` 命令都要先在 `deploy/docker/` 下执行**：`context: ../..`
 > 与 `volumes: ../../data` 都相对该目录，在仓库根跑会报
@@ -36,7 +37,7 @@
 | `danmu_api` | `logvar/danmu-api:1.21.6` | 上游 Node 服务 | `127.0.0.1:30012` |
 
 带源形态多第五个容器 `meow-sources`（nginx，宿主 `18080`，自带主爬虫 + Jable +
-41 站默认源），见 §3.3。
+54 站默认源），见 §3.3。
 
 **`drpy` 为什么不能省**：配置里 200+ 个源是 drpy/`.js`，没有这个运行时它们会被判
 “不可用”（`apiserver` 通过 `MEOW_JS_RUNTIME` 指向它）。`DRPY_STRIP_REMOTE=1` 默认开：
@@ -120,27 +121,24 @@ drpy 的 tag 来源不同——`docker-compose.yml` 用 `${DRPY_VERSION:-0.9.23}
 
 首次部署：`cd deploy/docker && cp .env.example .env && docker compose up -d`。
 
-默认镜像 `chrplus/meow-{web,apiserver}:${MEOW_VERSION}`（amd64 + arm64 双架构）。
-`MEOW_VERSION` 的 compose 兜底值必须与 `client/package.json` 及
-`server/plugin-manifests/apiserver.manifest.json` 同步（apiserver 版本由打包脚本
-写入 `VERSION` 文件、运行时读取，`ApiServer.java` 不再写死；`.env` 存在时同时改其
-`MEOW_VERSION`），用 `deploy/scripts/bump-version.ps1` 一次改齐；不一致的表现是
-“代码是新的、跑起来是旧行为”。兜底值散落在**每个 compose 文件**里，改版本时逐一检查
-——只改主文件、漏掉 `docker-compose.with-sources.yml` 的情况出现过。
+默认镜像 `chrplus/meow-{web,apiserver}:${MEOW_VERSION:-latest}`（amd64 + arm64 双架构）。
+**拉取型 compose 的默认 tag 是 `latest`**：新机器 `up -d` 直接拿到最新发布，不依赖发版状态；
+要可复现/回滚就在 `.env` 钉具体版本。只有 `docker-compose.build.yml` 的兜底 tag 仍与
+`client/package.json` 同步（本地构建产物打 tag），由 `deploy/scripts/bump-version.ps1` 维护。
 
-**升级**必须显式 pull，否则 `up -d` 发现本地已有同 tag 镜像就不再拉，静默跑旧版：
+**升级**必须显式 pull，否则 `up -d` 发现本地已有镜像就不再拉，静默跑旧版：
 
 ```bash
-sed -i 's/^MEOW_VERSION=.*/MEOW_VERSION=<新版本>/' .env
 docker compose pull web apiserver && docker compose up -d
 curl -s localhost:30011/api/health | grep -o '"version":"[^"]*"'
 ```
 
+在 `.env` 钉了具体版本的，先把 `MEOW_VERSION` 改成新 tag 再 pull。
+
 **判断升级成功只看 `/api/health` 的 `version`**，不要看镜像 tag。**离线升级**（NAS 拉
 不动 Docker Hub，报 `short read: expected N bytes but got M`）：在有网机器上
 `docker buildx build --platform linux/arm64` 构建目标架构，`docker save` + `gzip` 后
-`scp` 到目标机 `docker load`。**★ tag 要打两遍**——`docker save` 带 `-arm64` 后缀，
-compose 引用不带后缀的 `${MEOW_VERSION}`；漏打表现为“拉取失败、容器起不来”。
+`scp` 到目标机 `docker load`。**★ 离线机要先把 `.env` 的 `MEOW_VERSION` 钉成你 load 进去的 tag**（默认 `latest` 在离线机上不会自己更新）；`docker save` 的 tag 要与它一致，漏打表现为“拉取失败、容器起不来”。
 
 ### 3.1.1 ★ 三个“服务在跑但搜不到”的环境坑
 
@@ -191,8 +189,8 @@ compose 不做 manifest list，要发布多架构镜像用 `build-push-docker.ps
 
 ### 3.3 源服务：带源主体与独立源服务
 
-两种源形态共用同一镜像 `chrplus/meow-sources:1.2.0`（**独立版本线**，不跟
-`MEOW_VERSION` 走）：自带主爬虫 + Jable 扩展 + 41 站默认源，**不挂载即可用**；
+两种源形态共用同一镜像 `chrplus/meow-sources:latest`（**独立版本线**，不跟
+`MEOW_VERSION` 走）：自带主爬虫 + Jable 扩展 + 54 站默认源，**不挂载即可用**；
 `MEOW_SOURCES_DIR` 指到自己的完整源包目录时整目录只读覆盖镜像自带的源（挂到
 `/mounted-sources`）。默认 `./sources` 是空目录——空目录 = 用镜像自带的源。
 
@@ -243,9 +241,9 @@ compose 不做 manifest list，要发布多架构镜像用 `build-push-docker.ps
 
 | 变量 | 默认 | 组 | 什么时候改 |
 |---|---|---|---|
-| `MEOW_VERSION` | compose 兜底值，随发版手动同步（见 §3.1） | A | 即 `meow/{web,apiserver}` 的 tag |
+| `MEOW_VERSION` | `latest` | A | 默认跟随最新发布；要固定版本才填（`build.yml` 的兜底 tag 仍随发版） |
 | `DRPY_VERSION` | compose 兜底值 | A | drpy tag，**独立版本线** |
-| `WEB_IMAGE` / `APISERVER_IMAGE` | `chrplus/meow-*:${MEOW_VERSION}` | A | 换自己的仓库 |
+| `WEB_IMAGE` / `APISERVER_IMAGE` | `chrplus/meow-*:${MEOW_VERSION:-latest}` | A | 换自己的仓库 |
 | `DRPY_IMAGE` | `chrplus/meow-drpy:${DRPY_VERSION}` | A | 跨两个 compose 共用时钉死 |
 | `DANMU_API_IMAGE` | `logvar/danmu-api:1.21.6` | A | 升级弹幕服务 |
 | `WEB_PORT` / `APISERVER_PORT` / `DANMU_API_PORT` / `DRPY_PORT` | `30010` / `30011` / `30012` / `30013` | A | 端口冲突 |
@@ -255,8 +253,8 @@ compose 不做 manifest list，要发布多架构镜像用 `build-push-docker.ps
 | `MEOW_AUTH_TOKEN` | 空（关闭鉴权） | B | 后端不只监听本机时设 |
 | `MEOW_CORS` | `*` | B | 公网暴露时收紧（§9.1） |
 | `DANMU_SOURCE_ORDER` | 8 个来源 | B | 不配只有 3 个来源 |
-| `APISERVER_JAVA_OPTS` | `-Xms64m -Xmx512m …` | B | 小内存机器降 `-Xmx256m` |
-| `MEOW_SOURCES_IMAGE` | `chrplus/meow-sources:1.2.0` | A | 源服务镜像 tag，**独立版本线**；仅 sources / with-sources 读 |
+| `APISERVER_JAVA_OPTS` | `-Xms64m -Xmx512m …` | B | 小内存机器降 `-Xmx256m`；**别删 ENTRYPOINT 内置的关校验参数**（外部源包 stackmap 不完整，缺了全站 `VerifyError`，见 `deploy/SOURCE_PACK.md`） |
+| `MEOW_SOURCES_IMAGE` | `chrplus/meow-sources:latest` | A | 源服务镜像 tag，**独立版本线**；仅 sources / with-sources 读 |
 | `MEOW_SOURCES_PORT` / `MEOW_SOURCES_BIND` | `18080` / `0.0.0.0` | A | 端口冲突 / 收回本机 |
 | `MEOW_SOURCES_DIR` | `./sources`（空目录） | A | 指到完整源包目录时覆盖镜像自带的源 |
 | `MEOW_SOURCES_BASE` | `http://127.0.0.1:18080`（占位） | B | **按导入方改**，见 §3.3 |
@@ -382,7 +380,7 @@ http://127.0.0.1:9979`、`[api] sites: N | ext: M`、`[api] data: /data`、
 ```bash
 docker compose build web       && docker compose up -d web       # 改了前端
 docker compose build apiserver && docker compose up -d apiserver # 改了后端
-docker compose up -d            # 回滚：.env 改回旧 MEOW_VERSION，镜像还在时不重建
+docker compose up -d            # 回滚：.env 钉回旧 tag，镜像还在时不重建
 docker compose down             # 卸载（data/ 保留；rm -rf data/ 才删配置）
 ```
 

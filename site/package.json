@@ -6,7 +6,8 @@
   "scripts": {
     "sync": "node scripts/sync-docs.mjs",
     "dev": "pnpm run sync && vitepress dev",
-    "build": "pnpm run sync && vitepress build",
+    "build": "pnpm run sync && vitepress build && node scripts/check-anchors.mjs",
+    "check:anchors": "node scripts/check-anchors.mjs",
     "preview": "vitepress preview"
   },
   "devDependencies": {

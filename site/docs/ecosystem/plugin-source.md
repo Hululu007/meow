@@ -3,6 +3,8 @@
 插件源是一份 JSON 清单，列出可下载的插件（id、版本、地址、SHA256）。
 宿主只认清单，不关心它托管在哪。
 
+只想装插件不用看这页——这页是给自建插件源、托管清单的人看的。
+
 ## 文件位置与命名
 
 清单文件是 **`packages.json`**（官方 Release 资产里的同名文件就是标准样例）；
@@ -117,7 +119,7 @@ plugins/
 
 插件 zip 作为 Release 资产，清单里的 `url` 写绝对地址。
 注意 Release 资产会 302 到对象存储，不影响下载。**私有仓需要 token**：在
-设置 → 网络加速处填一次（PC 存 `%APPDATA%/com.meow.player/plugin-token.txt`，
+设置 →「更新」→「应用更新」→「访问令牌」填一次（PC 存 `%APPDATA%/com.meow.player/plugin-token.txt`，
 插件源与应用更新共用）；填了 token 后清单与资产 URL 仍可写标准 Release 链接，
 下载时会自动转成 API 资产端点。不填 token 时私有仓会 404，才需改用对象存储。
 

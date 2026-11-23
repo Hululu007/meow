@@ -31,6 +31,29 @@ const duration = ref(0)
 
 let started = false
 let userPaused = false
+/**
+ * 用户主动暂停过就记住，下次打开不再自动起播。
+ * 只记「暂停」：从没碰过播放器的访客仍按原设计在首次手势后起播。
+ */
+const PREF_PAUSED = 'meow.music.paused'
+
+function readPausedPref(): boolean {
+  try {
+    return localStorage.getItem(PREF_PAUSED) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writePausedPref(paused: boolean): void {
+  try {
+    if (paused) localStorage.setItem(PREF_PAUSED, '1')
+    else localStorage.removeItem(PREF_PAUSED)
+  } catch {
+    /* 隐私模式下写不了，只在本次会话内生效 */
+  }
+}
+
 /** 自动起播的时间戳：用于吞掉紧随其后的一次按钮点击 */
 let autoPlayAt = 0
 
@@ -169,10 +192,12 @@ function toggle() {
   if (playing.value) {
     audio.value?.pause()
     userPaused = true
+    writePausedPref(true)
     playing.value = false
     stopLoop()
   } else {
     userPaused = false
+    writePausedPref(false)
     void play()
   }
 }
@@ -225,6 +250,8 @@ function onVisibility() {
 
 onMounted(async () => {
   mounted.value = true
+  // 上次主动暂停过：本次不再自动起播，按钮仍可手动播放
+  if (readPausedPref()) userPaused = true
   // v-if 的内容在同一个 tick 里还没进 DOM，必须等下一次渲染
   await nextTick()
   if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {

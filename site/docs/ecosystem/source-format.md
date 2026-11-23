@@ -9,7 +9,7 @@
 :::
 
 ::: tip 只想快速起点源服务？不用自制源包
-社区维护的源服务镜像一条命令起（自带 41 站 + Jable），命令与坑位见
+社区维护的源服务镜像一条命令起（自带 54 站 + Jable），命令与坑位见
 [导入源包 · 现成的源服务镜像](/guide/source-pack#现成的源服务镜像)。
 本页「[源服务](#源服务-一个静态-nginx-目录)」一节则讲目录结构、字段规则与校验脚本。
 :::
@@ -279,20 +279,20 @@ sources/
 
 ### 源服务镜像
 
-社区镜像（多架构 amd64/arm64，镜像里已带 **主爬虫 + Jable 扩展 + 41 站默认源**）：
+社区镜像（多架构 amd64/arm64，镜像里已带 **主爬虫 + Jable 扩展 + 54 站默认源**）：
 
 ```bash
-docker pull chrplus/meow-sources:1.2.0
+docker pull chrplus/meow-sources:latest
 
 docker run -d --name meow-sources \
   -p 18080:8080 \
   -e MEOW_SOURCES_BASE=http://<HOST>:18080 \
-  chrplus/meow-sources:1.2.0
+  chrplus/meow-sources:latest
 ```
 
 - `MEOW_SOURCES_BASE` 用来把镜像里 `config.all.json` 的 `__SOURCE_BASE__`
   替换成客户端能访问的地址；TV/Fongmi 不能填 `127.0.0.1`。
-- 镜像默认源已包含 41 站和 Jable；不挂载即可导入。
+- 镜像默认源已包含 54 站和 Jable；不挂载即可导入。
 - 用自己的完整源包时，把目录挂到 `/mounted-sources`（含 `config.all.json` 时
   整目录覆盖默认源）：
 
@@ -301,7 +301,7 @@ docker run -d --name meow-sources \
   -p 18080:8080 \
   -e MEOW_SOURCES_BASE=http://<HOST>:18080 \
   -v /path/to/sources:/mounted-sources:ro \
-  chrplus/meow-sources:1.2.0
+  chrplus/meow-sources:latest
 ```
 
 compose 分工：
@@ -325,7 +325,8 @@ docker compose -f docker-compose.sources.yml up -d
 
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -f Dockerfile.sources -t chrplus/meow-sources:1.2.0 --push .
+  -f Dockerfile.sources \
+  -t chrplus/meow-sources:2.0.0 -t chrplus/meow-sources:latest --push .
 ```
 
 ### 校验与更新

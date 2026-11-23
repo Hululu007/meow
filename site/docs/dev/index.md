@@ -11,6 +11,7 @@
 | [前端手册](./frontend.md) | 前端不可回退决策与踩坑 |
 | [端与尺寸适配](./device-adaptive.md) | 判据全景、端×功能矩阵、混乱点与收口规范 |
 | [播放与转码](./playback.md) | 八类播放错误、转码决策、ABR、看门狗 |
+| [倒计时电源动作](./power-actions.md) | 关机/休眠/退出应用、能力探测、原生定时器（**设计稿**） |
 | [投屏](./casting.md) | A/B 两类投屏、URL 可达性、会话设计、设备矩阵 |
 | [弹幕](./danmaku.md) | 四源优先级、降级、缓存与调度 |
 | [片库与离线缓存](./library-cache.md) | WebDAV/SMB/local、Range、断点续传 |
