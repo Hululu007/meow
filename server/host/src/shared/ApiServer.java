@@ -2367,6 +2367,41 @@ public class ApiServer {
     /** 按站点分段的创建锁；只包住"建实例"这一段。 */
     private static final Map<String, Object> INSTANCE_LOCKS = new ConcurrentHashMap<>();
 
+    /**
+     * 给 spider 自己的 {@code Init} 单例塞一个 Application。
+     *
+     * <p>踩过（AppDrama2 系列「干饭/行动/再来/一碗」全空）：它们在 init 里走
+     * {@code Init.context().getContentResolver()}；JVM 宿主从不初始化这个单例，
+     * 于是 init 内部 NPE（自己吞掉），domain 留空、home/search 恒返回空结构。
+     *
+     * <p>必须用**站点类自己的 ClassLoader** 找 Init：外部 jar 由 Jars 的
+     * URLClassLoader 加载，{@code Class.forName}（App loader）看不到 jar 内的 Init。
+     */
+    private static void seedSpiderInit(Class<?> siteClass) {
+        boolean dbg = System.getenv("MEOW_DEBUG_INIT") != null;
+        try {
+            ClassLoader cl = siteClass.getClassLoader();
+            Class<?> ic = cl.loadClass("com.github.catvod.spider.Init");
+            Object inst = ic.getMethod("get").invoke(null);
+            if (inst == null) return;
+            java.lang.reflect.Field f = ic.getDeclaredField("c");
+            f.setAccessible(true);
+            if (f.get(inst) != null) {
+                if (dbg) System.out.println("[init] seed already cls=" + siteClass.getName() + " ctx=" + f.get(inst));
+                return;
+            }
+            Object app = cl.loadClass("android.app.Application")
+                    .getDeclaredConstructor().newInstance();
+            f.set(inst, app);
+            if (dbg) System.out.println("[init] seed OK cls=" + siteClass.getName() + " loader=" + cl + " ctx=" + app);
+        } catch (Throwable t) {
+            if (dbg) {
+                System.out.println("[init] seed FAIL cls=" + siteClass.getName() + " " + t);
+                t.printStackTrace();
+            }
+        }
+    }
+
     private static Object createInstance(String k) {
         {
             try {
@@ -2378,7 +2413,17 @@ public class ApiServer {
                 // 走平台钩子：JVM 是 Class.forName（spider 在类路径里），
                 // Android 是 DexClassLoader（spider 在 codeCacheDir 的 classes.dex 里）。
                 Class<?> c = platform.Bridge.loadClass("com.github.catvod.spider." + cls);
+                if (System.getenv("MEOW_DEBUG_INIT") != null) {
+                    System.out.println("[init] create key=" + k + " cls=" + c.getName()
+                            + " loader=" + c.getClassLoader()
+                            + " extLen=" + EXT.getOrDefault(k, "").length()
+                            + " bridgeCtx=" + platform.Bridge.context());
+                }
+                // ★ 必须放在构造之前：AppDrama2 在 <init>/init 里读 Init.context()，
+                //   构造后再 seed 已经晚了（NPE 被吞，之后所有调用都拿空结果）。
+                seedSpiderInit(c);
                 Object o = c.getDeclaredConstructor().newInstance();
+                seedSpiderInit(c);
                 try {
                     // Context 用反射拿而不是直接引用：写成 new android.content.Context()
                     // 会让整个类依赖 android stub 参与编译，只编译 ApiServer/SpiderHost
@@ -4218,6 +4263,11 @@ public class ApiServer {
      * 两者都空就是真的没结果。
      */
     private static String invokeSearch(Object spider, String wd, String pg, String site) {
+        if (System.getenv("MEOW_DEBUG_INIT") != null) {
+            System.out.println("[search] site=" + site + " wdLen=" + wd.length()
+                    + " pg=" + pg + " spider=" + spider.getClass().getName()
+                    + "@" + Integer.toHexString(System.identityHashCode(spider)));
+        }
         String out = "";
         try {
             out = str(method(spider, "searchContent", String.class, boolean.class, String.class)

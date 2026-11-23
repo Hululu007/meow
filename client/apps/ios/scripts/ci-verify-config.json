@@ -1,0 +1,19 @@
+{
+  "spider": "",
+  "sites": [
+    {
+      "key": "CI演示",
+      "name": "CI演示",
+      "type": 1,
+      "api": "http://127.0.0.1:8099/api.php/provide/vod/"
+    },
+    {
+      "key": "Douban",
+      "name": "豆瓣",
+      "type": 3,
+      "api": "csp_Douban"
+    }
+  ],
+  "lives": [],
+  "parses": []
+}

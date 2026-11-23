@@ -1,0 +1,174 @@
+name: _ios_verify
+
+# Runner 侧端到端验证（同一份 ApiServer/web，PC 宿主 + dex2jar）：
+#   1) 豆瓣 native 源：/api/Douban/home + category，截图
+#   2) 导入 http://肥猫.net/tv：配置解码、dex→class、站点表
+#   3) jar 爬虫：搜索 → 详情 → 播放 URL
+# 注意：这是 macOS JDK 上的宿主验证；IPA 内嵌 JDK9 静态库的真机启动仍需 iPhone。
+on:
+  push:
+    branches: [feat/ios-jvm]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: Cache web dist
+        id: webdist
+        uses: actions/cache@v4
+        with:
+          path: client/apps/web/dist
+          key: ios-webdist-${{ hashFiles('client/apps/web/src/**', 'client/apps/web/package.json', 'client/apps/web/vite.config.ts', 'client/apps/web/index.html', 'client/pnpm-lock.yaml', 'client/package.json') }}
+
+      - name: Build web dist
+        if: steps.webdist.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cd client
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build real host (Dex2Jvm enabled)
+        run: |
+          set -euo pipefail
+          cd server/host
+          find src -name '*.java' > /tmp/verify-sources.txt
+          rm -rf /tmp/verify-classes && mkdir -p /tmp/verify-classes
+          javac -encoding UTF-8 -cp "libs/*" -d /tmp/verify-classes @/tmp/verify-sources.txt
+          jar --create --file /tmp/verify-host.jar -C /tmp/verify-classes .
+          ls -lh /tmp/verify-host.jar
+
+      - name: Cache dex2jar
+        id: dex2jar
+        uses: actions/cache@v4
+        with:
+          path: client/apps/ios/build/dex-tools
+          key: dex-tools-2.4
+
+      - name: Download dex2jar
+        if: steps.dex2jar.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p client/apps/ios/build
+          curl -fL --retry 3 -o /tmp/dex-tools.zip \
+            https://github.com/pxb1988/dex2jar/releases/download/v2.4/dex-tools-v2.4.zip
+          rm -rf client/apps/ios/build/dex-tools
+          mkdir -p client/apps/ios/build/dex-tools
+          unzip -q /tmp/dex-tools.zip -d client/apps/ios/build/dex-tools
+          test -d client/apps/ios/build/dex-tools/dex-tools-v2.4/lib
+
+      - name: Start mock + host + web
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/meow-data" artifacts
+          cp client/apps/ios/scripts/ci-verify-config.json "$RUNNER_TEMP/meow-data/config.sites.json"
+          nohup python3 client/apps/ios/scripts/mock_cms.py --port 8099 \
+            > "$RUNNER_TEMP/mock.log" 2>&1 &
+          MEOW_BIND=127.0.0.1 \
+          MEOW_DEX2JAR="$PWD/client/apps/ios/build/dex-tools/dex-tools-v2.4" \
+            nohup java -Dfile.encoding=UTF-8 \
+              -cp "/tmp/verify-host.jar:server/host/libs/*" \
+              ApiServer --port=9978 --data-dir="$RUNNER_TEMP/meow-data" \
+              > "$RUNNER_TEMP/host.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/host.pid"
+          nohup python3 client/apps/ios/scripts/serve_web.py \
+            --root client/apps/web/dist --port 9979 \
+            --api-base http://127.0.0.1:9978 --site Douban \
+            > "$RUNNER_TEMP/web.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:9978/api/health > "$RUNNER_TEMP/health.json" 2>/dev/null && break
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/health.json" | head -c 300
+
+      - name: Douban API + screenshot
+        run: |
+          set -euo pipefail
+          curl -s --max-time 90 -X POST -H 'Content-Type: application/json' \
+            -d '{"id":"tv_hot","page":"1"}' \
+            http://127.0.0.1:9978/api/Douban/category \
+            -o artifacts/douban-category.json -w "douban-category %{http_code} %{size_download} %{time_total}\n"
+          python3 - <<'PY'
+          import json
+          d = json.load(open('artifacts/douban-category.json', encoding='utf-8'))
+          items = d.get('list') or []
+          print('DOUBAN_ITEMS', len(items))
+          print('DOUBAN_FIRST', (items[0].get('vod_name') if items else None))
+          assert items, 'Douban category returned no items'
+          PY
+          CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+          test -x "$CHROME"
+          "$CHROME" --headless=new --disable-gpu --hide-scrollbars --mute-audio \
+            --no-first-run --no-default-browser-check --force-device-scale-factor=2 \
+            --user-data-dir="$RUNNER_TEMP/chrome-douban" --window-size=430,932 \
+            --virtual-time-budget=25000 \
+            --screenshot="$PWD/artifacts/douban-home.png" \
+            "http://127.0.0.1:9979/" || true
+
+      - name: Import 肥猫 + sites
+        run: |
+          set -euo pipefail
+          curl -s --max-time 180 -X POST -H 'Content-Type: application/json' \
+            -d '{"url":"http://肥猫.net/tv","mode":"replace","onConflict":"keep","dryRun":false,"replaceSpider":true}' \
+            http://127.0.0.1:9978/api/config/import \
+            -o artifacts/feimao-import.json -w "feimao-import %{http_code} %{size_download} %{time_total}\n"
+          head -c 1200 artifacts/feimao-import.json; echo
+          curl -s --max-time 30 http://127.0.0.1:9978/api/sites -o artifacts/feimao-sites.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open('artifacts/feimao-sites.json', encoding='utf-8'))
+          sites = d.get('sites') or []
+          print('FEIMAO_SITES', len(sites))
+          keys = [s.get('key') for s in sites]
+          print('KEYS', keys[:20])
+          open('artifacts/feimao-keys.txt','w').write('\n'.join(keys))
+          PY
+
+      - name: Search / detail / play
+        run: |
+          set -euo pipefail
+          python3 client/apps/ios/scripts/verify_search_play.py \
+            http://127.0.0.1:9978 'AppDrama2#2' '庆余年' \
+            2>&1 | tee artifacts/search-play.log || true
+
+      - name: Stop host
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/host.pid" ]; then kill "$(cat "$RUNNER_TEMP/host.pid")" 2>/dev/null || true; fi
+          cp "$RUNNER_TEMP/host.log" artifacts/host.log 2>/dev/null || true
+          cp "$RUNNER_TEMP/mock.log" artifacts/mock.log 2>/dev/null || true
+
+      - name: Upload verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-verify-${{ github.run_number }}
+          path: artifacts/**
+          retention-days: 14
+          if-no-files-found: warn
