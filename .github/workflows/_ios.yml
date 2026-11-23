@@ -87,7 +87,25 @@ jobs:
           done
           cat "$RUNNER_TEMP/health.json" | head -c 400 || true
 
+      - name: Build unsigned device IPA
+        run: |
+          set -euo pipefail
+          cd client/apps/ios
+          xcodebuild -project Meow.xcodeproj -scheme Meow -configuration Release \
+            -sdk iphoneos -derivedDataPath build/dd-device \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild-device.log" | tail -40
+          APP=$(find build/dd-device/Build/Products/Release-iphoneos -maxdepth 1 -name 'Meow.app' | head -1)
+          test -n "$APP"
+          rm -rf build/ipa && mkdir -p build/ipa/Payload
+          cp -R "$APP" build/ipa/Payload/
+          (cd build/ipa && zip -qry "$GITHUB_WORKSPACE/artifacts/Meow-unsigned.ipa" Payload)
+          ls -lh "$GITHUB_WORKSPACE/artifacts/Meow-unsigned.ipa"
+          du -sh "$APP" || true
+
       - name: Boot simulator, install, launch, screenshot
+        if: always()
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           UDID=$(python3 - <<'PY'
@@ -104,35 +122,22 @@ jobs:
           PY
           )
           echo "simulator=$UDID"
-          echo "[ios] boot $UDID"
           xcrun simctl boot "$UDID" 2>/dev/null || true
-          timeout 240 xcrun simctl bootstatus "$UDID" -b || echo "[ios] bootstatus timeout (continue)"
+          # 用 bash 看门狗等 bootstatus，避免它卡死整个 job
+          xcrun simctl bootstatus "$UDID" -b &
+          BPID=$!
+          ( sleep 180; kill "$BPID" 2>/dev/null || true ) &
+          WPID=$!
+          wait "$BPID" || echo "[ios] bootstatus timeout (continue)"
+          kill "$WPID" 2>/dev/null || true
           APP=$(find client/apps/ios/build/dd-sim/Build/Products/Debug-iphonesimulator -maxdepth 2 -name 'MeowSim.app' | sed -n '1p')
           test -n "$APP"
-          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl install "$UDID" "$APP" || echo "[ios] install failed"
           echo "[ios] launch"
           xcrun simctl launch "$UDID" com.meow.player.ios.sim --api-base=http://127.0.0.1:9978 || echo "[ios] launch failed"
           sleep 18
           echo "[ios] screenshot"
           xcrun simctl io "$UDID" screenshot artifacts/ios-home.png || true
-          xcrun simctl spawn "$UDID" log show --last 3m --predicate 'process == "MeowSim"' \
-            > artifacts/simulator.log 2>/dev/null || true
-
-      - name: Build unsigned device IPA
-        run: |
-          set -euo pipefail
-          cd client/apps/ios
-          xcodebuild -project Meow.xcodeproj -scheme Meow -configuration Release \
-            -sdk iphoneos -derivedDataPath build/dd-device \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            build 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild-device.log" | tail -40
-          APP=$(find build/dd-device/Build/Products/Release-iphoneos -maxdepth 1 -name 'Meow.app' | head -1)
-          test -n "$APP"
-          rm -rf build/ipa && mkdir -p build/ipa/Payload
-          cp -R "$APP" build/ipa/Payload/
-          (cd build/ipa && zip -qry "$GITHUB_WORKSPACE/artifacts/Meow-unsigned.ipa" Payload)
-          ls -lh "$GITHUB_WORKSPACE/artifacts/Meow-unsigned.ipa"
-          du -sh "$APP" || true
 
       - name: Stop host
         if: always()
