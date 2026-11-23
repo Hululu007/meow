@@ -82,7 +82,8 @@ final class Bootstrap: ObservableObject {
         }
         #endif
 
-        bootScript = Self.makeBootScript(base: base)
+        let site = Self.argValue("--site") ?? ""
+        bootScript = Self.makeBootScript(base: base, site: site)
         webURL = URL(string: "http://127.0.0.1:9979/")
     }
 
@@ -102,16 +103,25 @@ final class Bootstrap: ObservableObject {
         return parts.joined(separator: ":")
     }
 
-    private static func makeBootScript(base: String) -> String {
-        guard !base.isEmpty else {
-            return "try{localStorage.removeItem('meow.api');localStorage.removeItem('meow.api.scope')}catch(e){}"
+    private static func makeBootScript(base: String, site: String) -> String {
+        var js: [String] = []
+        if base.isEmpty {
+            js.append("localStorage.removeItem('meow.api');localStorage.removeItem('meow.api.scope')")
+        } else {
+            let escaped = base
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+            // 前端 resolveBase()：裸 meow.api 需要 scope 标记才可信（与桌面端同判据）。
+            js.append("localStorage.setItem('meow.api','\(escaped)');" +
+                      "localStorage.setItem('meow.api.scope','ios')")
         }
-        let escaped = base
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-        // 前端 resolveBase()：裸 meow.api 需要 scope 标记才可信（与桌面端同判据）。
-        return "try{localStorage.setItem('meow.api','\(escaped)');" +
-               "localStorage.setItem('meow.api.scope','ios')}catch(e){}"
+        if !site.isEmpty {
+            let escapedSite = site
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+            js.append("localStorage.setItem('meow.site','\(escapedSite)')")
+        }
+        return "try{" + js.joined(separator: ";") + "}catch(e){}"
     }
 
     private static func argValue(_ key: String) -> String? {

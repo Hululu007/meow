@@ -1,0 +1,129 @@
+name: _ios_ui
+
+# 快速 UI 验证：不构建 App、不开模拟器，用 headless Chrome + 本地 mock 站
+# 对同一份 web/dist + ApiServer 截图。目标 60–120 秒，用来快速定位 UI/接口 bug。
+# 真机 IPA 与模拟器截图在 _ios.yml（手动 dispatch）。
+on:
+  push:
+    branches: [feat/ios-jvm]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-ui-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ui:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: Cache web dist
+        id: webdist
+        uses: actions/cache@v4
+        with:
+          path: client/apps/web/dist
+          key: ios-webdist-${{ hashFiles('client/apps/web/src/**', 'client/apps/web/package.json', 'client/apps/web/vite.config.ts', 'client/apps/web/index.html', 'client/pnpm-lock.yaml', 'client/package.json') }}
+
+      - name: Build web dist
+        if: steps.webdist.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cd client
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Cache host jar
+        id: hostjar
+        uses: actions/cache@v4
+        with:
+          path: client/apps/ios/build/jvm
+          key: ios-hostjar-${{ hashFiles('server/host/src/**', 'client/apps/ios/host-stub/**', 'client/apps/ios/scripts/build-host.sh') }}
+
+      - name: Build iOS host jar
+        if: steps.hostjar.outputs.cache-hit != 'true'
+        run: bash client/apps/ios/scripts/build-host.sh
+
+      - name: Start mock CMS + ApiServer + static web
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/meow-data" artifacts
+          cp client/apps/ios/scripts/ci-config.json "$RUNNER_TEMP/meow-data/config.sites.json"
+          nohup python3 client/apps/ios/scripts/mock_cms.py --port 8099 \
+            > "$RUNNER_TEMP/mock.log" 2>&1 &
+          nohup java -cp "client/apps/ios/build/jvm/host.jar:client/apps/ios/build/jvm/libs/*" \
+            ApiServer --port=9978 --data-dir="$RUNNER_TEMP/meow-data" \
+            > "$RUNNER_TEMP/host.log" 2>&1 &
+          nohup python3 client/apps/ios/scripts/serve_web.py \
+            --root client/apps/web/dist --port 9979 \
+            --api-base http://127.0.0.1:9978 --site CI演示 \
+            > "$RUNNER_TEMP/web.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:9978/api/health > "$RUNNER_TEMP/health.json" 2>/dev/null && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:9979/ > /dev/null
+          echo "[ui] health: $(head -c 200 "$RUNNER_TEMP/health.json" || true)"
+
+      - name: Screenshot with headless Chrome
+        run: |
+          set -euo pipefail
+          CHROME=""
+          for c in \
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+            "/Applications/Chromium.app/Contents/MacOS/Chromium" \
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"; do
+            if [ -x "$c" ]; then CHROME="$c"; break; fi
+          done
+          if [ -z "$CHROME" ]; then
+            echo "[ui] no Chrome/Chromium/Edge found" >&2
+            ls /Applications | head -30
+            exit 1
+          fi
+          echo "[ui] chrome=$CHROME"
+          "$CHROME" --headless=new --disable-gpu --hide-scrollbars --mute-audio \
+            --no-first-run --no-default-browser-check --force-device-scale-factor=2 \
+            --user-data-dir="$RUNNER_TEMP/chrome-mobile" --window-size=430,932 \
+            --virtual-time-budget=25000 \
+            --screenshot="$PWD/artifacts/ui-mobile.png" \
+            "http://127.0.0.1:9979/" || true
+          "$CHROME" --headless=new --disable-gpu --hide-scrollbars --mute-audio \
+            --no-first-run --no-default-browser-check \
+            --user-data-dir="$RUNNER_TEMP/chrome-desktop" --window-size=1280,800 \
+            --virtual-time-budget=25000 \
+            --screenshot="$PWD/artifacts/ui-desktop.png" \
+            "http://127.0.0.1:9979/" || true
+          ls -lh artifacts/*.png || true
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ui-${{ github.run_number }}
+          path: |
+            artifacts/**
+            ${{ runner.temp }}/host.log
+            ${{ runner.temp }}/mock.log
+            ${{ runner.temp }}/web.log
+            ${{ runner.temp }}/health.json
+          retention-days: 7
+          if-no-files-found: warn

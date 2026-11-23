@@ -108,5 +108,8 @@ WEB_SRC="$ROOT/client/apps/web/dist"
 rm -rf "$OUT/web"
 cp -R "$WEB_SRC" "$OUT/web"
 
+# XcodeGen 的 resources 里引用它；构建宿主脚本也会写一份，这里保证缓存命中时也存在。
+cp "$ROOT/server/host/config.sites.example.json" "$OUT/config.sites.example.json"
+
 du -sh "$OUT/libOpenJDK.a" "$JHOME/lib/modules" "$OUT/web" 2>/dev/null || true
 echo "[ios-runtime] ok: $JHOME"

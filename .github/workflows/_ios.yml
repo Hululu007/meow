@@ -1,19 +1,29 @@
 name: _ios
 
-# 只在 iOS 分支上触发：构建真机未签名 IPA（内嵌 OpenJDK 9 Zero + ApiServer），
-# 并在模拟器上跑 UI（连 macOS 上的同一个 ApiServer）截图。
+# 真机未签名 IPA：内嵌 OpenJDK 9 Zero + ApiServer。
+# 默认 push 只跑 IPA（缓存命中后约 2–3 分钟）；模拟器截图是可选输入 sim=true。
+# 快速 UI 截图见 _ios_ui.yml（不构建 App，60–120 秒）。
 on:
   push:
     branches: [feat/ios-jvm]
   workflow_dispatch:
+    inputs:
+      sim:
+        description: 同时构建模拟器包并截图（约 +4 分钟）
+        type: boolean
+        default: false
+
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  ipa:
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -27,7 +37,15 @@ jobs:
           cache: pnpm
           cache-dependency-path: client/pnpm-lock.yaml
 
+      - name: Cache web dist
+        id: webdist
+        uses: actions/cache@v4
+        with:
+          path: client/apps/web/dist
+          key: ios-webdist-${{ hashFiles('client/apps/web/src/**', 'client/apps/web/package.json', 'client/apps/web/vite.config.ts', 'client/apps/web/index.html', 'client/pnpm-lock.yaml', 'client/package.json') }}
+
       - name: Build web dist
+        if: steps.webdist.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           cd client
@@ -39,6 +57,17 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Cache host jar
+        id: hostjar
+        uses: actions/cache@v4
+        with:
+          path: client/apps/ios/build/jvm
+          key: ios-hostjar-${{ hashFiles('server/host/src/**', 'client/apps/ios/host-stub/**', 'client/apps/ios/scripts/build-host.sh') }}
+
+      - name: Build iOS host jar
+        if: steps.hostjar.outputs.cache-hit != 'true'
+        run: bash client/apps/ios/scripts/build-host.sh
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -48,44 +77,15 @@ jobs:
           path: client/apps/ios/build/cache
           key: ios-jdk9-bundle-v1
 
-      - name: Prepare OpenJDK 9 Zero + web + libOpenJDK.a
+      - name: Prepare OpenJDK 9 Zero + libOpenJDK.a
         run: bash client/apps/ios/scripts/prepare-runtime.sh
-
-      - name: Build iOS host jar (Java 9 target)
-        run: bash client/apps/ios/scripts/build-host.sh
 
       - name: Generate Xcode project
         run: |
           set -euo pipefail
-          cd client/apps/ios
-          xcodegen generate
-
-      - name: Build simulator app
-        run: |
-          set -euo pipefail
           mkdir -p artifacts
           cd client/apps/ios
-          xcodebuild -project Meow.xcodeproj -scheme MeowSim -configuration Debug \
-            -sdk iphonesimulator -derivedDataPath build/dd-sim \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            build 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild-sim.log" | tail -40
-
-      - name: Start macOS ApiServer
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/meow-data"
-          cp server/host/config.sites.example.json "$RUNNER_TEMP/meow-data/config.sites.json"
-          nohup java -cp "client/apps/ios/build/jvm/host.jar:client/apps/ios/build/jvm/libs/*" \
-            ApiServer --port=9978 --data-dir="$RUNNER_TEMP/meow-data" \
-            > "$RUNNER_TEMP/host.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/host.pid"
-          for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:9978/api/health > "$RUNNER_TEMP/health.json" 2>/dev/null; then
-              break
-            fi
-            sleep 1
-          done
-          cat "$RUNNER_TEMP/health.json" | head -c 400 || true
+          xcodegen generate
 
       - name: Build unsigned device IPA
         run: |
@@ -95,7 +95,7 @@ jobs:
             -sdk iphoneos -derivedDataPath build/dd-device \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             build 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild-device.log" | tail -40
-          APP=$(find build/dd-device/Build/Products/Release-iphoneos -maxdepth 1 -name 'Meow.app' | head -1)
+          APP=$(find build/dd-device/Build/Products/Release-iphoneos -maxdepth 1 -name 'Meow.app' | sed -n '1p')
           test -n "$APP"
           rm -rf build/ipa && mkdir -p build/ipa/Payload
           cp -R "$APP" build/ipa/Payload/
@@ -103,8 +103,35 @@ jobs:
           ls -lh "$GITHUB_WORKSPACE/artifacts/Meow-unsigned.ipa"
           du -sh "$APP" || true
 
-      - name: Boot simulator, install, launch, screenshot
-        if: always()
+      - name: Build simulator app
+        if: ${{ inputs.sim }}
+        run: |
+          set -euo pipefail
+          cd client/apps/ios
+          xcodebuild -project Meow.xcodeproj -scheme MeowSim -configuration Debug \
+            -sdk iphonesimulator -derivedDataPath build/dd-sim \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild-sim.log" | tail -30
+
+      - name: Start mock + host for simulator
+        if: ${{ inputs.sim }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/meow-data"
+          cp client/apps/ios/scripts/ci-config.json "$RUNNER_TEMP/meow-data/config.sites.json"
+          nohup python3 client/apps/ios/scripts/mock_cms.py --port 8099 \
+            > "$RUNNER_TEMP/mock.log" 2>&1 &
+          nohup java -cp "client/apps/ios/build/jvm/host.jar:client/apps/ios/build/jvm/libs/*" \
+            ApiServer --port=9978 --data-dir="$RUNNER_TEMP/meow-data" \
+            > "$RUNNER_TEMP/host.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/host.pid"
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:9978/api/health > /dev/null 2>&1 && break
+            sleep 1
+          done
+
+      - name: Simulator screenshot
+        if: ${{ always() && inputs.sim }}
         timeout-minutes: 10
         run: |
           set -euo pipefail
@@ -123,20 +150,18 @@ jobs:
           )
           echo "simulator=$UDID"
           xcrun simctl boot "$UDID" 2>/dev/null || true
-          # 用 bash 看门狗等 bootstatus，避免它卡死整个 job
           xcrun simctl bootstatus "$UDID" -b &
           BPID=$!
-          ( sleep 180; kill "$BPID" 2>/dev/null || true ) &
+          ( sleep 150; kill "$BPID" 2>/dev/null || true ) &
           WPID=$!
           wait "$BPID" || echo "[ios] bootstatus timeout (continue)"
           kill "$WPID" 2>/dev/null || true
           APP=$(find client/apps/ios/build/dd-sim/Build/Products/Debug-iphonesimulator -maxdepth 2 -name 'MeowSim.app' | sed -n '1p')
           test -n "$APP"
           xcrun simctl install "$UDID" "$APP" || echo "[ios] install failed"
-          echo "[ios] launch"
-          xcrun simctl launch "$UDID" com.meow.player.ios.sim --api-base=http://127.0.0.1:9978 || echo "[ios] launch failed"
+          xcrun simctl launch "$UDID" com.meow.player.ios.sim \
+            --api-base=http://127.0.0.1:9978 --site=CI演示 || echo "[ios] launch failed"
           sleep 18
-          echo "[ios] screenshot"
           xcrun simctl io "$UDID" screenshot artifacts/ios-home.png || true
 
       - name: Stop host
@@ -144,6 +169,7 @@ jobs:
         run: |
           if [ -f "$RUNNER_TEMP/host.pid" ]; then kill "$(cat "$RUNNER_TEMP/host.pid")" 2>/dev/null || true; fi
           cp "$RUNNER_TEMP/host.log" artifacts/host.log 2>/dev/null || true
+          cp "$RUNNER_TEMP/mock.log" artifacts/mock.log 2>/dev/null || true
 
       - name: Upload artifacts
         if: always()
@@ -152,3 +178,4 @@ jobs:
           name: ios-ipa-${{ github.run_number }}
           path: artifacts/**
           retention-days: 14
+          if-no-files-found: warn
