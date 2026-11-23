@@ -48,7 +48,6 @@ LIBS=(
   "$SRC/lib/libmanagement.a"
   "$SRC/lib/librmi.a"
 )
-[ -f "$SRC/lib/libfreetype.a.6" ] && LIBS+=("$SRC/lib/libfreetype.a.6")
 [ -n "$LIBFFI" ] && LIBS+=("$LIBFFI")
 
 for f in "${LIBS[@]}"; do
