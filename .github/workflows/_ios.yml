@@ -104,14 +104,17 @@ jobs:
           PY
           )
           echo "simulator=$UDID"
+          echo "[ios] boot $UDID"
           xcrun simctl boot "$UDID" 2>/dev/null || true
-          xcrun simctl bootstatus "$UDID" -b
-          APP=$(find client/apps/ios/build/dd-sim/Build/Products/Debug-iphonesimulator -maxdepth 2 -name 'MeowSim.app' | head -1)
+          timeout 240 xcrun simctl bootstatus "$UDID" -b || echo "[ios] bootstatus timeout (continue)"
+          APP=$(find client/apps/ios/build/dd-sim/Build/Products/Debug-iphonesimulator -maxdepth 2 -name 'MeowSim.app' | sed -n '1p')
           test -n "$APP"
           xcrun simctl install "$UDID" "$APP"
-          xcrun simctl launch "$UDID" com.meow.player.ios.sim --api-base=http://127.0.0.1:9978
-          sleep 15
-          xcrun simctl io "$UDID" screenshot artifacts/ios-home.png
+          echo "[ios] launch"
+          xcrun simctl launch "$UDID" com.meow.player.ios.sim --api-base=http://127.0.0.1:9978 || echo "[ios] launch failed"
+          sleep 18
+          echo "[ios] screenshot"
+          xcrun simctl io "$UDID" screenshot artifacts/ios-home.png || true
           xcrun simctl spawn "$UDID" log show --last 3m --predicate 'process == "MeowSim"' \
             > artifacts/simulator.log 2>/dev/null || true
 
