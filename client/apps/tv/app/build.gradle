@@ -54,17 +54,17 @@ android {
     tasks.named('preBuild').configure { dependsOn 'syncWebAssets' }
 
     defaultConfig {
-        applicationId 'com.meow.tv'
+        applicationId (project.findProperty("meowAppId") ?: "com.meow.tv")
         // 26 而不是 23：TV 网关复用 apiserver 源码后，core/DataPaths、core/VideoCache、
         // core/PosterStore 等用的是 java.nio.file.*，那是 API 26 才引入的。
         // desugaring 覆盖不到 nio.file（只给 java.time / stream / Optional 兜底），
         // 所以只能抬 minSdk，否则 API 23-25 的设备一进网关就 NoClassDefFoundError。
         // 实测目标设备：极米 Z6X Pro = Android 9 (API 28)，MuMu = API 30+，都够。
         minSdk 26
-        targetSdk 34
+        targetSdk 28
         // 与主版本对齐（AGENTS §4.1 的六处版本号之外，TV 是第七处）
-        versionCode 1221
-        versionName '1.2.21'
+        versionCode 1222
+        versionName '1.2.22'
         // 默认指向宿主机上的 Web 容器；电视上第一次跑请用 intent extra 覆盖：
         //   adb shell am start -n com.meow.tv/.MainActivity --es url http://192.168.1.2:30010
         buildConfigField 'String', 'DEFAULT_URL', '"http://10.0.2.2:30010"'

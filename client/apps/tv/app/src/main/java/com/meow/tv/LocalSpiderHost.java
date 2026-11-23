@@ -179,11 +179,11 @@ public final class LocalSpiderHost {
             LOADERS.put(jarUrl, loader);
             if (hash != null && !hash.isEmpty()) BY_HASH.put(hash, loader);
             /*
-             * 与影视仓保持一致：**jar 一载入就 Init.init(app)**（其 r1/b.java 的 d() 里
-             * new DexClassLoader 之后立刻调 a()）。放这里而不是每次实例化前，Guard 的
-             * Go 代理/解密器在第一次用到站点前就绪，后续 getSpider 不再等 15s×N 的端口扫描。
+             * 这里**不要**调 seedJarInitFor：普通 jar（肥猫等）的 Init 会被提前初始化，
+             * 之后它的 searchContent 反而抛 JSONException（实测 2026-11-23 AppRJ 回归）。
+             * Guard 系的初始化解在 ApiServer.createInstance 的实例化前那次 seed 就够了。
              */
-            seedJarInitFor(loader, ctx);
+            // seedJarInitFor(loader, ctx);
             lastError = "";
             return true;
         } catch (Throwable t) {
