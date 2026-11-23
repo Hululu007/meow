@@ -306,6 +306,15 @@ public final class Jars {
         if (i > 0) {
             url = spec.substring(0, i).trim();
             md5 = spec.substring(i + 5).trim();
+            /*
+             * ★ 兼容 `;md5;?<32位>?`：肥猫等源包用问号包住 hash
+             * （实测 `...png;md5;?252d4d89...?`），整段比对必然
+             * "md5 不匹配"，jar 永远下不下来 → 所有 csp_ 站静默不可用。
+             * 只取第一个 32 位十六进制串；没有就当没写 md5（跳过校验）。
+             */
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("([0-9a-fA-F]{32})").matcher(md5);
+            md5 = m.find() ? m.group(1) : "";
         }
 
         if (url.startsWith("file:") || !url.toLowerCase().startsWith("http")) {
