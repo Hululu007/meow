@@ -38,7 +38,8 @@ iOS 要对齐这条，拆成两问：
 
 | 问 | 结论 | 证据 |
 |---|---|---|
-| iOS 能跑 Node 吗 | **能，但不是官方 Node**。`nodejs-mobile` 有 iOS 预编译包（`v18.20.4-ios.zip`，真机 arm64 + 模拟器 arm64/x86_64），它把 V8 **配成启动即关 JIT**（interpreter only），因此不需要 iOS 禁止的可执行内存 | `doc_mobile/BUILDING.md`：「using the v8 engine configured to start with JIT disabled」；发行包里有 `nodejs-mobile-v18.20.4-ios.zip` |
+| iOS 能跑 Node 吗 | **能，但不是官方 Node**。`nodejs-mobile` 有 iOS 预编译包（`v18.20.4-ios.zip`，49MB），它把 V8 **配成启动即关 JIT**（interpreter only），因此不需要 iOS 禁止的可执行内存 | `doc_mobile/BUILDING.md`：「using the v8 engine configured to start with JIT disabled」；runner 上已下载成功并解包（`_ios_node.yml`） |
+| 包长什么样 | 是 **XCFramework**：`NodeMobile.xcframework/ios-arm64/NodeMobile.framework`（真机 arm64，**二进制 52MB**）+ `ios-arm64_x86_64-simulator`。对外只有一个 C 符号：`int node_start(int argc, char *argv[])`（头文件 `Headers/NodeMobile.h`） | `client/apps/ios/build/node/probe.txt`（CI 产物） |
 | danmu_api 能在上面跑吗 | **能**。它是纯 ESM + Node 内置模块 + 纯 JS 依赖（`https-proxy-agent` / `dotenv` / `node-fetch` / `@dan-uni/dan-any`），没有运行期 native 模块；唯一的硬编码是**代理端口 5321**（TV 的载荷已改成可配、0=关） | 本机实测：`node danmu_api/server.js`（`DANMU_API_PORT=18401`、`DANMU_API_PROXY_PORT=0`）→ `/api/v2/fongmi/danmaku?name=庆余年&episode=1` 返回 200、33.8KB 弹幕、3.3s |
 | 别的 JS 引擎行不行 | **不行（就现载荷而言）**：JavaScriptCore / QuickJS-ng / Hermes 都没有 ESM 与 Node 内置模块，而 danmu_api 是 ESM + `node:` 前缀导入 + `zlib`/`fs`/`http` | 这些引擎反而更适合「自己重写一份弹幕接口」而不是「跑现成载荷」 |
 

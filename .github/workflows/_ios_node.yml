@@ -40,11 +40,14 @@ jobs:
           FW=client/apps/ios/build/node/NodeMobile.framework
           echo "== binary =="
           lipo -info "$FW/NodeMobile"
+          file "$FW/NodeMobile"
           echo "== node_start symbol =="
-          nm -gU "$FW/NodeMobile" 2>/dev/null | grep -w node_start || \
-            (echo "node_start NOT FOUND in exports" && exit 1)
+          # macOS 的 nm 给 C 符号加前导下划线：_node_start
+          nm -gU "$FW/NodeMobile" 2>/dev/null | grep -E '(^|[[:space:]])_?node_start$' || \
+            (echo "node_start NOT FOUND in exports" && nm -gU "$FW/NodeMobile" | head -20 && exit 1)
           echo "== headers =="
           find "$FW" -name '*.h' -maxdepth 3
+          cat "$FW/Headers/NodeMobile.h"
 
       - name: Link smoke test (simulator slice)
         run: |
