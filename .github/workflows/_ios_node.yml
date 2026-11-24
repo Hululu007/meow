@@ -59,7 +59,7 @@ jobs:
           int main(void) { (void)node_start; return 0; }
           EOF
           xcrun --sdk iphonesimulator clang -target arm64-apple-ios13.0-simulator \
-            -F "$FW" -framework NodeMobile /tmp/nodesmoke.m -o /tmp/nodesmoke
+            -F "$(dirname "$FW")" -framework NodeMobile /tmp/nodesmoke.m -o /tmp/nodesmoke
           echo "link ok: $(file /tmp/nodesmoke)"
 
       - name: Upload probe report
