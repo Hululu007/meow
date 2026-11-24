@@ -483,6 +483,18 @@ public final class Transcode {
     }
 
     /**
+     * 是不是 iOS（OpenJDK 的 iOS 移植把 os.name 设为 "iOS"）。
+     *
+     * <p>★ 必须显式判：JDK 9 的 {@code ProcessImpl$Platform.get()} 不认识 "iOS"，
+     * 第一次 {@code ProcessBuilder.start()} 就抛 {@code Error: iOS is not a supported
+     * OS platform} —— 这会把整个 {@code ApiServer.main} 打死（真机实测）。
+     * iOS 本来就没有 fork/exec，所有起进程的路径都应当直接降级。
+     */
+    public static boolean isIos() {
+        return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("ios");
+    }
+
+    /**
      * 确保某个源已经开始转码。幂等：已在转或已转好就直接返回。
      *
      * @param sourceUrl 可被 ffmpeg 直接读到的地址（http/https）
@@ -1045,6 +1057,7 @@ public final class Transcode {
 
     /** 跑一条只读命令拿 stdout（带真超时：读线程独立，主线程只等时钟）。 */
     private static String runCapture(List<String> cmd, int timeoutSec) {
+        if (isIos()) return "";   // 没有 exec；探针/探测一律当作不可用
         Process p = null;
         try {
             ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -1098,6 +1111,7 @@ public final class Transcode {
      * <p>{@code forceSw=true} 用于「硬解失败后的软解重试」。
      */
     private static void startFfmpeg(Job j, String ff, String source, boolean forceSw) throws Exception {
+        if (isIos()) throw new Exception("iOS 上不能启动 ffmpeg");
         // 一次只跑一个重转码（VDEC 通道有限；被放弃的旧任务要停）
         stopOtherJobs(j.id);
         // 从零开始转：清掉可能残留的半成品与完成标记，否则清单会指向不存在的分片
@@ -1141,7 +1155,7 @@ public final class Transcode {
      * 不会误杀用户自己的 ffmpeg。
      */
     public static void killStaleTranscodes() {
-        if (isWindows()) return;
+        if (isWindows() || isIos()) return;
         try {
             Process p = new ProcessBuilder("pkill", "-f", "cache/transcode/seg-").start();
             p.waitFor(3, java.util.concurrent.TimeUnit.SECONDS);
