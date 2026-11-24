@@ -1805,8 +1805,26 @@ public class ApiServer {
                 if (seg.length >= 4) {
                     String site = URLDecoder.decode(seg[2], "UTF-8");
                     String action = seg[3];
+                    /*
+                     * ★ query 参数必须并进请求体。
+                     *
+                     * 踩过（2026-11-23，aiwex 全站搜索/详情全空）：前端和自动化脚本都是
+                     * `GET /api/xxx/search?wd=庆余年`、`?id=...`，而这里原来只读 body，
+                     * query 被整段丢掉 —— spider 收到 `wd=""`、`id=""`，Guard 系直接返回空，
+                     * 表现成"首页正常、搜索恒空、详情空骨架、play NPE"。
+                     * body 里已有的字段优先（POST JSON 仍然可覆盖 query）。
+                     */
                     String body = read(ex.getRequestBody());
-                    sendJson(ex, 200, call(site, action, body));
+                    JSONObject merged;
+                    try {
+                        merged = body == null || body.trim().isEmpty() ? new JSONObject() : new JSONObject(body);
+                    } catch (Exception e) {
+                        merged = new JSONObject();
+                    }
+                    for (Map.Entry<String, String> qe : query(ex).entrySet()) {
+                        if (!merged.has(qe.getKey())) merged.put(qe.getKey(), qe.getValue());
+                    }
+                    sendJson(ex, 200, call(site, action, merged.toString()));
                     return;
                 }
             }
@@ -2483,7 +2501,13 @@ public class ApiServer {
                 }
             } catch (NoSuchMethodException ignored) {
             }
-            platform.Bridge.log("[spider] seed jar Init <- Context");
+            Object loaderAfter = null;
+            try {
+                loaderAfter = ic.getMethod("loader").invoke(null);
+            } catch (NoSuchMethodException ignored) {
+            }
+            platform.Bridge.log("[spider] seed jar Init <- Context ok=" + (loaderAfter != null)
+                    + " ctx=" + ctx.getClass().getName());
         } catch (Throwable t) {
             // 普通 jar 没有 Init；加密 jar 的 .so 也可能因架构/宿主校验失败。
             // 真正原因会在 newInstance 处以 NoClassDefFoundError 呈现，这里只留一行。
@@ -2542,15 +2566,17 @@ public class ApiServer {
                  * ExceptionInInitializerError，之后所有 Guard 都报
                  * NoClassDefFoundError: DexNative（看着像缺类）。
                  */
-                // 测试（2026-11-23）：影视仓从不调 jar 的 Init.init，guard 自己通过
-                // ActivityThread 拿 Application 并完成初始化。先关掉我们的预注入验证。
-                // seedJarInitBeforeInstance(c);
                 /*
-                 * ★ 但实测（同日，.77 arm64）：不调 Init.init 时 Guard 连类初始化都过不了
-                 * （DexNative clinit 失败），所以影视仓是在 jar 载入时调了
-                 * `Init.init(Application)`（见其 r1/b.java 的 a()）。这里恢复预注入。
+                 * ★ 只对 Guard 系加密 jar 预注入 Init。
+                 *
+                 * 普通 jar（肥猫/AppRJ…）的 Init 是它们自己的宿主桥，提前 init 会让
+                 * 之后的 searchContent 抛 JSONException（2026-11-23 实测回归）。
+                 * Guard 系（类名以 Guard 结尾）才需要这个 Application 注入，
+                 * 否则 DexNative.<clinit> 直接失败。
                  */
-                seedJarInitBeforeInstance(c);
+                if (cls.endsWith("Guard")) {
+                    seedJarInitBeforeInstance(c);
+                }
                 /*
                  * ★ loader 没就绪时**绝不能** newInstance。
                  *
@@ -4495,6 +4521,9 @@ public class ApiServer {
      */
     private static String invokeSearch(Object spider, String wd, String pg, String site) {
         String out = "";
+        System.out.println("[search] site=" + site + " cls="
+                + (spider == null ? "null" : spider.getClass().getName())
+                + " wd=[" + wd + "] pg=" + pg);
         try {
             out = str(method(spider, "searchContent", String.class, boolean.class, String.class)
                     .invoke(spider, wd, false, pg));
