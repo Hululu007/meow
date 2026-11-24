@@ -77,6 +77,9 @@ lst.json
 ds.json
 release/
 release-*/
+# 工作区临时产物（抓包、逆向中间文件、jadx 等，可能上 GB）
+tmp/
+.worktree/
 
 # ── 文档与工具链：镜像用不到 ─────────────────────────
 docs/

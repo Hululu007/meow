@@ -101,3 +101,14 @@ server/host/src/shared/sources/CmsSource.java
 server/host/src/shared/sources/DoubanSource.java
 server/host/src/shared/sources/NativeSource.java
 server/host/src/shared/sources/NativeSources.java
+server/host/src/jvm/GuardShell.java
+server/host/src/android/os/Bundle.java
+server/host/src/android/view/MotionEvent.java
+server/host/src/android/view/ViewTreeObserver.java
+server/host/src/android/text/TextWatcher.java
+server/host/src/android/widget/CompoundButton.java
+server/host/src/android/widget/ProgressBar.java
+server/host/src/android/content/ContentProvider.java
+server/host/src/android/util/AttributeSet.java
+server/host/src/android/graphics/drawable/ClipDrawable.java
+server/host/src/android/graphics/drawable/LayerDrawable.java

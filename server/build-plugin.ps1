@@ -216,6 +216,20 @@ if (Test-Path $spiderJar) {
     Write-Host '  dist/spider.jar: 未包含（纯壳插件）' -ForegroundColor Yellow
 }
 
+# 加密 Guard 壳：unidbg 解密 + dex2jar + 字节码修复（独立子进程）
+$guardBuild = Join-Path $root 'tools\guarduild-guard-helper.ps1'
+if (Test-Path $guardBuild) {
+    Write-Host "`n[guard] 构建加密 Guard helper..." -ForegroundColor Yellow
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $guardBuild
+    $guardLibs = Join-Path $root 'host\guard-libs'
+    if (Test-Path $guardLibs) {
+        if (Test-Path "$out\guard-libs") { Remove-Item "$out\guard-libs" -Recurse -Force }
+        Copy-Item $guardLibs "$out\guard-libs" -Recurse -Force
+        $gmb = [math]::Round(((Get-ChildItem "$out\guard-libs" -Recurse | Measure-Object Length -Sum).Sum) / 1MB, 1)
+        Write-Host "  guard-libs: ${gmb}MB" -ForegroundColor Green
+    }
+}
+
 Write-Host "`n完成: $out" -ForegroundColor Cyan
 Get-ChildItem $out | ForEach-Object {
     $sz = '<dir>'

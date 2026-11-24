@@ -60,5 +60,17 @@ VER="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
 [ -n "$VER" ] || { echo "读不到 plugin-manifests/apiserver.manifest.json 的 version" >&2; exit 1; }
 printf '%s\n' "$VER" > "$OUT/VERSION"
 
+# 加密 Guard 壳：unidbg 解密 + dex2jar + 字节码修复（独立子进程）
+if [ -f "$ROOT/tools/guard/build-guard-helper.sh" ]; then
+    echo "[guard] helper"
+    bash "$ROOT/tools/guard/build-guard-helper.sh"
+    if [ -d "$ROOT/host/guard-libs" ]; then
+        rm -rf "$OUT/guard-libs"
+        mkdir -p "$OUT/guard-libs"
+        cp -a "$ROOT/host/guard-libs/." "$OUT/guard-libs/"
+        echo "  guard-libs: $(du -sh "$OUT/guard-libs" | cut -f1)"
+    fi
+fi
+
 ls -lh "$OUT/apiserver.jar"
 echo "  VERSION: $VER"

@@ -11,6 +11,10 @@ FROM eclipse-temurin:17-jdk AS build
 WORKDIR /build
 COPY server/host/src ./src
 COPY server/host/libs ./libs
+# 加密 Guard 子进程：unidbg + dex2jar + 字节码修复（不参与宿主 javac）
+COPY server/host/guard-libs ./host/guard-libs
+COPY server/tools/guard ./tools/guard
+RUN sh tools/guard/build-guard-helper.sh
 # CI 会把插件 job 编好的 class 目录塞进这里（deploy/docker/prebuilt-classes）。
 # .class 与 CPU 架构无关，复用它就省掉 **arm64 在 QEMU 里再跑一遍 javac** ——
 # 2026-11-17 实测那一层 162.7 秒（amd64 40.8 秒），是整条 Docker 构建的最大头。
@@ -80,6 +84,8 @@ WORKDIR /app
 
 COPY --from=build /build/classes ./classes
 COPY server/host/libs ./libs
+# 加密 Guard 壳的解密/运行时依赖（独立子进程用；不进宿主 classpath）
+COPY --from=build /build/host/guard-libs ./guard-libs
 # ★ 公开壳：源码库不再带真实站点配置。
 #   私有全量构建放 config.sites.json 就播种它；公开构建只有
 #   config.sites.example.json（空壳），entrypoint 会自动回退。

@@ -2720,6 +2720,11 @@ public class ApiServer {
              *   HTML → 记"非 JSON" → 该站永远空。判据与下面的 js 分支同源
              *   （isScriptApi），不要各写一套。
              */
+            // 加密 Guard 源：交给独立 companion 进程（宿主内直接跑会被自身 HTTP 栈打断）。
+            // 放在原生源之后，保证 Douban 这类 NativeSource 优先。
+            String guardOut = core.Jars.forwardGuard(site, action, body);
+            if (guardOut != null) return guardOut;
+
             String directApi = API.get(site);
             if (directApi != null && directApi.startsWith("http") && !isScriptApi(directApi)) {
                 String out = sources.CmsSource.invoke(directApi, action, body);
