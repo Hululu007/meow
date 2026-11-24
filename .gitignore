@@ -177,10 +177,11 @@ deploy/docker/default-sources/
 
 # ── 公开壳内容边界（2026-11-09）──────────────────────────────────────
 # 内部逆向、真实配置、待办/测试矩阵/归档与私密部署材料不进公开库；
-# 完整版保留在私有库 upchr/meow-private。
+# 公开脱敏版 AGENTS.md 入库；本机私有完整版 AGENTS.private.md 与
+# 完整私有库 upchr/meow-private 保留。
 reverse/
 research/
-AGENTS.md
+AGENTS.private.md
 server/README.md
 docs/archive/
 docs/images/
