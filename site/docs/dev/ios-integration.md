@@ -37,10 +37,10 @@ iOS 壳不再只是「连远端后端」：**进程内跑着与 PC/Docker 同一
 
 | 现象 | 真因 | 修法 |
 |---|---|---|
-| 刘海挡住顶栏 | `WebView` 带了 `.ignoresSafeArea()`，而 WKWebView 自己的 `contentInsetAdjustmentBehavior` 是 `.never` | `RootView.swift` 去掉忽略安全区（黑底仍铺满），页面整块落在安全区内 |
+| 刘海挡住顶栏 | 页面没带 `viewport-fit=cover`，`env(safe-area-inset-*)` 恒为 0；WebView 又被缩进安全区（第一版把整块内容框进去，看起来是上下两条黑边，用户否了） | WebView **铺满全屏**（`.ignoresSafeArea()`），`index.html` 的 iOS 分支补 `viewport-fit=cover`；`tokens.css` 按 `data-shell='ios'` 给 `.app-header` / `.has-tabbar` 加 `env(safe-area-inset-*)` —— 背景铺满、顶栏与底栏各自让开刘海/Home 条（主流 App 的做法） |
 | 点输入框整页放大、键盘收起不还原 | WebKit 对字号 <16px 的输入控件聚焦时自动 zoom | `index.html` 首帧脚本认出 `window.meowIos` → `maximum-scale=1`；`tokens.css` 把 `html[data-shell='ios']` 下的输入控件抬到 16px |
 | 导入报「读取失败」，服务端日志却是 `Broken pipe` | `dryRun` 也跑 `Dex2Jvm.rewrite`（下载 jar + dex2jar），Zero 上几十秒；客户端先断 → 响应写不出去 → 配置一个字节都没写 | ① 预览不再转换 jar（回 `dex2jvm: {skipped:"dryRun"}`）；② 确认导入改后台线程，`GET /api/config/import` 轮询 `state/pending`，界面显示已用秒数 |
-| 导入后回首页显示「连不上后端」 | 后端还在转换，首页 ping 超时被当成断连 | iOS 壳也走启动重试（4 次 × 1.2 秒）；导入期间界面持续显示进度，不再误导 |
+| 导入成功后回首页「连不上后端」，设置页还显示已连接 | 两个叠加：① `resolveBase()` 的后端地址来自 `localStorage`，一旦那份缓存缺失，非桌面壳退回**同源** —— iOS 的同源是静态服务 9979（只做 GET/HEAD，POST 回 405 → 浏览器报 `Load failed`，后端日志里一行都没有）；② `spiderClassPresent()` 不缓存**未命中**，未命中要逐 jar 扫 zip —— 导入 41 站后基线里 44 个名字全变未命中，`/api/health`、`/api/sites` 每个站问一次，Zero 上把网关拖成「像挂了」 | ① 地址改成只认宿主注入的 `window.meowIos.apiBase`（桥每次文档加载都在），localStorage 只当缓存，拿不到就报明确错误；② 类名查找按 `core.Jars.generation()` 缓存（`rebuildSites()` 也失效）；`siteVisible()` 先判「基线幽灵」再查 jar；③ 诊断：服务端 ≥3s 的请求打 `[slow]`，前端网络级失败通过新增的 `meowLog` 桥写进 `launch.log` |
 
 附带的兼容：粘站点首页（`http://肥猫.net`）时，后端检测到内容是 HTML 且 URL 没有路径，
 自动补 `/tv` 再拉一次 —— 用户不需要知道配置文件的真实路径。

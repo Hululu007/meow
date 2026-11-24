@@ -2121,13 +2121,35 @@ public class ApiServer {
         int hash = k.indexOf('#');
         if (hash > 0) k = k.substring(0, hash);
         if (k.isEmpty()) return false;
+
+        /*
+         * 「jar 里有没有这个类」必须缓存 —— 尤其是**未命中**。
+         *
+         * 未命中时 Jars 会逐个 jar 扫 zip 目录（Class.forName 失败不缓存），
+         * 桌面 JIT 下几毫秒，iOS 的 Zero 解释执行下一次几十到几百毫秒。
+         * /api/health 与 /api/sites 对**每个站点**都要问一次；导入 41 站之后
+         * 基线里那 44 个名字全变成未命中，一次 health 就能扫上百次 ——
+         * 网关像挂了：客户端请求超时，服务端日志只有一行 [req]（2026-11-24 真机）。
+         *
+         * 失效判据是 jar 代次（core.Jars.reload 与 rebuildSites 都会 +1）。
+         */
+        int gen = core.Jars.generation();
+        long[] memo = SPIDER_CLASS_MEMO.get(k);
+        if (memo != null && memo[0] == gen) return memo[1] == 1L;
+        boolean ok;
         try {
             platform.Bridge.loadClass("com.github.catvod.spider." + k);
-            return true;
+            ok = true;
         } catch (Throwable t) {
-            return false;
+            ok = false;
         }
+        SPIDER_CLASS_MEMO.put(k, new long[]{gen, ok ? 1L : 0L});
+        return ok;
     }
+
+    /** 站点类名存在性缓存：key → {jar 代次, 1 存在 / 0 不存在}。 */
+    private static final java.util.concurrent.ConcurrentHashMap<String, long[]> SPIDER_CLASS_MEMO =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     /** 是否配置了外部弹幕 API（policy.json 的 danmakuApi 或 MEOW_DANMAKU_API）。 */
     private static boolean danmakuApiConfigured() {
@@ -14125,6 +14147,14 @@ public class ApiServer {
      * 重建与遍历都在 SITES 自身上同步（见 searchAll 的 targets 拷贝）。
      */
     private static void rebuildSites() {
+        /*
+         * 站点表重建 → 类名缓存作废。
+         *
+         * JVM 侧 core.Jars.reload() 也会 +1，但 Android（TV）根本不走那条路
+         * （DexClassLoader 在 LocalSpiderHost 里），只靠这里兜住；多 +1 一次
+         * 只是让缓存空跑一轮，没有副作用。
+         */
+        core.Jars.invalidateClassCache();
         Map<String, String> base = sitesBaseline;
         Map<String, String> baseExt = extBaseline;
         synchronized (SITES) {
@@ -14181,13 +14211,18 @@ public class ApiServer {
      * <p>原生源（豆瓣 / 预告 / 配置中心）不依赖配置，永远可见。
      */
     private static boolean siteVisible(String key) {
-        if (!siteImplemented(key)) return false;
+        // 原生源（豆瓣 / 预告 / 配置中心）不依赖 jar，先答，省一次类查找
         if (sources.NativeSources.get(key) != null) return true;
+        /*
+         * 基线幽灵（静态 44 名里没进配置的）一律不可见 —— 这个结论与 jar 里
+         * 有没有这个类**无关**，所以先判，省掉一次（iOS 上很贵的）jar 扫描。
+         * 原顺序是"先 siteImplemented 再判基线"，导入 41 站后这里会白扫 44 次。
+         */
         if (!CONFIG_SITE_KEYS.isEmpty() && !CONFIG_SITE_KEYS.contains(key)) {
             Map<String, String> base = sitesBaseline;
             if (base != null && base.containsKey(key)) return false;
         }
-        return true;
+        return siteImplemented(key);
     }
 
     /** 对外可见站点键的快照（过滤掉没有实现的默认名与基线幽灵）。 */

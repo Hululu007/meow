@@ -1,12 +1,14 @@
 /**
- * iOS 真机的四个修复（2026-11-24）—— 都是"typecheck 与运行期都发现不了"的契约：
+ * iOS 真机的修复（2026-11-24，两轮）—— 都是"typecheck 与运行期都发现不了"的契约：
  *
- *  1. 安全区：WebView 不再 ignoresSafeArea（刘海不遮顶栏）—— 锁 Swift 源码；
+ *  1. 安全区：WebView **铺满全屏**，顶栏/底栏用 env() 让开刘海（不是黑边）；
  *  2. 输入框不缩放：iOS 壳锁 maximum-scale=1 + 输入控件 16px；
  *  3. 导入不再被客户端超时打断：确认导入走后台线程 + 轮询；
- *  4. 粘站点首页（`http://肥猫.net`）自动补 `/tv`。
+ *  4. 粘站点首页（`http://肥猫.net`）自动补 `/tv`；
+ *  5. 导入后网关"像挂了"：站点类名查找要缓存（未命中会扫整个 jar）；
+ *  6. iOS 后端地址只认注入的桥，别再退回同源静态服务（9979）。
  *
- * 前三条的失败形态都是"界面报失败但后端其实在做"，没有异常可抓，只能锁源码。
+ * 这些失败形态都是"界面报错但后端日志干净"，没有异常可抓，只能锁源码。
  */
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -23,16 +25,21 @@ const view = read(join(WEB, 'src', 'views', 'SettingsView.vue'))
 const html = read(join(WEB, 'index.html'))
 const tokens = read(join(WEB, 'src', 'styles', 'tokens.css'))
 const host = read(join(ROOT, 'server', 'host', 'src', 'shared', 'ApiServer.java'))
+const jars = read(join(ROOT, 'server', 'host', 'src', 'shared', 'core', 'Jars.java'))
 const rootView = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'RootView.swift'))
+const webViewSwift = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'WebView.swift'))
 const appStore = read(join(WEB, 'src', 'stores', 'app.ts'))
 
 describe('iOS：安全区与输入缩放', () => {
-  it('WebView 不再 ignoresSafeArea（刘海/Home 条区域留给黑底）', () => {
+  it('WebView 铺满全屏，安全区交给 CSS env()（顶栏/底栏下移，不是黑边）', () => {
     expect(rootView).toContain('WebView(url: url')
-    // 唯一允许忽略安全区的是底层背景色
-    expect(rootView).toContain('Color.black.ignoresSafeArea()')
     const web = rootView.slice(rootView.indexOf('WebView(url: url'))
-    expect(web.slice(0, 420)).not.toContain('.ignoresSafeArea()')
+    // 页面必须画到刘海底下：背景与顶部渐层铺满，内容靠 padding 让开
+    expect(web.slice(0, 600)).toContain('.ignoresSafeArea()')
+    expect(html).toContain('viewport-fit=cover')
+    expect(tokens).toContain("html[data-shell='ios'] .app-header")
+    expect(tokens).toContain('padding-top: env(safe-area-inset-top)')
+    expect(tokens).toContain("html[data-shell='ios'] .has-tabbar")
   })
 
   it('iOS 壳锁住页面缩放，且输入控件抬到 16px', () => {
@@ -87,5 +94,31 @@ describe('导入：站点首页自动补 /tv', () => {
     expect(host).toContain('private static String appendTvPath')
     expect(host).toContain('if (looksLikeHtml(raw))')
     expect(host).toContain('retry with " + alt')
+  })
+})
+
+describe('导入后「像挂了」：类查找缓存 + base 只认桥', () => {
+  it('站点类名查找按 jar 代次缓存（未命中会扫整个 jar）', () => {
+    expect(host).toContain('SPIDER_CLASS_MEMO')
+    expect(host).toContain('core.Jars.generation()')
+    expect(jars).toContain('public static int generation()')
+    expect(jars).toContain('public static void invalidateClassCache()')
+    // 站点表重建时也要失效（TV 不走 Jars.reload）
+    expect(host).toContain('core.Jars.invalidateClassCache()')
+    // 基线幽灵先判，别为它们白扫 jar
+    expect(host).toContain('return siteImplemented(key)')
+  })
+
+  it('iOS 后端地址只认注入的桥；拿不到就报错，不退回同源 9979', () => {
+    expect(api).toContain('iosShellInfo()?.apiBase')
+    expect(api).toContain('(isDesktopShell() || isIosShell()) && !resolveBase()')
+    expect(api).toContain('iOS 壳没有拿到后端地址')
+  })
+
+  it('网络级失败写进宿主日志（后端日志里这类失败一行都没有）', () => {
+    expect(api).toContain('function webLog')
+    expect(api).toContain('fetch ${method} ${base()}${path} failed after')
+    expect(webViewSwift).toContain('name: "meowLog"')
+    expect(webViewSwift).toContain('WKScriptMessageHandler')
   })
 })

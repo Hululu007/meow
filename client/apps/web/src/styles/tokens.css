@@ -973,6 +973,29 @@ html[data-shell='ios'] select {
 }
 
 /*
+ * iOS 壳：安全区变量无条件生效（不受 639px 断点限制）。
+ *
+ * 壳侧 `RootView` 让 WKWebView 铺满全屏（进刘海区），页面用 env() 把**内容**
+ * 推开 —— 这是主流 App 的做法：背景与顶部渐层铺满，顶栏/底栏各自让开刘海和
+ * Home 条。下面 639px 断点里那组只覆盖手机竖屏；iPad / 横屏时 CSS 宽度 >639，
+ * 但刘海（横屏在左右）与 Home 条仍然占位，所以这里再按壳身份补一份。
+ *
+ * ★ 算式必须与断点里那份逐字一致，否则转屏时顶栏高度会跳一截。
+ */
+html[data-shell='ios'] {
+  --header-h: calc(3.5rem + env(safe-area-inset-top));
+  --tabbar-h: calc(6rem + env(safe-area-inset-bottom));
+  --tabbar-clear: calc(4.25rem + env(safe-area-inset-bottom));
+}
+html[data-shell='ios'] .app-header {
+  height: calc(3.5rem + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+}
+html[data-shell='ios'] .has-tabbar {
+  padding-bottom: var(--tabbar-h);
+}
+
+/*
  * TV 上隐藏某控件（遥控器用不到它，留着只会让焦点多走一格）。
  *
  * 目前只有播放器音量条：TV 的音量由遥控器独立的音量键交给系统处理，

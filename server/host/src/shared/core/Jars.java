@@ -41,6 +41,10 @@ public final class Jars {
     private static final List<URLClassLoader> LOADERS = new ArrayList<>();
     private static volatile boolean hookInstalled;
 
+    /** {@link #reload()} 的代次，见 generation() 的说明。 */
+    private static final java.util.concurrent.atomic.AtomicInteger GENERATION =
+            new java.util.concurrent.atomic.AtomicInteger();
+
     /**
      * git 加速候选（前端「网络与加速」里配置的代理前缀）。
      *
@@ -164,6 +168,16 @@ public final class Jars {
     public static synchronized void reload() {
         if (!isJvm()) return;   // Android 走 LocalSpiderHost 的 DexClassLoader，别插手
         closeAll();
+        /*
+         * 代次自增：ApiServer 的「类名是否存在」缓存靠它失效。
+         *
+         * 为什么要缓存：未命中的 Class.forName 会逐个 jar 扫一遍 zip 目录 ——
+         * 桌面 JIT 下几毫秒，iOS 的 Zero 解释执行下一次几十到几百毫秒。
+         * /api/health 与 /api/sites 对每个站点都问一次，59 个站 × 每次几十次
+         * 未命中，能把整个网关拖成"像挂了"（2026-11-24 真机现象：
+         * 导入后首页请求超时，服务端日志只有 [req] 没有下文）。
+         */
+        GENERATION.incrementAndGet();
         for (String spec : collect()) {
             try {
                 File f = prepare(spec);
@@ -175,6 +189,21 @@ public final class Jars {
             }
         }
         installHook();
+    }
+
+    /** jar 集合的代次；每次 {@link #reload()} 自增。缓存方拿它做失效判据。 */
+    public static int generation() {
+        return GENERATION.get();
+    }
+
+    /**
+     * 手动作废类名缓存（站点表重建时调）。
+     *
+     * <p>Android 不走 {@link #reload()}（DexClassLoader 在 LocalSpiderHost），
+     * 但它同样会换站点表，缓存必须失效。
+     */
+    public static void invalidateClassCache() {
+        GENERATION.incrementAndGet();
     }
 
     /**

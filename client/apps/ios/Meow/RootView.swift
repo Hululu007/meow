@@ -9,15 +9,21 @@ struct RootView: View {
 
             if let url = boot.webURL {
                 /*
-                 * ★ 不要 ignoresSafeArea：WKWebView 自己是 contentInsetAdjustmentBehavior
-                 *   = .never，页面又会画到刘海底下（顶栏被遮住、设置页第一个输入框
-                 *   点不到）。这里让 SwiftUI 把 WebView 约束在安全区内，刘海/Home
-                 *   指示条那块只露底层黑底——等价于「浏览器窗口不进刘海」。
+                 * 全屏铺满（和浏览器一样进刘海区），安全区交给页面自己算。
+                 *
+                 * ★ 为什么不是把 WebView 缩进安全区（上一版做法，用户否了）：
+                 *   那样刘海/Home 条两块永远是黑边，应用的背景和顶栏、底栏
+                 *   都变成"贴在里面的一张小画"，和主流 App 不一样。主流做法是
+                 *   页面画满全屏，再由 CSS 用 env(safe-area-inset-*) 把**内容**
+                 *   （顶栏、底栏、卡片）推开 —— tokens.css 里 `.app-header`
+                 *   / `.has-tabbar` 的算式已经按这个写好了，只要求页面
+                 *   viewport 带 `viewport-fit=cover`（index.html 的 iOS 分支已加）。
                  */
                 WebView(url: url,
                         script: boot.bootScript,
                         onReady: { _ = Task { @MainActor in boot.webReady = true } },
                         onError: { message in _ = Task { @MainActor in boot.message = message } })
+                    .ignoresSafeArea()
             }
 
             if !boot.webReady {

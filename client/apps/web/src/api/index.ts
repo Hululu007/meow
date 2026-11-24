@@ -12,7 +12,7 @@ import type { HistoryItem } from '../stores/history'
 import { isLoopbackUrl } from '@/utils/loopback'
 import { getPrefs } from '../stores/prefs'
 import { enabledProxyPrefixes } from './gitAccel'
-import { isDesktopShell, isTvShell } from '@/compat/shell'
+import { isDesktopShell, isIosShell, iosShellInfo, isTvShell } from '@/compat/shell'
 
 export { isLoopbackUrl }
 
@@ -62,6 +62,21 @@ function resolveBase(): string {
       return desktopBase
     }
     return manual
+  }
+
+  /*
+   * iOS 壳：地址**只认宿主注入的桥**（`window.meowIos.apiBase`），localStorage 只是缓存。
+   *
+   * 踩过（2026-11-24 真机）：导入完成后从设置页回首页，界面报「连不上后端」，
+   * 而 jvm.log 里连一条 `POST /api/Douban/home` 都没有 —— 请求打到了静态服务
+   * 9979（它只做 GET/HEAD，POST 回 405；浏览器把这次 CORS 失败报成 Load failed）。
+   * 根因：base 以前是从 localStorage 的 `meow.api` 推出来的，一旦那份缓存没写上/
+   * 被清掉，非桌面壳就退回**同源**（9979）—— iOS 的同源不是后端。
+   * 桥是每次文档加载都由 BootScript 注入的权威来源，所以放在 localStorage 之前。
+   */
+  if (isIosShell()) {
+    const viaBridge = String(iosShellInfo()?.apiBase || '').trim()
+    if (viaBridge) return viaBridge.replace(/\/$/, '')
   }
 
   const runtime =
@@ -115,7 +130,29 @@ function base(): string {
  * 所以桌面端只要还没拿到确定地址，就必须报错，绝不退化成同源请求。
  */
 function backendUnavailable(): boolean {
-  return isDesktopShell() && !resolveBase()
+  return (isDesktopShell() || isIosShell()) && !resolveBase()
+}
+
+/**
+ * 把一行诊断写进宿主日志（只有注入了 `meowLog` 桥的壳会真正写出：iOS）。
+ *
+ * 为什么需要：真机上「连不上后端」有两种完全不同的成因 ——
+ *   ① 请求到了后端但很慢（jvm.log 有 [req]/[slow]，能查）；
+ *   ② 请求根本没发出去（打到静态服务 / 预检失败，jvm.log 一行都没有）。
+ * 第 ② 种只能靠前端把「目标地址 + 错误原文 + 耗时」写进 launch.log 才查得动
+ * （2026-11-24 真机就是这种：界面报断连，后端日志干净得像没发生）。
+ */
+function webLog(msg: string) {
+  try {
+    const bridge = (window as unknown as {
+      webkit?: { messageHandlers?: { meowLog?: { postMessage?: (s: string) => void } } }
+    }).webkit?.messageHandlers?.meowLog
+    if (bridge && typeof bridge.postMessage === 'function') {
+      bridge.postMessage(String(msg).slice(0, 400))
+    }
+  } catch {
+    /* 记日志失败绝不影响业务 */
+  }
 }
 
 // ---------------------------------------------------------------- 启动引导
@@ -378,10 +415,16 @@ async function requestUncached<T>(
   const { method = 'GET', body, timeout = 60_000, keepalive } = options
   // 桌面端地址未定时不要发同源请求（会命中 dev 服务器代理，连到不该连的后端）
   if (backendUnavailable()) {
-    throw new Error('后端尚未就绪：请稍候，或到「设置 → 本机插件」检查影视后端是否已安装并启动')
+    throw new Error(
+      isIosShell()
+        ? 'iOS 壳没有拿到后端地址（本地网关可能还没起来），请稍候重试'
+        : '后端尚未就绪：请稍候，或到「设置 → 本机插件」检查影视后端是否已安装并启动',
+    )
   }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeout)
+  const startedAt = Date.now()
+  let gotResponse = false
   try {
     // 写操作令牌：后端设了 authToken 才需要（见 policy.json）。
     // 每个请求都带——GET 上它被后端忽略，省掉"哪些请求要带"的分支。
@@ -400,6 +443,7 @@ async function requestUncached<T>(
       // 下次打开还停在旧位置）。
       ...(keepalive ? { keepalive: true } : {}),
     })
+    gotResponse = true
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       // 后端异常时可能返回非 JSON（空响应 / HTML 错误页），
@@ -416,11 +460,28 @@ async function requestUncached<T>(
     }
     const raw = await res.text()
     if (!raw) throw new Error(`[${method}] ${path} → 后端返回空响应（服务可能正在重启）`)
+    const cost = Date.now() - startedAt
+    // 慢请求留痕：真机上「后端像挂了」多半是 Zero 解释执行下的慢，不是断连
+    if (cost >= 5000) webLog(`slow ${method} ${path} ${cost}ms`)
     try {
       return JSON.parse(raw) as T
     } catch {
       throw new Error(`[${method}] ${path} → 响应不是 JSON：${raw.slice(0, 160)}`)
     }
+  } catch (e) {
+    /*
+     * 只记「没拿到任何 HTTP 响应」的失败。这类问题在真机上最难查：
+     * 请求可能根本没到后端（打到静态服务的 405 / 预检失败），后端日志干净。
+     */
+    if (!gotResponse) {
+      const name = (e as { name?: string })?.name || ''
+      const why =
+        name === 'AbortError'
+          ? `timeout ${timeout}ms`
+          : String((e as { message?: unknown })?.message ?? e)
+      webLog(`fetch ${method} ${base()}${path} failed after ${Date.now() - startedAt}ms: ${why}`)
+    }
+    throw e
   } finally {
     clearTimeout(timer)
   }
