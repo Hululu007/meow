@@ -1004,6 +1004,17 @@ const skipCdOptions = [
   { value: 0, label: '立即跳' },
   ...[3, 5, 10, 15].map((v) => ({ value: v, label: `${v} 秒` })),
 ]
+/**
+ * 无声时的记忆选择（2026-11-24）。
+ *
+ * 播放页的提示条点过一次会记住（native/transcode），但以前**没有出口**，
+ * 用户想改回"每次询问"只能清数据。这里补上设置项。
+ */
+const silentActionOptions = [
+  { value: 'ask', label: '每次询问' },
+  { value: 'native', label: '原生播放' },
+  { value: 'transcode', label: '转码' },
+]
 
 // ---------------------------------------------------------------- 外观
 
@@ -6783,6 +6794,16 @@ onBeforeUnmount(() => {
           label="无声自动用原生播放"
           :options="onOff"
           @update:model-value="(v) => update('nativeOnSilent', v === 'on')"
+        />
+        <!--
+          无声时的记忆选择（2026-11-24）：提示条点过一次会记住，
+          必须给一个改回「每次询问」的出口，否则一次误点永久生效。
+        -->
+        <TileSelect
+          :model-value="prefs.silentAction"
+          label="音轨解不了时"
+          :options="silentActionOptions"
+          @update:model-value="(v) => update('silentAction', v as 'ask' | 'native' | 'transcode')"
         />
         <!--
           TV 上控制栏会自动隐藏，想知道播到哪只能按键唤出。

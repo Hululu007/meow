@@ -586,17 +586,29 @@ public final class Transcode {
      * 幂等键仍只取 URL —— 同一集换头重来应当复用同一份产物。
      */
     public static Job ensure(String sourceUrl, boolean forceVideo, String headerJson) {
+        return ensure(sourceUrl, forceVideo, headerJson, false);
+    }
+
+    /**
+     * preferCopy=true：客户端明确要求"视频原样 copy、只转音频"（remux）。
+     *
+     * <p>只在片库这类已知场景由前端请求（在线源 copy 成 HLS 的时间戳风险大），
+     * 且仍要求编码在 h264/hevc/av1 里 —— 其他编码不赌。
+     */
+    public static Job ensure(String sourceUrl, boolean forceVideo, String headerJson,
+                             boolean preferCopy) {
         String id = idFor(sourceUrl);
         /*
          * 单集锁（S1，2026-11-17）：前端 start 请求与 2 秒一次的轮询可能
          * 同时进来，"检查状态 → 起 ffmpeg"必须串行，否则会起两个进程写同一目录。
          */
         synchronized (lockFor(id)) {
-            return ensure0(sourceUrl, forceVideo, id, headerJson == null ? "" : headerJson);
+            return ensure0(sourceUrl, forceVideo, id, headerJson == null ? "" : headerJson, preferCopy);
         }
     }
 
-    private static Job ensure0(String sourceUrl, boolean forceVideo, String id, String headerJson) {
+    private static Job ensure0(String sourceUrl, boolean forceVideo, String id, String headerJson,
+                               boolean preferCopy) {
         Job found = JOBS.get(id);
         if (found != null) {
             if ("running".equals(found.state)) {
@@ -674,6 +686,7 @@ public final class Transcode {
          */
         j.phase = "probe";
         Probe probe = probe(ff, sourceUrl, headerJson);
+        if (preferCopy) applyCopyPreference(probe);
         /*
          * ★ 这里必须传**真实**的硬解能力（2026-11-20 复核修正）。
          * 原来传死 false，等于把"RK3566 + rkmpp"也当成无硬解：4K HEVC 明明
@@ -717,14 +730,19 @@ public final class Transcode {
      * 幂等键单独给一个 {@code key}，同一个片库文件重复点转码会复用同一份产物。
      */
     public static Job ensureLocal(String source, String key) {
+        return ensureLocal(source, key, false);
+    }
+
+    /** preferCopy=true：视频原样 copy、只转音频（片库 remux）。 */
+    public static Job ensureLocal(String source, String key, boolean preferCopy) {
         String id = idFor(key);
         // 单集锁：与 ensure 同理（幂等键是 lib|path，同一集并发点击只起一个任务）
         synchronized (lockFor(id)) {
-            return ensureLocal0(source, key, id);
+            return ensureLocal0(source, key, id, preferCopy);
         }
     }
 
-    private static Job ensureLocal0(String source, String key, String id) {
+    private static Job ensureLocal0(String source, String key, String id, boolean preferCopy) {
         Job found = JOBS.get(id);
         if (found != null) {
             if ("running".equals(found.state)) {
@@ -787,6 +805,7 @@ public final class Transcode {
          */
         j.phase = "probe";
         Probe probe = probe(ff, source);
+        if (preferCopy) applyCopyPreference(probe);
         boolean hwCapable = probe != null && hwTranscode(ff, probe);
         if (slow4kHopeless(probe, hwCapable)) {
             j.state = "failed";
@@ -919,7 +938,45 @@ public final class Transcode {
         int height;
         /** 源总时长（秒）。0 = 没探到 —— 用来判断 ffmpeg 是不是只转了一小段就退出。 */
         double duration;
+        /** 位深（8/10/12）：高位深判定用，缺省按 pixFmt 推。 */
+        int bitDepth;
+        /** 色彩传输（smpte2084=PQ / arib-std-b67=HLG 判 HDR）；空 = 未知。 */
+        String colorTransfer = "";
+        /** 音频声道数（2 / 6 / 8…）。 */
+        int channels;
         String detail = "";
+    }
+
+    /** pix_fmt → 位深（8/10/12/16）；认不出按 8。 */
+    private static int bitDepthOf(String pixFmt) {
+        String pf = pixFmt == null ? "" : pixFmt.toLowerCase();
+        if (pf.isEmpty()) return 0;
+        if (pf.contains("p016") || pf.contains("16le") || pf.contains("16be")) return 16;
+        if (pf.contains("p012") || pf.contains("12le") || pf.contains("12be")) return 12;
+        if (pf.contains("p010") || pf.contains("10le") || pf.contains("10be")) return 10;
+        return 8;
+    }
+
+    /** 是否 HDR（PQ / HLG）。探测不到 color_transfer 时按 SDR 处理，绝不乱 tonemap。 */
+    private static boolean isHdr(Probe p) {
+        if (p == null) return false;
+        String ct = p.colorTransfer == null ? "" : p.colorTransfer.toLowerCase();
+        return "smpte2084".equals(ct) || "arib-std-b67".equals(ct)
+                || "smpte-st-2084".equals(ct);
+    }
+
+    /**
+     * 客户端明确要求 remux 时放宽 copy：只要编码在 h264/hevc/av1 里就原样复制。
+     *
+     * <p>位深不设限 —— 是否真的能解由前端按端侧实测能力判断（它只在能解时
+     * 才带 copy=1）；后端不再替客户端做"10-bit 一律不行"的猜测。
+     */
+    private static void applyCopyPreference(Probe p) {
+        if (p == null) return;
+        String v = p.vcodec == null ? "" : p.vcodec.toLowerCase();
+        if ("h264".equals(v) || "hevc".equals(v) || "av1".equals(v)) {
+            p.copyVideo = true;
+        }
     }
 
     // ------------------------------------------------------------ rkmpp 硬解硬编（2026-11-17）
@@ -1082,6 +1139,9 @@ public final class Transcode {
                 .put("vcodec", cached.vcodec == null ? "" : cached.vcodec)
                 .put("acodec", cached.acodec == null ? "" : cached.acodec)
                 .put("pixfmt", cached.pixFmt == null ? "" : cached.pixFmt)
+                .put("bitDepth", cached.bitDepth)
+                .put("colorTransfer", cached.colorTransfer == null ? "" : cached.colorTransfer)
+                .put("channels", cached.channels)
                 .put("width", cached.width)
                 .put("height", cached.height)
                 .put("duration", (long) Math.round(cached.duration));
@@ -1103,7 +1163,11 @@ public final class Transcode {
             // 顺序是 codec_name,width,height,pix_fmt（不是请求顺序，实测过），
             // 所以只按位置取前 4 段；不要顺手加 profile——它排在 width 前面，
             // 会把解析顶歪（`h264,High 10,1396,866,...`）。
-            v.add("-show_entries"); v.add("stream=codec_name,width,height,pix_fmt");
+            /*
+             * color_transfer 排在 pix_fmt 之后（ffprobe 按 stream 结构体顺序输出，
+             * 不是按请求顺序）；缺这个字段时 csv 只有 4 段，按长度判断即可。
+             */
+            v.add("-show_entries"); v.add("stream=codec_name,width,height,pix_fmt,color_transfer");
             v.add("-of"); v.add("csv=p=0");
             addHttpInputOptions(v, source, header);
             v.add(source);
@@ -1117,6 +1181,7 @@ public final class Transcode {
             int w = parseIntSafe(vf[1], 0);
             int h = parseIntSafe(vf[2], 0);
             String pixFmt = vf.length > 3 ? vf[3] : "";
+            String colorTransfer = vf.length > 4 ? vf[4] : "";
 
             List<String> a = new ArrayList<>();
             a.add(fp);
@@ -1168,8 +1233,12 @@ public final class Transcode {
             p.height = h;
             p.duration = dur;
             p.copyAudio = "aac".equals(acodec) && ch > 0 && ch <= 2;
+            p.bitDepth = bitDepthOf(pixFmt);
+            p.colorTransfer = colorTransfer;
+            p.channels = ch;
             p.detail = vcodec + " " + w + "x" + h + (pixFmt.isEmpty() ? "" : " " + pixFmt)
-                    + " / " + acodec + " " + ch + "ch";
+                    + " / " + acodec + " " + ch + "ch"
+                    + (colorTransfer.isEmpty() ? "" : " / " + colorTransfer);
             return p;
         } catch (Exception e) {
             return null;
@@ -1311,7 +1380,8 @@ public final class Transcode {
 
     /** 硬编码率分档（按**输出**高度；硬解路径最高出 1080p）。 */
     private static String hwBitrate(int h) {
-        if (h > 900) return "5M";
+        // 2026-11-24：5M 在 1080p 上明显发糊（用户实报「降画质」），提到 8M。
+        if (h > 900) return "8M";
         if (h > 600) return "3M";
         return "2M";
     }
@@ -1367,10 +1437,17 @@ public final class Transcode {
          * 参数名不兼容：传错会让 ffmpeg 以 "Option not found" 直接不启动，
          * 所以按 major 只挑一个；版本探测不到（0）就都不传，保持旧行为。
          */
+        /*
+         * ★ 只对 HLS 输入加这两个选项（2026-11-24 实测踩过）：
+         * ffmpeg 9 里 `-extension_picky` 是 **HLS demuxer 的选项**，对 MKV/MP4
+         * 这类普通 http 输入会报 "Option not found" 直接打不开（ffprobe 反而
+         * 接受，所以 probe 能过、转码必挂）。片库 SMB 流是 MKV → 全部中招。
+         */
         int major = ffmpegMajor();
-        if (major >= 7) {
+        boolean hlsSource = source.toLowerCase().contains(".m3u8");
+        if (hlsSource && major >= 7) {
             cmd.add("-extension_picky"); cmd.add("0");
-        } else if (major >= 1) {
+        } else if (hlsSource && major >= 1) {
             cmd.add("-allowed_extensions"); cmd.add("ALL");
         }
         /*
@@ -1528,8 +1605,23 @@ public final class Transcode {
              */
             cmd.add("-force_key_frames");
             cmd.add("expr:gte(t,n_forced*" + SEG_SECONDS + ")");
+            /*
+             * HDR→SDR（2026-11-24）：只对 PQ/HLG 做 tonemap。
+             * 不加的话 HDR 源转出来仍贴 bt2020 标签、在 SDR 屏上发灰，
+             * 用户看到的就是"降画质"。SDR 10-bit 绝不能走这条链（会偏色）。
+             */
+            String vf = "scale='min(1920,iw)':-2";
+            if (p != null && isHdr(p)) {
+                vf = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
+                        + "tonemap=tonemap=hable:desat=0,"
+                        + "zscale=t=bt709:m=bt709:r=tv,format=yuv420p,"
+                        + "scale='min(1920,iw)':-2";
+                cmd.add("-color_primaries"); cmd.add("bt709");
+                cmd.add("-color_trc"); cmd.add("bt709");
+                cmd.add("-colorspace"); cmd.add("bt709");
+            }
             // 4K 源降到 1080p：H.264 编 4K 慢 4 倍，而浏览器端肉眼收益很小
-            cmd.add("-vf"); cmd.add("scale='min(1920,iw)':-2");
+            cmd.add("-vf"); cmd.add(vf);
         }
         if (p != null && p.copyAudio) {
             cmd.add("-c:a"); cmd.add("copy");
@@ -1838,6 +1930,9 @@ public final class Transcode {
             o.put("srcVcodec", p.vcodec);
             o.put("srcAcodec", p.acodec);
             o.put("srcPixfmt", p.pixFmt);
+            o.put("srcBitDepth", p.bitDepth);
+            o.put("srcColorTransfer", p.colorTransfer == null ? "" : p.colorTransfer);
+            o.put("srcChannels", p.channels);
             o.put("srcWidth", p.width);
             o.put("srcHeight", p.height);
             o.put("copyVideo", p.copyVideo);
@@ -1855,6 +1950,47 @@ public final class Transcode {
         o.put("lastSegmentAge",
                 j.lastSegmentAt > 0 ? (System.currentTimeMillis() - j.lastSegmentAt) / 1000 : -1);
         if (j.code != null && !j.code.isEmpty()) o.put("code", j.code);
+        return o;
+    }
+
+    /** 转码能力缓存（ffmpeg 不会中途换，10 分钟刷一次足够）。 */
+    private static volatile JSONObject CAPS_CACHE = null;
+    private static volatile long CAPS_AT = 0;
+
+    /**
+     * 后端转码能力（前端选路/提示用）：
+     *   available  ffmpeg 是否存在
+     *   hw         是否有 rkmpp 硬编（h264_rkmpp）
+     *   tonemap    是否有 zscale + tonemap（HDR→SDR 可用）
+     *   maxHeight  硬编路径最大输出高度（0 = 不限）
+     */
+    public static JSONObject caps() throws org.json.JSONException {
+        JSONObject cached = CAPS_CACHE;
+        if (cached != null && System.currentTimeMillis() - CAPS_AT < 600_000L) {
+            return new JSONObject(cached.toString());
+        }
+        JSONObject o = new JSONObject();
+        String ff = ffmpegPath();
+        if (ff.isEmpty()) {
+            o.put("ok", true).put("available", false).put("hw", false)
+                    .put("tonemap", false).put("maxHeight", 0);
+        } else {
+            boolean hw = false;
+            boolean tonemap = false;
+            try {
+                String enc = runCapture(java.util.Arrays.asList(
+                        ff, "-hide_banner", "-encoders"), 10);
+                if (enc != null) hw = enc.contains("h264_rkmpp");
+                String fil = runCapture(java.util.Arrays.asList(
+                        ff, "-hide_banner", "-filters"), 10);
+                if (fil != null) tonemap = fil.contains("zscale") && fil.contains("tonemap");
+            } catch (Exception ignored) {
+            }
+            o.put("ok", true).put("available", true).put("hw", hw)
+                    .put("tonemap", tonemap).put("maxHeight", hw ? 1080 : 0);
+        }
+        CAPS_CACHE = new JSONObject(o.toString());
+        CAPS_AT = System.currentTimeMillis();
         return o;
     }
 

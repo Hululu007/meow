@@ -211,6 +211,19 @@ const emit = defineEmits<{
    * 不含暂停/seek/换集），消费方据此记观看时长。
    */
   (e: 'progress', payload: { pos: number; dur: number; final: boolean; watched: number }): void
+  /**
+   * 高丢帧（2026-11-24）：某些 4K 源的切片时间轴有缝，Chromium 渲染器
+   * 只能靠丢帧追赶媒体时钟。父组件据此切"原画转封装"。
+   */
+  (e: 'high-drop', payload: {
+    dropped: number
+    total: number
+    ratio: number
+    /** hls.js 当前选中的变体地址（可能是空：单码率清单） */
+    levelUrl?: string
+    /** 当前画面高度（判"转封装后不能更低"） */
+    height?: number
+  }): void
   /** 元数据就绪（可以安全 seek 了）。续播恢复挂在这里 */
   (e: 'loaded', payload: { duration: number }): void
   /** 分片中途 403/401（token 过期）：父组件应重新取 play 地址并在原位置续播 */
@@ -1306,6 +1319,11 @@ const hls = shallowRef<Hls | null>(null)
 const dash = shallowRef<any>(null)
 const dm = shallowRef<DanmakuRenderer | null>(null)
 let hideTimer: number | undefined
+/** 高丢帧自愈：定时采样 + 每个源只报一次 */
+let dropGuardTimer: number | undefined
+let dropReported = false
+/** 当前选中的清晰度变体地址（高丢帧自愈转封装时用它，避免 ffmpeg 选到低码率变体） */
+let activeLevelUrl = ''
 
 // ---------------------------------------------------------------- 调试面板
 
@@ -1757,6 +1775,8 @@ function setupSource(url: string) {
   // 每次换源都允许"hls 判错 → 回退原生"各一次
   nativeSrcFallbackTried = false
   endedSent = false
+  dropReported = false
+  activeLevelUrl = ''
   // 新源要重新自动起播（见 onLoaded 里 didAutoStart 的注释）
   didAutoStart = false
   // 位置可信要等 onLoaded（metadata + 刷新续播 seek）：之前不弹片头提示
@@ -1893,6 +1913,23 @@ function setupSource(url: string) {
     // 清单已到手 → 起播预算放宽（20s → 35s）。注册在 loadSource 之前，
     // 不依赖事件时序（事件本身是异步的，但先挂上更稳）。
     h.on(Hls.Events.MANIFEST_PARSED, () => extendStartupForManifest())
+    /*
+     * 记录 hls.js 当前选中的变体地址（2026-11-24）。
+     *
+     * 母清单交给 ffmpeg 时它只取**第一个**变体（实测是 1080p），
+     * 转封装出来就降了分辨率。把播放器正在用的这一档（4K）传过去，
+     * 后端 copy 的才是用户实际在看的那一路。
+     */
+    h.on(Hls.Events.LEVEL_SWITCHED, (_e, data: { level: number }) => {
+      const raw = h.levels?.[data.level]?.url as unknown
+      const lu = Array.isArray(raw) ? String(raw[0] || '') : String(raw || '')
+      if (!lu) return
+      try {
+        activeLevelUrl = new URL(lu, url).toString()
+      } catch {
+        activeLevelUrl = lu
+      }
+    })
     h.loadSource(url)
     h.attachMedia(v)
     // 分片加载耗时：定位"卡在哪个分片"最直接的数据。
@@ -5608,9 +5645,38 @@ function clearDmRetry() {
 
 // ---------------------------------------------------------------- lifecycle
 
+/**
+ * 高丢帧检测（2026-11-24）。
+ *
+ * 只检测、不处理：连续采样里丢帧率 >15% 且已播过 12 秒，就通知父组件。
+ * 判据来自实测：某 4K 源 60 秒窗口丢 431/1500 = 28.7%，而同一 App 的
+ * 1080p 线路丢 0；不是解码能力/网络/弹幕问题，是源的分片时间轴有缝。
+ */
+function checkVideoDrops() {
+  const v = video.value
+  if (!v || v.paused || dropReported) return
+  if (v.currentTime < 12) return
+  const q = typeof v.getVideoPlaybackQuality === 'function'
+    ? v.getVideoPlaybackQuality()
+    : null
+  if (!q || q.totalVideoFrames < 150) return
+  const ratio = q.droppedVideoFrames / q.totalVideoFrames
+  if (ratio > 0.15) {
+    dropReported = true
+    emit('high-drop', {
+      dropped: q.droppedVideoFrames,
+      total: q.totalVideoFrames,
+      ratio,
+      levelUrl: activeLevelUrl,
+      height: v.videoHeight,
+    })
+  }
+}
+
 onMounted(() => {
   // 换集后恢复上一次的全屏状态（伪全屏，不需要用户手势）
   void restoreFsIntent()
+  dropGuardTimer = window.setInterval(checkVideoDrops, 5000)
   const v = video.value
   const s = stage.value
   if (s) {
@@ -5983,6 +6049,7 @@ watch(prefs, (p) => {
 }, { deep: true })
 
 onBeforeUnmount(() => {
+  if (dropGuardTimer) clearInterval(dropGuardTimer)
   // 卸载后 onFullscreenChange 可能已经收不到（监听已摘），先按住这个标志，
   // 避免浏览器在元素移除时触发的 fullscreenchange 再把状态写乱。
   unmounting = true

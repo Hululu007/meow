@@ -105,6 +105,51 @@ export type PlayErrorKind =
   `busyRetrying` 必须是 `ref`（普通变量改值不会触发 Vue 重渲染，实测文案会停在
   「另一台设备正在转 4K」不动）。
 
+### 能力优先：不按「10-bit」一刀切（2026-11-24）
+
+旧逻辑只要 pixfmt 是 10-bit 就转码，把 HEVC Main10（4K HDR 的标准编码）也判死：
+PC 的 WebView2 实测能解 `hvc1.2.4.L153.B0`（`MediaSource.isTypeSupported` = true），
+却仍被砍成 1080p 8-bit —— 用户看到的就是"都被降画质了"。
+
+现在 `utils/playRoute.ts` 按**设备实测能力**决策，`highBit` 只对 **H.264 Hi10P**
+（WebView 与电视硬解的共同盲区）成立：
+
+- 端侧探测：`utils/codecCaps.ts` 用 `MediaSource.isTypeSupported` 按
+  codec/profile/位深实测（Chromium / Android WebView；Safari 走原生 HLS，不探测）。
+- HEVC Main10 / AV1 10-bit：能解 → 直连；电视有原生桥 → 原生（原画）；
+  都没有才转码。探测不到时按"能解"处理，失败由运行时兜底。
+- 探测结果只影响**片库**（点播没有 probe，仍走直连 + 运行时兜底）。
+
+### 原画转封装（remux）：视频 copy，只转音频
+
+片库里 4K HEVC + AC3/DTS 的文件，旧逻辑整条重编码（4K→1080p）。现在 PC/网页侧
+只要"视频能解、只有音频解不了"，就走 **remux**：后端 `-c:v copy` + 音频 AAC，
+画面零损失。前端在 `PlayView` 的 `allowRemux`（仅片库）打开时才走这条路，
+并带 `copy=1`；后端 `applyCopyPreference()` 只对 h264/hevc/av1 放宽 copy。
+
+**硬门槛**：请求了 copy 就必须 `copyVideo=true` 且输出高度不低于源画面，
+否则取消任务、保持原样播放 —— 宁可不自愈，也不静默降画质。
+
+### 高丢帧自愈（4K 源时间轴有缝）
+
+实测某 4K 源：整集 874 片、EXTINF 1.16~5.16s 参差、每片边界丢 1 帧，
+Chromium 渲染器丢帧 28.7%（25fps 只出 17.7fps）；同一 App 的 1080p 线路丢 0。
+`VideoPlayer` 每 5 秒采样 `getVideoPlaybackQuality()`，丢帧率 >15% 且已播 12 秒
+就发 `high-drop`，父组件用**播放器当前选中的那一档变体地址**（`hls.levels[i].url`）
+起后端 remux，并从当前位置续播。用母清单会让 ffmpeg 选到第一个变体（常见 1080p），
+所以必须传变体地址。
+
+### 分片代理：12 槽 + 失败留痕
+
+`STREAM_SLOTS` 8→12；503 带 `Retry-After: 1` 并每 10 秒记一条日志；
+代理 IOException 记 `stream` 日志（URL 先 scrub）。实测并发 14 个**不同**分片时
+10 成功 + 4 个 503（是闸门而不是源站问题）；对**同一个**分片反复并发才会被源站
+掐 TLS —— 正常播放不会那样请求。
+
+另外：`-extension_picky` 只对 HLS 输入加。ffmpeg 9 里它是 HLS demuxer 的选项，
+对 MKV/MP4 这类普通 http 输入会报 `Option not found`（ffprobe 反而接受），
+片库 SMB 流会全部打不开。
+
 
 ## 三、两级错误展示
 

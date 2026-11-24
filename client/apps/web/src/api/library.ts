@@ -681,8 +681,14 @@ export interface TranscodeResult {
  * 但片库有两种情况拉不了 —— 本地目录的流地址是 127.0.0.1（被 SSRF 防线拒），
  * SMB 的 ffmpeg 根本不认。所以这里传 lib + path，让后端自己取文件。
  */
-export async function startLibraryTranscode(lib: string, path: string): Promise<TranscodeResult> {
+export async function startLibraryTranscode(
+  lib: string,
+  path: string,
+  /** copy=1：视频原样 copy、只转音频（remux；画面零损失） */
+  copy = false,
+): Promise<TranscodeResult> {
   const q = new URLSearchParams({ lib, path })
+  if (copy) q.set('copy', '1')
   const r = await fetch(`${apiBase()}/api/transcode?${q}`)
   if (!r.ok) {
     // 后端 stage 前的预检（ffmpeg 缺失等）返回 502 + 人话 msg——
@@ -841,10 +847,11 @@ export async function waitLibraryTranscode(
   path: string,
   onProgress?: TranscodeProgress,
   timeoutMs = TRANSCODE_BASE_MS,
+  copy = false,
 ): Promise<TranscodeResult> {
   return waitTranscodeCore(
     {
-      start: () => startLibraryTranscode(lib, path),
+      start: () => startLibraryTranscode(lib, path, copy),
       poll: async () => {
         const q = new URLSearchParams({ lib, path, mode: 'status' })
         const r = await fetch(`${apiBase()}/api/transcode?${q}`)
@@ -885,10 +892,15 @@ export async function cancelTranscode(t: {
   }
 }
 
-export async function startTranscode(src: string, header = ''): Promise<TranscodeResult> {
+export async function startTranscode(
+  src: string,
+  header = '',
+  copy = false,
+): Promise<TranscodeResult> {
   const q = new URLSearchParams({ src })
   // 源站要求的 UA/Referer：转码是后端自己拉流，不带就是 404（咕噜4K 实测）
   if (header) q.set('header', header)
+  if (copy) q.set('copy', '1')
   const r = await fetch(`${apiBase()}/api/transcode?${q}`)
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   return (await r.json()) as TranscodeResult
@@ -902,10 +914,11 @@ export async function waitTranscode(
   onProgress?: TranscodeProgress,
   timeoutMs = TRANSCODE_BASE_MS,
   header = '',
+  copy = false,
 ): Promise<TranscodeResult> {
   return waitTranscodeCore(
     {
-      start: () => startTranscode(src, header),
+      start: () => startTranscode(src, header, copy),
       poll: async () => {
         const q = new URLSearchParams({ src, mode: 'status' })
         const r = await fetch(`${apiBase()}/api/transcode?${q}`)

@@ -1549,6 +1549,17 @@ public class ApiServer {
                  * 宁可直接 503 让播放器重试，也不让整台后端跟着卡。
                  */
                 if (!STREAM_SLOTS.tryAcquire()) {
+                    /*
+                     * 2026-11-24：这里以前静默回 503，用户只看到"进不去播放页"、
+                     * 后台日志一片干净。现在记一条（节流 10 秒）并给 Retry-After，
+                     * 让播放器/前端知道该退避重试而不是报错。
+                     */
+                    long now = System.currentTimeMillis();
+                    if (now - STREAM_BUSY_LOGGED_AT > 10_000) {
+                        STREAM_BUSY_LOGGED_AT = now;
+                        core.LogBuffer.warn("stream", "分片代理繁忙（12 槽已满），回 503 让播放器退避");
+                    }
+                    ex.getResponseHeaders().set("Retry-After", "1");
                     sendText(ex, 503,
                             "{\"code\":-1,\"busy\":true,\"msg\":\"分片代理繁忙，请重试\"}",
                             "application/json; charset=utf-8");
@@ -11376,7 +11387,9 @@ public class ApiServer {
      * 让播放器重试，而不是让所有请求在无界队列里排队等 45 秒。
      */
     private static final java.util.concurrent.Semaphore STREAM_SLOTS =
-            new java.util.concurrent.Semaphore(8, true);
+            new java.util.concurrent.Semaphore(12, true);
+    /** 503 日志节流：槽位打满时每 10 秒最多记一条，避免刷爆环形缓冲。 */
+    private static volatile long STREAM_BUSY_LOGGED_AT = 0;
 
     // ---------------------------------------------------------------- 广告分片
 
@@ -11766,6 +11779,8 @@ public class ApiServer {
                 current = next;
             }
         } catch (IOException e) {
+            // 代理失败必须留痕：否则"偶尔进不去播放页"永远查不到原因
+            core.LogBuffer.warn("stream", "代理失败 " + core.LogBuffer.scrub(url) + " -> " + e);
             sendJson(ex, 502, "{\"code\":-1,\"msg\":" + JSONObject.quote(String.valueOf(e)) + "}");
             return;
         }
@@ -12250,6 +12265,11 @@ public class ApiServer {
             sendJson(ex, ok ? 200 : 404, new JSONObject().put("ok", ok).toString());
             return;
         }
+        // 能力探测（前端选路用）：ffmpeg 可用性 / 硬编 / tonemap / 最大输出高度
+        if ("caps".equals(q.get("action"))) {
+            sendJson(ex, 200, core.Transcode.caps().toString());
+            return;
+        }
         if (!"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method)) {
             sendJson(ex, 405, "{\"code\":-1,\"msg\":\"method not allowed\"}");
             return;
@@ -12290,7 +12310,9 @@ public class ApiServer {
             sendJson(ex, 200, core.Transcode.toJson(j).toString());
             return;
         }
-        core.Transcode.Job j = core.Transcode.ensure(src, false, srcHeader);
+        // copy=1：客户端明确要求 remux（视频原样 copy，只转音频）
+        boolean preferCopy = "1".equals(q.get("copy"));
+        core.Transcode.Job j = core.Transcode.ensure(src, false, srcHeader, preferCopy);
         sendJson(ex, 200, core.Transcode.toJson(j).toString());
     }
 

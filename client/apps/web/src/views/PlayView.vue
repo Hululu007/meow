@@ -31,7 +31,8 @@ import {
   waitTranscode,
 } from '@/api/library'
 import { skipWindowFrom, startAtFrom, subTracksFrom } from '@/api/playExtras'
-import { resolvePlaybackRoute, webviewAudioCodecs } from '@/utils/playRoute'
+import { isHi10p, resolvePlaybackRoute, webCanDecodeVideo, webviewAudioCodecs } from '@/utils/playRoute'
+import { detectCodecCaps } from '@/utils/codecCaps'
 import { transcodeBadge, transcodeMediaInfo, type MediaSourceInfo } from '@/utils/mediaInfo'
 import type { MediaProbeResult } from '@/api/library'
 import { embedPlay, hasEmbedPlayer, hasNativePlayer, openNative } from '@/api/nativeBridge'
@@ -89,6 +90,32 @@ let silentHintTimer: number | undefined
 /** WebView 解码能力表（分配决策的输入；按端差异收敛在这里） */
 const WEBVIEW_VIDEO_CODECS_TV = ['h264', 'hevc']
 const WEBVIEW_VIDEO_CODECS_DESKTOP = ['h264']
+/**
+ * 实测能力（2026-11-24 降画质实报）：只在 Chromium/Android WebView 里探，
+ * 探测不到（Safari/SSR/老内核）就退回上面的硬编码表 —— 不回归。
+ */
+const codecCaps = detectCodecCaps()
+function audioCodecsNow(): string[] {
+  return codecCaps.probed ? codecCaps.audio : webviewAudioCodecs()
+}
+function videoCodecsNow(): string[] {
+  if (codecCaps.probed) return codecCaps.video
+  return isAndroid() ? WEBVIEW_VIDEO_CODECS_TV : WEBVIEW_VIDEO_CODECS_DESKTOP
+}
+/** 组一次路由输入，避免四处调用各写一遍 */
+function routeInput(probe: Parameters<typeof resolvePlaybackRoute>[0]['probe']) {
+  return {
+    probe,
+    audioCodecs: audioCodecsNow(),
+    videoCodecs: videoCodecsNow(),
+    hasNative: hasNativePlayer(),
+    preferNativeOnSilent: getPrefs().nativeOnSilent === true,
+    transcodeAvailable: transcodeOk.value,
+    caps: codecCaps,
+    // remux 只对片库开：在线源 copy 成 HLS 的时间戳风险大、4K copy 带宽也高
+    allowRemux: isLibraryPlay.value,
+  }
+}
 /** 「已转码播放」提示：用户要知道画面为什么晚了几秒才出 */
 const transcodeHint = ref('')
 
@@ -692,21 +719,30 @@ async function load() {
      */
     const known = peekMediaProbe(libraryLib.value!, libraryFile.value!)
     if (known?.ok) {
-      const pf = (known.pixfmt || '').toLowerCase()
-      const highBit = /p0?(?:10|12|16)(?:le|be)?$/.test(pf)
+      /*
+       * 2026-11-24 改：原来只要 pixfmt 是 10-bit 就拦下转码 —— 把 HEVC Main10
+       * （4K HDR 的标准编码）也当成"只能转码"，PC/电视明明能解却看不到原画。
+       * 现在只对 **H.264 Hi10P** 无条件拦；HEVC/AV1 按端侧实测能力判断。
+       */
+      const hi10p = isHi10p(known)
+      const videoBad = !webCanDecodeVideo(known, routeInput(known))
       const ac = (known.acodec || '').toLowerCase()
-      const audioBad = !!ac && !webviewAudioCodecs().includes(ac)
+      const audioBad = !!ac && !audioCodecsNow().includes(ac)
       const remembered = getPrefs().silentAction
       /*
        * 探测结果已知 + 用户已做过选择 → **不要先直连**（2026-11-23 实报：
        * 先播两秒无声再切转码，用户看到"闪一下才重新开始"）。直接按选择分流。
        * 只有「每次询问」(ask) 才保留直连 + 提示条的行为。
        */
-      if (highBit || (audioBad && remembered !== 'ask')) {
+      if (hi10p || videoBad || (audioBad && remembered !== 'ask')) {
         mediaProbe.value = known
         // 组件跨集复用：没有新 src 时旧片的 HLS 会继续在后台播，先停掉
         player.value?.stop?.()
-        loadingText.value = highBit ? '10-bit 片源，正在准备转码…' : '正在准备转码…'
+        loadingText.value = hi10p
+          ? '10-bit 片源，正在准备转码…'
+          : videoBad
+            ? '当前内核解不了这个编码，正在准备转码…'
+            : '正在准备转码…'
         onNoAudio()
         return
       }
@@ -1001,6 +1037,8 @@ const playError = ref('')
 const hopError = ref('')
 /** 后端有没有 ffmpeg；null = 还没探测过 */
 const transcodeOk = ref<boolean | null>(null)
+/** 高丢帧自愈要求的最小输出高度（0 = 不检查）；tryTranscode 读一次就清零 */
+let healMinHeight = 0
 
 async function ensureTranscodeProbe(): Promise<boolean> {
   if (transcodeOk.value !== null) return transcodeOk.value
@@ -1114,7 +1152,9 @@ function tryNative() {
  *
  * 已转好的分片是增量的：前几个分片就绪即可起播，不用等整片转完。
  */
-async function tryTranscode(src: string) {
+async function tryTranscode(src: string, copy = false) {
+  const minH = healMinHeight
+  healMinHeight = 0
   const myEpoch = playEpoch
   pendingTranscode = { src }
   transcodeWaiting.value = true
@@ -1137,6 +1177,7 @@ async function tryTranscode(src: string) {
       },
       undefined,
       headerStr,
+      copy,
     )
     ;(window as unknown as { __meowLastTranscode?: unknown }).__meowLastTranscode = {
       ok: r.ok, state: r.state, code: r.code, error: r.error,
@@ -1195,14 +1236,33 @@ async function tryTranscode(src: string) {
     if (r.duration && r.readySeconds && r.readySeconds < r.duration - 5) {
       pollTranscodeProgress({ src })
     }
+    /*
+     * ★ 原画转封装的硬门槛（2026-11-24）：请求了 copy 就必须真的是 copy，
+     *   且输出高度不能低于当前画面。探测拿不到头/拿错变体时后端会退回
+     *   软编 1080p —— 那种情况宁可不起播，也不能静默降画质。
+     */
+    if (copy) {
+      // 源高度优先用触发时抓到的（此时播放器可能已停，videoHeight 会变 0）
+      const curH = minH || document.querySelector('video')?.videoHeight || 0
+      const outH = Number(r.outHeight || 0)
+      if (r.copyVideo !== true || (curH > 0 && outH > 0 && outH < curH)) {
+        void cancelTranscode({ src })
+        showSilentHint('该源无法原画转封装，已保持原样播放（避免降画质）', false, false)
+        transcodeTried = false
+        return
+      }
+    }
     mediaInfo.value = transcodeMediaInfo(r)
     // 提示条压在单行里：HEVC 10-bit 4K → H.264 1080p（拿不到编码就退回原文案）
     const badge = transcodeBadge(mediaInfo.value)
     transcodeHint.value = r.partial
       ? `本次只转出 ${r.readySeconds || 0} 秒（另一台设备接手了转码），看到断点会停住`
-      : badge
-        ? `已转码播放（${badge}）`
-        : '已转码播放（源文件未改动）'
+      : r.copyVideo
+        // remux：视频原样 copy（原画），只把音轨转成 AAC
+        ? '已转封装播放（原画视频，仅音轨转 AAC）'
+        : badge
+          ? `已转码播放（${badge}）`
+          : '已转码播放（源文件未改动）'
     clearTimeout(lineHintTimer)
     lineHintTimer = window.setTimeout(() => (transcodeHint.value = ''), 8000)
     // 播放器直接吃后端给的清单地址；hls.js 会按需拉分片
@@ -1284,7 +1344,7 @@ function unsupportedContainer(url: string): boolean {
  * 实测 WebView 110 能播大多数 MKV/H265，先直连才是对的；
  * 只有真的报错了才需要转码。
  */
-async function tryLibraryTranscode(lib: string, file: string) {
+async function tryLibraryTranscode(lib: string, file: string, copy = false) {
   dbg('startTranscode', file)
   // 转码一旦开始，之前那条错误页要收掉（否则错误页盖着、用户在等转码却看着报错）
   playError.value = ''
@@ -1303,7 +1363,7 @@ async function tryLibraryTranscode(lib: string, file: string) {
     const r = await waitLibraryTranscode(lib, file, (sec, ph, stalled) => {
       if (myEpoch !== playEpoch) return
       loadingText.value = transcodePhaseText(sec, ph, stalled)
-    })
+    }, undefined, copy)
     if (myEpoch !== playEpoch) {
       if (r.state === 'running') void cancelTranscode({ lib, path: file })
       return
@@ -1337,14 +1397,31 @@ async function tryLibraryTranscode(lib: string, file: string) {
     if (r.duration && r.readySeconds && r.readySeconds < r.duration - 5) {
       pollTranscodeProgress({ lib, path: file })
     }
+    /*
+     * 片库 remux 同样有"必须真 copy、且不能降分辨率"的硬门槛：
+     * 探测失败时后端会退回软编 1080p，那种情况宁可保持原样也不静默降画质。
+     */
+    if (copy) {
+      const curH = document.querySelector('video')?.videoHeight || 0
+      const outH = Number(r.outHeight || 0)
+      if (r.copyVideo !== true || (curH > 0 && outH > 0 && outH < curH)) {
+        void cancelTranscode({ lib, path: file })
+        showSilentHint('该文件无法原画转封装，已保持原样播放（避免降画质）', false, false)
+        transcodeTried = false
+        return
+      }
+    }
     mediaInfo.value = transcodeMediaInfo(r)
     // 提示条压在单行里：HEVC 10-bit 4K → H.264 1080p（拿不到编码就退回原文案）
     const badge = transcodeBadge(mediaInfo.value)
     transcodeHint.value = r.partial
       ? `本次只转出 ${r.readySeconds || 0} 秒（另一台设备接手了转码），看到断点会停住`
-      : badge
-        ? `已转码播放（${badge}）`
-        : '已转码播放（源文件未改动）'
+      : r.copyVideo
+        // remux：视频原样 copy（原画），只把音轨转成 AAC
+        ? '已转封装播放（原画视频，仅音轨转 AAC）'
+        : badge
+          ? `已转码播放（${badge}）`
+          : '已转码播放（源文件未改动）'
     clearTimeout(lineHintTimer)
     lineHintTimer = window.setTimeout(() => (transcodeHint.value = ''), 8000)
     play.value = { url: absoluteApi(r.playlist) } as PlayResult
@@ -1375,7 +1452,7 @@ async function tryLibraryTranscode(lib: string, file: string) {
  *   · TV 壳（默认提示式）→ 提示条给「原生播放」按钮，不自动打断
  *   · 其余（PC/网页）→ 后端转码（能力预检后），预检失败也落到原生提示
  */
-function onNoAudio() {
+function onNoAudio(zeroAudio = false) {
   dbg('onNoAudio', 'tt=' + transcodeTried, 'nd=' + libraryNoDirect.value, 'native=' + hasNativePlayer())
   if (transcodeTried || libraryNoDirect.value) {
     /*
@@ -1412,14 +1489,17 @@ function onNoAudio() {
    *   按"交给运行时兜底"），而此刻兜底已经响了，不能再回 direct（实测：
    *   .76 上老后端无 probe 端点 → 检测触发却什么都不发生）。
    */
-  const route = resolvePlaybackRoute({
-    probe: { acodec: 'ac3' },
-    audioCodecs: webviewAudioCodecs(),
-    videoCodecs: isAndroid() ? WEBVIEW_VIDEO_CODECS_TV : WEBVIEW_VIDEO_CODECS_DESKTOP,
-    hasNative: hasNativePlayer(),
-    preferNativeOnSilent: getPrefs().nativeOnSilent === true,
-    transcodeAvailable: transcodeOk.value,
-  })
+  const route = resolvePlaybackRoute(
+    routeInput(
+      mediaProbe.value && mediaProbe.value.ok
+        ? {
+            ...mediaProbe.value,
+            // 运行时"零解码"是比 probe 更硬的证据：probe 说 AAC 也要按超纲处理
+            acodec: zeroAudio ? 'ac3' : mediaProbe.value.acodec,
+          }
+        : { acodec: 'ac3' },
+    ),
+  )
   /*
    * 记忆化选择（2026-11-23 实报「每次进都弹提示」）：用户点过一次提示条上的
    * 按钮就按记忆直接执行，不再每集重复询问 —— 设备能力不会变。
@@ -1438,6 +1518,22 @@ function onNoAudio() {
     return
   }
   dbg('route', route, 'eff=' + effective, 'remembered=' + String(remembered))
+  /*
+   * remux：视频能解、只有音频超纲 → 让后端把视频原样 copy、音频转 AAC。
+   * 画面零损失（4K 不再被砍成 1080p），代价是带宽（4K copy 较高，片库局域网可承受）。
+   */
+  if (effective === 'remux') {
+    transcodeTried = true
+    void ensureTranscodeProbe().then((ok) => {
+      if (!ok) {
+        showSilentHint('后端不支持转码，建议用原生播放', hasNativePlayer())
+        return
+      }
+      if (!libraryLib.value || !libraryFile.value) return
+      void tryLibraryTranscode(libraryLib.value, libraryFile.value, true)
+    })
+    return
+  }
   if (effective === 'native-hint') {
     transcodeTried = true
     showSilentHint(
@@ -1448,15 +1544,14 @@ function onNoAudio() {
     return
   }
   /*
-   * 10-bit（Hi10P）片源：转码是唯一出路，但 RK3566 软解+软编实测 0.34x，
-   * 播 1 秒要转 3 秒 —— **边转边看必然卡死**（表现为 0:00 起播超时/网络超时）。
-   * 与其自动起一个永远追不上的任务，不如把话说明白，让人自己决定换片源。
+   * H.264 Hi10P：转码是唯一出路（WebView 与电视硬解的共同盲区），但 RK3566
+   * 软解+软编实测 0.34x，播 1 秒要转 3 秒 —— **边转边看必然卡死**。
+   * HEVC Main10/AV1 10-bit 不在这里：它们要么直连、要么原生，轮不到这条提示。
    */
   if (effective === 'transcode') {
-    const pix = (mediaProbe.value?.pixfmt || '').toLowerCase()
-    const highBit = /p0?(?:10|12|16)(?:le|be)?$/.test(pix)
+    const hi10p = isHi10p(mediaProbe.value || {})
     // 10-bit 是"这集文件"的属性，不是一次性选择：每次都提示（按钮仍可强行转码）
-    if (highBit) {
+    if (hi10p) {
       transcodeTried = true
       // 起播前拦截的路径不会有播放器加载遮罩收尾，这里手动收掉
       loading.value = false
@@ -1600,18 +1695,49 @@ async function fetchProbeRoute() {
   mediaProbe.value = p
   dbg('probe', JSON.stringify({ a: p.acodec, v: p.vcodec, pf: p.pixfmt }))
   if (transcodeTried || libraryNoDirect.value) return
-  const route = resolvePlaybackRoute({
-    probe: p,
-    audioCodecs: webviewAudioCodecs(),
-    videoCodecs: isAndroid() ? WEBVIEW_VIDEO_CODECS_TV : WEBVIEW_VIDEO_CODECS_DESKTOP,
-    hasNative: hasNativePlayer(),
-    preferNativeOnSilent: getPrefs().nativeOnSilent === true,
-    transcodeAvailable: transcodeOk.value,
-  })
+  const route = resolvePlaybackRoute(routeInput(p))
   if (route === 'direct') return
   // 预判命中：与运行时检测同一出口（onNoAudio 内部会按 route 再分配一次，
   // 这里先把 probe 塞进去即可）
   onNoAudio()
+}
+
+/**
+ * 高丢帧自愈（2026-11-24）。
+ *
+ * 某些 4K 源的分片时间轴有缝（实测每片边界丢 1 帧、整集 874 片），Chromium
+ * 渲染器只能靠丢帧追赶媒体时钟 → 25fps 只出 18fps，肉眼"一顿一顿"。
+ * 这里切到后端"原画转封装"：视频 copy（画面零损失），由 ffmpeg 重新切分片、
+ * 重排时间轴；从当前位置续播。
+ *
+ * 只对点播直链生效：片库已走 remux/直连策略；转码产物本身不再自愈。
+ */
+async function onHighDrop(p: {
+  dropped: number
+  total: number
+  ratio: number
+  levelUrl?: string
+  height?: number
+}) {
+  if (transcodeTried) return
+  if (isLibraryPlay.value) return
+  const u = typeof play.value?.url === 'string' ? play.value.url : ''
+  // 已经是转码产物/转码请求（query 或 path 两种形态）→ 不再套娃
+  if (!u || !/^https?:/i.test(u) || u.includes('/api/transcode')) return
+  /*
+   * ★ transcodeOk 初值是 null（还没探过后端），不能直接 `!transcodeOk.value`
+   *   判断 —— 那会在第一次卡顿时直接 return（实测踩过：自愈一次都没触发）。
+   */
+  const ok = await ensureTranscodeProbe()
+  if (!ok || transcodeTried) return
+  dbg('highDrop', JSON.stringify(p))
+  transcodeTried = true
+  refreshSeekAt.value = lastTickPos > 1 ? lastTickPos : 0
+  healMinHeight = p.height && p.height > 0 ? p.height : 0
+  showSilentHint('检测到画面丢帧，正在切换原画转封装（画面不重编码）…', false, false)
+  // 用播放器当前选中的那一档变体（4K），别把母清单交给 ffmpeg（它会选 1080p）
+  const src = p.levelUrl && /^https?:/i.test(p.levelUrl) ? p.levelUrl : u
+  void tryTranscode(src, true)
 }
 
 async function onPlayerError(payload: PlayErrorPayload | string) {
@@ -1623,8 +1749,7 @@ async function onPlayerError(payload: PlayErrorPayload | string) {
    */
   if (
     isLibraryPlay.value &&
-    (libraryNoDirect.value ||
-      /p0?(?:10|12|16)(?:le|be)?$/.test((mediaProbe.value?.pixfmt || '').toLowerCase()))
+    (libraryNoDirect.value || isHi10p(mediaProbe.value || {}))
   ) {
     // 已经决定不走直连（转码/原生/10-bit）：直连元素残余的解码错误不应再弹错误页
     playError.value = ''
@@ -3304,7 +3429,8 @@ onBeforeUnmount(() => {
       :subs="playSubs"
       :dm-block-words="dmBlockWords"
       :no-audio-fallback="isLibraryPlay"
-      @no-audio="onNoAudio"
+      @no-audio="onNoAudio(true)"
+      @high-drop="onHighDrop"
       :can-download="canDownloadCurrent"
       :can-download-all="canDownloadAll"
       :can-cast="canCastCurrent"

@@ -204,7 +204,7 @@ describe('F5 容器预判（不能播的内核直接转码，不白等 watchdog�
   it('预判失败/异常能让错误页显示出来（loading 必须收尾）', () => {
     const i = src.indexOf('async function tryLibraryTranscode')
     // 2400：函数里还要算编码信息与提示文案（2026-11-23），窗口给足但仍只覆盖这一个函数
-    const body = src.slice(i, i + 2400)
+    const body = src.slice(i, i + 3200)
     expect((body.match(/loading\.value = false/g) || []).length).toBeGreaterThanOrEqual(2)
   })
 })

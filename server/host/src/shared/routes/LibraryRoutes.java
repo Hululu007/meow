@@ -861,7 +861,9 @@ public final class LibraryRoutes {
                     "{\"code\":-1,\"msg\":\"WebDAV 片库请直接用 src 传流地址\"}");
             return;
         }
-        core.Transcode.Job j = core.Transcode.ensureLocal(source, key);
+        // copy=1：客户端要求 remux（视频原样 copy，只转音频）
+        boolean preferCopy = "1".equals(q.get("copy"));
+        core.Transcode.Job j = core.Transcode.ensureLocal(source, key, preferCopy);
         Api.sendJson(ex, 200, core.Transcode.toJson(j).toString());
     }
 
