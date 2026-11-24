@@ -487,4 +487,14 @@ public final class Jars {
             return false;
         }
     }
+
+    /**
+     * main 线暂不包含 Guard 解密实现（在独立分支开发）。
+     *
+     * <p>ApiServer 的 seedJarInitBeforeInstance 会先问这一句；这里安全返回 false，
+     * 让普通 jar 继续走 Init 注入。Guard 分支合入时用真实实现替换本方法。
+     */
+    public static boolean initGuardPayload(Class<?> c) {
+        return false;
+    }
 }
