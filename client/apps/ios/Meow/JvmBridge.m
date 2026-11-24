@@ -1,6 +1,6 @@
 #import "JvmBridge.h"
 
-#if !TARGET_OS_SIMULATOR
+#if !TARGET_OS_SIMULATOR && !defined(MEOW_NO_JVM)
 
 #include <jni.h>
 #include <dlfcn.h>
@@ -128,8 +128,8 @@ static NSString *jvmLogPath(NSString *dataDir) {
                   dataDir:(NSString *)dataDir
                      port:(int)port
                completion:(void (^)(BOOL, NSString *_Nullable))completion {
-#if TARGET_OS_SIMULATOR
-    completion(NO, @"simulator has no embedded JVM");
+#if TARGET_OS_SIMULATOR || defined(MEOW_NO_JVM)
+    completion(NO, @"simulator / no-jvm build has no embedded JVM");
 #else
     static BOOL started = NO;
     @synchronized (self) {

@@ -108,18 +108,24 @@ jobs:
         run: |
           set -euo pipefail
           cd client/apps/ios
-          EXTRA=""
           if [ "$NOJVM" = "1" ]; then
-            # 排障变体：JVM 静态库照常链接，但 isAvailable 直接返回 NO，
-            # 即「链接了但永不启动 JVM」。用来二分闪退发生在 dyld/静态初始化
-            # 还是「启动 JVM 的那一刻」。
-            echo "== NOJVM variant: JVM linked but never started =="
-            EXTRA="GCC_PREPROCESSOR_DEFINITIONS=MEOW_NO_JVM=1"
+            # 排障变体：**不链接** OpenJDK 静态库，JNI 代码也被预处理掉。
+            # 用来判定闪退是否由「静态 JVM 的链接/静态初始化」引起：
+            #   - 这个包能起来 → 问题在 JVM 链接层（dyld 构造器）或启动那一刻；
+            #   - 这个包也闪退 → 与 JVM 无关，是包/侧载器层面。
+            echo "== NOJVM variant: static JVM NOT linked =="
+            xcodebuild -project Meow.xcodeproj -scheme Meow -configuration Release \
+              -sdk iphoneos -derivedDataPath build/dd-device \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+              GCC_PREPROCESSOR_DEFINITIONS=MEOW_NO_JVM=1 \
+              "OTHER_LDFLAGS=-Wl,-all_load -Wl,-export_dynamic -lc++ -lz -liconv -framework Foundation -framework UIKit -framework WebKit -framework Network -framework Security" \
+              build 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild-device.log" | tail -40
+          else
+            xcodebuild -project Meow.xcodeproj -scheme Meow -configuration Release \
+              -sdk iphoneos -derivedDataPath build/dd-device \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+              build 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild-device.log" | tail -40
           fi
-          xcodebuild -project Meow.xcodeproj -scheme Meow -configuration Release \
-            -sdk iphoneos -derivedDataPath build/dd-device \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO $EXTRA \
-            build 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild-device.log" | tail -40
           APP=$(find build/dd-device/Build/Products/Release-iphoneos -maxdepth 1 -name 'Meow.app' | sed -n '1p')
           test -n "$APP"
           rm -rf build/ipa && mkdir -p build/ipa/Payload
