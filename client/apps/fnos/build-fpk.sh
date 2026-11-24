@@ -257,7 +257,10 @@ ls -lh "$OUT/meow_${VER}_${PLATFORM}.fpk"
 # ★ 体积绊线（不是设计目标，是"有人又把大依赖打进来"的报警器）：
 #   2026-11-16 实测量级 19.5MiB（dex2jar 裁剪后）。1.1.7 那次没拦，一夜 +18MB。
 FPK_BYTES="$(stat -c%s "$OUT/meow_${VER}_${PLATFORM}.fpk")"
-FPK_MAX_MIB="${FPK_MAX_MIB:-24}"
+# 24 → 60（2026-11-24）：1.2.22 起 fpk 带 guard-libs（unidbg/unicorn/keystone 等
+# 31 个 jar，实测 34MB）用于加载加密源；x86 包实测 54.1MiB。阈值仍保留 ——
+# 再涨 6MB 以上（比如又把某个大依赖顺手打进来）会继续报红。
+FPK_MAX_MIB="${FPK_MAX_MIB:-60}"
 if [ "$FPK_BYTES" -gt $((FPK_MAX_MIB * 1048576)) ]; then
     echo "fpk 体积 $(awk -v b="$FPK_BYTES" 'BEGIN{printf "%.1f", b/1048576}')MiB 超过绊线 ${FPK_MAX_MIB}MiB。" >&2
     echo "先看是不是有大依赖被顺手打进包（参考 dex2jar 裁剪：deploy/scripts/fetch-dex2jar.sh）。" >&2
