@@ -47,7 +47,7 @@ import { isPlayErrorPayload, shouldTranscode, type PlayErrorPayload } from '@/co
 import type { PlayResult } from '@/api/types'
 import { getPrefs, setPref } from '@/stores/prefs'
 import { getDmOffset } from '@/stores/dmOffset'
-import { isTvEnv, isTvShell, isWideLayout } from '@/compat/shell'
+import { isIosShell, isTvEnv, isTvShell, isWideLayout } from '@/compat/shell'
 import { isAndroid, isFirefox } from '@/compat/ua'
 import { getLinePref, setLinePref } from '@/stores/linePref'
 import { lineBudget, noteLineFail, noteLineOk, sortLinesByHealth } from '@/stores/lineHealth'
@@ -619,6 +619,17 @@ const playableSrc = computed(() => {
   const apiRoot = apiBase().replace(/\/+$/, '')
   if (apiRoot && url.startsWith(apiRoot + '/api/')) return url
   if (!url || !/^https?:/i.test(url)) return ''
+  /*
+   * iOS：媒体**不经过 JVM 代理**（2026-11-24 真机实测）。
+   *
+   * 端内 JVM 是 Zero 解释执行，TLS 解密 + 字节拷贝全在解释器里跑：一个 500KB
+   * 分片要 4~6 秒（~100KB/s），HLS 永远起不来；更糟的是每个分片请求会**长时间
+   * 占住网关线程**，十几路之后线程池满 → 图片、接口一起超时（用户看到的就是
+   * "图片全碎 + 按钮没反应 + 所有线路都播不出来"）。
+   * 源站不需要额外请求头时直连最快；确实要 Referer/UA 的（play.header 非空）
+   * 才退回代理。
+   */
+  if (isIosShell() && !String(play.value?.header || '').trim()) return url
   return proxyStream(url, play.value?.header)
 })
 

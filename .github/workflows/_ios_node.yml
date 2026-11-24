@@ -1,0 +1,74 @@
+name: _ios_node
+
+# iOS 端内 Node 运行时的**可行性探针**（不进 IPA）。
+#
+# 背景：V8 的 JIT 需要可执行内存，iOS 非越狱设备不给 → 官方 Node 跑不了。
+# nodejs-mobile 的 iOS 构建把 V8 配成「启动即关 JIT」，是唯一能进 App 的 Node。
+# 本工作流只做三件事（macOS runner，不需要 iPhone）：
+#   1) 下载发行包并挑出真机 arm64 与模拟器 arm64 两份 framework；
+#   2) 核对导出符号（node_start）与头文件；
+#   3) 用 clang 对模拟器那份做一次**链接**冒烟（链接不过 = 集成必然失败）。
+#
+# 通过后，才把 framework 接进 `_ios.yml` 的 IPA 构建（那一步要改链接与体积）。
+on:
+  push:
+    branches: [feat/ios-jvm]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-node-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download + stage NodeMobile.framework
+        run: |
+          set -euo pipefail
+          bash client/apps/ios/scripts/prepare-node-runtime.sh | tee node-probe.txt
+
+      - name: Inspect exports (device arm64)
+        run: |
+          set -euo pipefail
+          FW=client/apps/ios/build/node/NodeMobile.framework
+          echo "== binary =="
+          lipo -info "$FW/NodeMobile"
+          file "$FW/NodeMobile"
+          echo "== node_start symbol =="
+          # macOS 的 nm 给 C 符号加前导下划线：_node_start
+          nm -gU "$FW/NodeMobile" 2>/dev/null | grep -E '(^|[[:space:]])_?node_start$' || \
+            (echo "node_start NOT FOUND in exports" && nm -gU "$FW/NodeMobile" | head -20 && exit 1)
+          echo "== headers =="
+          find "$FW" -name '*.h' -maxdepth 3
+          cat "$FW/Headers/NodeMobile.h"
+
+      - name: Link smoke test (simulator slice)
+        run: |
+          set -euo pipefail
+          FW=client/apps/ios/build/node/sim/NodeMobile.framework
+          test -d "$FW" || { echo "simulator framework missing"; exit 1; }
+          cat > /tmp/nodesmoke.m <<'EOF'
+          extern int node_start(int argc, char *argv[]);
+          int main(void) { (void)node_start; return 0; }
+          EOF
+          xcrun --sdk iphonesimulator clang -target arm64-apple-ios13.0-simulator \
+            -F "$(dirname "$FW")" -framework NodeMobile /tmp/nodesmoke.m -o /tmp/nodesmoke
+          echo "link ok: $(file /tmp/nodesmoke)"
+
+      - name: Upload probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-node-probe-${{ github.run_number }}
+          path: |
+            client/apps/ios/build/node/probe.txt
+            node-probe.txt
+          retention-days: 14
+          if-no-files-found: warn

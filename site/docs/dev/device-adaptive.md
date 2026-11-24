@@ -51,6 +51,7 @@ cd client/apps/web && npx vitest run tests/device-profile.test.ts
 |---|---|---|---|
 | `data-shell='tv'` | `window.meowTv` 桥存在，或 UA `MeowTV`（仅首屏兜底） | `compat/shell.ts` `isTvShell()`；写入在 `compat/deviceProfile.ts` | 菜单键、返回键、设置页端分区、更新中心 fpk 排除 |
 | `hasTvModule()` | `meowTv.moduleCheck` 是函数（**能力，不是身份**） | `compat/shell.ts` | 更新中心「运行时模块 / 弹幕组件」行、设置页运行时分区 |
+| `data-shell='ios'` | `window.meowIos` 桥存在（**只看桥，不看 UA**） | `compat/shell.ts` `isIosShell()`；写入在 `compat/deviceProfile.ts` | 设置页「后端地址」改成只读（iOS 的后端是 App 进程内的 JVM 网关，改地址 = 把 App 指向别人的后端） |
 | `data-shell='tauri'` | `__TAURI_INTERNALS__` / `__TAURI__` | `compat/shell.ts` `isDesktopShell()`（`api/index.ts` 的 `isDesktop()` 只是别名） | base 解析、插件管理、桌面行为 |
 | `currentPlatform()` | 桌面 → `meowTv.appUpdaterPlatform()` → web（**会话内缓存**） | `api/appUpdate.ts` | 更新包匹配（windows-x64 / android-arm64 / x86_64 / armv7 / web） |
 | `capability` | `shell`（同步）/ `fpk`（异步探测 `/api/_shell/*` + `/app-center/*`）/ `none` | `stores/appUpdate.ts` `probeCapability()`（**单点**） | 更新通道、弹窗、FpkUpgradePanel |
@@ -123,7 +124,7 @@ cd client/apps/web && npx vitest run tests/device-profile.test.ts
 | 画中画 | `document.pictureInPictureEnabled` | VideoPlayer |
 | 系统休眠 | `hasSystemSleep()` | nativeBridge |
 | 更新安装 | `capability`：`shell` / `fpk` / `none` | `stores/appUpdate.ts`（单点；`FpkUpgradePanel` 仍绕过，见 D-3） |
-| iOS 壳能力（规划中，未实现） | `window.meowIos.*` 方法探测（只作能力入口，不做样式判据） | 见 [ios-integration](./ios-integration.md) |
+| iOS 壳能力 | `window.meowIos` 桥（`version` / `apiBase` / `runtime` 只读字段） | `compat/shell.ts` `iosShellInfo()`；注入在 `client/apps/ios/Meow/Bootstrap.swift` |
 
 ### 1.5 全局样式开关（`html[data-*]`）
 

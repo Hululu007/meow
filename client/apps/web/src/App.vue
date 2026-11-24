@@ -262,6 +262,8 @@ function syncWallpaperAttr(on: boolean) {
 }
 
 onMounted(async () => {
+  // 内核网络进程被回收时（图片全碎 + 按钮无反应）弹恢复横幅
+  window.addEventListener('meow:net-unhealthy', onNetUnhealthy)
   // 首次关闭提示：壳只负责 eval 这个全局函数，弹层在本组件里
   if (desktop) {
     ;(window as unknown as { __meowTrayHint?: () => void }).__meowTrayHint = showTrayHint
@@ -822,6 +824,7 @@ function uninstallTvBackHandler() {
 
 
 onBeforeUnmount(() => {
+  window.removeEventListener('meow:net-unhealthy', onNetUnhealthy)
   // 只清自己挂的钩子，避免覆盖别的会话/组件设置的函数
   const w = window as unknown as { __meowTrayHint?: () => void }
   if (desktop && w.__meowTrayHint === showTrayHint) w.__meowTrayHint = undefined
@@ -895,6 +898,25 @@ const showStartupTip = computed(() => {
   if (isPlay.value) return false
   return route.name === 'home' || !route.name
 })
+
+/**
+ * 内核网络进程被系统回收（iOS / 移动端内存压力下常见）。
+ *
+ * <p>症状成对出现：**所有图片突然全碎**（连本地静态图都裂）+ **按钮点了没反应**
+ * （fetch 全失败，但页面还在、SPA 路由照走）。原因是 WKWebView 的网络进程被
+ * 系统杀掉后没有重建，页面里的 requests 全部失败（2026-11-24 真机）。
+ * 恢复办法只有一个：重载页面（会重建网络进程）。这里给一条明显的横幅 + 一键重载，
+ * 不让用户以为是"图片坏了 / 按钮坏了"。
+ */
+const netBroken = ref(false)
+
+function onNetUnhealthy() {
+  netBroken.value = true
+}
+
+function reloadPage() {
+  location.reload()
+}
 
 /**
  * 是否显示「后端未连接」大卡片。
@@ -1032,6 +1054,32 @@ onBeforeUnmount(() => stopDesktopShortcuts?.())
 </script>
 
 <template>
+  <!--
+    内核网络进程被回收的恢复横幅（iOS / 移动端内存压力下会出现）。
+    症状：图片突然全碎 + 按钮点了没反应（fetch 全挂），但页面与路由还活着。
+    Teleport 到 body：站内 <main> 有 relative z-10，直接放会被压在下面。
+  -->
+  <Teleport to="body">
+    <div
+      v-if="netBroken"
+      class="fixed left-2 right-2 z-[200] flex items-center gap-2 rounded-lg border border-hot/30 bg-card px-3 py-2 text-xs text-ink shadow-lg"
+      style="top: calc(env(safe-area-inset-top) + 0.5rem)"
+    >
+      <span class="min-w-0 flex-1 leading-snug">
+        界面与后端失联：图片和按钮会一起失效（系统回收了内核网络进程）。重载即恢复。
+      </span>
+      <button
+        class="shrink-0 rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-on-accent"
+        @click="reloadPage()"
+      >
+        重载
+      </button>
+      <button class="shrink-0 rounded bg-card px-2 py-1 text-[11px]" @click="netBroken = false">
+        忽略
+      </button>
+    </div>
+  </Teleport>
+
   <!--
     背景层：fixed 铺满，z-0，在内容之下。
 

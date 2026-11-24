@@ -12,7 +12,7 @@ import type { HistoryItem } from '../stores/history'
 import { isLoopbackUrl } from '@/utils/loopback'
 import { getPrefs } from '../stores/prefs'
 import { enabledProxyPrefixes } from './gitAccel'
-import { isDesktopShell, isTvShell } from '@/compat/shell'
+import { isDesktopShell, isIosShell, iosShellInfo, isTvShell } from '@/compat/shell'
 
 export { isLoopbackUrl }
 
@@ -62,6 +62,21 @@ function resolveBase(): string {
       return desktopBase
     }
     return manual
+  }
+
+  /*
+   * iOS 壳：地址**只认宿主注入的桥**（`window.meowIos.apiBase`），localStorage 只是缓存。
+   *
+   * 踩过（2026-11-24 真机）：导入完成后从设置页回首页，界面报「连不上后端」，
+   * 而 jvm.log 里连一条 `POST /api/Douban/home` 都没有 —— 请求打到了静态服务
+   * 9979（它只做 GET/HEAD，POST 回 405；浏览器把这次 CORS 失败报成 Load failed）。
+   * 根因：base 以前是从 localStorage 的 `meow.api` 推出来的，一旦那份缓存没写上/
+   * 被清掉，非桌面壳就退回**同源**（9979）—— iOS 的同源不是后端。
+   * 桥是每次文档加载都由 BootScript 注入的权威来源，所以放在 localStorage 之前。
+   */
+  if (isIosShell()) {
+    const viaBridge = String(iosShellInfo()?.apiBase || '').trim()
+    if (viaBridge) return viaBridge.replace(/\/$/, '')
   }
 
   const runtime =
@@ -115,7 +130,85 @@ function base(): string {
  * 所以桌面端只要还没拿到确定地址，就必须报错，绝不退化成同源请求。
  */
 function backendUnavailable(): boolean {
-  return isDesktopShell() && !resolveBase()
+  return (isDesktopShell() || isIosShell()) && !resolveBase()
+}
+
+/**
+ * 把一行诊断写进宿主日志（只有注入了 `meowLog` 桥的壳会真正写出：iOS）。
+ *
+ * 为什么需要：真机上「连不上后端」有两种完全不同的成因 ——
+ *   ① 请求到了后端但很慢（jvm.log 有 [req]/[slow]，能查）；
+ *   ② 请求根本没发出去（打到静态服务 / 预检失败，jvm.log 一行都没有）。
+ * 第 ② 种只能靠前端把「目标地址 + 错误原文 + 耗时」写进 launch.log 才查得动
+ * （2026-11-24 真机就是这种：界面报断连，后端日志干净得像没发生）。
+ */
+function webLog(msg: string) {
+  try {
+    const bridge = (window as unknown as {
+      webkit?: { messageHandlers?: { meowLog?: { postMessage?: (s: string) => void } } }
+    }).webkit?.messageHandlers?.meowLog
+    if (bridge && typeof bridge.postMessage === 'function') {
+      bridge.postMessage(String(msg).slice(0, 400))
+    }
+  } catch {
+    /* 记日志失败绝不影响业务 */
+  }
+}
+
+/**
+ * 客户端日志上送宿主（iOS 真机排障，2026-11-24）。
+ *
+ * WKWebView 里的 JS 异常 / 路由懒加载失败只进 Safari 控制台，端上拿不到；
+ * 真机只能靠 PC 远程读 `/api/logs`。这里把错误 POST 给宿主，日志页就有 `[web]` 行。
+ *
+ * 三条约束：①绝不抛出（这条通道不能成为新的错误源）；②每分钟最多 20 条，
+ * 报错风暴不许把宿主 2000 条的环形缓冲冲掉；③正文截断 600 字。
+ */
+let clientLogWindow = { at: 0, n: 0 }
+export function reportClientLog(
+  level: 'info' | 'warn' | 'error',
+  text: string,
+  tag = 'web',
+): void {
+  try {
+    const now = Date.now()
+    if (now - clientLogWindow.at > 60_000) clientLogWindow = { at: now, n: 0 }
+    if (++clientLogWindow.n > 20) return
+    const msg = String(text || '').slice(0, 600)
+    if (!msg) return
+    void fetch(`${base()}/api/_clientlog`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level, tag, text: msg }),
+      keepalive: true,
+    }).catch(() => {
+      /* 宿主没这条端点（旧版）/ 网络断了：静默 */
+    })
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * 连续网络级失败计数（10 秒窗口）。
+ *
+ * 10 秒内 ≥5 次「连 HTTP 响应都没拿到」= 不是某个接口坏了，而是**内核网络进程
+ * 被系统回收**（iOS 内存压力下常见）。症状成对出现：图片突然全碎 + 按钮点了没反应。
+ * 这里抛事件让 App 弹一条「重载即恢复」的横幅，别让用户以为是图/按钮坏了。
+ */
+let netFailStamps: number[] = []
+function noteNetFailure() {
+  const now = Date.now()
+  netFailStamps = netFailStamps.filter((t) => now - t < 10_000)
+  netFailStamps.push(now)
+  if (netFailStamps.length >= 5) {
+    netFailStamps = []
+    try {
+      window.dispatchEvent(new CustomEvent('meow:net-unhealthy'))
+    } catch {
+      /* 非浏览器环境（测试）忽略 */
+    }
+  }
 }
 
 // ---------------------------------------------------------------- 启动引导
@@ -378,10 +471,16 @@ async function requestUncached<T>(
   const { method = 'GET', body, timeout = 60_000, keepalive } = options
   // 桌面端地址未定时不要发同源请求（会命中 dev 服务器代理，连到不该连的后端）
   if (backendUnavailable()) {
-    throw new Error('后端尚未就绪：请稍候，或到「设置 → 本机插件」检查影视后端是否已安装并启动')
+    throw new Error(
+      isIosShell()
+        ? 'iOS 壳没有拿到后端地址（本地网关可能还没起来），请稍候重试'
+        : '后端尚未就绪：请稍候，或到「设置 → 本机插件」检查影视后端是否已安装并启动',
+    )
   }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeout)
+  const startedAt = Date.now()
+  let gotResponse = false
   try {
     // 写操作令牌：后端设了 authToken 才需要（见 policy.json）。
     // 每个请求都带——GET 上它被后端忽略，省掉"哪些请求要带"的分支。
@@ -400,6 +499,7 @@ async function requestUncached<T>(
       // 下次打开还停在旧位置）。
       ...(keepalive ? { keepalive: true } : {}),
     })
+    gotResponse = true
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       // 后端异常时可能返回非 JSON（空响应 / HTML 错误页），
@@ -416,11 +516,29 @@ async function requestUncached<T>(
     }
     const raw = await res.text()
     if (!raw) throw new Error(`[${method}] ${path} → 后端返回空响应（服务可能正在重启）`)
+    const cost = Date.now() - startedAt
+    // 慢请求留痕：真机上「后端像挂了」多半是 Zero 解释执行下的慢，不是断连
+    if (cost >= 5000) webLog(`slow ${method} ${path} ${cost}ms`)
     try {
       return JSON.parse(raw) as T
     } catch {
       throw new Error(`[${method}] ${path} → 响应不是 JSON：${raw.slice(0, 160)}`)
     }
+  } catch (e) {
+    /*
+     * 只记「没拿到任何 HTTP 响应」的失败。这类问题在真机上最难查：
+     * 请求可能根本没到后端（打到静态服务的 405 / 预检失败），后端日志干净。
+     */
+    if (!gotResponse) {
+      const name = (e as { name?: string })?.name || ''
+      const why =
+        name === 'AbortError'
+          ? `timeout ${timeout}ms`
+          : String((e as { message?: unknown })?.message ?? e)
+      webLog(`fetch ${method} ${base()}${path} failed after ${Date.now() - startedAt}ms: ${why}`)
+      noteNetFailure()
+    }
+    throw e
   } finally {
     clearTimeout(timer)
   }
@@ -1517,6 +1635,23 @@ export interface ConfigImportResult {
   }
   /** 导入后留下的旧配置快照（供「恢复上一次配置」） */
   backup?: ConfigBackupInfo
+  /**
+   * 后台导入的状态（`GET /api/config/import` 返回）。
+   *
+   * 确认导入走后台线程：iOS 上 dex2jar 转换要 1~2 分钟，同步等响应的话
+   * 客户端会先断（服务端只剩 Broken pipe）。`pending:true` 时要继续轮询。
+   */
+  state?: 'idle' | 'running' | 'converting' | 'done' | 'error'
+  pending?: boolean
+  /** 后台导入已跑了多久（毫秒），仅 running 时有 */
+  elapsedMs?: number
+  /** 后台导入当前阶段（读配置 / 下载并转换源 jar / 写入配置） */
+  phase?: string
+  /**
+   * true = 站点表已落盘，源 jar 转换在后台继续（state 会先到 `converting`）。
+   * 这期间直连站/原生站可用，jar 站等转换完成自动可用。
+   */
+  deferred?: boolean
 }
 
 /** 导入前的配置快照。`exists:false` 表示没有可回滚的版本。 */
@@ -1586,6 +1721,13 @@ export async function importConfig(
     dryRun?: boolean
     /** 用导入配置的顶层 spider 覆盖本地（源包迁移时必须为 true） */
     replaceSpider?: boolean
+    /**
+     * true = 后台导入：服务端立刻回 202 `{ok, pending:true}`，真正写入在后台
+     * 线程里跑，结果用 {@link getImportJobState} 轮询。
+     *
+     * 只对确认导入有意义（dryRun 预览不转换 jar，本来就快）。
+     */
+    background?: boolean
   } = {},
 ): Promise<ConfigImportResult> {
   return request<ConfigImportResult>('/api/config/import', {
@@ -1597,9 +1739,21 @@ export async function importConfig(
       dryRun: !!opts.dryRun,
       proxies: configProxies(),
       replaceSpider: !!opts.replaceSpider,
+      background: !!opts.background,
     },
     timeout: 120_000,
   })
+}
+
+/**
+ * 后台导入的进度/结果（`GET /api/config/import`）。
+ *
+ * 与 {@link getLastConfigImport} 的区别：这个**不吞异常** —— 轮询循环要靠
+ * 「这次请求失败」来决定是否下一轮重试，把错误变成 `{imported:false}`
+ * 会让循环误以为导入没发生。
+ */
+export async function getImportJobState(): Promise<ConfigImportResult> {
+  return request<ConfigImportResult>('/api/config/import', { timeout: 20_000 })
 }
 
 // ---------------------------------------------------------------- 直播源（config.lives）

@@ -8,6 +8,11 @@ import AboutDialog from '@/components/common/AboutDialog.vue'
 import { useCardCols } from '@/composables/useCardCols'
 import WallpaperPicker from '@/components/common/WallpaperPicker.vue'
 import { THEME_MODES, THEME_STYLES, resolveMode } from '@/stores/theme'
+// iOS 壳：后端是 App 进程内的 JVM 网关，地址由壳写死 —— 设置页要能认出它，
+// 把「后端地址」那行换成只读展示（改了就等于把 App 指向别人的后端）。
+import { isIosShell, iosShellInfo } from '@/compat/shell'
+import { uaText } from '@/compat/ua'
+import { fetchServerLogs } from '@/api/logs'
 import type { TileAction } from '@/components/common/tile'
 import {
   apiBase,
@@ -64,6 +69,7 @@ import {
   fetchLives,
   fetchLivePlaylist,
   getConfigBackup,
+  getImportJobState,
   getCachedDepot,
   getLastConfigImport,
   importConfig,
@@ -2703,6 +2709,56 @@ async function doPreviewImport() {
   }
 }
 
+/**
+ * 轮询后台导入，直到有结果（或超时）。
+ *
+ * 为什么要轮询而不是等那个 POST 响应：确认导入要下载源 jar + dex2jar 转换，
+ * iOS 上（OpenJDK Zero 解释执行）一次 1~2 分钟很正常。同步等响应的话
+ * WKWebView 的 fetch 会先断开，服务端写响应抛 Broken pipe，界面只能报
+ * "导入失败"——而配置其实正在写（2026-11-24 真机实测）。
+ *
+ * 单次轮询失败不判死：后端正忙时 GET 也可能超时，下一轮继续。
+ */
+async function waitImportJob(): Promise<ConfigImportResult> {
+  const started = Date.now()
+  let lastErr = ''
+  for (;;) {
+    const elapsed = Date.now() - started
+    // 真机上首次导入（dex2jar）实测能到 2~3 分钟，给足 10 分钟再判超时；
+    // 超时也只提示"后台仍在跑"，绝不把还在干活的导入说成失败
+    if (elapsed > 600_000) {
+      throw new Error(
+        `等了 ${Math.round(elapsed / 1000)} 秒还没结束（后台仍在跑，稍后看站点明细）${
+          lastErr ? '：' + lastErr : ''
+        }`,
+      )
+    }
+    // 先查再等：Android/TV 上 dex2jvm 是空操作，导入毫秒级完成，
+    // 先 sleep 一秒会让用户白等一下
+    try {
+      const s = await getImportJobState()
+      lastErr = ''
+      if (s.state === 'converting') {
+        /*
+         * 站点表已经写进去了（导入本身成功），只是源 jar 还在后台转。
+         * 这一档要单独说清楚：用户能立刻用直连站/原生站，jar 站转完自动可用。
+         */
+        cfgMsg.value = `站点已导入；源 jar 后台转换中…已 ${Math.round(elapsed / 1000)} 秒（完成后自动可用）`
+      } else if (s.pending || s.state === 'running') {
+        // 后端报了阶段就用它（下载/转换/写入），比只报秒数更能说明"卡在哪"
+        cfgMsg.value = s.phase
+          ? `正在导入… ${s.phase}（已 ${Math.round(elapsed / 1000)} 秒）`
+          : `正在导入…已 ${Math.round(elapsed / 1000)} 秒`
+      } else {
+        return s
+      }
+    } catch (e: any) {
+      lastErr = e?.message || String(e)
+    }
+    await new Promise((r) => setTimeout(r, 900))
+  }
+}
+
 /** 第二步：确认写入。按面板当前所选策略执行（不是读取时那份）。 */
 async function doImportConfig() {
   const url = cfgPreview.value?.url || cfgUrl.value.trim()
@@ -2718,16 +2774,29 @@ async function doImportConfig() {
     return
   }
   cfgBusy.value = true
-  cfgMsg.value = ''
+  cfgMsg.value = '正在导入…'
   try {
-    const r = await importConfig(url, {
+    const started = await importConfig(url, {
       mode: importMode.value,
       onConflict: importConflict.value,
       replaceSpider: cfgReplaceSpider.value,
+      background: true,
     })
+    if (!started.ok) {
+      cfgMsgOk.value = false
+      cfgMsg.value = started.msg || '导入失败'
+      return
+    }
+    // 新后端回 pending:true（后台线程在跑）；老后端直接给最终结果
+    const r = started.pending ? await waitImportJob() : started
     if (!r.ok) {
       cfgMsgOk.value = false
       cfgMsg.value = r.msg || '导入失败'
+      return
+    }
+    if (!r.imported) {
+      cfgMsgOk.value = false
+      cfgMsg.value = r.msg || '导入没有生效，请重试'
       return
     }
     cfgMsgOk.value = true
@@ -3230,6 +3299,9 @@ const tvMode = isTvShell()
 // 运行时模块/弹幕载荷是能力（moduleCheck）：老壳没有时不显示对应分区。
 const tvModule = hasTvModule()
 const desktop = isDesktop()
+// iOS 壳：ApiServer 跑在 App 进程内（JVM），地址由壳写死 → 只读展示。
+const ios = isIosShell()
+const iosInfo = iosShellInfo()
 
 // ---------------------------------------------------------------- 本机执行（TV）
 //
@@ -3561,9 +3633,15 @@ async function payloadInstall() {
 //          关掉它等于把自己被控制的能力切断，而打开它的唯一办法是重启应用；
 //          做成开关只会让用户以为"关掉还能再打开"。所以 PC 端只读展示状态。
 //   Web —— 用不上：浏览器沙箱里起不了 TCP 监听，也没有可被控制的应用窗口。
-const debugPlatform = computed<'tv' | 'pc' | null>(() => {
+const debugPlatform = computed<'tv' | 'pc' | 'ios' | null>(() => {
   if (tvMode) return 'tv'
   if (desktop) return 'pc'
+  /*
+   * iOS：端内网关只绑回环、也起不了 TV 那种 MCP 进程，给不了「开关」；
+   * 但排障必须有一个入口 —— 只读展示运行信息 + 复制诊断 + 重载界面
+   * （用户 2026-11-24 要求对齐 TV 的「维护 → 调试」）。
+   */
+  if (ios) return 'ios'
   return null
 })
 
@@ -3635,6 +3713,91 @@ function refreshDebug() {
   else if (debugPlatform.value === 'pc') void refreshPcDebug()
 }
 refreshDebug()
+
+// ---------------------------------------------------------------- iOS 调试（排障用）
+//
+// iOS 给不了 TV 那种「开关远程调试」：端内网关虽然监听 0.0.0.0（同一 Wi-Fi 可直连 9978），
+// 但 iOS 一切后台就挂起 App，监听套接字随之消失，没有可常驻的调试进程；
+// 也没有 TV DebugServer 那套 MCP（19777）。所以这里给**排障三件套**：
+// 运行信息（构建号/端口/运行时）、复制诊断（带最近日志，直接粘给开发）、重载界面。
+// 「图片全碎 / 按钮没反应」这类问题多半是内核网络进程被系统回收，重载即恢复。
+
+const diagMsg = ref('')
+const iosDiag = computed(() => {
+  const info = iosShellInfo()
+  return {
+    build: String(info.build || ''),
+    version: String(info.version || ''),
+    apiBase: String(info.apiBase || ''),
+    runtime: String(info.runtime || ''),
+  }
+})
+
+/**
+ * 保持亮屏（2026-11-24 用户要求）。
+ *
+ * iOS 息屏 = App 被系统挂起 = 端内网关（9978）的监听套接字全部消失，
+ * 远程调试立刻断。iOS 没有「后台常驻监听」的合法通道，所以唯一可靠的
+ * 办法是别让屏幕自动锁；状态由壳持久化（UserDefaults），这里只读写。
+ */
+const keepAwake = ref(iosShellInfo().keepAwake !== false)
+function setKeepAwake(v: boolean) {
+  keepAwake.value = v
+  try {
+    // 桥不存在（模拟器/旧包）时静默：不影响其它功能
+    ;(window as any).meowIos?.setKeepAwake?.(v)
+  } catch {
+    /* ignore */
+  }
+}
+
+async function copyIosDiagnostics() {
+  const lines: string[] = []
+  lines.push('## 猫窝 iOS 诊断')
+  lines.push(`时间: ${new Date().toISOString()}`)
+  lines.push(`构建: ${iosDiag.value.build || '?'}  版本: ${iosDiag.value.version || '?'}`)
+  lines.push(`网关: ${iosDiag.value.apiBase || '(空)'}  运行时: ${iosDiag.value.runtime || '?'}`)
+  lines.push(`页面: ${location.href}  壳: ${document.documentElement.dataset.shell || '?'}`)
+  lines.push(`UA: ${uaText()}`)
+  try {
+    const r = await fetchServerLogs({ limit: 120 })
+    if (r.state === 'ok' && r.data) {
+      lines.push('')
+      lines.push(`## 服务端日志（最近 ${r.data.items.length} 条）`)
+      for (const it of r.data.items) {
+        lines.push(`${new Date(it.at).toISOString()} [${it.level}] ${it.tag}: ${it.text}`)
+      }
+    } else {
+      lines.push(`## 服务端日志不可用：${r.state} ${r.detail || ''}`)
+    }
+  } catch (e: any) {
+    lines.push(`## 服务端日志异常：${e?.message || e}`)
+  }
+  const text = lines.join('\n')
+  try {
+    await navigator.clipboard.writeText(text)
+    diagMsg.value = `已复制 ${text.length} 字符，可直接粘贴发给开发`
+  } catch {
+    // WKWebView 里 clipboard 可能被拒：退化成 textarea + execCommand
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+      diagMsg.value = `已复制 ${text.length} 字符（兼容模式）`
+    } catch {
+      diagMsg.value = '复制失败：请到「运行日志」页手动查看'
+    }
+  }
+}
+
+function reloadWebView() {
+  location.reload()
+}
 /** 远程调试剩余时间每分钟刷新一次（只有 TV 有意义） */
 let dbgTimer: number | undefined
 
@@ -5326,7 +5489,7 @@ onBeforeUnmount(() => {
         </span>
       </div>
 
-      <div class="flex flex-wrap items-center gap-2.5">
+      <div v-if="!ios" class="flex flex-wrap items-center gap-2.5">
         <span class="w-20 shrink-0 text-xs text-ink-3">后端地址</span>
         <!--
           输入框始终可编辑：插件托管时也允许改（改完点右边按钮就切到远端）。
@@ -5360,6 +5523,23 @@ onBeforeUnmount(() => {
         >
           用插件
         </button>
+      </div>
+      <!--
+        iOS 壳：后端是 App 进程内的 JVM 网关（ApiServer），端口与地址由壳决定。
+        允许改地址 = 把整个 App 指向别人的后端（本地网关还在跑但没人用它），
+        所以这里只读展示，并把运行时与版本一并给出。
+      -->
+      <div v-else class="flex flex-wrap items-center gap-2.5">
+        <span class="w-20 shrink-0 text-xs text-ink-3">本地网关</span>
+        <span
+          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs text-ink-2"
+        >
+          {{ iosInfo.apiBase || 'http://127.0.0.1:9978' }}
+        </span>
+        <span class="text-[11px] text-ink-3">
+          {{ iosInfo.runtime || 'OpenJDK 9 Zero' }} · v{{ iosInfo.version || '—' }}
+          <template v-if="iosInfo.build"> · {{ iosInfo.build }}</template>
+        </span>
       </div>
       <p
         v-if="apiMsg"
@@ -8046,16 +8226,22 @@ onBeforeUnmount(() => {
       <!-- ── 远程调试（TV / PC）：原独立分区，归到维护 ── -->
       <template v-if="debugPlatform">
         <div class="set-sub mt-3">
-          <span class="font-medium text-ink-2">远程调试</span>
+          <span class="font-medium text-ink-2">调试</span>
           <span>
             {{
               debugPlatform === 'tv'
                 ? '局域网 PC 可读取状态 / 截图 / 派发按键'
-                : '内置 MCP 服务，供外部工具读取状态 / 截图 / 派发按键'
+                : debugPlatform === 'ios'
+                  ? '运行信息 · 复制诊断 · 重载界面'
+                  : '内置 MCP 服务，供外部工具读取状态 / 截图 / 派发按键'
             }}
           </span>
           <span class="flex-1" />
-          <span class="text-[11px]" :class="dbg.running ? 'text-accent' : 'text-ink-3'">
+          <span
+            v-if="debugPlatform !== 'ios'"
+            class="text-[11px]"
+            :class="dbg.running ? 'text-accent' : 'text-ink-3'"
+          >
             {{ dbg.running ? '运行中' : dbg.enabled ? '待生效' : '已关闭' }}
           </span>
         </div>
@@ -8075,7 +8261,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- PC：只读。地址 + 探测区间给客户端抄 -->
-        <div v-else class="mt-2 space-y-1.5">
+        <div v-else-if="debugPlatform === 'pc'" class="mt-2 space-y-1.5">
           <div>
             <span class="mb-1 block text-[11px] text-ink-3">服务地址</span>
             <code class="select-all rounded bg-field px-2 py-1 text-xs text-accent">
@@ -8086,6 +8272,49 @@ onBeforeUnmount(() => {
             端口可能顺延，客户端在 {{ dbg.portRange }} 区间探测
             <code class="rounded bg-field px-1">/health</code>
           </p>
+        </div>
+
+        <!-- iOS：没有常驻调试进程（切后台即挂起），给排障三件套 -->
+        <div v-else class="mt-2 space-y-2">
+          <div class="space-y-1">
+            <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] text-ink-3">
+              <span>构建 <code class="select-all text-accent">{{ iosDiag.build || '?' }}</code></span>
+              <span>版本 {{ iosDiag.version || '?' }}</span>
+            </div>
+            <div class="text-[11px] text-ink-3">
+              网关 <code class="select-all text-accent">{{ iosDiag.apiBase || '(未就绪)' }}</code>
+            </div>
+            <div class="text-[11px] text-ink-3">{{ iosDiag.runtime }}</div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-dim"
+              @click="copyIosDiagnostics()"
+            >
+              复制诊断
+            </button>
+            <button
+              class="rounded-md bg-card px-3 py-1.5 text-xs hover:bg-card-hover"
+              @click="reloadWebView()"
+            >
+              重载界面
+            </button>
+          </div>
+          <!-- 远程调试必须让屏幕别自动锁：息屏 = App 挂起 = 网关端口消失 -->
+          <div class="flex items-center justify-between gap-3 rounded-lg bg-field px-3 py-2">
+            <div class="min-w-0">
+              <div class="text-xs">保持亮屏</div>
+              <div class="text-[11px] leading-relaxed text-ink-3">
+                远程调试期间防止自动锁屏；息屏后 iOS 会挂起应用，网关端口随之消失
+              </div>
+            </div>
+            <ToggleSwitch
+              :model-value="keepAwake"
+              label="保持亮屏"
+              @update:model-value="setKeepAwake"
+            />
+          </div>
+          <p v-if="diagMsg" class="text-[11px] text-accent">{{ diagMsg }}</p>
         </div>
 
         <!-- 令牌要能被抄写：投影仪上没有 adb，验收方只能看屏幕。
@@ -8105,6 +8334,10 @@ onBeforeUnmount(() => {
         <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
           <template v-if="debugPlatform === 'tv'">
             每次开启都会换新令牌，关闭后服务立即停止。
+          </template>
+          <template v-else-if="debugPlatform === 'ios'">
+            同一 Wi-Fi 下可用 http://设备IP:9978 直连调试（App 需保持前台，切后台会被系统挂起）；
+            「图片全碎 / 按钮没反应」多半是内核网络进程被系统回收，点「重载界面」即恢复。
           </template>
           <template v-else>
             只监听 127.0.0.1，不对外网开放。

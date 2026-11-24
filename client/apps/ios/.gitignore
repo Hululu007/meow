@@ -1,0 +1,4 @@
+build/
+Meow.xcodeproj/
+*.xcuserstate
+xcuserdata/

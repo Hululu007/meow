@@ -753,13 +753,23 @@ public class ApiServer {
             } catch (NumberFormatException ignored) {
             }
         }
+        /*
+         * iOS：把源 jar 的下载交给原生（NSURLSession）。
+         *
+         * Zero 解释执行下 JVM 的 TLS 与大文件 IO 都很贵（1~5MB 的 jar 要十几秒），
+         * 原生是秒级。原生注册失败 / 下载出错时 Bridge.nativeDownload 返回 false，
+         * Jars 会回退到原来的 HttpURLConnection 路径，功能不受影响。
+         */
+        if (System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("ios")) {
+            platform.Bridge.installDownloader(platform.IosNative::download);
+        }
         // 参数就绪后再做依赖 DataPaths 的初始化（静态块里做会丢掉 --data-dir）
         boot();
         String bind = "0.0.0.0";
         String envBind = System.getenv("MEOW_BIND");
         if (envBind != null && !envBind.trim().isEmpty()) bind = envBind.trim();
 
-        listen(bind, port, 16);
+        listen(bind, port, 48);
         STARTED_AT = System.currentTimeMillis();
         logStartupTail(port);
     }
@@ -839,7 +849,148 @@ public class ApiServer {
         core.Transcode.apiPort = port;
         // 上次进程可能把转码 ffmpeg 留成孤儿（继续占 VDEC/RGA、永远不写 .done）
         core.Transcode.killStaleTranscodes();
+        HOST = server;
+        startHostKeeper(bind, port, threads);
+        resumePendingJarConversion();
         return server;
+    }
+
+    /** 当前监听器；看门狗重绑时替换。 */
+    private static volatile platform.HttpServer HOST;
+
+    /** 守夜/看门狗只起一次（listen 可能被重绑逻辑再次调用）。 */
+    private static volatile boolean hostKeeperStarted;
+
+    /**
+     * 宿主保活 + 自探活。
+     *
+     * <p><b>★ 为什么要一条非 daemon 的守夜线程</b>（2026-11-24 真机实测）：
+     * 端内 JVM 是从 JNI 里起来的，{@code ApiServer.main} 起完监听就返回；
+     * JDK 的 HTTP 分发线程是从**调用线程**继承 daemon 属性的，而 JNI attach
+     * 的线程是 daemon —— 于是整个 VM 里可能只剩线程池那几条"可回收"的线程。
+     * 一旦最后一条非 daemon 线程结束，VM 会 DestroyJavaVM：端口被关掉，
+     * App 还活着，之后每个请求都立刻 {@code Load failed}（导入完成后就撞上）。
+     * 这条线程从头到尾只 sleep，唯一作用就是"本进程活着期间 VM 不许退"。
+     *
+     * <p><b>看门狗</b>（daemon）：每 15 秒真发一次 {@code GET /api/_hb}。
+     * 连续 2 次不通就停掉旧监听器重绑同一端口 —— 万一分发线程被异常带走，
+     * 网关能自己回来，而不是让用户看着"设置页已连接、首页断连"。
+     * 探活成功每 60 秒打一行 {@code [hb] ok}，给日志留时间戳（排障用）。
+     */
+    private static void startHostKeeper(final String bind, final int port, final int threads) {
+        if (hostKeeperStarted) return;
+        hostKeeperStarted = true;
+
+        Thread keeper = new Thread(() -> {
+            for (;;) {
+                try {
+                    Thread.sleep(3_600_000L);
+                } catch (InterruptedException ignored) {
+                    // 没人会中断它；真被中断也继续睡
+                }
+            }
+        }, "meow-host-keeper");
+        keeper.setDaemon(false);
+        keeper.start();
+
+        Thread watchdog = new Thread(() -> {
+            int dead = 0;
+            long lastBeat = 0;
+            long lastBusy = 0;
+            for (;;) {
+                try {
+                    Thread.sleep(15_000L);
+                    int st = probeState(port);
+                    long now = System.currentTimeMillis();
+                    if (st > 0) {
+                        dead = 0;
+                        if (now - lastBeat >= 60_000L) {
+                            lastBeat = now;
+                            System.out.println("[hb] ok threads=" + Thread.activeCount()
+                                    + " sites=" + siteCount());
+                        }
+                    } else if (st == 0) {
+                        /*
+                         * 连得上但没响应 = 线程池满了（长流/慢源），**不是监听死了**。
+                         * 这里绝对不能重绑：重绑会掐掉所有在途的视频流，用户看到的就是
+                         * "看着看着所有线路都播不出来"（2026-11-24 真机）。
+                         */
+                        dead = 0;
+                        if (now - lastBusy >= 60_000L) {
+                            lastBusy = now;
+                            System.out.println("[busy] gateway saturated (probe timed out), skip rebind");
+                        }
+                    } else {
+                        dead++;
+                        System.out.println("[watchdog] connect failed x" + dead);
+                        if (dead >= 2) {
+                            rebindListener(bind, port, threads);
+                            dead = 0;
+                        }
+                    }
+                } catch (InterruptedException ignored) {
+                } catch (Throwable t) {
+                    System.out.println("[watchdog] " + t);
+                }
+            }
+        }, "meow-host-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
+    }
+
+    /** 真发一次 HTTP 请求（只连上不算数：分发线程死了 backlog 仍会接连接）。 */
+    /**
+     * 探活三态：**1 = 有 HTTP 响应；0 = 连上了但没响应（线程池满了）；-1 = 连不上（监听没了）**。
+     *
+     * <p>为什么必须分开（2026-11-24 真机）：iOS 上视频分片走 `/api/proxy/stream`，
+     * Zero 解释执行下每片要几秒、还一直占着网关线程。十几路之后线程池（16）满了，
+     * 新连接进得来但没人处理 —— 旧探活把这种情况当"监听死了"直接重绑，
+     * **把正在播的流全掐了**，而真正要做的只是"别在忙的时候动它"。
+     */
+    private static int probeState(int port) {
+        java.net.Socket s = new java.net.Socket();
+        try {
+            try {
+                s.connect(new InetSocketAddress("127.0.0.1", port), 1200);
+            } catch (Throwable refused) {
+                return -1;
+            }
+            s.setSoTimeout(2500);
+            s.getOutputStream().write(("GET /api/_hb HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    + "Connection: close\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            s.getOutputStream().flush();
+            java.io.InputStream in = s.getInputStream();
+            int c = in.read();
+            return c == 'H' ? 1 : 0;
+        } catch (Throwable t) {
+            // 连上了但读超时/被重置：多半是忙，不是死
+            return 0;
+        } finally {
+            try {
+                s.close();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /** 分发线程被带走后的自愈：停掉旧监听器，在原端口重建。 */
+    private static void rebindListener(String bind, int port, int threads) {
+        try {
+            platform.HttpServer old = HOST;
+            if (old != null) {
+                try {
+                    old.stop();
+                } catch (Throwable ignored) {
+                }
+            }
+            platform.HttpServer again = platform.HttpServer.create(
+                    new InetSocketAddress(bind, port), 0);
+            again.start(ApiServer::handle, threads);
+            HOST = again;
+            System.out.println("[watchdog] listener rebound on " + port);
+        } catch (Throwable t) {
+            System.out.println("[watchdog] rebind failed: " + t);
+        }
     }
 
     /**
@@ -1252,6 +1403,45 @@ public class ApiServer {
 
         String method = ex.getRequestMethod();
         String path = ex.getRequestURI().getPath();
+        // 看门狗自探活：写在 [req] 之前，否则每 15 秒刷一行日志淹掉真问题
+        if ("/api/_hb".equals(path)) {
+            byte[] hb = "ok".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            ex.sendResponseHeaders(200, hb.length);
+            ex.getResponseBody().write(hb);
+            ex.close();
+            return;
+        }
+        /*
+         * 客户端日志上送（iOS 真机排障，2026-11-24）。
+         *
+         * <p>为什么需要：WKWebView 里的 JS 异常（比如懒加载 chunk 失败导致
+         * 「点底栏没反应」）只进 Safari 控制台，端上根本拿不到；真机只能靠
+         * PC 远程读 /api/logs。页面把错误 POST 到这里，日志页就能看到 [web] 行。
+         *
+         * <p>不写磁盘、不进访问日志；正文截断 600 字，坏 JSON 直接忽略。
+         */
+        if ("/api/_clientlog".equals(path)) {
+            try {
+                String body = read(ex.getRequestBody());
+                JSONObject in = new JSONObject(body == null || body.trim().isEmpty() ? "{}" : body);
+                String level = in.optString("level", "info");
+                String tag = in.optString("tag", "web");
+                String text = in.optString("text", "");
+                if (text.length() > 600) text = text.substring(0, 600);
+                if (!text.isEmpty()) {
+                    if ("error".equals(level)) core.LogBuffer.error(tag, text);
+                    else if ("warn".equals(level)) core.LogBuffer.warn(tag, text);
+                    else core.LogBuffer.info(tag, text);
+                }
+            } catch (Throwable ignored) {
+                // 客户端日志永远不能影响主流程
+            }
+            byte[] ok = "ok".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            ex.sendResponseHeaders(200, ok.length);
+            ex.getResponseBody().write(ok);
+            ex.close();
+            return;
+        }
         // 访问日志：TV/PC 排查"配了地址但没反应"时，先看这里有没有请求进来。
         // 只打路径不打 query（弹幕/代理的 query 里有长 URL，会淹没日志）。
         System.out.println("[req] " + method + " " + path);
@@ -2174,13 +2364,35 @@ public class ApiServer {
         int hash = k.indexOf('#');
         if (hash > 0) k = k.substring(0, hash);
         if (k.isEmpty()) return false;
+
+        /*
+         * 「jar 里有没有这个类」必须缓存 —— 尤其是**未命中**。
+         *
+         * 未命中时 Jars 会逐个 jar 扫 zip 目录（Class.forName 失败不缓存），
+         * 桌面 JIT 下几毫秒，iOS 的 Zero 解释执行下一次几十到几百毫秒。
+         * /api/health 与 /api/sites 对**每个站点**都要问一次；导入 41 站之后
+         * 基线里那 44 个名字全变成未命中，一次 health 就能扫上百次 ——
+         * 网关像挂了：客户端请求超时，服务端日志只有一行 [req]（2026-11-24 真机）。
+         *
+         * 失效判据是 jar 代次（core.Jars.reload 与 rebuildSites 都会 +1）。
+         */
+        int gen = core.Jars.generation();
+        long[] memo = SPIDER_CLASS_MEMO.get(k);
+        if (memo != null && memo[0] == gen) return memo[1] == 1L;
+        boolean ok;
         try {
             platform.Bridge.loadClass("com.github.catvod.spider." + k);
-            return true;
+            ok = true;
         } catch (Throwable t) {
-            return false;
+            ok = false;
         }
+        SPIDER_CLASS_MEMO.put(k, new long[]{gen, ok ? 1L : 0L});
+        return ok;
     }
+
+    /** 站点类名存在性缓存：key → {jar 代次, 1 存在 / 0 不存在}。 */
+    private static final java.util.concurrent.ConcurrentHashMap<String, long[]> SPIDER_CLASS_MEMO =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     /** 是否配置了外部弹幕 API（policy.json 的 danmakuApi 或 MEOW_DANMAKU_API）。 */
     private static boolean danmakuApiConfigured() {
@@ -4423,6 +4635,62 @@ public class ApiServer {
      *
      * <p>空 body 违反 HTTP API 契约，兜底成空结构后客户端能正常走"无数据"分支。
      */
+    /**
+     * detail 返回的线路表缓存：`site|vod_id` → `vod_play_from` 按 `$$$` 拆分后的列表。
+     *
+     * <p><b>为什么必须缓存</b>：CatVod 的 {@code playerContent(flag, id, flags)}
+     * 第三个参数就是这张线路表。部分 spider（实测 AppRJ / Jpys / AppGet）
+     * 在内部用 {@code flags.indexOf(flag)} 的结果去取 {@code vod_play_url}
+     * 的第 N 组地址 —— 传空 List 时下标是 -1，直接
+     * {@code ArrayIndexOutOfBoundsException}。前端逐条线路都收到「该线路暂不可用」，
+     * 用户看到的就是「所有线路都播不了」，而弹幕正常（弹幕不走这条链路）。
+     *
+     * <p>上限 256 条 LRU：一个剧 4~10 条线路，足够覆盖「详情 → 播放」的窗口，
+     * 又不会把几十个站点的详情常驻内存（iOS 的 JVM 堆只有 ~500MB）。
+     */
+    private static final Map<String, List<String>> PLAY_FLAGS =
+            new LinkedHashMap<String, List<String>>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, List<String>> eldest) {
+                    return size() > 256;
+                }
+            };
+
+    /** 从 detailContent 的响应里抽取每个条目的线路表（只取前 32 条，批量详情够用）。 */
+    private static void rememberPlayFlags(String site, String detailJson) {
+        if (detailJson == null || detailJson.isEmpty()) return;
+        try {
+            JSONArray list = new JSONObject(detailJson).optJSONArray("list");
+            if (list == null) return;
+            int n = Math.min(list.length(), 32);
+            for (int i = 0; i < n; i++) {
+                JSONObject v = list.optJSONObject(i);
+                if (v == null) continue;
+                String from = v.optString("vod_play_from", "");
+                String id = v.optString("vod_id", "");
+                if (from.isEmpty() || id.isEmpty()) continue;
+                List<String> flags = new ArrayList<>();
+                for (String f : from.split("\\$\\$\\$")) {
+                    if (!f.isEmpty()) flags.add(f);
+                }
+                if (flags.isEmpty()) continue;
+                synchronized (PLAY_FLAGS) {
+                    PLAY_FLAGS.put(site + "|" + id, flags);
+                }
+            }
+        } catch (Throwable ignored) {
+            // 缓存失败不影响详情响应；play 时会退化到原来的空表行为
+        }
+    }
+
+    /** 取缓存；未命中返回空表（与历史行为一致，再靠 play 里的补详情重试兜底）。 */
+    private static List<String> playFlagsFor(String site, String id) {
+        synchronized (PLAY_FLAGS) {
+            List<String> v = PLAY_FLAGS.get(site + "|" + id);
+            return v == null ? new ArrayList<String>() : v;
+        }
+    }
+
     private static String emptyFallback(String action, String raw) {
         if (raw != null && !raw.trim().isEmpty()) return raw;
         switch (action) {
@@ -4473,7 +4741,9 @@ public class ApiServer {
                     java.util.List<String> ids = (t.startsWith("{") || t.startsWith("["))
                             ? new ArrayList<>(Arrays.asList(id))
                             : new ArrayList<>(Arrays.asList(id.split(",")));
-                    return str(method(o, "detailContent", List.class).invoke(o, ids));
+                    String raw = str(method(o, "detailContent", List.class).invoke(o, ids));
+                    rememberPlayFlags(site, raw);
+                    return raw;
                 }
                 case "search": {
                     String wd = b.optString("wd", "");
@@ -4483,14 +4753,44 @@ public class ApiServer {
                 case "play": {
                     String flag = b.optString("flag", "");
                     String id = b.optString("id", "");
+                    /*
+                     * ★ CatVod 的第三个参数是「详情里所有线路的 flag」。
+                     * 有些 spider（实测 AppRJ / Jpys / AppGet）在 playerContent 里
+                     * 用 flag 在 flags 里的下标去取 vod_play_url 的第 N 组，
+                     * 传空 List 就等于让它们拿 -1 当地址下标 →
+                     * ArrayIndexOutOfBoundsException → 前端逐条提示"该线路暂不可用"，
+                     * 用户看到的就是"所有线路都播不了"（弹幕却正常，因为弹幕不走这条）。
+                     * flags 由 detail 时缓存，详见 rememberPlayFlags()。
+                     */
+                    java.util.List<String> flags = playFlagsFor(site, id);
                     try {
                         return normalizePlay(str(method(o, "playerContent", String.class, String.class, List.class)
-                                .invoke(o, flag, id, new ArrayList<String>())));
+                                .invoke(o, flag, id, flags)));
                     } catch (java.lang.reflect.InvocationTargetException ite) {
                         // 某些 spider 的 playerContent 对 id 格式很敏感（例如 Jpys 会抛
                         // ArrayIndexOutOfBoundsException）。这里降级成一条可读错误，
                         // 而不是让整个请求 500，前端可以提示用户换线路。
                         Throwable cause = ite.getCause() == null ? ite : ite.getCause();
+                        /*
+                         * 缓存没热的情况（重启后从历史/收藏直接进播放页，没先拉 detail）：
+                         * 补一次 detailContent 把 flags 建起来，再重试一次。
+                         * 只在「空 flags + 越界」时做，正常播放不付这个代价。
+                         */
+                        if (flags.isEmpty() && cause instanceof ArrayIndexOutOfBoundsException) {
+                            try {
+                                java.util.List<String> ids = new ArrayList<>(Arrays.asList(id.split(",")));
+                                String raw = str(method(o, "detailContent", List.class).invoke(o, ids));
+                                rememberPlayFlags(site, raw);
+                                java.util.List<String> again = playFlagsFor(site, id);
+                                if (!again.isEmpty()) {
+                                    return normalizePlay(str(method(o, "playerContent",
+                                            String.class, String.class, List.class)
+                                            .invoke(o, flag, id, again)));
+                                }
+                            } catch (Throwable ignored) {
+                                // 补详情的失败不覆盖原始错误：原始错误更有诊断价值
+                            }
+                        }
                         return new JSONObject()
                                 .put("parse", 1)
                                 .put("url", "")
@@ -4528,6 +4828,11 @@ public class ApiServer {
      * 两者都空就是真的没结果。
      */
     private static String invokeSearch(Object spider, String wd, String pg, String site) {
+        if (System.getenv("MEOW_DEBUG_INIT") != null) {
+            System.out.println("[search] site=" + site + " wdLen=" + wd.length()
+                    + " pg=" + pg + " spider=" + spider.getClass().getName()
+                    + "@" + Integer.toHexString(System.identityHashCode(spider)));
+        }
         String out = "";
         System.out.println("[search] site=" + site + " cls="
                 + (spider == null ? "null" : spider.getClass().getName())
@@ -7754,10 +8059,26 @@ public class ApiServer {
         }
         try {
             String v = System.getProperty("meow.danmaku.bundled", "");
-            return v == null ? "" : v.trim();
-        } catch (Throwable t) {
-            return "";
+            if (v != null && !v.trim().isEmpty()) return v.trim();
+        } catch (Throwable ignored) {
         }
+        /*
+         * 文件兜底（iOS 壳）：端内 node 起来后由壳写 data/danmaku-host.txt。
+         *
+         * 为什么不用 JNI 设系统属性：node 比 JVM 晚起，属性只能设一次、异常难兜底；
+         * 文件是壳与宿主之间唯一不依赖 JNI 的通道，node 什么时候好就什么时候写，
+         * 宿主每次请求重读（文件几百字节，弹幕请求很少）。
+         */
+        try {
+            java.io.File f = core.DataPaths.file("danmaku-host.txt");
+            if (f != null && f.isFile() && f.length() > 0 && f.length() < 4096) {
+                String v = new String(java.nio.file.Files.readAllBytes(f.toPath()),
+                        StandardCharsets.UTF_8).trim();
+                if (!v.isEmpty()) return v;
+            }
+        } catch (Throwable ignored) {
+        }
+        return "";
     }
 
     /** 这个 host 是不是本机回环（本机服务的失败不该进 5 分钟冷却）。 */
@@ -13550,8 +13871,232 @@ public class ApiServer {
     /** 串行化「写配置文件 + 重建站点表」这一段，见 handleConfigImport 里的说明。 */
     private static final Object IMPORT_LOCK = new Object();
 
+    /**
+     * 后台导入的状态：idle | running | done | error。
+     *
+     * <p>只允许一个导入在跑（再点一次就返回 already，前端继续轮询同一份结果）。
+     * 读写在 HTTP 线程与导入线程之间跨线程，所以是 volatile；状态本身只是
+     * 一个枚举串，不需要加锁读。
+     */
+    private static volatile String importJobState = "idle";
+    private static volatile long importJobStartedAt;
+
+    /**
+     * 后台导入当前在做什么（读配置 / 下载并转换源 jar / 写入配置）。
+     *
+     * <p>为什么要有：iOS 的 Zero 解释执行下，dex2jar 一次 1~2 分钟。只报
+     * 「已 90 秒」用户不知道卡在哪；报出阶段至少能区分"网络慢"和"在转换"。
+     */
+    private static volatile String importJobPhase = "";
+
+    /**
+     * 端上还有一次「配置里的 dex jar 正在（或等待）转换」。
+     *
+     * <p>延迟转换（2026-11-24）：后台导入先把站点表落盘、立即回成功，jar 转换
+     * 在同一个后台线程里继续。这段窗口里类还没加载，但站点**不能从列表里消失**
+     * ——否则用户看到"导入成功但 0 站"。所以 {@link #siteImplemented} 在这个
+     * 标志为真时，对配置里声明过的站点直接放行（真正调用失败时由报错兜底）。
+     */
+    private static volatile boolean importJarPending;
+
+    /** 延迟转换用的配置基址（相对 jar 地址要按它补全）。 */
+    private static volatile String importJobConfigBase = "";
+
     /** 导入前的配置快照文件名（只留一份，语义是"撤销上一次导入"）。 */
     private static final String CONFIG_BACKUP = "config.sites.json.bak";
+
+    /**
+     * 起一个后台导入线程并立刻返回。
+     *
+     * <p>内部复用同一个 {@link #handleConfigImport(HttpExchange)}：给它一个
+     * {@link core.MemoryExchange} 当交换对象，响应写进内存缓冲区，再由本方法
+     * 解析成 {@code lastImport}。这样导入逻辑只有一份，不存在"后台版"与
+     * "同步版"行为漂移。
+     *
+     * @return 给客户端的应答：{@code {ok:true, pending:true}}，已有导入在跑时
+     *         额外带 {@code already:true}
+     */
+    private static String startImportJob(String body) throws Exception {
+        /*
+         * 去掉 background 标记再进后台。
+         *
+         * 不去掉会自己调自己：handleConfigImport 读到 background=true 又转回
+         * 本方法，看到状态是 running 就回 {pending:true, already:true} ——
+         * 外层把它当成"成功"，state 变 done 而一样都没导入（实测踩到）。
+         */
+        String jobBody = body;
+        try {
+            JSONObject jb = new JSONObject(body);
+            jb.remove("background");
+            /*
+             * 标记"这批由后台线程处理"：handleConfigImport 看到它就把 jar 转换
+             * 推迟到写盘之后（先让用户拿到站点表，转换在后台继续，界面显示
+             * "转换中"）。同步客户端（CI / 老前端）不带这个标记，仍然一次做完。
+             */
+            jb.put("_deferred", true);
+            jobBody = jb.toString();
+        } catch (Exception ignored) {
+            // body 不是 JSON：交给 handleConfigImport 报 400
+        }
+        final String effectiveBody = jobBody;
+        synchronized (IMPORT_LOCK) {
+            if ("running".equals(importJobState)) {
+                return new JSONObject().put("ok", true).put("pending", true)
+                        .put("already", true).toString();
+            }
+            importJobState = "running";
+            importJobStartedAt = System.currentTimeMillis();
+            importJobPhase = "读取配置";
+        }
+        Thread worker = new Thread(() -> {
+            core.MemoryExchange mx = new core.MemoryExchange("/api/config/import", "POST", effectiveBody);
+            try {
+                handleConfigImport(mx);
+                if (mx.responseCode() == 202) {
+                    // 兜底：真进了"又开始一个后台任务"的死循环，别把它当成功
+                    importJobState = "error";
+                    lastImport = new JSONObject().put("ok", false)
+                            .put("msg", "后台导入没有执行（background 标记未被清除）");
+                    return;
+                }
+                JSONObject res = mx.responseJson();
+                if (res == null) {
+                    res = new JSONObject().put("ok", false)
+                            .put("msg", "导入线程没有产出 JSON 响应（HTTP " + mx.responseCode() + "）");
+                }
+                // 成功路径里 handleConfigImport 已经把 lastImport 设成完整结果；
+                // 失败路径（4xx/5xx）的响应体就是错误对象，也要让 GET 读得到。
+                if (!res.optBoolean("ok")) lastImport = res;
+                if (res.optBoolean("ok") && res.optBoolean("deferred")) {
+                    // 站点表已经落盘；转换继续在**同一个后台线程**里跑完
+                    importJobState = "converting";
+                    runDeferredConversion();
+                } else {
+                    importJobState = res.optBoolean("ok") ? "done" : "error";
+                }
+                if (!res.optBoolean("ok")) {
+                    platform.Bridge.log("[import] background failed: " + res.optString("msg", ""));
+                }
+            } catch (Throwable err) {
+                importJobState = "error";
+                try {
+                    lastImport = new JSONObject().put("ok", false).put("msg", String.valueOf(err));
+                } catch (Exception ignored) {
+                    // org.json 的 put 声明了受检异常；这里已经在错误路径上，别再抛
+                }
+                platform.Bridge.log("[import] background threw: " + err);
+            }
+        }, "meow-import");
+        worker.setDaemon(true);
+        worker.start();
+        return new JSONObject().put("ok", true).put("pending", true).toString();
+    }
+
+    /** 待转换标记文件：`<data>/import-jar.pending`（内容 = 配置基址）。 */
+    private static java.io.File jarPendingMarker() {
+        try {
+            return core.DataPaths.file("import-jar.pending");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static void writeJarPendingMarker(String base) {
+        java.io.File f = jarPendingMarker();
+        if (f == null) return;
+        try {
+            java.nio.file.Files.write(f.toPath(),
+                    String.valueOf(base == null ? "" : base)
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void clearJarPendingMarker() {
+        java.io.File f = jarPendingMarker();
+        if (f != null) f.delete();
+    }
+
+    /**
+     * 延迟转换：把 config 里的 dex jar 转成 class 并挂回去。
+     *
+     * <p>为什么要延迟（2026-11-24 用户点单）：iOS 端内 dex2jar 一次 1~2 分钟。
+     * 导入先把站点表落盘、立刻回成功，用户马上能用直连站/原生站；jar 站在转换
+     * 完成后自动变得可用（转换窗口内站点不会从列表消失，见 importJarPending）。
+     *
+     * <p>转换失败不回滚配置：站点声明还在，重新导入（转换缓存命中）即可；
+     * 状态里带 error + 原文，前端能看见。
+     */
+    private static void runDeferredConversion() {
+        String base = importJobConfigBase == null ? "" : importJobConfigBase;
+        importJobPhase = "转换源 jar（后台，1~2 分钟）";
+        importJarPending = true;
+        long t0 = System.currentTimeMillis();
+        try {
+            JSONObject d2j;
+            synchronized (IMPORT_LOCK) {
+                invalidateConfigTables();
+                JSONObject cfg = loadConfigSites();
+                d2j = core.Dex2Jvm.rewrite(cfg, base);
+                if (!core.DataPaths.write("config.sites.json", cfg.toString())) {
+                    throw new java.io.IOException("cannot write config.sites.json");
+                }
+                core.Jars.reload();
+                rebuildSites();
+            }
+            d2j.put("ms", System.currentTimeMillis() - t0);
+            importJarPending = false;
+            clearJarPendingMarker();
+            JSONObject cur = lastImport == null ? new JSONObject() : new JSONObject(lastImport.toString());
+            cur.put("dex2jvm", d2j);
+            lastImport = cur;
+            importJobState = "done";
+            importJobPhase = "完成";
+            System.out.println("[import] deferred conversion done in "
+                    + (System.currentTimeMillis() - t0) + "ms");
+            core.LogBuffer.info("dex2jvm", "deferred done: " + d2j);
+        } catch (Throwable t) {
+            importJobState = "error";
+            importJarPending = false;
+            clearJarPendingMarker();
+            try {
+                JSONObject cur = lastImport == null ? new JSONObject() : new JSONObject(lastImport.toString());
+                cur.put("ok", false);
+                cur.put("imported", true);
+                cur.put("msg", "源 jar 转换失败：" + t);
+                lastImport = cur;
+            } catch (Exception ignored) {
+                // org.json 的 put 声明了受检异常；错误路径上别再抛
+            }
+            platform.Bridge.log("[import] deferred conversion failed: " + t);
+        }
+    }
+
+    /**
+     * 上次跑到一半的延迟转换（App 被杀 / 崩溃）→ 启动后接着做。
+     *
+     * <p>判据是标记文件：只在「确实有配置写进去了、jar 还没转完」时存在。
+     * 转完（成功或失败）都会删掉，所以正常启动不会多打一次转包。
+     */
+    private static void resumePendingJarConversion() {
+        if (!core.Jars.isJvm()) return;
+        java.io.File marker = jarPendingMarker();
+        if (marker == null || !marker.isFile()) return;
+        String base = "";
+        try {
+            base = new String(java.nio.file.Files.readAllBytes(marker.toPath()),
+                    java.nio.charset.StandardCharsets.UTF_8).trim();
+        } catch (Throwable ignored) {
+        }
+        importJobConfigBase = base;
+        importJobState = "converting";
+        importJarPending = true;
+        importJobPhase = "转换源 jar（上次未完成）";
+        Thread t = new Thread(ApiServer::runDeferredConversion, "meow-import-resume");
+        t.setDaemon(true);
+        t.start();
+        System.out.println("[import] resume pending jar conversion");
+    }
 
     /**
      * 把当前 config.sites.json 存成备份。
@@ -14050,6 +14595,29 @@ public class ApiServer {
         return s.length() > 80 ? s.substring(0, 80) + "…" : s;
     }
 
+    /** 内容像网页（而不是 JSON 配置）？只认标签开头，避免把 base64 伪装误判。 */
+    private static boolean looksLikeHtml(String s) {
+        if (s == null) return false;
+        String t = s.trim();
+        if (!t.startsWith("<")) return false;
+        String head = t.substring(0, Math.min(t.length(), 400)).toLowerCase(java.util.Locale.ROOT);
+        return head.contains("<html") || head.contains("<!doctype")
+                || head.contains("<body") || head.contains("<head");
+    }
+
+    /** `http://host` / `http://host/` → `http://host/tv`；已有路径的地址原样返回。 */
+    private static String appendTvPath(String url) {
+        try {
+            java.net.URI u = new java.net.URI(url);
+            String path = u.getPath();
+            if (path != null && !path.isEmpty() && !"/".equals(path)) return url;
+            String base = url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+            return base + "/tv";
+        } catch (Exception e) {
+            return url;
+        }
+    }
+
     /**
      * 导入外部 CatVod 配置。
      *
@@ -14064,15 +14632,48 @@ public class ApiServer {
     private static void handleConfigImport(HttpExchange ex) throws Exception {
         if ("GET".equalsIgnoreCase(ex.getRequestMethod())) {
             JSONObject cur = lastImport;
+            JSONObject out = cur == null ? new JSONObject() : new JSONObject(cur.toString());
             if (cur == null) {
-                sendJson(ex, 200, new JSONObject().put("ok", true).put("imported", false).toString());
-                return;
+                out.put("ok", true);
+                out.put("imported", false);
             }
-            sendJson(ex, 200, cur.toString());
+            /*
+             * 后台导入的进度：前端确认导入后轮询这里。
+             * state = idle | running | done | error；pending=true 就继续等。
+             * 老客户端不读这两个字段，行为不变。
+             */
+            out.put("state", importJobState);
+            out.put("pending", "running".equals(importJobState));
+            if ("running".equals(importJobState) || "converting".equals(importJobState)) {
+                out.put("elapsedMs", System.currentTimeMillis() - importJobStartedAt);
+                out.put("phase", importJobPhase);
+            }
+            sendJson(ex, 200, out.toString());
             return;
         }
 
         String body = read(ex.getRequestBody());
+
+        /*
+         * 后台导入：先回 202，导入在后台线程里跑，前端轮询 GET 取结果。
+         *
+         * 为什么必须分开：确认导入要下载源 jar + dex2jar 转换（见 Dex2Jvm），
+         * iOS 的 Zero 解释执行一次 30s~2min，WKWebView 的 fetch 等不到那么久。
+         * 同步路径下客户端一断，服务端写响应就抛 Broken pipe，用户看到"导入失败"，
+         * 配置一个字节都没写（2026-11-24 真机实测 jvm.log 的栈就是这样）。
+         * 预览（dryRun）不转换 jar，本来就快，不走后台。
+         */
+        boolean background = false;
+        try {
+            JSONObject peek = body == null || body.trim().isEmpty() ? null : new JSONObject(body);
+            background = peek != null && peek.optBoolean("background", false);
+        } catch (Exception ignored) {
+            // body 不是 JSON：交给下面的正常路径去报 400
+        }
+        if (background) {
+            sendJson(ex, 202, startImportJob(body));
+            return;
+        }
         String url;
         /*
          * 导入策略：
@@ -14086,6 +14687,11 @@ public class ApiServer {
         String mode = "replace";
         String onConflict = "keep";
         boolean dryRun = false;
+        /**
+         * 内部标记（只有 startImportJob 会写）：站点表先落盘，jar 转换留到写完之后。
+         * 同步客户端不带它，一次做完（CI 与老前端行为不变）。
+         */
+        boolean deferred = false;
         List<String> proxiesParsed = new ArrayList<>();
         // 请求体是否明确带了 proxies：带了才更新 jar 的加速候选。
         // 老客户端不带这个字段，不能当成"用户关掉了加速"把已存配置清空。
@@ -14104,6 +14710,7 @@ public class ApiServer {
                 onConflict = oc.toLowerCase();
             }
             dryRun = in.optBoolean("dryRun", false);
+            deferred = in.optBoolean("_deferred", false);
             proxiesParsed = proxiesFromBody(in);
             hasProxies = in.has("proxies");
             replaceSpider = in.optBoolean("replaceSpider", false);
@@ -14146,6 +14753,27 @@ public class ApiServer {
         if (raw == null || raw.trim().isEmpty()) {
             sendJson(ex, 502, "{\"code\":-1,\"msg\":\"fetch failed: " + url + "\"}");
             return;
+        }
+
+        /*
+         * 粘的是站点首页、不是配置文件时，自动补一次 `/tv` 再试。
+         *
+         * 踩过（2026-11-24 真机）：用户填 `http://肥猫.net`（首页是 HTML，
+         * 配置在 `/tv`），旧逻辑直接报 `not a JSON config`，用户不知道要加路径，
+         * 只能猜"是不是源挂了"。只在「URL 没有路径 + 内容确实是网页」时补，
+         * 有路径的地址（用户已指明）一律不动。
+         */
+        if (looksLikeHtml(raw)) {
+            String alt = appendTvPath(url);
+            if (!alt.equals(url)) {
+                String retry = fetchTextAccel(alt, IMPORT_TIMEOUT_MS, proxies);
+                if (retry != null && !retry.trim().isEmpty() && !looksLikeHtml(retry)) {
+                    System.out.println("[import] html at root, retry with " + alt);
+                    raw = retry;
+                    url = alt;
+                    configBase = alt;
+                }
+            }
         }
 
         JSONObject doc;
@@ -14207,9 +14835,41 @@ public class ApiServer {
             return;
         }
 
-        // JVM 导入期预处理：只有 classes.dex 的 jar 先转成 class jar，
-        // 再写回 spiderJvm / 站点 jar；Android 端跳过。
-        JSONObject dex2jvm = core.Dex2Jvm.rewrite(doc, configBase);
+        /*
+         * JVM 导入期预处理：只有 classes.dex 的 jar 先转成 class jar，
+         * 再写回 spiderJvm / 站点 jar；Android 端跳过。
+         *
+         * ★ dryRun（读取并预览）不做这一步：转换要下载 jar 再跑 dex2jar，
+         *   iOS 的 Zero 解释执行一次 30s~2min，而预览只需要站点表和 diff。
+         *   带着它一起跑的直接后果（2026-11-24 真机实测）：WKWebView 等不到
+         *   就断开，服务端写响应抛 Broken pipe，界面报"读取失败"，而配置
+         *   一个字节都没写。转换留到确认导入时做，那一趟走后台线程（见顶部
+         *   background 分支），客户端只轮询进度。
+         */
+        final boolean deferConvert = deferred && !preview;
+        if (!preview) {
+            importJobPhase = deferConvert ? "写入配置" : "下载并转换源 jar（iOS 慢，可能要 1~2 分钟）";
+        }
+        long d2jStart = System.currentTimeMillis();
+        JSONObject dex2jvm;
+        if (preview) {
+            dex2jvm = new JSONObject().put("skipped", "dryRun");
+        } else if (deferConvert) {
+            /*
+             * 延迟转换：这里只写站点表，jar 转换交给后台线程（startImportJob →
+             * runDeferredConversion）。iOS 上 dex2jar 要 1~2 分钟，用户没必要
+             * 盯着它——先拿到 41 站，jar 站在转换完成后自动可用。
+             */
+            dex2jvm = new JSONObject().put("deferred", true);
+            importJobConfigBase = configBase;
+            writeJarPendingMarker(configBase);
+            importJarPending = true;
+        } else {
+            dex2jvm = core.Dex2Jvm.rewrite(doc, configBase);
+        }
+        // 耗时写进结果：真机上"导入慢"到底是下载还是转换，下一次一眼能分开
+        dex2jvm.put("ms", System.currentTimeMillis() - d2jStart);
+        if (!preview) importJobPhase = "写入配置";
 
         java.util.Set<String> jarClasses = jarSpiderClasses();
         invalidateConfigTables();
@@ -14494,6 +15154,8 @@ public class ApiServer {
                 // 当前生效的仓（多仓切换后前端据此打「当前」标记）
                 .put("active", activeRepo)
                 .put("dex2jvm", dex2jvm)
+                // true = 站点表已落盘，jar 转换在后台继续（前端要显示"转换中"）
+                .put("deferred", deferConvert)
                 // 导入完成后也回一份 diff：用户要知道"这次到底加了什么、丢了什么"，
                 // 而不是只看到一个站点总数
                 .put("diff", diff)
@@ -14579,6 +15241,14 @@ public class ApiServer {
      * 重建与遍历都在 SITES 自身上同步（见 searchAll 的 targets 拷贝）。
      */
     private static void rebuildSites() {
+        /*
+         * 站点表重建 → 类名缓存作废。
+         *
+         * JVM 侧 core.Jars.reload() 也会 +1，但 Android（TV）根本不走那条路
+         * （DexClassLoader 在 LocalSpiderHost 里），只靠这里兜住；多 +1 一次
+         * 只是让缓存空跑一轮，没有副作用。
+         */
+        core.Jars.invalidateClassCache();
         Map<String, String> base = sitesBaseline;
         Map<String, String> baseExt = extBaseline;
         synchronized (SITES) {
@@ -14619,6 +15289,14 @@ public class ApiServer {
     private static boolean siteImplemented(String key) {
         if (key == null || key.isEmpty()) return false;
         if (sources.NativeSources.get(key) != null) return true;
+        /*
+         * 延迟转换窗口内（jar 还在后台转）不能把配置里声明的站点判成"没实现"。
+         *
+         * 否则导入成功后站点列表反而少一半（实测就是这样：类没加载 → 41 个
+         * spar_x 全被过滤），用户以为导入失败。真正调用时类不存在会由
+         * /api/<site>/... 的报错兜底，比"从列表里消失"好查得多。
+         */
+        if (importJarPending && CONFIG_SITE_KEYS.contains(key)) return true;
         if (spiderClassPresent(key)) return true;
         String api = API.get(key);
         return api != null && !api.isEmpty() && !api.startsWith("csp_");
@@ -14635,13 +15313,18 @@ public class ApiServer {
      * <p>原生源（豆瓣 / 预告 / 配置中心）不依赖配置，永远可见。
      */
     private static boolean siteVisible(String key) {
-        if (!siteImplemented(key)) return false;
+        // 原生源（豆瓣 / 预告 / 配置中心）不依赖 jar，先答，省一次类查找
         if (sources.NativeSources.get(key) != null) return true;
+        /*
+         * 基线幽灵（静态 44 名里没进配置的）一律不可见 —— 这个结论与 jar 里
+         * 有没有这个类**无关**，所以先判，省掉一次（iOS 上很贵的）jar 扫描。
+         * 原顺序是"先 siteImplemented 再判基线"，导入 41 站后这里会白扫 44 次。
+         */
         if (!CONFIG_SITE_KEYS.isEmpty() && !CONFIG_SITE_KEYS.contains(key)) {
             Map<String, String> base = sitesBaseline;
             if (base != null && base.containsKey(key)) return false;
         }
-        return true;
+        return siteImplemented(key);
     }
 
     /** 对外可见站点键的快照（过滤掉没有实现的默认名与基线幽灵）。 */

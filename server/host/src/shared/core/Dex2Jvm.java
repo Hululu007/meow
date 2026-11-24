@@ -29,7 +29,9 @@ import java.util.zip.ZipFile;
  *
  * <p>只在 JVM 生效：Android 端继续用 DexClassLoader，不转换。
  *
- * <p>转换器通过 {@code MEOW_DEX2JAR} 指定（dex2jar 的 d2j-dex2jar.sh）。
+ * <p>转换器优先级：{@code -Dmeow.dex2jar.inprocess=true} 且端内有
+ * {@code core.Dex2JvmInProcess} 时直接调 dex2jar 库（iOS 无 fork/exec）；否则走
+ * {@code MEOW_DEX2JAR}（dex2jar 的 d2j-dex2jar.sh）。
  * 转换失败、含 native .so、或转换后没有 spider 类时，保留原配置并返回原因；
  * 不阻断其它非 jar 站点的导入。
  */
@@ -48,19 +50,22 @@ public final class Dex2Jvm {
      */
     public static JSONObject rewrite(JSONObject doc, String configBase) throws Exception {
         JSONObject out = new JSONObject();
-        File tool = resolveTool();
-        out.put("enabled", Jars.isJvm() && tool != null);
+        // iOS 没有 fork/exec：属性打开且端内转换器在 classpath 时，直接调库转换。
+        // 属性优先，端上即使误设 MEOW_DEX2JAR 也不会再去 exec。
+        boolean inproc = inProcessAvailable();
+        File tool = inproc ? null : resolveTool();
+        out.put("enabled", Jars.isJvm() && (tool != null || inproc));
         if (!Jars.isJvm()) {
             out.put("skipped", "android-runtime");
             return out;
         }
-        if (tool == null) {
+        if (tool == null && !inproc) {
             out.put("skipped", "dex2jar not found (tools/dex2jar or MEOW_DEX2JAR)");
             return out;
         }
 
         Map<String, Converted> seen = new LinkedHashMap<>();
-        String toolTag = toolTag(tool);
+        String toolTag = tool != null ? toolTag(tool) : "inproc";
         int converted = 0, alreadyJvm = 0, nativeJar = 0, failed = 0, noDex = 0;
         String lastError = "";
 
@@ -297,7 +302,7 @@ public final class Dex2Jvm {
     private static String validate(File jar) {
         try (ZipFile z = new ZipFile(jar)) {
             boolean found = false;
-            var en = z.entries();
+            java.util.Enumeration<? extends ZipEntry> en = z.entries();
             while (en.hasMoreElements()) {
                 ZipEntry e = en.nextElement();
                 String n = e.getName();
@@ -318,7 +323,7 @@ public final class Dex2Jvm {
         } catch (Throwable t) {
             // Proxy 不是每个 jar 都有；有其它 spider 类也算通过
             try (ZipFile z = new ZipFile(jar)) {
-                var en = z.entries();
+                java.util.Enumeration<? extends ZipEntry> en = z.entries();
                 while (en.hasMoreElements()) {
                     String n = en.nextElement().getName();
                     if (n.startsWith(SPIDER_CLASS_PREFIX) && n.endsWith(".class")) {
@@ -334,7 +339,7 @@ public final class Dex2Jvm {
     private static JarInfo inspect(File file) throws IOException {
         JarInfo info = new JarInfo();
         try (ZipFile z = new ZipFile(file)) {
-            var en = z.entries();
+            java.util.Enumeration<? extends ZipEntry> en = z.entries();
             while (en.hasMoreElements()) {
                 ZipEntry e = en.nextElement();
                 String n = e.getName();
@@ -350,7 +355,7 @@ public final class Dex2Jvm {
 
     private static String sha256(File f) throws Exception {
         MessageDigest md = MessageDigest.getInstance("SHA-256");
-        try (var in = Files.newInputStream(f.toPath())) {
+        try (java.io.InputStream in = Files.newInputStream(f.toPath())) {
             byte[] buf = new byte[65536];
             int n;
             while ((n = in.read(buf)) != -1) md.update(buf, 0, n);
@@ -361,6 +366,7 @@ public final class Dex2Jvm {
     }
 
     private static ProcessResult run(File tool, File src, File out) {
+        if (tool == null) return runInProcess(src, out);
         List<String> cmd = new ArrayList<>();
         if (tool.isDirectory()) {
             // 插件/fpk/Docker 里带的是 dex2jar 的 lib 目录，不依赖宿主装 java：
@@ -397,7 +403,7 @@ public final class Dex2Jvm {
             // 超时永远不生效。读线程是 daemon，超时强杀后也不会挂住 JVM。
             Process proc = p;
             Thread reader = new Thread(() -> {
-                try (var r = new java.io.BufferedReader(new java.io.InputStreamReader(
+                try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(
                         proc.getInputStream(), StandardCharsets.UTF_8))) {
                     String line;
                     while ((line = r.readLine()) != null) {
@@ -429,8 +435,36 @@ public final class Dex2Jvm {
         }
     }
 
-    private static String javaExe() {
+    /**
+     * 端内转换（iOS）：反射调 {@code core.Dex2JvmInProcess}，避免 PC 端编译时依赖 dex2jar 库。
+     * 该类只在 iOS host-stub 里编译，缺失时属性判定为不可用。
+     */
+    private static ProcessResult runInProcess(File src, File out) {
         try {
+            Class<?> c = Class.forName("core.Dex2JvmInProcess");
+            Object err = c.getMethod("convert", File.class, File.class)
+                    .invoke(null, src, out);
+            if (err != null) return new ProcessResult(false, "in-process: " + err);
+            return new ProcessResult(true, "in-process");
+        } catch (Throwable t) {
+            return new ProcessResult(false, "in-process: " + t.getClass().getSimpleName()
+                    + ": " + t.getMessage());
+        }
+    }
+
+    private static boolean inProcessAvailable() {
+        if (!"true".equalsIgnoreCase(System.getProperty("meow.dex2jar.inprocess", ""))) {
+            return false;
+        }
+        try {
+            Class.forName("core.Dex2JvmInProcess", false, Dex2Jvm.class.getClassLoader());
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static String javaExe() {        try {
             String home = System.getProperty("java.home", "");
             File f = new File(home, "bin/java" + (System.getProperty("os.name", "")
                     .toLowerCase().contains("win") ? ".exe" : ""));
@@ -547,6 +581,17 @@ public final class Dex2Jvm {
         boolean hasNative;
     }
 
-    private record ProcessResult(boolean ok, String message) {
+    private static final class ProcessResult {
+        final boolean ok;
+        final String message;
+
+        ProcessResult(boolean ok, String message) {
+            this.ok = ok;
+            this.message = message;
+        }
+
+        String message() {
+            return message;
+        }
     }
 }

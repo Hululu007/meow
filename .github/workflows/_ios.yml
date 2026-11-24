@@ -1,0 +1,249 @@
+name: _ios
+
+# 真机未签名 IPA：内嵌 OpenJDK 9 Zero + ApiServer。
+# 默认 push 只跑 IPA（缓存命中后约 2–3 分钟）；模拟器截图是可选输入 sim=true。
+# 快速 UI 截图见 _ios_ui.yml（不构建 App，60–120 秒）。
+on:
+  push:
+    branches: [feat/ios-jvm]
+  workflow_dispatch:
+    inputs:
+      sim:
+        description: 同时构建模拟器包并截图（约 +4 分钟）
+        type: boolean
+        default: false
+      nojvm:
+        description: 排障变体：不链接静态 JVM（用来二分「闪退是否来自 JVM」）
+        type: boolean
+        default: false
+
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: Cache web dist
+        id: webdist
+        uses: actions/cache@v4
+        with:
+          path: client/apps/web/dist
+          key: ios-webdist-${{ hashFiles('client/apps/web/src/**', 'client/apps/web/package.json', 'client/apps/web/vite.config.ts', 'client/apps/web/index.html', 'client/pnpm-lock.yaml', 'client/package.json') }}
+
+      - name: Build web dist
+        if: steps.webdist.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cd client
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Cache host jar
+        id: hostjar
+        uses: actions/cache@v4
+        with:
+          path: client/apps/ios/build/jvm
+          key: ios-hostjar-${{ hashFiles('server/host/src/**', 'client/apps/ios/host-stub/**', 'client/apps/ios/vendor/dex2jar/**', 'server/host/libs/**', 'client/apps/ios/scripts/build-host.sh') }}
+
+      - name: Build iOS host jar
+        if: steps.hostjar.outputs.cache-hit != 'true'
+        run: bash client/apps/ios/scripts/build-host.sh
+
+      - name: Stamp build id into Info.plist
+        run: |
+          set -euo pipefail
+          BUILD_ID="$(git rev-parse --short HEAD)-$(date -u +%Y%m%d%H%M)"
+          echo "build_id=$BUILD_ID"
+          PLIST=client/apps/ios/Meow/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :MeowBuild string $BUILD_ID" "$PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Set :MeowBuild $BUILD_ID" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Print :MeowBuild" "$PLIST"
+          echo "$BUILD_ID" > client/apps/ios/build/build-id.txt
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Cache OpenJDK runtime tarballs
+        uses: actions/cache@v4
+        with:
+          path: client/apps/ios/build/cache
+          key: ios-jdk9-bundle-v1
+
+      - name: Prepare OpenJDK 9 Zero + libOpenJDK.a
+        run: bash client/apps/ios/scripts/prepare-runtime.sh
+
+      # 端内 Node 运行时（nodejs-mobile，52MB 动态库）+ 弹幕载荷（danmu_api，~40MB）
+      - name: Cache node runtime + danmu payload
+        id: nodepayload
+        uses: actions/cache@v4
+        with:
+          path: |
+            client/apps/ios/build/node
+            client/apps/ios/build/danmu-api
+          key: ios-node-danmu-${{ hashFiles('client/apps/ios/scripts/prepare-node-runtime.sh', 'client/apps/ios/scripts/prepare-danmu-payload.sh') }}
+
+      - name: Prepare Node runtime + danmu payload
+        if: steps.nodepayload.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          bash client/apps/ios/scripts/prepare-node-runtime.sh
+          bash client/apps/ios/scripts/prepare-danmu-payload.sh
+
+      - name: Verify node + payload staged
+        run: |
+          set -euo pipefail
+          test -d client/apps/ios/build/node/NodeMobile.framework || { echo "NodeMobile.framework missing"; exit 1; }
+          test -f client/apps/ios/build/danmu-api/danmu_api/server.js || { echo "danmu payload missing"; exit 1; }
+          file client/apps/ios/build/node/NodeMobile.framework/NodeMobile
+          du -sh client/apps/ios/build/node/NodeMobile.framework client/apps/ios/build/danmu-api
+
+      - name: Generate Xcode project
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cd client/apps/ios
+          xcodegen generate
+
+      - name: Build unsigned device IPA
+        env:
+          NOJVM: ${{ inputs.nojvm && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          cd client/apps/ios
+          if [ "$NOJVM" = "1" ]; then
+            # 排障变体：**不链接** OpenJDK 静态库，JNI 代码也被预处理掉。
+            # 用来判定闪退是否由「静态 JVM 的链接/静态初始化」引起：
+            #   - 这个包能起来 → 问题在 JVM 链接层（dyld 构造器）或启动那一刻；
+            #   - 这个包也闪退 → 与 JVM 无关，是包/侧载器层面。
+            echo "== NOJVM variant: static JVM NOT linked =="
+            xcodebuild -project Meow.xcodeproj -scheme Meow -configuration Release \
+              -sdk iphoneos -derivedDataPath build/dd-device \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+              GCC_PREPROCESSOR_DEFINITIONS=MEOW_NO_JVM=1 \
+              "OTHER_LDFLAGS=-Wl,-all_load -Wl,-export_dynamic -lc++ -lz -liconv -framework Foundation -framework UIKit -framework WebKit -framework Network -framework Security" \
+              build 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild-device.log" | tail -40
+          else
+            xcodebuild -project Meow.xcodeproj -scheme Meow -configuration Release \
+              -sdk iphoneos -derivedDataPath build/dd-device \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+              build 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild-device.log" | tail -40
+          fi
+          APP=$(find build/dd-device/Build/Products/Release-iphoneos -maxdepth 1 -name 'Meow.app' | sed -n '1p')
+          test -n "$APP"
+          rm -rf build/ipa && mkdir -p build/ipa/Payload
+          cp -R "$APP" build/ipa/Payload/
+          IPA_NAME="Meow-unsigned.ipa"
+          if [ "$NOJVM" = "1" ]; then IPA_NAME="Meow-unsigned-nojvm.ipa"; fi
+          (cd build/ipa && zip -qry "$GITHUB_WORKSPACE/artifacts/$IPA_NAME" Payload)
+          ls -lh "$GITHUB_WORKSPACE/artifacts/$IPA_NAME"
+          du -sh "$APP" || true
+          # 包里到底装了什么：条目数 / 体积 / 构建标识，闪退排查时先对这三个数
+          echo "== bundle inventory =="
+          find "$APP" -type f | wc -l
+          du -sh "$APP"
+          /usr/libexec/PlistBuddy -c "Print :MeowBuild" "$APP/Info.plist" || true
+          ls "$APP/jvm" "$APP/jvm/libs" | head -40
+          echo "== frameworks =="
+          ls -lh "$APP/Frameworks" || true
+          nm -gU "$APP/Frameworks/libOpenJDK.dylib" 2>/dev/null | grep -E "_JNI_CreateJavaVM$" || true
+          nm -gU "$APP/Frameworks/libmeow-smoke.dylib" 2>/dev/null | grep -E "_meow_smoke$" || true
+
+      - name: Build simulator app
+        if: ${{ inputs.sim }}
+        run: |
+          set -euo pipefail
+          cd client/apps/ios
+          xcodebuild -project Meow.xcodeproj -scheme MeowSim -configuration Debug \
+            -sdk iphonesimulator -derivedDataPath build/dd-sim \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild-sim.log" | tail -30
+
+      - name: Start mock + host for simulator
+        if: ${{ inputs.sim }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/meow-data"
+          cp client/apps/ios/scripts/ci-config.json "$RUNNER_TEMP/meow-data/config.sites.json"
+          nohup python3 client/apps/ios/scripts/mock_cms.py --port 8099 \
+            > "$RUNNER_TEMP/mock.log" 2>&1 &
+          nohup java -cp "client/apps/ios/build/jvm/host.jar:client/apps/ios/build/jvm/libs/*" \
+            ApiServer --port=9978 --data-dir="$RUNNER_TEMP/meow-data" \
+            > "$RUNNER_TEMP/host.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/host.pid"
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:9978/api/health > /dev/null 2>&1 && break
+            sleep 1
+          done
+
+      - name: Simulator screenshot
+        if: ${{ always() && inputs.sim }}
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          UDID=$(python3 - <<'PY'
+          import json, subprocess
+          data = json.loads(subprocess.check_output(['xcrun','simctl','list','devices','available','-j']))
+          for runtime, devices in data.get('devices', {}).items():
+              if 'iOS' not in runtime:
+                  continue
+              for d in devices:
+                  if d.get('isAvailable') and d['name'].startswith('iPhone'):
+                      print(d['udid'])
+                      raise SystemExit
+          raise SystemExit('no iPhone simulator')
+          PY
+          )
+          echo "simulator=$UDID"
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b &
+          BPID=$!
+          ( sleep 150; kill "$BPID" 2>/dev/null || true ) &
+          WPID=$!
+          wait "$BPID" || echo "[ios] bootstatus timeout (continue)"
+          kill "$WPID" 2>/dev/null || true
+          APP=$(find client/apps/ios/build/dd-sim/Build/Products/Debug-iphonesimulator -maxdepth 2 -name 'MeowSim.app' | sed -n '1p')
+          test -n "$APP"
+          xcrun simctl install "$UDID" "$APP" || echo "[ios] install failed"
+          xcrun simctl launch "$UDID" com.meow.player.ios.sim \
+            --api-base=http://127.0.0.1:9978 --site=CI演示 || echo "[ios] launch failed"
+          sleep 18
+          xcrun simctl io "$UDID" screenshot artifacts/ios-home.png || true
+
+      - name: Stop host
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/host.pid" ]; then kill "$(cat "$RUNNER_TEMP/host.pid")" 2>/dev/null || true; fi
+          cp "$RUNNER_TEMP/host.log" artifacts/host.log 2>/dev/null || true
+          cp "$RUNNER_TEMP/mock.log" artifacts/mock.log 2>/dev/null || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa${{ inputs.nojvm && '-nojvm' || '' }}-${{ github.run_number }}
+          path: artifacts/**
+          retention-days: 14
+          if-no-files-found: warn

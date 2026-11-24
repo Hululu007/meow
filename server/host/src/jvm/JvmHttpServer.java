@@ -41,6 +41,7 @@ public final class JvmHttpServer extends HttpServer {
     public void start(Handler handler, int threads) throws IOException {
         impl.createContext("/", ex -> {
             JvmExchange wrapped = new JvmExchange(ex);
+            long t0 = System.currentTimeMillis();
             try {
                 handler.handle(wrapped);
             } catch (IOException e) {
@@ -52,6 +53,21 @@ public final class JvmHttpServer extends HttpServer {
                 throw new IOException(t);
             } finally {
                 wrapped.finish();
+                /*
+                 * 慢请求留痕（≥3s）。
+                 *
+                 * 为什么要有：真机上「首页连不上后端」有两种完全不同的成因 ——
+                 * 请求到了后端但处理很慢（iOS 的 Zero 解释执行下，59 个站的
+                 * /api/sites 能跑十几秒），和请求压根没发出去（jvm.log 里连
+                 * [req] 都没有）。只看起点的 [req] 分不出这两类；把耗时长
+                 * 的请求补一行 [slow]，配合前端写进 launch.log 的失败原因，
+                 * 下一次就能一眼定位。
+                 */
+                long ms = System.currentTimeMillis() - t0;
+                if (ms >= 3000) {
+                    System.out.println("[slow] " + ex.getRequestMethod() + " "
+                            + ex.getRequestURI().getPath() + " " + ms + "ms");
+                }
             }
         });
         ExecutorService pool = Executors.newFixedThreadPool(threads);

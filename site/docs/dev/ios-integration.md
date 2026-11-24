@@ -1,11 +1,130 @@
 # iOS 端接入（IPA 形态与发版）
 
-::: warning 本文是“落地契约”，不是“已支持”声明
-**主线（`main`）没有 iOS 工程**：`client/apps/ios/` 不存在，官方路径仍是
-「iPhone / iPad 用 Safari + 添加到主屏幕」。
-可跑的工程在实验分支 [`feat/ios-jvm`](https://github.com/upchr/meow/tree/feat/ios-jvm/client/apps/ios)
-（端内 OpenJDK Zero 跑 `ApiServer`），未进主线、未发官方 IPA；进度见
-[应用计划](/reference/roadmap)。
+::: warning 现状（2026-11-24）：iOS 工程**已合入 main**（实验性），真机已跑通本地网关
+`client/apps/ios/` 可出未签名 IPA，**未上架、未发官方包**。
+真机（LiveContainer 侧载）验证到：JVM 启动、`/api/health` ok、豆瓣首页出数据、源导入能写盘。
+本文的「落地契约」部分仍然有效；下面 §0 是与契约不一致的**已实现部分**，
+与契约冲突时以 §0 为准（其余章节保留原契约口径，标【待实现】= 代码还没写；
+标【待实测】= 没有 iPhone，无法验证）。
+:::
+
+## 零、已实现（feat/ios-jvm，实验性）
+
+iOS 壳不再只是「连远端后端」：**进程内跑着与 PC/Docker 同一份 Java 宿主**
+（`ApiServer`），源站、jar 爬虫、弹幕内置源都在手机本机执行。
+
+| 能力 | 怎么做的 | 验证到哪一步 |
+|---|---|---|
+| 本地网关 | 静态链接 **OpenJDK 9 Zero**（`libjvm.a`，无 JIT）进壳，`JNI_CreateJavaVM` 起 `ApiServer` 监听 `127.0.0.1:9978`；WKWebView 加载本地静态服务 `9979` | **真机已跑通**（LiveContainer 侧载）：`/api/health` ok、豆瓣首页出数据；Static JVM 的 `__TEXT,__const` 必须 `-rename_section` 到 `__DATA,__const`（否则 dyld 初始化写只读页 → SIGBUS） |
+| 源导入 | 与 PC 同一套 `POST /api/config/import`（URL / 覆盖 / dryRun / `replaceSpider`）；**确认导入走后台线程 + 轮询**（见 §0.2） | 肥猫 `http://肥猫.net/tv` → 41 站；OECT 源服务 `config.all.json` → 54 站；真机踩过「转换太久被客户端超时」 |
+| dex 源包 | iOS 没有 fork/exec → **端内 dex2jar**（`core.Dex2JvmInProcess`，dex2jar 2.4 子集进 `jvm/libs`），`Dex2Jvm` 在 `-Dmeow.dex2jar.inprocess=true` 时反射调用它 | 肥猫顶层 dex → 893 个类；OECT 的 Jable（站点级 dex）→ 搜索 24 条 |
+| JVM 源包（class jar） | `URLClassLoader` 直接加载；**必须**带 `-XX:-BytecodeVerificationRemote`（外部 jar 的 stackmap 常不完整，否则 `VerifyError`） | OECT `spider.jar`：AppRJ 搜索 2 条（不开校验就是 VerifyError） |
+| 壳身份 | `window.meowIos` 桥（`version` / `apiBase` / `runtime`）→ `data-shell='ios'`；设置页「后端地址」改为只读（地址由壳写死） | 前端门禁 `device-profile` / `mobile-ux-polish` / `legacy-compat` 全绿 |
+| CI | `_ios.yml`（未签名 IPA）、`_ios_ui.yml`（headless Chrome 快速截图）、`_ios_verify.yml`（runner 端到端，用的是 **IPA 里那份 host.jar**） | 三条流水线绿 |
+
+**仍然缺**（与 TV 的差距，逐条都有原因）：
+
+- **转码 / MKV / FLV / DTS**：端上无 ffmpeg，只有 WebKit + AVPlayer（HLS/mp4）。
+- **本地片库**：进程内没有可浏览的系统目录（`LibraryRoots` 只在 PC 插件模式追加盘符），
+  实用路径是 WebDAV / SMB。
+- **局域网网关 / 手机推设置**：iOS 壳只绑回环，不给别的设备当后端。
+- **签名与上架**：OpenJDK 9 Zero 是 GPL-2.0+CE → 只能侧载，不能进 App Store。
+- **后台挂起 / 内存**：启动与导入已真机验证过；后台被系统挂起后 JVM 线程能否恢复还没测。
+
+### 0.2 真机第一轮暴露的四个问题（2026-11-24）
+
+首包能进首页之后用户报的四个问题。全都不是崩溃，日志里能对上证据：
+
+| 现象 | 真因 | 修法 |
+|---|---|---|
+| 刘海挡住顶栏 | 页面没带 `viewport-fit=cover`，`env(safe-area-inset-*)` 恒为 0；WebView 又被缩进安全区（第一版把整块内容框进去，看起来是上下两条黑边，用户否了） | WebView **铺满全屏**（`.ignoresSafeArea()`），`index.html` 的 iOS 分支补 `viewport-fit=cover`；`tokens.css` 按 `data-shell='ios'` 给 `.app-header` / `.has-tabbar` 加 `env(safe-area-inset-*)` —— 背景铺满、顶栏与底栏各自让开刘海/Home 条（主流 App 的做法） |
+| 点输入框整页放大、键盘收起不还原 | WebKit 对字号 <16px 的输入控件聚焦时自动 zoom | `index.html` 首帧脚本认出 `window.meowIos` → `maximum-scale=1`；`tokens.css` 把 `html[data-shell='ios']` 下的输入控件抬到 16px |
+| 导入报「读取失败」，服务端日志却是 `Broken pipe` | `dryRun` 也跑 `Dex2Jvm.rewrite`（下载 jar + dex2jar），Zero 上几十秒；客户端先断 → 响应写不出去 → 配置一个字节都没写 | ① 预览不再转换 jar（回 `dex2jvm: {skipped:"dryRun"}`）；② 确认导入改后台线程，`GET /api/config/import` 轮询 `state/pending`，界面显示已用秒数 |
+| 导入成功后回首页「连不上后端」，设置页还显示已连接 | 两个叠加：① `resolveBase()` 的后端地址来自 `localStorage`，一旦那份缓存缺失，非桌面壳退回**同源** —— iOS 的同源是静态服务 9979（只做 GET/HEAD，POST 回 405 → 浏览器报 `Load failed`，后端日志里一行都没有）；② `spiderClassPresent()` 不缓存**未命中**，未命中要逐 jar 扫 zip —— 导入 41 站后基线里 44 个名字全变未命中，`/api/health`、`/api/sites` 每个站问一次，Zero 上把网关拖成「像挂了」 | ① 地址改成只认宿主注入的 `window.meowIos.apiBase`（桥每次文档加载都在），localStorage 只当缓存，拿不到就报明确错误；② 类名查找按 `core.Jars.generation()` 缓存（`rebuildSites()` 也失效）；`siteVisible()` 先判「基线幽灵」再查 jar；③ 诊断：服务端 ≥3s 的请求打 `[slow]`，前端网络级失败通过新增的 `meowLog` 桥写进 `launch.log` |
+
+附带的兼容：粘站点首页（`http://肥猫.net`）时，后端检测到内容是 HTML 且 URL 没有路径，
+自动补 `/tv` 再拉一次 —— 用户不需要知道配置文件的真实路径。
+
+### 0.1 Node 运行时 / danmu_api：结论是「有，但要换实现」
+
+TV 的运行时模块 = **node 二进制 + `danmu_api` 载荷**，node 起在 `:node` 进程，
+再通过 `platform.Bridge.installDanmakuHost(...)` 把弹幕地址注入给网关里的 `ApiServer`。
+iOS 要对齐这条，拆成两问：
+
+| 问 | 结论 | 证据 |
+|---|---|---|
+| iOS 能跑 Node 吗 | **能，但不是官方 Node**。`nodejs-mobile` 有 iOS 预编译包（`v18.20.4-ios.zip`，49MB），它把 V8 **配成启动即关 JIT**（interpreter only），因此不需要 iOS 禁止的可执行内存 | `doc_mobile/BUILDING.md`：「using the v8 engine configured to start with JIT disabled」；runner 上已下载成功并解包（`_ios_node.yml`） |
+| 包长什么样 | 是 **XCFramework**：`NodeMobile.xcframework/ios-arm64/NodeMobile.framework`（真机 arm64，**二进制 52MB**）+ `ios-arm64_x86_64-simulator`。对外只有一个 C 符号：`int node_start(int argc, char *argv[])`（头文件 `Headers/NodeMobile.h`） | `client/apps/ios/build/node/probe.txt`（CI 产物） |
+| danmu_api 能在上面跑吗 | **能**。它是纯 ESM + Node 内置模块 + 纯 JS 依赖（`https-proxy-agent` / `dotenv` / `node-fetch` / `@dan-uni/dan-any`），没有运行期 native 模块；唯一的硬编码是**代理端口 5321**（TV 的载荷已改成可配、0=关） | 本机实测：`node danmu_api/server.js`（`DANMU_API_PORT=18401`、`DANMU_API_PROXY_PORT=0`）→ `/api/v2/fongmi/danmaku?name=庆余年&episode=1` 返回 200、33.8KB 弹幕、3.3s |
+| 别的 JS 引擎行不行 | **不行（就现载荷而言）**：JavaScriptCore / QuickJS-ng / Hermes 都没有 ESM 与 Node 内置模块，而 danmu_api 是 ESM + `node:` 前缀导入 + `zlib`/`fs`/`http` | 这些引擎反而更适合「自己重写一份弹幕接口」而不是「跑现成载荷」 |
+
+**接口已经现成**：宿主侧 `ApiServer` 认 `meow.danmaku.bundled` 系统属性
+（`bundledDanmakuHost()`，与 TV 的 `Bridge.installDanmakuHost` 等价），
+值形如 `http://127.0.0.1:<port>/api/v2/fongmi/danmaku?name={name}&episode={episode}`。
+所以 iOS 侧只要：起 node → 探到端口 → 设这个属性（JNI 里一句
+`System.setProperty` 即可），宿主立刻改用端内弹幕源。
+
+**已落地 / 待落地**：
+
+- 已落地：`client/apps/ios/scripts/prepare-node-runtime.sh`（下载 + 挑真机/模拟器
+  两份 framework + 报告）、`.github/workflows/_ios_node.yml`（macOS runner 上
+  核对 `node_start` 导出符号并做一次模拟器链接冒烟）。
+- 待落地：framework 进 IPA 链接、`NodeBridge`（起 node / 探端口 / 设属性）、
+  弹幕载荷（`node_modules` 113MB，**必须**像 TV 那样首启下载，不能打进包里）。
+
+### 0.3 第二轮真机（2026-11-24 晚）：网关在导入完成后消失 + 开屏 + 全屏
+
+第二轮日志（`launch.log` 里的 `[web] fetch ... failed after 2ms: Load failed`）说明
+**不是请求慢，是端口没了**：`[import:merge] ... table now 59` 之后 jvm.log 再没有一行
+请求，之后每个请求 2~6ms 就 `Load failed`（连接被拒），而 App 还活着。
+
+| 问题 | 处理 |
+|---|---|
+| 端内 JVM 可能在导入完成后**整机退出**（`ApiServer.main` 起完监听就返回；JNI attach 的调用线程是 daemon，JDK 的 HTTP 分发线程从调用线程继承 daemon 属性） | `listen()` 起一条 **非 daemon 的守夜线程**（`meow-host-keeper`，只 sleep）：本进程活着期间 VM 不许退。桌面/Docker 行为不变 |
+| 万一是分发线程被异常带走（VM 还活着但不再 accept） | 看门狗（daemon）每 15s 真发一次 `GET /api/_hb`，连续 2 次不通就 `stop()` 旧监听器并**在原端口重绑**；正常时每 60s 打一行 `[hb] ok`（带时间戳，便于定位"哪一刻断的"） |
+| 导入到底卡在哪一步看不出来 | 后台导入多了 `phase`：`读取配置` → `下载并转换源 jar` → `写入配置`；结果里 `dex2jvm.ms` 给出转换耗时。端内转换顺带改成 **STORED 不压缩**（Zero 下 deflate 4MB 要十几秒），产物变大但更快 |
+
+同时按真机反馈改的两处体验：
+
+- **开屏页**：启动过程不再显示「正在启动 Java 宿主 / 等待 API 就绪」这类工程化文案，
+  换成 TV 同款品牌屏（`#0B2220` 底 + 居中图标 + 轻微呼吸）；只有真的起不来
+  （缺 web 资源 / 静态服务失败 / 网页加载失败）才显示一行原因 + 「重试」。
+- **播放页全屏**：iPhone 的 WKWebView 拿不到元素全屏（`requestFullscreen` 要么被拒、
+  要么"成功"但画面不变），所以 iOS 壳**直接走伪全屏**（容器 CSS 撑满）+ 通过新增的
+  `meowIos.setOrientation` 桥让原生转横屏（`ShellOrientation.swift`，iOS 16+ 用
+  `requestGeometryUpdate`）。进播放页的自动横屏沿用原有 `tryLandscape()`。
+
+### 0.4 导入提速 + 弹幕运行时落地（2026-11-24 晚）
+
+**导入为什么要动**：端内 dex2jar 在 Zero 解释执行下是桌面的 ~25 倍
+（桌面实测 6.0s / 1.15MB jar → 端上 ~150s）。三条都上了：
+
+| 做法 | 效果 | 备注 |
+|---|---|---|
+| **延迟转换** | 导入先落站点表、立刻回成功；jar 转换在同一后台线程里继续（`state=converting`，界面显示「源 jar 后台转换中…已 N 秒」） | 转换窗口内站点**不能从列表消失**（`importJarPending` → `siteImplemented` 放行配置里声明过的站）；App 被杀后启动会 `resumePendingJarConversion` 接着做 |
+| **原生下载** | jar 走壳的 NSURLSession（JNI `RegisterNatives` → `platform.IosNative.download`），失败自动回退 JVM 的 HttpURLConnection | 只影响"新 jar"；下载只是搬运，没有平台语义 |
+| **STORED 不压缩** | 端内 dex2jar 输出不压缩，Zero 下省掉 deflate 的十几秒 | 产物 1.82MB（原来 1.76MB 压缩版），读的时候也省 inflate |
+
+**弹幕运行时（对齐 TV 的「运行时模块 + 载荷」）**：
+- **运行时**：nodejs-mobile 的 `NodeMobile.framework`（真机 arm64、52MB 动态库）
+  以 `embed` 方式进 IPA；对外只有 `node_start(argc, argv)` 一个 C 符号。
+- **载荷**：TV/PC 用的同一个 `danmu-api-1.0.0.zip`（构建脚本
+  `prepare-danmu-payload.sh` 解开成 `build/danmu-api` 打进 IPA，~40MB），
+  首次启动拷到 Documents 再跑。
+- **接法**：node 起在 `127.0.0.1:19321`（`DANMU_API_PORT`/`DANMU_API_BIND`/
+  `DANMU_API_PROXY_PORT=0`/`SOURCE_ORDER` 与 TV manifest 一致）；探活通过后把
+  `http://127.0.0.1:19321/api/v2/fongmi/danmaku?name={name}&episode={episode}`
+  写进 `gateway/danmaku-host.txt`，宿主 `bundledDanmakuHost()` 每次请求重读这个文件。
+  **为什么走文件而不是 JNI 设系统属性**：node 比 JVM 晚起，属性只能设一次、
+  异常难兜底；文件是壳与宿主之间唯一不依赖 JNI 的通道。
+- **失败兜底**：载荷没打进包 / node 起不来 / 端口不通 → 只写日志，宿主继续用
+  **内置弹幕源**（弹弹play 官方 + 6 个镜像）。弹幕功能不受影响。
+
+---
+
+::: warning 以下为「落地契约」原文
+仓库主分支当前**没有 iOS 工程**（`client/apps/ios/` 不存在），用户指南仍按
+「iPhone / iPad 用 Safari + 添加到主屏幕」写。
 本文定义**如果按 TV APK 的形态做 iOS 壳**：工程结构、能力边界、IPA 构建与发版 CI、
 签名与验收红线。标【待实现】= 代码还没写；标【待实测】= 没有 iPhone，无法验证。
 :::
@@ -21,10 +140,12 @@ TV 端已经有完整的一套「壳」：`client/apps/tv` 是 Android WebView �
 
 1. **能对齐的**：同一份 Web 前端、同一个后端、同一个「壳 + JS 桥 + 设置页」形态，
    以及同一条 `tag → 构建 → draft Release → Publish → 清单` 发版节奏。
-2. **对不齐的**：TV 的端内网关与 dex jar 执行在 iOS 上**没有对应物**——没有 JVM、
-   禁止动态加载可执行代码，iOS 壳只能连后端、不能端内跑源。TV 的 Node 模块是
-   Android APK，不能直接搬；iOS 用 nodejs-mobile **进程内嵌 libnode** 跑
-   `danmu_api`（见 §3.7），这是唯一可行的「内置 Node」形态。
+2. **对不齐的**：TV 的端内网关与 dex jar 执行在 iOS 上**曾经**没有对应物——没有 JVM、
+   禁止动态加载可执行代码，iOS 壳只能连后端、不能端内跑源。
+   ★ 这条已被 §0 推翻：`feat/ios-jvm` 用**静态链接的 OpenJDK 9 Zero**把同一份
+   `ApiServer` 搬进了进程（无 JIT、不需要可执行内存），端内 dex→class 也用
+   **端内 dex2jar 库**解决（不能 fork/exec）。TV 的 Node 模块是 Android APK，
+   搬不了；`danmu_api` 那部分见 §3.7 与 §0 的「仍然缺」。
 3. **真正的分水岭是签名**：没有 $99 账号，CI 只能产出**未签名 IPA**，用户必须用
    自己的 Apple ID 在电脑上签（AltStore / Sideloadly，7 天有效）。
    所以 IPA **不是自更新通道**，`packages.json` 也不该收它。

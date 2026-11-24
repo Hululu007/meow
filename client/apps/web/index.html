@@ -98,6 +98,28 @@
               )
             }
           }
+
+          /*
+           * iOS 壳（WKWebView）：先把壳身份落到属性上，再锁住页面缩放。
+           *
+           * 踩过（2026-11-24 真机）：输入框字号 <16px 时，WebKit 在聚焦时会
+           * 自动把整页放大（键盘收起后不还原），搜索/配置地址那几处一碰就
+           * 错位。`maximum-scale=1` 关掉这个自动缩放；16px 输入框见
+           * tokens.css 的 `html[data-shell='ios']` 段（两道一起上才稳：
+           * 有的内核忽略 maximum-scale）。
+           *
+           * `window.meowIos` 由 Boot.swift 在 documentStart 注入，早于本脚本。
+           */
+          if (window.meowIos && window.meowIos.platform === 'ios') {
+            root.setAttribute('data-shell', 'ios')
+            var mvi = document.querySelector('meta[name="viewport"]')
+            if (mvi) {
+              mvi.setAttribute(
+                'content',
+                'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover',
+              )
+            }
+          }
         } catch (e) {
           /* 首帧脚本绝不抛错，否则整页白屏 */
         }

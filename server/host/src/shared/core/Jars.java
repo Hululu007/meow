@@ -41,6 +41,10 @@ public final class Jars {
     private static final List<URLClassLoader> LOADERS = new ArrayList<>();
     private static volatile boolean hookInstalled;
 
+    /** {@link #reload()} 的代次，见 generation() 的说明。 */
+    private static final java.util.concurrent.atomic.AtomicInteger GENERATION =
+            new java.util.concurrent.atomic.AtomicInteger();
+
     /**
      * git 加速候选（前端「网络与加速」里配置的代理前缀）。
      *
@@ -164,6 +168,16 @@ public final class Jars {
     public static synchronized void reload() {
         if (!isJvm()) return;   // Android 走 LocalSpiderHost 的 DexClassLoader，别插手
         closeAll();
+        /*
+         * 代次自增：ApiServer 的「类名是否存在」缓存靠它失效。
+         *
+         * 为什么要缓存：未命中的 Class.forName 会逐个 jar 扫一遍 zip 目录 ——
+         * 桌面 JIT 下几毫秒，iOS 的 Zero 解释执行下一次几十到几百毫秒。
+         * /api/health 与 /api/sites 对每个站点都问一次，59 个站 × 每次几十次
+         * 未命中，能把整个网关拖成"像挂了"（2026-11-24 真机现象：
+         * 导入后首页请求超时，服务端日志只有 [req] 没有下文）。
+         */
+        GENERATION.incrementAndGet();
         for (String spec : collect()) {
             try {
                 File f = prepare(spec);
@@ -194,6 +208,21 @@ public final class Jars {
             }
         }
         installHook();
+    }
+
+    /** jar 集合的代次；每次 {@link #reload()} 自增。缓存方拿它做失效判据。 */
+    public static int generation() {
+        return GENERATION.get();
+    }
+
+    /**
+     * 手动作废类名缓存（站点表重建时调）。
+     *
+     * <p>Android 不走 {@link #reload()}（DexClassLoader 在 LocalSpiderHost），
+     * 但它同样会换站点表，缓存必须失效。
+     */
+    public static void invalidateClassCache() {
+        GENERATION.incrementAndGet();
     }
 
     /**
@@ -427,6 +456,15 @@ public final class Jars {
         if (i > 0) {
             url = spec.substring(0, i).trim();
             md5 = spec.substring(i + 5).trim();
+            /*
+             * ★ 兼容 `;md5;?<32位>?`：肥猫等源包用问号包住 hash
+             * （实测 `...png;md5;?252d4d89...?`），整段比对必然
+             * "md5 不匹配"，jar 永远下不下来 → 所有 csp_ 站静默不可用。
+             * 只取第一个 32 位十六进制串；没有就当没写 md5（跳过校验）。
+             */
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("([0-9a-fA-F]{32})").matcher(md5);
+            md5 = m.find() ? m.group(1) : "";
         }
 
         if (url.startsWith("file:") || !url.toLowerCase().startsWith("http")) {
@@ -488,6 +526,22 @@ public final class Jars {
 
     /** 下载一个候选到 .part；HTTP 错误、超限、HTML 错误页都抛异常。 */
     private static void downloadTo(File part, String url) throws Exception {
+        /*
+         * iOS：先让壳用 NSURLSession 下。
+         *
+         * Zero 解释执行下 JVM 的 TLS + 大文件 IO 要十几秒，原生是秒级；
+         * 失败（或下回来是 HTML 错误页）就落回下面的 JVM 路径，功能不变。
+         */
+        if (platform.Bridge.hasDownloader()) {
+            try {
+                if (platform.Bridge.nativeDownload(url, part.getAbsolutePath())) {
+                    long len = part.length();
+                    if (len > 0 && len <= 64L * 1024 * 1024 && !looksLikeHtml(part)) return;
+                }
+            } catch (Throwable ignored) {
+                // 落到 JVM 路径
+            }
+        }
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(url).openConnection();

@@ -621,6 +621,9 @@ public final class CacheRoutes {
                                               java.util.List<java.nio.file.Path> segs,
                                               java.nio.file.Path out,
                                               java.nio.file.Path dir) throws Exception {
+        if (core.Transcode.isIos()) {
+            throw new java.io.IOException("iOS 上没有 ffmpeg，无法合并导出");
+        }
         StringBuilder list = new StringBuilder();
         for (java.nio.file.Path p : segs) {
             // concat 清单里的单引号需要转义；分片名由后端生成（seg-00001.ts），实际不会出现

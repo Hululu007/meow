@@ -80,6 +80,7 @@ server/host/src/shared/core/Jars.java
 server/host/src/shared/core/Library.java
 server/host/src/shared/core/LibraryRoots.java
 server/host/src/shared/core/LogBuffer.java
+server/host/src/shared/core/MemoryExchange.java
 server/host/src/shared/core/PosterStore.java
 server/host/src/shared/core/Scrape.java
 server/host/src/shared/core/Transcode.java
@@ -89,6 +90,7 @@ server/host/src/shared/platform/Bridge.java
 server/host/src/shared/platform/Headers.java
 server/host/src/shared/platform/HttpExchange.java
 server/host/src/shared/platform/HttpServer.java
+server/host/src/shared/platform/IosNative.java
 server/host/src/shared/platform/ServerProvider.java
 server/host/src/shared/routes/Api.java
 server/host/src/shared/routes/CacheRoutes.java
