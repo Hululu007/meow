@@ -1497,6 +1497,8 @@ export interface ConfigImportResult {
   builtinSites?: number
   skipped?: ConfigSkippedSite[]
   depot?: Array<{ url?: string; name?: string }>
+  /** 当前生效的仓（多仓切换后用来打「当前」标记） */
+  active?: string
   url?: string
   msg?: string
   diff?: ConfigImportDiff
@@ -1531,8 +1533,11 @@ export interface ConfigBackupInfo {
 export interface DepotEntry {
   name: string
   url: string
-  /** 拉取 + 解析成功 */
-  ok: boolean
+  /**
+   * 拉取 + 解析成功。
+   * 缓存里由"直接导入索引"生成的条目没有探测数据 → `undefined`（未知）。
+   */
+  ok?: boolean
   error?: string
   /** 配置里的站点总数 */
   sites?: number
@@ -1552,6 +1557,16 @@ export interface ConfigDepotResult {
   ok?: boolean
   entries?: DepotEntry[]
   msg?: string
+  /** 索引地址（探测/导入时记录，GET 缓存返回） */
+  index?: string
+  /** 当前生效的仓 url */
+  active?: string
+  /** 上次探测时间（毫秒）；0 = 只有仓列表、还没探测过 */
+  probedAt?: number
+  /** 缓存超过 24h（列表还在，但建议刷新） */
+  stale?: boolean
+  /** GET 时：是否命中本地缓存 */
+  cached?: boolean
 }
 
 /** 配置导入的 GitHub 加速前缀（仅 configImport 渠道启用时非空） */
@@ -1678,6 +1693,14 @@ export async function probeConfigDepot(url: string): Promise<ConfigDepotResult> 
     body: { url, proxies: configProxies() },
     timeout: 150_000,
   })
+}
+
+/**
+ * 读多仓缓存（不探测）：重启后设置页仍能列出已知仓库并一键切换。
+ * `cached=false` 表示还没有缓存（从没探测/导入过索引）。
+ */
+export async function getCachedDepot(): Promise<ConfigDepotResult> {
+  return request<ConfigDepotResult>('/api/config/depot', { timeout: 10_000 })
 }
 
 /** 查导入前的配置快照。 */

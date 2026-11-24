@@ -151,8 +151,14 @@ JVM，站点级 `jar` 在多 jar 场景按站点写。
 - **导入**（`POST /api/config/import`）：多仓索引**只取第一个子仓**，其余子仓作为
   可选列表回给前端（`depot` 字段），用户挑中哪个再以该地址重新导入。
   实际导入的那个仓拉取失败 → `502`，原配置不动。
+- **仓库列表落盘**（`config.depot.json`）：探测或导入索引时写
+  `{index, probedAt, active, entries}`；`GET /api/config/depot` 不传 url 直接回缓存
+  （超 24h 标 `stale`，不自动删）。导入成功时把导入的仓记成 `active`。
+  设置页启动即读这份缓存，所以重启后仍能一键切仓（对齐 Fongmi 把每个仓存成
+  Config 行的做法；我们不合并多仓，同一时刻只有一个仓生效）。
 
-探测结果会写进 `site-health.json`，站点管理页的「可用 / 不可用」来自这里。
+探测**不写** `site-health.json`：健康分来自真实调用（`HealthRoutes.record`），
+探测只判断"结构上能不能加载"，不代表今天搜得到。
 
 ## 八、改这块之前
 

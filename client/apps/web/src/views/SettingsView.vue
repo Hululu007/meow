@@ -64,6 +64,7 @@ import {
   fetchLives,
   fetchLivePlaylist,
   getConfigBackup,
+  getCachedDepot,
   getLastConfigImport,
   importConfig,
   probeConfigDepot,
@@ -2379,9 +2380,41 @@ const canResetBuiltin = computed(() => liveBuiltin.value.length < 2)
 const depotEntries = ref<DepotEntry[]>([])
 const depotBusy = ref(false)
 const depotMsg = ref('')
+/** 多仓索引地址 / 当前生效的仓 / 上次探测时间（来自后端缓存，重启后仍在） */
+const depotIndex = ref('')
+const depotActive = ref('')
+const depotProbedAt = ref(0)
+const depotStale = ref(false)
 /** 导入前留下的旧配置快照 */
 const cfgBackup = ref<ConfigBackupInfo>({ exists: false })
 const restoreBusy = ref(false)
+
+/**
+ * 读多仓缓存（不探测）：重启后设置页直接列出已知仓，不用重新粘贴索引地址。
+ *
+ * <p>Fongmi 把每个仓存成一条 Config 记录，切仓时直接选；我们等价地把
+ * 「索引 + 仓列表 + 当前仓」落在 config.depot.json，语义对齐。
+ */
+async function loadDepotCache() {
+  try {
+    const r = await getCachedDepot()
+    if (!r.cached) return
+    depotIndex.value = r.index || ''
+    depotActive.value = r.active || ''
+    depotProbedAt.value = r.probedAt || 0
+    depotStale.value = r.stale === true
+    if (r.entries?.length) {
+      depotEntries.value = r.entries
+      const usable = r.entries.filter((e) => e.ok && (e.inJar || 0) + (e.direct || 0) > 0)
+      depotMsg.value = depotProbedAt.value
+        ? `共 ${r.entries.length} 个仓，其中 ${usable.length} 个我们有站点能加载${depotStale.value ? '（超过 24 小时，建议刷新）' : ''}`
+        : `共 ${r.entries.length} 个仓（还没探测过，点「刷新探测」看每个仓能用几站）`
+    }
+  } catch {
+    /* 缓存读不到不影响导入，静默 */
+  }
+}
+void loadDepotCache()
 
 /**
  * 探测多仓。
@@ -2389,16 +2422,17 @@ const restoreBusy = ref(false)
  * <p>为什么不直接导入：多仓索引里十几个仓质量差很多（实测同一份索引里，
  * 有的仓 96 站全部能用，有的仓 298 站里只有 8 站能加载）。而导入是**覆盖式**的，
  * 用户随便挑一个就等于把现有配置冲掉。所以先探测、再让用户看着数据挑。
+ *
+ * <p>输入框为空时用缓存里的索引地址（「刷新探测」直接可用）。
  */
 async function probeDepot() {
-  const url = cfgUrl.value.trim()
+  const url = (cfgUrl.value.trim() || depotIndex.value).trim()
   if (!/^https?:\/\//i.test(url)) {
     depotMsg.value = '请先填 http(s) 开头的配置地址'
     return
   }
   depotBusy.value = true
   depotMsg.value = ''
-  depotEntries.value = []
   try {
     const r = await probeConfigDepot(url)
     if (!r.ok) {
@@ -2406,6 +2440,10 @@ async function probeDepot() {
       return
     }
     depotEntries.value = r.entries || []
+    depotIndex.value = r.index || url
+    depotActive.value = r.active || ''
+    depotProbedAt.value = r.probedAt || Date.now()
+    depotStale.value = false
     const usable = depotEntries.value.filter((e) => e.ok && (e.inJar || 0) + (e.direct || 0) > 0)
     depotMsg.value = depotEntries.value.length
       ? `共 ${depotEntries.value.length} 个仓，其中 ${usable.length} 个我们有站点能加载`
@@ -2417,15 +2455,27 @@ async function probeDepot() {
   }
 }
 
-/** 从探测结果里选一个仓导入（url 直接进输入框，再走同一个导入流程）。 */
+/**
+ * 切到某个仓：URL 进输入框，走同一个预览→确认导入流程。
+ *
+ * <p>列表**不清空**：切错了/想切回来还要用，清掉就得重新探测一遍。
+ */
 async function importDepotEntry(e: DepotEntry) {
-  if (!e.ok) return
+  // 缓存里"直接导入索引"生成的条目没有探测数据（ok=undefined），一样允许切
+  if (e.ok === false) return
   cfgUrl.value = e.url
-  depotEntries.value = []
-  // 不直接写盘：先预览再确认。多仓里挑错一个仓 = 整表换掉，
-  // 原来点「用这个」就直接覆盖了，用户没有任何反悔窗口。
   await doPreviewImport()
 }
+
+/** 探测时间的展示文案（分钟/小时前）。 */
+const depotAgo = computed(() => {
+  const t = depotProbedAt.value
+  if (!t) return ''
+  const m = Math.max(0, Math.round((Date.now() - t) / 60000))
+  if (m < 1) return '刚刚'
+  if (m < 60) return `${m} 分钟前`
+  return `${Math.round(m / 60)} 小时前`
+})
 
 async function loadCfgBackup() {
   const r = await getConfigBackup()
@@ -2684,6 +2734,9 @@ async function doImportConfig() {
     cfgSummary.value = { sites: r.sites || 0, total: r.totalSites || 0, url }
     cfgSkipped.value = r.skipped || []
     cfgPreview.value = null
+    // 多仓：后端已把"当前仓/索引/仓列表"落盘，这里同步本地状态（「当前」标记）
+    if (r.active) depotActive.value = r.active
+    void loadDepotCache()
     cfgMsg.value = `已按「${cfgApplyLabel.value}」导入 ${r.sites}/${r.totalSites} 站${
       r.depot?.length ? `，另有 ${r.depot.length} 个多仓地址` : ''
     }`
@@ -6055,11 +6108,35 @@ onBeforeUnmount(() => {
           title="地址里有多个仓时，先逐个探活，看每个仓能用几站"
           @click="probeDepot"
         >
-          {{ depotBusy ? '探测中…' : '多仓探测' }}
+          {{ depotBusy ? '探测中…' : depotEntries.length ? '刷新探测' : '多仓探测' }}
         </button>
       </div>
 
       <p v-if="depotMsg" class="mt-1.5 text-[11px] text-ink-3">{{ depotMsg }}</p>
+
+      <!--
+        已保存的多仓列表（后端 config.depot.json）：重启后仍在这里，
+        不用重新粘贴索引地址。「刷新探测」只刷新数据，不动配置。
+      -->
+      <div
+        v-if="depotEntries.length && depotIndex"
+        class="mt-2 rounded-md bg-field/50 px-2.5 py-1.5 text-[11px] text-ink-3"
+      >
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span class="shrink-0">多仓索引</span>
+          <span class="min-w-0 flex-1 truncate font-mono opacity-80" :title="depotIndex">
+            {{ depotIndex }}
+          </span>
+          <span v-if="depotAgo" class="shrink-0">探测于 {{ depotAgo }}</span>
+        </div>
+        <div class="mt-0.5">
+          当前仓：
+          <span class="text-ink-2">
+            {{ depotEntries.find((x) => x.url === depotActive)?.name || (depotActive || '未记录') }}
+          </span>
+          <span v-if="depotStale" class="ml-1 text-warn">列表超过 24 小时，建议刷新</span>
+        </div>
+      </div>
 
       <!--
         预览卡片：按用户此刻的问题排成三段，而不是把所有信息平铺。
@@ -6232,10 +6309,21 @@ onBeforeUnmount(() => {
           v-for="e in depotEntries"
           :key="e.url"
           class="flex flex-wrap items-center gap-2 rounded-md px-2.5 py-1.5"
-          :class="e.ok ? 'bg-field' : 'bg-field/50'"
+          :class="e.ok === false ? 'bg-field/50' : 'bg-field'"
         >
-          <span class="min-w-0 flex-1 truncate text-xs" :class="e.ok ? 'text-ink' : 'text-ink-3'">
+          <span
+            class="min-w-0 flex-1 truncate text-xs"
+            :class="e.ok === false ? 'text-ink-3' : 'text-ink'"
+            :title="e.url"
+          >
             {{ e.name }}
+          </span>
+          <!-- 当前生效的仓（导入成功时后端记录，重启后仍在） -->
+          <span
+            v-if="depotActive === e.url"
+            class="shrink-0 rounded-full bg-accent/20 px-2 py-0.5 text-[10px] text-accent"
+          >
+            当前
           </span>
           <span
             v-if="e.ok"
@@ -6245,19 +6333,24 @@ onBeforeUnmount(() => {
           >
             {{ e.hint }}
           </span>
-          <span v-else class="shrink-0 text-[10px] text-ink-3">{{ e.error || '不可用' }}</span>
+          <span
+            v-else-if="e.ok === false"
+            class="shrink-0 text-[10px] text-ink-3"
+          >{{ e.error || '不可用' }}</span>
+          <!-- 缓存里"直接导入索引"生成的条目还没探测过：允许先切，数字等刷新探测 -->
+          <span v-else class="shrink-0 text-[10px] text-ink-3">未探测</span>
           <button
-            v-if="e.ok"
+            v-if="e.ok !== false && depotActive !== e.url"
             class="shrink-0 rounded-md bg-card-hover px-2.5 py-1 text-[11px] transition hover:bg-accent/20 hover:text-accent disabled:opacity-40"
             :disabled="cfgBusy"
             @click="importDepotEntry(e)"
           >
-            用这个
+            切到这个仓
           </button>
         </div>
         <p class="text-[11px] leading-relaxed text-ink-3">
           只列出"结构上能用"的站数（我们的 jar 里有没有这个类），不代表今天一定搜得到。
-          导入会覆盖当前配置，旧配置会自动备份，可用下面的「恢复」撤回。
+          切仓会覆盖当前配置，旧配置会自动备份，可用下面的「恢复」撤回。
         </p>
       </div>
       <p

@@ -28,6 +28,7 @@ const VP = read('client', 'apps', 'web', 'src', 'components', 'player', 'VideoPl
 const TV_BRIDGE = read('client', 'apps', 'tv', 'app', 'src', 'main', 'java', 'com', 'meow', 'tv', 'TvBridge.java')
 const MAIN = read('client', 'apps', 'tv', 'app', 'src', 'main', 'java', 'com', 'meow', 'tv', 'MainActivity.java')
 const SERVER = read('server', 'host', 'src', 'shared', 'ApiServer.java')
+const SETTINGS = read('client', 'apps', 'web', 'src', 'views', 'SettingsView.vue')
 
 describe('#12 / TV-1：TV 原生能力表 → HEVC Main10 自动原生', () => {
   it('Java 桥用 MediaCodecList 实测，且按 profile 判 Main10（不是有 HEVC 就算）', () => {
@@ -151,6 +152,28 @@ describe('#7：饭太硬图片包/多仓', () => {
     expect(SERVER).toContain('urls.opt(i)')
     // 三处调用：探仓、导入、嵌套
     expect((SERVER.match(/repoOf\(/g) || []).length).toBeGreaterThanOrEqual(4)
+  })
+})
+
+describe('#多仓仓库列表：持久化 + 一键切仓（对齐 Fongmi）', () => {
+  it('后端落盘索引/仓列表/当前仓，GET 直接给缓存（含 24h stale 标记）', () => {
+    expect(SERVER).toContain('DEPOT_CACHE = "config.depot.json"')
+    expect(SERVER).toContain('private static JSONObject depotCacheRead()')
+    expect(SERVER).toContain('private static void depotCacheWrite(')
+    expect(SERVER).toContain('private static void depotRemember(')
+    expect(SERVER).toContain('.put("cached", false)')
+    expect(SERVER).toContain('.put("stale"')
+    expect(SERVER).toContain('.put("active", activeRepo)')
+    // 裸字符串仓用主机名，不再显示「仓 2」
+    expect(SERVER).toContain('private static String repoNameOf(String url)')
+  })
+  it('设置页启动即读缓存，标当前仓，可一键切', () => {
+    expect(SETTINGS).toContain('getCachedDepot')
+    expect(SETTINGS).toContain('loadDepotCache')
+    expect(SETTINGS).toContain('depotActive')
+    expect(SETTINGS).toContain('切到这个仓')
+    expect(SETTINGS).toContain('depotStale')
+    expect(SETTINGS).toContain('当前')
   })
 })
 

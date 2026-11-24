@@ -13641,8 +13641,26 @@ public class ApiServer {
      * {@code {ok, entries:[{name,url,ok,error,sites,csp,inJar,reason}]}}。
      */
     private static void handleConfigDepot(HttpExchange ex) throws Exception {
+        /*
+         * GET = 读缓存（不传 url）：重启后设置页仍能列出已知仓库，不用重新探测。
+         * 探测结果落 config.depot.json，带探测时间；超过 24h 标 stale（不自动删）。
+         */
         if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
-            sendJson(ex, 405, "{\"code\":-1,\"msg\":\"POST only\"}");
+            JSONObject c = depotCacheRead();
+            JSONObject out = new JSONObject().put("ok", true);
+            if (c == null) {
+                out.put("cached", false).put("entries", new JSONArray());
+            } else {
+                long at = c.optLong("probedAt", 0);
+                out.put("cached", true)
+                        .put("index", c.optString("index", ""))
+                        .put("active", c.optString("active", ""))
+                        .put("probedAt", at)
+                        .put("stale", at > 0 && System.currentTimeMillis() - at > 24 * 3600_000L)
+                        .put("entries", c.optJSONArray("entries") == null
+                                ? new JSONArray() : c.optJSONArray("entries"));
+            }
+            sendJson(ex, 200, out.toString());
             return;
         }
         String body = read(ex.getRequestBody());
@@ -13740,7 +13758,103 @@ public class ApiServer {
                 b.optInt("inJar", 0) * 1000 + (b.optBoolean("ok") ? 1 : 0),
                 a.optInt("inJar", 0) * 1000 + (a.optBoolean("ok") ? 1 : 0)));
         for (JSONObject j : list) sorted.put(j);
-        sendJson(ex, 200, new JSONObject().put("ok", true).put("entries", sorted).toString());
+        /*
+         * 落盘（#多仓）：仓库列表 + 探测时间 + 当前仓。Fongmi 把每个仓存成
+         * Config 行、切仓直接选；我们这里等价地存一份索引清单，重启后
+         * 设置页直接列出来，不必重新探测。
+         */
+        JSONObject old = depotCacheRead();
+        String active = "";
+        if (old != null && url.equals(old.optString("index", ""))) {
+            active = old.optString("active", "");
+        }
+        JSONObject cache = new JSONObject()
+                .put("index", url)
+                .put("probedAt", System.currentTimeMillis())
+                .put("active", active)
+                .put("entries", sorted);
+        depotCacheWrite(cache);
+        sendJson(ex, 200, new JSONObject().put("ok", true)
+                .put("index", url).put("active", active).put("probedAt", cache.optLong("probedAt"))
+                .put("entries", sorted).toString());
+    }
+
+    // ---------------------------------------------------------------- 多仓缓存
+
+    private static final String DEPOT_CACHE = "config.depot.json";
+
+    /** 读多仓缓存（不存在/坏了都返回 null，调用方按"没有"处理）。 */
+    private static JSONObject depotCacheRead() {
+        try {
+            java.io.File f = core.DataPaths.file(DEPOT_CACHE);
+            if (!f.isFile() || f.length() == 0) return null;
+            String s = new String(java.nio.file.Files.readAllBytes(f.toPath()),
+                    StandardCharsets.UTF_8);
+            return s.trim().isEmpty() ? null : new JSONObject(s);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 原子写缓存：先写 .tmp 再改名，避免半份 JSON 把列表读坏。 */
+    private static void depotCacheWrite(JSONObject o) {
+        try {
+            java.io.File f = core.DataPaths.file(DEPOT_CACHE);
+            java.io.File dir = f.getParentFile();
+            if (dir != null && !dir.isDirectory()) dir.mkdirs();
+            java.io.File tmp = new java.io.File(f.getAbsolutePath() + ".tmp");
+            java.nio.file.Files.write(tmp.toPath(),
+                    o.toString().getBytes(StandardCharsets.UTF_8));
+            java.nio.file.Files.move(tmp.toPath(), f.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 记录"当前使用的是哪个仓"。导入成功时调用（#多仓）。
+     *
+     * <p>只更新已有缓存：用户直接粘一个普通配置地址时不能凭空造出"多仓列表"。
+     * 导入索引时若还没有缓存，则按索引里的仓列表建一份最小清单（无探测数据）。
+     */
+    private static void depotRemember(String importedUrl, boolean isDepot, String activeUrl,
+                                      JSONArray repos) {
+        try {
+            JSONObject c = depotCacheRead();
+            if (isDepot) {
+                if (c == null) c = new JSONObject();
+                boolean sameIndex = importedUrl.equals(c.optString("index", ""));
+                c.put("index", importedUrl);
+                if (!sameIndex || c.optJSONArray("entries") == null) {
+                    JSONArray entries = new JSONArray();
+                    if (repos != null) {
+                        for (int i = 0; i < repos.length(); i++) {
+                            JSONObject r = repos.optJSONObject(i);
+                            if (r == null) continue;
+                            entries.put(new JSONObject()
+                                    .put("name", r.optString("name", ""))
+                                    .put("url", r.optString("url", "")));
+                        }
+                    }
+                    c.put("entries", entries).put("probedAt", 0);
+                }
+                c.put("active", activeUrl == null ? "" : activeUrl);
+                depotCacheWrite(c);
+                return;
+            }
+            if (c == null) return;
+            JSONArray entries = c.optJSONArray("entries");
+            if (entries == null) return;
+            for (int i = 0; i < entries.length(); i++) {
+                JSONObject e = entries.optJSONObject(i);
+                if (e != null && importedUrl.equals(e.optString("url", ""))) {
+                    c.put("active", importedUrl);
+                    depotCacheWrite(c);
+                    return;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     /**
@@ -13758,14 +13872,26 @@ public class ApiServer {
             JSONObject o = (JSONObject) v;
             String u = o.optString("url", "").trim();
             if (u.isEmpty()) return null;
-            return new String[]{o.optString("name", "仓 " + (i + 1)), u};
+            String nm = o.optString("name", "").trim();
+            return new String[]{nm.isEmpty() ? repoNameOf(u) : nm, u};
         }
         if (v instanceof String) {
             String u = ((String) v).trim();
             if (u.isEmpty()) return null;
-            return new String[]{"仓 " + (i + 1), u};
+            // 裸字符串项没有名字：用主机名，别再显示「仓 2」这种认不出的编号
+            return new String[]{repoNameOf(u), u};
         }
         return null;
+    }
+
+    /** 仓的默认展示名：URL 的主机名（取不到时退回整条 URL）。 */
+    private static String repoNameOf(String url) {
+        try {
+            String h = java.net.URI.create(url).getHost();
+            if (h != null && !h.isEmpty()) return h;
+        } catch (Throwable ignored) {
+        }
+        return url;
     }
 
     /**
@@ -14000,15 +14126,21 @@ public class ApiServer {
          */
         JSONArray depotOut = new JSONArray();
         JSONArray urls = doc.optJSONArray("urls");
-        if (urls != null) {
+        boolean isDepot = urls != null && urls.length() > 0;
+        // 当前生效的仓：索引导入 = 第一个仓；单仓导入 = 这个地址本身
+        String activeRepo = url;
+        if (isDepot) {
             for (int i = 0; i < urls.length(); i++) {
                 String[] repo = repoOf(urls, i);
                 if (repo == null) continue;
                 depotOut.put(new JSONObject().put("url", repo[1]).put("name", repo[0]));
             }
-            String[] firstRepo = urls.length() > 0 ? repoOf(urls, 0) : null;
+            String[] firstRepo = repoOf(urls, 0);
             String first = firstRepo == null ? "" : firstRepo[1];
-            if (!first.isEmpty()) configBase = first;
+            if (!first.isEmpty()) {
+                configBase = first;
+                activeRepo = first;
+            }
             if (first.isEmpty()) {
                 sendJson(ex, 400, "{\"code\":-1,\"msg\":\"depot has no usable url\"}");
                 return;
@@ -14317,12 +14449,16 @@ public class ApiServer {
                 .put("totalSites", siteCount())
                 .put("skipped", skipped)
                 .put("depot", depotOut)
+                // 当前生效的仓（多仓切换后前端据此打「当前」标记）
+                .put("active", activeRepo)
                 .put("dex2jvm", dex2jvm)
                 // 导入完成后也回一份 diff：用户要知道"这次到底加了什么、丢了什么"，
                 // 而不是只看到一个站点总数
                 .put("diff", diff)
                 // 让前端能立刻显示「恢复上一次配置」：导入刚把旧配置挪进备份
                 .put("backup", configBackupInfo());
+        // 多仓：记下索引/当前仓，重启后设置页仍能一键切换
+        depotRemember(url, isDepot, activeRepo, isDepot ? depotOut : null);
         lastImport = res;
         System.out.println("[import:" + (isMerge ? "merge" : "replace") + "] " + url
                 + " -> " + okCount + " sites, " + skipped.length() + " skipped, table now "
