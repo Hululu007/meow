@@ -107,11 +107,15 @@ static NSString *jvmLogPath(NSString *dataDir) {
     if (!resources) return NO;
     NSString *modules = [resources.path stringByAppendingPathComponent:@"openjdk/lib/modules"];
     NSString *hostJar = [resources.path stringByAppendingPathComponent:@"jvm/host.jar"];
+    NSFileManager *fm = NSFileManager.defaultManager;
+#ifdef MEOW_JVM_STATIC
+    return [fm fileExistsAtPath:modules] && [fm fileExistsAtPath:hostJar];
+#else
     NSString *dylib = [NSBundle.mainBundle.privateFrameworksPath
                        stringByAppendingPathComponent:@"libOpenJDK.dylib"];
-    NSFileManager *fm = NSFileManager.defaultManager;
     return [fm fileExistsAtPath:modules] && [fm fileExistsAtPath:hostJar]
         && [fm fileExistsAtPath:dylib];
+#endif
 #endif
 }
 
@@ -170,6 +174,19 @@ static NSString *jvmLogPath(NSString *dataDir) {
             }
             jvmInstallSignalHandlers();
 
+#ifdef MEOW_JVM_STATIC
+            /*
+             * F 变体：JVM 静态链进主程序 + 固定基址（-Wl,-no_pie）。
+             * 依据 E 的 .ips：崩在 OpenJDK logging 的全局构造器里，写 __LINKEDIT
+             * 只读页 —— 非 PIC 静态对象在 PIE 里绝对地址失效，-no_pie 是对应的修法。
+             */
+            Dl_info image = {0};
+            if (dladdr((const void *)&JNI_CreateJavaVM, &image) && image.dli_fname) {
+                strncpy(gJvmImagePath, image.dli_fname, sizeof(gJvmImagePath) - 1);
+            }
+            MeowCreateJavaVMFn createVM = (MeowCreateJavaVMFn)&JNI_CreateJavaVM;
+            jvmLogWrite("[meow-jvm] static JNI_CreateJavaVM\n");
+#else
             /*
              * 0) 探针：先 dlopen 一个 10 行的 dylib（libmeow-smoke.dylib）。
              *    - 探针也 SIGBUS/失败 → 侧载器根本不允许加载内嵌动态库（签名问题），
@@ -215,6 +232,8 @@ static NSString *jvmLogPath(NSString *dataDir) {
                 completion(NO, why);
                 return;
             }
+
+#endif
 
             NSString *tmp = NSTemporaryDirectory();
             NSString *trustStore = [javaHome stringByAppendingPathComponent:@"lib/security/cacerts"];

@@ -36,15 +36,11 @@ targets:
         buildPhase: resources
       - path: build/config.sites.example.json
         buildPhase: resources
-    # dylib 不参与链接（运行时 dlopen），只拷进 Frameworks/。
-    # 用 postBuildScripts 而不是 XcodeGen 的 framework 依赖：后者要求 .framework 结构。
-    postBuildScripts:
-      - name: Embed OpenJDK + smoke dylibs
-        basedOnDependencyAnalysis: false
-        script: |
-          set -e
-          mkdir -p "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"
-          cp "${SRCROOT}"/build/openjdk-framework/*.dylib "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/"
+    # F 变体：静态链接 + -no_pie。
+    # 依据：E 的 .ips 崩在 OpenJDK 的 logging 全局构造器（LogTagSet ->
+    # MemTracker -> NativeCallStack），写入 __LINKEDIT 只读页 —— 典型的
+    # 「非 PIC 静态对象被装进 PIE/dylib 后绝对地址失效」。固定基址（-no_pie）
+    # 让链接期解出的绝对地址保持有效。
     settings:
       base:
         PRODUCT_NAME: Meow
@@ -58,9 +54,9 @@ targets:
         HEADER_SEARCH_PATHS:
           - "$(SRCROOT)/build/jni/include"
           - "$(SRCROOT)/build/jni/include/ios"
-        # JVM 不再静态链进主程序（LiveContainer 等侧载器会在 main 之前崩）；
-        # 改为运行期 dlopen build/openjdk-framework/libOpenJDK.dylib。
-        OTHER_LDFLAGS: "$(inherited) -framework Foundation -framework UIKit -framework WebKit -framework Network -framework Security"
+        # F: 静态链 + 固定基址（-no_pie）
+        OTHER_LDFLAGS: "$(inherited) -Wl,-all_load $(SRCROOT)/build/libOpenJDK.a -Wl,-no_pie -lc++ -lz -liconv -framework Foundation -framework UIKit -framework WebKit -framework Network -framework Security"
+        GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) MEOW_JVM_STATIC=1"
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
 
