@@ -1556,6 +1556,8 @@ export interface ConfigImportResult {
   pending?: boolean
   /** 后台导入已跑了多久（毫秒），仅 running 时有 */
   elapsedMs?: number
+  /** 后台导入当前阶段（读配置 / 下载并转换源 jar / 写入配置） */
+  phase?: string
 }
 
 /** 导入前的配置快照。`exists:false` 表示没有可回滚的版本。 */

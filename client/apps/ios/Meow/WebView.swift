@@ -25,6 +25,8 @@ struct WebView: UIViewRepresentable {
         // 前端诊断通道：页面里的网络级失败（请求没到后端 / 预检失败）连不上
         // 后端日志，只有这里能落到 launch.log。见 api/index.ts 的 webLog()。
         controller.add(context.coordinator, name: "meowLog")
+        // 页面 → 原生的控制通道（目前只有转屏：播放页全屏要横屏）。
+        controller.add(context.coordinator, name: "meowIos")
         config.userContentController = controller
 
         let view = WKWebView(frame: .zero, configuration: config)
@@ -50,11 +52,21 @@ struct WebView: UIViewRepresentable {
             self.parent = parent
         }
 
-        /// 页面通过 `window.webkit.messageHandlers.meowLog.postMessage(...)` 写诊断。
+        /// 页面通过 `window.webkit.messageHandlers.*.postMessage(...)` 调原生。
         func userContentController(_ userContentController: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
-            guard message.name == "meowLog" else { return }
-            LaunchLog.write("[web] \(message.body)")
+            switch message.name {
+            case "meowLog":
+                LaunchLog.write("[web] \(message.body)")
+            case "meowIos":
+                if let dict = message.body as? [String: Any],
+                   let op = dict["op"] as? String,
+                   op == "orientation" {
+                    ShellOrientation.apply(dict["value"] as? String ?? "")
+                }
+            default:
+                break
+            }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

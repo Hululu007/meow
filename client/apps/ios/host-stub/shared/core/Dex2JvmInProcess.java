@@ -97,6 +97,14 @@ public final class Dex2JvmInProcess {
         Files.deleteIfExists(out);
         try (OutputStream fos = new BufferedOutputStream(Files.newOutputStream(out));
              ZipOutputStream zos = new ZipOutputStream(fos)) {
+            /*
+             * 不压缩（STORED）。
+             *
+             * iOS 上是 Zero 解释执行，deflate 的 CPU 全落在解释器里 —— 4MB 的
+             * class 字节压一遍要十几秒，而 jar 只落一次盘、之后全是读。产物变大
+             * （~2MB → ~4MB）换来的时间更值；读的时候也省掉 inflate。
+             */
+            zos.setLevel(java.util.zip.Deflater.NO_COMPRESSION);
             for (Path f : files) {
                 String name = dir.relativize(f).toString().replace(File.separatorChar, '/');
                 zos.putNextEntry(new ZipEntry(name));

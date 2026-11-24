@@ -72,6 +72,28 @@ iOS 要对齐这条，拆成两问：
 - 待落地：framework 进 IPA 链接、`NodeBridge`（起 node / 探端口 / 设属性）、
   弹幕载荷（`node_modules` 113MB，**必须**像 TV 那样首启下载，不能打进包里）。
 
+### 0.3 第二轮真机（2026-11-24 晚）：网关在导入完成后消失 + 开屏 + 全屏
+
+第二轮日志（`launch.log` 里的 `[web] fetch ... failed after 2ms: Load failed`）说明
+**不是请求慢，是端口没了**：`[import:merge] ... table now 59` 之后 jvm.log 再没有一行
+请求，之后每个请求 2~6ms 就 `Load failed`（连接被拒），而 App 还活着。
+
+| 问题 | 处理 |
+|---|---|
+| 端内 JVM 可能在导入完成后**整机退出**（`ApiServer.main` 起完监听就返回；JNI attach 的调用线程是 daemon，JDK 的 HTTP 分发线程从调用线程继承 daemon 属性） | `listen()` 起一条 **非 daemon 的守夜线程**（`meow-host-keeper`，只 sleep）：本进程活着期间 VM 不许退。桌面/Docker 行为不变 |
+| 万一是分发线程被异常带走（VM 还活着但不再 accept） | 看门狗（daemon）每 15s 真发一次 `GET /api/_hb`，连续 2 次不通就 `stop()` 旧监听器并**在原端口重绑**；正常时每 60s 打一行 `[hb] ok`（带时间戳，便于定位"哪一刻断的"） |
+| 导入到底卡在哪一步看不出来 | 后台导入多了 `phase`：`读取配置` → `下载并转换源 jar` → `写入配置`；结果里 `dex2jvm.ms` 给出转换耗时。端内转换顺带改成 **STORED 不压缩**（Zero 下 deflate 4MB 要十几秒），产物变大但更快 |
+
+同时按真机反馈改的两处体验：
+
+- **开屏页**：启动过程不再显示「正在启动 Java 宿主 / 等待 API 就绪」这类工程化文案，
+  换成 TV 同款品牌屏（`#0B2220` 底 + 居中图标 + 轻微呼吸）；只有真的起不来
+  （缺 web 资源 / 静态服务失败 / 网页加载失败）才显示一行原因 + 「重试」。
+- **播放页全屏**：iPhone 的 WKWebView 拿不到元素全屏（`requestFullscreen` 要么被拒、
+  要么"成功"但画面不变），所以 iOS 壳**直接走伪全屏**（容器 CSS 撑满）+ 通过新增的
+  `meowIos.setOrientation` 桥让原生转横屏（`ShellOrientation.swift`，iOS 16+ 用
+  `requestGeometryUpdate`）。进播放页的自动横屏沿用原有 `tryLandscape()`。
+
 ---
 
 ::: warning 以下为「落地契约」原文

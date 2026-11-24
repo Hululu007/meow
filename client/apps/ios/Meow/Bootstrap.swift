@@ -9,8 +9,11 @@ import Foundation
 @MainActor
 final class Bootstrap: ObservableObject {
     @Published var webURL: URL?
-    @Published var message = "正在启动本地宿主…"
     @Published var webReady = false
+    /// 只有"连界面都起不来"才算失败；进度不再往界面上写文字 ——
+    /// 开屏页（品牌图标）负责盖住整个启动过程（2026-11-24 用户要求）。
+    @Published var failed = false
+    @Published var failText = ""
 
     /// 不参与观察：webURL 变化时 RootView 已经会重建 WebView。
     var bootScript = ""
@@ -24,6 +27,24 @@ final class Bootstrap: ObservableObject {
         guard !started else { return }
         started = true
         Task { await boot() }
+    }
+
+    /** 开屏页上的「重试」：整条启动链路重跑（静态服务先停掉，端口才回得来）。 */
+    func retry() {
+        guard failed else { return }
+        failed = false
+        failText = ""
+        webURL = nil
+        webReady = false
+        staticServer.stop()
+        started = false
+        start()
+    }
+
+    private func fail(_ text: String) {
+        failed = true
+        failText = text
+        LaunchLog.write("boot failed: \(text)")
     }
 
     private func boot() async {
@@ -43,8 +64,7 @@ final class Bootstrap: ObservableObject {
 
         guard let webRoot = Bundle.main.resourceURL?.appendingPathComponent("web"),
               fm.fileExists(atPath: webRoot.appendingPathComponent("index.html").path) else {
-            message = "缺少 web 资源（先构建 client/apps/web）"
-            LaunchLog.write("web resources missing")
+            fail("缺少 web 资源（先构建 client/apps/web）")
             return
         }
 
@@ -52,8 +72,7 @@ final class Bootstrap: ObservableObject {
             try await staticServer.start(root: webRoot, port: 9979)
             LaunchLog.write("static server on 9979")
         } catch {
-            message = "静态服务启动失败：\(error.localizedDescription)"
-            LaunchLog.write("static server failed: \(error.localizedDescription)")
+            fail("静态服务启动失败：\(error.localizedDescription)")
             return
         }
 
@@ -65,7 +84,6 @@ final class Bootstrap: ObservableObject {
         //   之前这里 return 会让 webURL 永远是 nil → 用户只看到转圈 + 一句提示，
         //   连首页/设置页都进不去（C 包实测）。
         if JvmBridge.isAvailable() {
-            message = "正在启动 Java 宿主…"
             let javaHome = Bundle.main.resourceURL!.appendingPathComponent("openjdk").path
             let classPath = Self.hostClassPath()
             LaunchLog.write("jvm start (classpath \(classPath.count) chars)")
@@ -80,19 +98,16 @@ final class Bootstrap: ObservableObject {
             }
             if ok {
                 base = "http://127.0.0.1:9978"
-                message = "等待 API 就绪…"
                 if !(await Self.waitHealth(base: base, attempts: 120)) {
-                    message = "Java 宿主已启动但 /api/health 未就绪" + Self.logTailHint()
-                    LaunchLog.write("health wait failed")
+                    // 不算致命：网页照样能进，首页自己会显示「后端未连接」并提供刷新
+                    LaunchLog.write("health wait failed" + Self.logTailHint())
                 } else {
                     LaunchLog.write("health ok")
                 }
             } else {
-                message = "Java 宿主启动失败" + Self.logTailHint()
-                LaunchLog.write("jvm start failed")
+                LaunchLog.write("jvm start failed" + Self.logTailHint())
             }
         } else {
-            message = "未内置 Java 运行时（本地网关不可用，界面仍可浏览）"
             LaunchLog.write("jvm resources missing; loading web without backend")
         }
         #endif
@@ -127,6 +142,14 @@ final class Bootstrap: ObservableObject {
                   + "build:'\(Self.buildId())',"
                   + "apiBase:'\(Self.jsString(base))',"
                   + "runtime:'OpenJDK 9 Zero（静态链接 · -Xint）'}")
+        /*
+         * 转屏桥：播放页全屏要横屏。WKWebView 里没有 Screen Orientation API 的
+         * lock（非全屏上下文一律拒绝），只能让原生转；前端 shellSetOrientation
+         * 会同时试 meowTv / meowIos 两个桥。
+         */
+        js.append("window.meowIos.setOrientation=function(m){try{"
+                  + "window.webkit.messageHandlers.meowIos.postMessage({op:'orientation',value:String(m||'')})"
+                  + "}catch(e){}}")
         if base.isEmpty {
             js.append("localStorage.removeItem('meow.api');localStorage.removeItem('meow.api.scope')")
         } else {

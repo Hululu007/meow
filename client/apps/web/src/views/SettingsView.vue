@@ -2661,7 +2661,9 @@ async function waitImportJob(): Promise<ConfigImportResult> {
   let lastErr = ''
   for (;;) {
     const elapsed = Date.now() - started
-    if (elapsed > 300_000) {
+    // 真机上首次导入（dex2jar）实测能到 2~3 分钟，给足 10 分钟再判超时；
+    // 超时也只提示"后台仍在跑"，绝不把还在干活的导入说成失败
+    if (elapsed > 600_000) {
       throw new Error(
         `等了 ${Math.round(elapsed / 1000)} 秒还没结束（后台仍在跑，稍后看站点明细）${
           lastErr ? '：' + lastErr : ''
@@ -2675,6 +2677,10 @@ async function waitImportJob(): Promise<ConfigImportResult> {
       const s = await getImportJobState()
       lastErr = ''
       if (!s.pending && s.state !== 'running') return s
+      // 后端报了阶段就用它（下载/转换/写入），比只报秒数更能说明"卡在哪"
+      if (s.phase) {
+        cfgMsg.value = `正在导入… ${s.phase}（已 ${Math.round(elapsed / 1000)} 秒）`
+      }
     } catch (e: any) {
       lastErr = e?.message || String(e)
     }

@@ -839,7 +839,122 @@ public class ApiServer {
         core.Transcode.apiPort = port;
         // 上次进程可能把转码 ffmpeg 留成孤儿（继续占 VDEC/RGA、永远不写 .done）
         core.Transcode.killStaleTranscodes();
+        HOST = server;
+        startHostKeeper(bind, port, threads);
         return server;
+    }
+
+    /** 当前监听器；看门狗重绑时替换。 */
+    private static volatile platform.HttpServer HOST;
+
+    /** 守夜/看门狗只起一次（listen 可能被重绑逻辑再次调用）。 */
+    private static volatile boolean hostKeeperStarted;
+
+    /**
+     * 宿主保活 + 自探活。
+     *
+     * <p><b>★ 为什么要一条非 daemon 的守夜线程</b>（2026-11-24 真机实测）：
+     * 端内 JVM 是从 JNI 里起来的，{@code ApiServer.main} 起完监听就返回；
+     * JDK 的 HTTP 分发线程是从**调用线程**继承 daemon 属性的，而 JNI attach
+     * 的线程是 daemon —— 于是整个 VM 里可能只剩线程池那几条"可回收"的线程。
+     * 一旦最后一条非 daemon 线程结束，VM 会 DestroyJavaVM：端口被关掉，
+     * App 还活着，之后每个请求都立刻 {@code Load failed}（导入完成后就撞上）。
+     * 这条线程从头到尾只 sleep，唯一作用就是"本进程活着期间 VM 不许退"。
+     *
+     * <p><b>看门狗</b>（daemon）：每 15 秒真发一次 {@code GET /api/_hb}。
+     * 连续 2 次不通就停掉旧监听器重绑同一端口 —— 万一分发线程被异常带走，
+     * 网关能自己回来，而不是让用户看着"设置页已连接、首页断连"。
+     * 探活成功每 60 秒打一行 {@code [hb] ok}，给日志留时间戳（排障用）。
+     */
+    private static void startHostKeeper(final String bind, final int port, final int threads) {
+        if (hostKeeperStarted) return;
+        hostKeeperStarted = true;
+
+        Thread keeper = new Thread(() -> {
+            for (;;) {
+                try {
+                    Thread.sleep(3_600_000L);
+                } catch (InterruptedException ignored) {
+                    // 没人会中断它；真被中断也继续睡
+                }
+            }
+        }, "meow-host-keeper");
+        keeper.setDaemon(false);
+        keeper.start();
+
+        Thread watchdog = new Thread(() -> {
+            int fails = 0;
+            long lastBeat = 0;
+            for (;;) {
+                try {
+                    Thread.sleep(15_000L);
+                    boolean ok = probeHealth(port);
+                    if (ok) {
+                        fails = 0;
+                        long now = System.currentTimeMillis();
+                        if (now - lastBeat >= 60_000L) {
+                            lastBeat = now;
+                            System.out.println("[hb] ok threads=" + Thread.activeCount()
+                                    + " sites=" + siteCount());
+                        }
+                    } else {
+                        fails++;
+                        System.out.println("[watchdog] self-probe failed x" + fails);
+                        if (fails >= 2) {
+                            rebindListener(bind, port, threads);
+                            fails = 0;
+                        }
+                    }
+                } catch (InterruptedException ignored) {
+                } catch (Throwable t) {
+                    System.out.println("[watchdog] " + t);
+                }
+            }
+        }, "meow-host-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
+    }
+
+    /** 真发一次 HTTP 请求（只连上不算数：分发线程死了 backlog 仍会接连接）。 */
+    private static boolean probeHealth(int port) {
+        java.net.Socket s = new java.net.Socket();
+        try {
+            s.connect(new InetSocketAddress("127.0.0.1", port), 1500);
+            s.setSoTimeout(3000);
+            s.getOutputStream().write(("GET /api/_hb HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    + "Connection: close\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            s.getOutputStream().flush();
+            java.io.InputStream in = s.getInputStream();
+            int c = in.read();
+            return c == 'H';
+        } catch (Throwable t) {
+            return false;
+        } finally {
+            try {
+                s.close();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /** 分发线程被带走后的自愈：停掉旧监听器，在原端口重建。 */
+    private static void rebindListener(String bind, int port, int threads) {
+        try {
+            platform.HttpServer old = HOST;
+            if (old != null) {
+                try {
+                    old.stop();
+                } catch (Throwable ignored) {
+                }
+            }
+            platform.HttpServer again = platform.HttpServer.create(
+                    new InetSocketAddress(bind, port), 0);
+            again.start(ApiServer::handle, threads);
+            HOST = again;
+            System.out.println("[watchdog] listener rebound on " + port);
+        } catch (Throwable t) {
+            System.out.println("[watchdog] rebind failed: " + t);
+        }
     }
 
     /**
@@ -1252,6 +1367,14 @@ public class ApiServer {
 
         String method = ex.getRequestMethod();
         String path = ex.getRequestURI().getPath();
+        // 看门狗自探活：写在 [req] 之前，否则每 15 秒刷一行日志淹掉真问题
+        if ("/api/_hb".equals(path)) {
+            byte[] hb = "ok".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            ex.sendResponseHeaders(200, hb.length);
+            ex.getResponseBody().write(hb);
+            ex.close();
+            return;
+        }
         // 访问日志：TV/PC 排查"配了地址但没反应"时，先看这里有没有请求进来。
         // 只打路径不打 query（弹幕/代理的 query 里有长 URL，会淹没日志）。
         System.out.println("[req] " + method + " " + path);
@@ -13162,6 +13285,14 @@ public class ApiServer {
     private static volatile String importJobState = "idle";
     private static volatile long importJobStartedAt;
 
+    /**
+     * 后台导入当前在做什么（读配置 / 下载并转换源 jar / 写入配置）。
+     *
+     * <p>为什么要有：iOS 的 Zero 解释执行下，dex2jar 一次 1~2 分钟。只报
+     * 「已 90 秒」用户不知道卡在哪；报出阶段至少能区分"网络慢"和"在转换"。
+     */
+    private static volatile String importJobPhase = "";
+
     /** 导入前的配置快照文件名（只留一份，语义是"撤销上一次导入"）。 */
     private static final String CONFIG_BACKUP = "config.sites.json.bak";
 
@@ -13200,6 +13331,7 @@ public class ApiServer {
             }
             importJobState = "running";
             importJobStartedAt = System.currentTimeMillis();
+            importJobPhase = "读取配置";
         }
         Thread worker = new Thread(() -> {
             core.MemoryExchange mx = new core.MemoryExchange("/api/config/import", "POST", effectiveBody);
@@ -13639,6 +13771,7 @@ public class ApiServer {
             out.put("pending", "running".equals(importJobState));
             if ("running".equals(importJobState)) {
                 out.put("elapsedMs", System.currentTimeMillis() - importJobStartedAt);
+                out.put("phase", importJobPhase);
             }
             sendJson(ex, 200, out.toString());
             return;
@@ -13823,9 +13956,14 @@ public class ApiServer {
          *   一个字节都没写。转换留到确认导入时做，那一趟走后台线程（见顶部
          *   background 分支），客户端只轮询进度。
          */
+        if (!preview) importJobPhase = "下载并转换源 jar（iOS 慢，可能要 1~2 分钟）";
+        long d2jStart = System.currentTimeMillis();
         JSONObject dex2jvm = preview
                 ? new JSONObject().put("skipped", "dryRun")
                 : core.Dex2Jvm.rewrite(doc, configBase);
+        // 耗时写进结果：真机上"导入慢"到底是下载还是转换，下一次一眼能分开
+        dex2jvm.put("ms", System.currentTimeMillis() - d2jStart);
+        if (!preview) importJobPhase = "写入配置";
 
         java.util.Set<String> jarClasses = jarSpiderClasses();
         invalidateConfigTables();

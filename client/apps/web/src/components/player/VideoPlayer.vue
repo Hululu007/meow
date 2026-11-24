@@ -16,7 +16,7 @@ import {
 import { getSkipMarks, setSkipMark, type SkipMarks } from '@/stores/skipMarks'
 import { isTvEnv } from '@/composables/useCardCols'
 import { isIosPhone } from '@/compat/ua'
-import { hasFinePointer, isTvShell } from '@/compat/shell'
+import { hasFinePointer, isIosShell, isTvShell } from '@/compat/shell'
 import { cleanDmTitle, epBadgeOf } from '@/utils/dmTitle'
 import { assToVtt, srtToVtt, subtitleFormat, type MiddleSegment, type SubTrack } from '@/api/playExtras'
 import {
@@ -2686,6 +2686,12 @@ let pageLandscape = false
 function shellSetOrientation(mode: 'landscape' | 'portrait') {
   const b = (window as unknown as { meowTv?: { setOrientation?: (m: string) => void } }).meowTv
   if (b && typeof b.setOrientation === 'function') b.setOrientation(mode)
+  /*
+   * iOS 壳：WKWebView 里没有可用的 Screen Orientation lock（只在真全屏上下文
+   * 有效，而 iPhone 拿不到元素全屏），方向只能由原生转 —— 见 ShellOrientation.swift。
+   */
+  const ios = (window as unknown as { meowIos?: { setOrientation?: (m: string) => void } }).meowIos
+  if (ios && typeof ios.setOrientation === 'function') ios.setOrientation(mode)
 }
 
 function syncShellOrientation(full: boolean) {
@@ -3567,6 +3573,20 @@ async function toggleFullscreen() {
   if (pseudoFs.value || document.fullscreenElement) {
     await exitPseudoFs()
     rememberFsIntent(false)
+    return
+  }
+  /*
+   * iOS（WKWebView）不走 requestFullscreen。
+   *
+   * iPhone 上它要么直接抛 NotAllowedError，要么"成功"但画面一点不变
+   * （document.fullscreenElement 有值 → 我们以为进了全屏，用户看到的却是没反应）。
+   * 统一用伪全屏（容器 CSS 撑满 WebView）+ 请壳把界面转横屏 —— 这条路径
+   * 在 WKWebView 里是确定有效的（2026-11-24 用户报「点了不会全屏」）。
+   */
+  if (isIosShell()) {
+    await enterPseudoFs()
+    syncShellOrientation(true)
+    rememberFsIntent(true)
     return
   }
   try {

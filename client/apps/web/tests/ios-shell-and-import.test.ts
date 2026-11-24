@@ -28,6 +28,8 @@ const host = read(join(ROOT, 'server', 'host', 'src', 'shared', 'ApiServer.java'
 const jars = read(join(ROOT, 'server', 'host', 'src', 'shared', 'core', 'Jars.java'))
 const rootView = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'RootView.swift'))
 const webViewSwift = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'WebView.swift'))
+const bootstrapSwift = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'Bootstrap.swift'))
+const player = read(join(WEB, 'src', 'components', 'player', 'VideoPlayer.vue'))
 const appStore = read(join(WEB, 'src', 'stores', 'app.ts'))
 
 describe('iOS：安全区与输入缩放', () => {
@@ -97,8 +99,7 @@ describe('导入：站点首页自动补 /tv', () => {
   })
 })
 
-describe('导入后「像挂了」：类查找缓存 + base 只认桥', () => {
-  it('站点类名查找按 jar 代次缓存（未命中会扫整个 jar）', () => {
+describe('导入后「像挂了」：类查找缓存 + base 只认桥', () => {  it('站点类名查找按 jar 代次缓存（未命中会扫整个 jar）', () => {
     expect(host).toContain('SPIDER_CLASS_MEMO')
     expect(host).toContain('core.Jars.generation()')
     expect(jars).toContain('public static int generation()')
@@ -120,5 +121,45 @@ describe('导入后「像挂了」：类查找缓存 + base 只认桥', () => {
     expect(api).toContain('fetch ${method} ${base()}${path} failed after')
     expect(webViewSwift).toContain('name: "meowLog"')
     expect(webViewSwift).toContain('WKScriptMessageHandler')
+  })
+})
+
+describe('开屏：品牌页盖住启动过程（不写工程化文案）', () => {
+  it('开屏用品牌图标，进度不再往界面上写文字', () => {
+    expect(rootView).toContain('Image("BrandLogo")')
+    expect(rootView).toContain('0x0B / 255.0')
+    // 「正在启动 Java 宿主」「等待 API 就绪」这类用户不该看到
+    expect(bootstrapSwift).not.toContain('正在启动 Java 宿主')
+    expect(bootstrapSwift).not.toContain('等待 API 就绪')
+    // 只有真起不来才给一行原因 + 重试
+    expect(rootView).toContain('boot.failed')
+    expect(bootstrapSwift).toContain('func retry()')
+  })
+})
+
+describe('宿主保活：进程活着就不许 VM 退（导入完成后网关消失的真因）', () => {
+  it('非 daemon 守夜线程 + 看门狗自探活 + 重绑', () => {
+    expect(host).toContain('meow-host-keeper')
+    expect(host).toContain('keeper.setDaemon(false)')
+    expect(host).toContain('meow-host-watchdog')
+    expect(host).toContain('probeHealth(port)')
+    expect(host).toContain('rebindListener')
+    // 探活要走一条不刷访问日志的轻路径
+    expect(host).toContain('/api/_hb')
+  })
+
+  it('导入阶段可见（下载并转换 / 写入）', () => {
+    expect(host).toContain('importJobPhase = "写入配置"')
+    expect(host).toContain('"phase", importJobPhase')
+    expect(view).toContain('s.phase')
+  })
+})
+
+describe('播放页全屏（iOS 只能伪全屏 + 原生转屏）', () => {
+  it('iOS 不走 requestFullscreen，直接伪全屏并转横屏', () => {
+    expect(player).toContain('if (isIosShell()) {')
+    expect(player).toContain('ios.setOrientation(mode)')
+    expect(bootstrapSwift).toContain('meowIos.setOrientation')
+    expect(webViewSwift).toContain('ShellOrientation.apply')
   })
 })

@@ -46,6 +46,12 @@ final class StaticServer {
 
     deinit { listener?.cancel() }
 
+    /// 停掉监听（开屏页「重试」时用：同一端口必须先释放才能重建）。
+    func stop() {
+        listener?.cancel()
+        listener = nil
+    }
+
     // MARK: - connection
 
     private func accept(_ connection: NWConnection) {
