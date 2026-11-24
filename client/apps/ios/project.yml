@@ -44,6 +44,8 @@ targets:
         SUPPORTED_PLATFORMS: iphoneos
         SDKROOT: iphoneos
         SWIFT_OBJC_BRIDGING_HEADER: Meow/Meow-Bridging-Header.h
+        # 没有 AppIcon 时主屏/侧载器（LiveContainer 等）显示白块。
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         HEADER_SEARCH_PATHS:
           - "$(SRCROOT)/build/jni/include"
           - "$(SRCROOT)/build/jni/include/ios"
@@ -75,6 +77,8 @@ targets:
         SUPPORTED_PLATFORMS: iphonesimulator
         SDKROOT: iphonesimulator
         SWIFT_OBJC_BRIDGING_HEADER: Meow/Meow-Bridging-Header.h
+        # 没有 AppIcon 时主屏/侧载器（LiveContainer 等）显示白块。
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         OTHER_LDFLAGS: "$(inherited) -framework Foundation -framework UIKit -framework WebKit -framework Network -framework Security"
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO

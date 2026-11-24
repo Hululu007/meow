@@ -90,6 +90,12 @@ static NSString *jvmLogPath(NSString *dataDir) {
 + (BOOL)isAvailable {
 #if TARGET_OS_SIMULATOR
     return NO;
+#elif defined(MEOW_NO_JVM)
+    /*
+     * 排障变体（CI dispatch nojvm=true）：静态库照常链接，但永不启动 JVM。
+     * 用来区分「闪退发生在 dyld/静态初始化」还是「启动 JVM 的那一刻」。
+     */
+    return NO;
 #else
     NSURL *resources = NSBundle.mainBundle.resourceURL;
     if (!resources) return NO;

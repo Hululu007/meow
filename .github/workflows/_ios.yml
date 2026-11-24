@@ -12,6 +12,10 @@ on:
         description: 同时构建模拟器包并截图（约 +4 分钟）
         type: boolean
         default: false
+      nojvm:
+        description: 排障变体：不链接静态 JVM（用来二分「闪退是否来自 JVM」）
+        type: boolean
+        default: false
 
 concurrency:
   group: ios-ipa-${{ github.ref }}
@@ -99,19 +103,31 @@ jobs:
           xcodegen generate
 
       - name: Build unsigned device IPA
+        env:
+          NOJVM: ${{ inputs.nojvm && '1' || '0' }}
         run: |
           set -euo pipefail
           cd client/apps/ios
+          EXTRA=""
+          if [ "$NOJVM" = "1" ]; then
+            # 排障变体：JVM 静态库照常链接，但 isAvailable 直接返回 NO，
+            # 即「链接了但永不启动 JVM」。用来二分闪退发生在 dyld/静态初始化
+            # 还是「启动 JVM 的那一刻」。
+            echo "== NOJVM variant: JVM linked but never started =="
+            EXTRA="GCC_PREPROCESSOR_DEFINITIONS=MEOW_NO_JVM=1"
+          fi
           xcodebuild -project Meow.xcodeproj -scheme Meow -configuration Release \
             -sdk iphoneos -derivedDataPath build/dd-device \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO $EXTRA \
             build 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild-device.log" | tail -40
           APP=$(find build/dd-device/Build/Products/Release-iphoneos -maxdepth 1 -name 'Meow.app' | sed -n '1p')
           test -n "$APP"
           rm -rf build/ipa && mkdir -p build/ipa/Payload
           cp -R "$APP" build/ipa/Payload/
-          (cd build/ipa && zip -qry "$GITHUB_WORKSPACE/artifacts/Meow-unsigned.ipa" Payload)
-          ls -lh "$GITHUB_WORKSPACE/artifacts/Meow-unsigned.ipa"
+          IPA_NAME="Meow-unsigned.ipa"
+          if [ "$NOJVM" = "1" ]; then IPA_NAME="Meow-unsigned-nojvm.ipa"; fi
+          (cd build/ipa && zip -qry "$GITHUB_WORKSPACE/artifacts/$IPA_NAME" Payload)
+          ls -lh "$GITHUB_WORKSPACE/artifacts/$IPA_NAME"
           du -sh "$APP" || true
           # 包里到底装了什么：条目数 / 体积 / 构建标识，闪退排查时先对这三个数
           echo "== bundle inventory =="
@@ -192,7 +208,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-ipa-${{ github.run_number }}
+          name: ios-ipa${{ inputs.nojvm && '-nojvm' || '' }}-${{ github.run_number }}
           path: artifacts/**
           retention-days: 14
           if-no-files-found: warn
