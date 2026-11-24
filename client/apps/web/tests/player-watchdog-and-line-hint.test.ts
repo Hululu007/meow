@@ -85,14 +85,17 @@ describe('假死看门狗：已有 metadata 但 currentTime 恒 0', () => {
 
   it('窗口不能太短（正常 4K 起播实测 14.3s）', () => {
     const code = codeOnly(PLAYER)
-    const i = code.indexOf('stallTimer = window.setTimeout')
-    expect(i).toBeGreaterThan(-1)
-    const m = code.slice(i).match(/onStallTimeout,\s*(\d[\d_]*)/)
-    expect(m).toBeTruthy()
-    const ms = Number(m![1].replace(/_/g, ''))
-    // 至少 10 秒，否则会误杀慢源（实测沉默的真相 4K = 14.3s 才 loadedmetadata）
-    expect(ms).toBeGreaterThanOrEqual(10_000)
-    expect(ms).toBeLessThan(20_000)
+    /*
+     * #16 起窗口是父组件可配的（按线路健康分档）：默认值必须仍是 12s，
+     * 否则会误杀慢源（实测沉默的真相 4K = 14.3s 才 loadedmetadata）。
+     */
+    expect(code).toMatch(/onStallTimeout,\s*stallBudgetMs\(\)/)
+    const f = code.indexOf('function stallBudgetMs')
+    expect(f).toBeGreaterThan(-1)
+    const body = code.slice(f, f + 260)
+    expect(body).toContain('12_000')
+    // 下限 2s：调用方传 0/垃圾值必须退回默认，不能被配成"立刻超时"
+    expect(body).toContain('2_000')
   })
 
   it('clearStartupWatchdog 要同时清两个定时器', () => {

@@ -18,9 +18,15 @@
 
 import { isDesktop, tauriInvoke } from './index'
 import { isTvEnv } from '@/compat/shell'
+import type { NativeCodecCaps } from '@/utils/codecCaps'
 
 interface MeowTvBridge {
   nativePlayerAvailable(): boolean
+  /**
+   * 1.2.22+：原生解码能力（MediaCodecList 实测，JSON 串）。
+   * 老壳没有这个方法 → 返回空串，调用方按"未知"处理。
+   */
+  nativeCaps?(): string
   openNative(url: string, title: string, headers: string, positionMs: number): boolean
   /** 1.2.18+：带弹幕地址的原生播放；老壳没有这个方法 */
   openNativeWithDanmaku?(
@@ -131,6 +137,53 @@ export function hasNativePlayer(): boolean {
   } catch {
     return false
   }
+}
+
+let nativeCapsCache: NativeCodecCaps | null = null
+
+/**
+ * 原生播放器的解码能力（TV 壳 `nativeCaps()` 一次探测并缓存）。
+ *
+ * <p>为什么不能只看 WebView：Android WebView 的 MSE 层经常不报 HEVC Main10，
+ * 但同一台机器的 ExoPlayer 走 MediaCodec 能解。分配层拿到这份能力表，
+ * 才会"WebView 解不了就自动交给原生"，而不是先转码把 4K 砍成 1080p（#12）。
+ *
+ * <p>老壳没有 `nativeCaps` / 返回空 / JSON 坏了 → `probed=false`，调用方
+ * 按"未知"处理（保持旧行为）。失败也缓存：同一次会话里桥不会中途长出来。
+ */
+export function nativeCodecCaps(): NativeCodecCaps {
+  if (nativeCapsCache) return nativeCapsCache
+  const unknown: NativeCodecCaps = { probed: false, video: [], highBitVideo: [], audio: [] }
+  try {
+    const b = (window as unknown as { meowTv?: MeowTvBridge }).meowTv
+    if (!b || typeof b.nativeCaps !== 'function') {
+      nativeCapsCache = unknown
+      return nativeCapsCache
+    }
+    const raw = b.nativeCaps()
+    if (!raw) {
+      nativeCapsCache = unknown
+      return nativeCapsCache
+    }
+    const o = JSON.parse(raw) as Partial<NativeCodecCaps>
+    const arr = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').map((x) => x.toLowerCase()) : []
+    nativeCapsCache = {
+      probed: true,
+      video: arr(o.video),
+      highBitVideo: arr(o.highBitVideo),
+      audio: arr(o.audio),
+    }
+    return nativeCapsCache
+  } catch {
+    nativeCapsCache = unknown
+    return nativeCapsCache
+  }
+}
+
+/** 只用于测试/诊断：清缓存。 */
+export function __resetNativeCodecCaps(): void {
+  nativeCapsCache = null
 }
 
 /** 是否支持原生输入框（TV 壳 0.9.24+；老壳没有这个方法） */

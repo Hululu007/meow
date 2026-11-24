@@ -80,15 +80,43 @@ export async function saveLibrary(libs: Partial<LibraryInfo>[]): Promise<boolean
   return !!j.ok
 }
 
-/** 测试连接（不落盘）。 */
-export async function testLibrary(lib: Partial<LibraryInfo>): Promise<{ ok: boolean; msg?: string; entries?: number }> {
+/** 测试连接（不落盘）。成功后带顶层目录（#5 添加弹框直接进入浏览）。 */
+export async function testLibrary(
+  lib: Partial<LibraryInfo>,
+): Promise<{ ok: boolean; msg?: string; entries?: number; dirs?: Array<{ name: string; path: string }> }> {
   const r = await fetch(`${apiBase()}/api/library?action=test`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ lib }),
   })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
-  return (await r.json()) as { ok: boolean; msg?: string; entries?: number }
+  return (await r.json()) as {
+    ok: boolean
+    msg?: string
+    entries?: number
+    dirs?: Array<{ name: string; path: string }>
+  }
+}
+
+/**
+ * 保存前浏览候选片库（#5）：SMB/WebDAV 填完地址先列目录再选 root。
+ * 失败返回 `{ok:false,msg}`（后端已翻译成中文成因），不抛异常。
+ */
+export async function browseLibrary(
+  lib: Partial<LibraryInfo>,
+  path = '',
+): Promise<{ ok: boolean; msg?: string; dirs?: Array<{ name: string; path: string }> }> {
+  const r = await fetch(`${apiBase()}/api/library?action=browse`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lib, path }),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return (await r.json()) as {
+    ok: boolean
+    msg?: string
+    dirs?: Array<{ name: string; path: string }>
+  }
 }
 
 /**
@@ -101,6 +129,27 @@ export async function testLibrary(lib: Partial<LibraryInfo>): Promise<{ ok: bool
 export function libraryStream(lib: string, path: string): string {
   const q = new URLSearchParams({ lib, path })
   return `${apiBase()}/api/library/stream?${q}`
+}
+
+/** 这一条是不是 `.strm` 直链（#6）。 */
+export function isStrmFile(name: string): boolean {
+  return /\.strm$/i.test(name)
+}
+
+/**
+ * 读出 `.strm` 里的直链（#6）。
+ *
+ * 后端只做"读文件 + 取第一个 http(s) 行"，不跟随 302；播放交给
+ * `/api/proxy/stream`（它已经支持逐跳重定向与防盗链头）。
+ */
+export async function resolveLibraryStrm(
+  lib: string,
+  path: string,
+): Promise<{ ok: boolean; url?: string; msg?: string }> {
+  const q = new URLSearchParams({ action: 'strm', lib, path })
+  const r = await fetch(`${apiBase()}/api/library?${q}`)
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return (await r.json()) as { ok: boolean; url?: string; msg?: string }
 }
 
 // ------------------------------------------------- 目录树（「选择目录」弹窗）
@@ -270,8 +319,13 @@ export interface ParsedName {
   part: number
 }
 
-/** 视频扩展名白名单。列表里出现别的类型（.txt/.nfo）不该当影片。 */
-const VIDEO_EXT = /\.(mp4|mkv|avi|ts|m2ts|mov|wmv|flv|webm|rmvb|iso)$/i
+/**
+ * 视频扩展名白名单。列表里出现别的类型（.txt/.nfo）不该当影片。
+ *
+ * `strm`（#6）：一行一个 http(s) 直链的文本，Emby/Jellyfin/Kodi 同款；
+ * 后端 `action=strm` 读出地址后按在线播放处理。
+ */
+const VIDEO_EXT = /\.(mp4|mkv|avi|ts|m2ts|mov|wmv|flv|webm|rmvb|iso|strm)$/i
 
 export function isVideoFile(name: string): boolean {
   return VIDEO_EXT.test(name)
@@ -887,7 +941,7 @@ export async function waitLibraryTranscode(
  * 播放页时前端拿不到 id，只能按源坐标取消——后端用同一套幂等键反推。
  * 失败静默：取消失败最多是多烧一会儿 CPU，不该影响用户下一步操作。
  */
-export async function cancelTranscode(t: {
+export type TranscodeCancelCoords = {
   id?: string
   src?: string
   lib?: string
@@ -895,21 +949,50 @@ export async function cancelTranscode(t: {
   /** 与 start 时一致的模式（后端幂等键含模式，不带会停错任务） */
   copy?: boolean
   repair?: boolean
-}): Promise<boolean> {
+}
+
+/** 取消/保活共用的 query（坐标不全时返回空串）。 */
+function transcodeQueryOf(t: TranscodeCancelCoords): string {
   const q = new URLSearchParams()
   if (t.id) q.set('id', t.id)
   else if (t.src) q.set('src', t.src)
   else if (t.lib && t.path) {
     q.set('lib', t.lib)
     q.set('path', t.path)
-  } else return false
+  } else return ''
   if (t.repair) q.set('repair', '1')
   else if (t.copy) q.set('copy', '1')
+  return q.toString()
+}
+
+export async function cancelTranscode(t: TranscodeCancelCoords): Promise<boolean> {
+  const q = transcodeQueryOf(t)
+  if (!q) return false
   try {
     const r = await fetch(`${apiBase()}/api/transcode?${q}`, { method: 'DELETE' })
     return r.ok
   } catch {
     return false
+  }
+}
+
+/**
+ * 离页时取消（#15）：用 `keepalive` 让请求在页面卸载/关 TV 端后仍能发出。
+ *
+ * <p>`pagehide` / WebView `onDestroy` 里普通 fetch 会被取消，后端 ffmpeg 就
+ * 继续空转到空闲看门狗（2 分钟 × 4K 满核）。keepalive 是浏览器保底机制，
+ * 不保证 100%，所以后端 120s 空闲取消仍保留。
+ */
+export function cancelTranscodeOnLeave(t: TranscodeCancelCoords): void {
+  const q = transcodeQueryOf(t)
+  if (!q) return
+  try {
+    void fetch(`${apiBase()}/api/transcode?${q}`, {
+      method: 'DELETE',
+      keepalive: true,
+    }).catch(() => {})
+  } catch {
+    /* 页面已在卸载：忽略 */
   }
 }
 

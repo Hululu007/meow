@@ -78,9 +78,9 @@
 |---|---|
 | `key` | **必须唯一**；同一个 jar 多个 ext 时要起不同 key（如 `Bili`、`Bili#2`） |
 | `name` | 展示名 |
-| `api` | `csp_XXX` 走 jar；以 `.js` 结尾走 drpy；CMS 接口走直连 |
+| `api` | `csp_XXX` 走 jar；脚本地址（`.js` / `.mjs`，可带 `?v=3`）走 drpy；其余 http(s) 当 CMS 直连 |
 | `type` | CatVod 约定；`1` 表示 CMS 直连，`3` 表示 jar |
-| `ext` | 传给 spider 的扩展参数，单 key 站点也建议写上 |
+| `ext` | 传给 spider 的扩展参数；drpy 的 `./json/xxx.json` 会按配置文件地址补成绝对 URL |
 | `searchable` | 是否参与聚合搜索 |
 | `hide` | 是否在列表隐藏 |
 | `jar` | 可选：站点级 **dex** jar 地址；省略时由顶层 `spider` 提供 |
@@ -192,10 +192,30 @@ TV/Fongmi 在站点没有 `jar` 时会回退到顶层 `spider`；JVM 则优先 `
 ## 多仓索引
 
 ```json
-{ "urls": ["https://example.com/site-a/config.json", "https://example.com/site-b/config.json"] }
+{
+  "urls": [
+    { "url": "https://example.com/site-a/config.json", "name": "仓 A" },
+    "https://example.com/site-b/config.json"
+  ]
+}
 ```
 
-导入时逐个探测，可用仓库合并成一份站点表。失效仓会被跳过，不阻断其他仓。
+两种写法都认：对象 `{url,name}` 与**裸字符串**（影视仓/饭太硬生态常见）。
+
+导入时**只取第一个仓**（与 Fongmi 的 `VodConfig.parseDepot` 一致），其余仓在
+「多仓探测」列表里给出，用户可再手动导入/切换——多仓本质是收藏夹，全部合并会让
+同名站点互相覆盖、搜索目标翻几倍。
+
+## 伪装配置：图片包与 base64
+
+生态里配置常被伪装成非 JSON，后端会剥两层：
+
+- **图片包**：JPEG 头 + `**` + base64 JSON（饭太硬 `/tv` 实测）。取最后一个 `**`
+  之后的尾巴，先按 JSON 试、再按 base64（MIME/URL 两种字母表）解。
+- **整段 base64**：解出来必须是 JSON 才算，否则报原始解析错误。
+
+导入失败时看提示「返回的不是 JSON（可能是加密/二进制内容）」——先确认地址返回的是
+配置本身，而不是网页或加密包。
 
 ## 苹果CMS 直连
 

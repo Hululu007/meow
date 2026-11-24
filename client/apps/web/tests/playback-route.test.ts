@@ -180,6 +180,71 @@ describe('播放分配：HEVC Main10（4K HDR 的标准编码）', () => {
   })
 })
 
+/**
+ * TV 原生能力表（#12 / TV-1，2026-11-24）。
+ *
+ * 背景：Android WebView 的 MSE 表经常不报 HEVC Main10，但同一台机器的
+ * ExoPlayer 走 MediaCodec 能解。只按 WebView 判 → 4K HDR 被判"只能转码"，
+ * 用户看到的就是"片库都被降画质了"。新壳 `nativeCaps()` 给出 MediaCodecList
+ * 实测能力后，分配层必须"WebView 解不了、原生能解 → 自动原生"。
+ */
+describe('播放分配：TV 原生能力表（nativeCaps）', () => {
+  const MAIN10 = { acodec: 'aac', vcodec: 'hevc', pixfmt: 'yuv420p10le' }
+  const MAIN10_AC3 = { acodec: 'ac3', vcodec: 'hevc', pixfmt: 'yuv420p10le' }
+  const CAPS_NO_HI = {
+    probed: true,
+    video: ['h264', 'hevc'],
+    highBitVideo: [] as string[],
+    audio: ['aac', 'mp3', 'opus', 'vorbis', 'flac'],
+  }
+  const NATIVE_OK = {
+    probed: true,
+    video: ['h264', 'hevc'],
+    highBitVideo: ['hevc'],
+    audio: ['aac', 'ac3', 'eac3', 'dts'],
+  }
+  const NATIVE_NO_HEVC10 = { ...NATIVE_OK, highBitVideo: [] as string[] }
+  const NATIVE_NO_AC3 = { ...NATIVE_OK, audio: ['aac', 'mp3'] }
+
+  it('WebView 解不了 Main10、原生能解 → 自动 native（不转码、不只给提示）', () => {
+    expect(tv({ probe: MAIN10, caps: CAPS_NO_HI, nativeCaps: NATIVE_OK })).toBe('native')
+    expect(
+      tv({ probe: MAIN10_AC3, caps: CAPS_NO_HI, nativeCaps: NATIVE_OK }),
+    ).toBe('native')
+  })
+  it('原生也只有 8-bit HEVC → 转码（别让用户白点一次原生）', () => {
+    expect(tv({ probe: MAIN10, caps: CAPS_NO_HI, nativeCaps: NATIVE_NO_HEVC10 })).toBe(
+      'transcode',
+    )
+  })
+  it('原生解不了 AC3 → 转码（原生救不了音轨）', () => {
+    expect(
+      tv({ probe: MAIN10_AC3, caps: CAPS_NO_HI, nativeCaps: NATIVE_NO_AC3 }),
+    ).toBe('transcode')
+  })
+  it('老壳没有 nativeCaps → 保持旧行为（native-hint，不自动切）', () => {
+    expect(tv({ probe: MAIN10, caps: CAPS_NO_HI })).toBe('native-hint')
+  })
+  it('WebView 能解时不被原生表带偏 → 仍直连', () => {
+    expect(
+      tv({
+        probe: MAIN10,
+        caps: {
+          probed: true,
+          video: ['h264', 'hevc'],
+          highBitVideo: ['hevc'],
+          audio: ['aac'],
+        },
+        nativeCaps: NATIVE_NO_HEVC10,
+      }),
+    ).toBe('direct')
+  })
+  it('Hi10P 原生也救不了 → 转码（能力表说能解 HEVC 也不行）', () => {
+    const hi10p = { acodec: 'aac', vcodec: 'h264', pixfmt: 'yuv420p10le' }
+    expect(tv({ probe: hi10p, caps: CAPS_NO_HI, nativeCaps: NATIVE_OK })).toBe('transcode')
+  })
+})
+
 describe('播放分配：remux（视频 copy + 音频转码，零画质损失）', () => {
   it('默认不开：AC3 在 PC 仍走整条转码（旧行为，不回归）', () => {
     expect(pc({ probe: AC3 })).toBe('transcode')

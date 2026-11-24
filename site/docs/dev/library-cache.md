@@ -108,8 +108,9 @@ WebDAV 靠"只接受相对路径"防穿越；本地目录天生是绝对路径�
 |---|---|---|
 | `/api/webdav` | POST | 通用 WebDAV 转发（同步/备份用），回 `{ok,status,body}` |
 | `/api/library` | GET | 不带 `lib`：配置 + 每个库的顶层目录；带 `lib&path`：列目录 |
-| `/api/library` | POST | 保存整表；`?action=test` 测试连接 |
-| `/api/library/stream` | GET | 片库文件流，`lib&path`，Range 透传 |
+| `/api/library` | GET | `?action=strm&lib&path`：读 `.strm` 里的首个 http(s) 地址 |
+| `/api/library` | POST | 保存整表；`?action=test` 测试连接（成功带顶层目录）；`?action=browse` 保存前浏览候选 SMB/WebDAV 目录 |
+| `/api/library/stream` | GET | 片库文件流，`lib&path`，Range 透传；`.strm` 302 到 `/api/proxy/stream` |
 
 - 三个片库路由在 `ApiServer.java:1455-1468` 显式注册，且 `path.startsWith("/api/library/")`
   直接 404。**必须这样**：落到 `/api/{site}/{action}` 兜底会把 `library` 当站点名去加载类。
@@ -126,6 +127,15 @@ WebDAV 靠"只接受相对路径"防穿越；本地目录天生是绝对路径�
   安全审计 H13 的实测结论）。本地/SMB 各自有前缀校验，只有 WebDAV 是字符串拼接。
 - 本地/SMB 的流都带 `Accept-Ranges: bytes`；`Content-Type` 按扩展名映射，
   mkv 是 `video/x-matroska`、ts 是 `video/mp2t`（`Library.java:351-364`）。
+- **`.strm`（#6）**：文件内容是一行 http(s) 直链，不是媒体字节。`action=strm`
+  读出首个地址；前端把它当**在线播放**（`playableSrc` 包 `/api/proxy/stream`，
+  转码走 `tryTranscode` 而非片库 `tryLibraryTranscode`，`fetchProbeRoute` 跳过 ——
+  ffprobe 读文本没有编码）。直接请求 `/api/library/stream?...strm` 会 302 到代理，
+  老客户端也能播。`api/library.ts` 的 `VIDEO_EXT` 把 `strm` 纳入视频条目。
+- **保存前浏览（#5）**：`action=browse` 接受未保存的 `{lib}` + `path`，SMB/WebDAV
+  复用同一套 `listSmb`/`listWebdav`。失败统一走 `Library.explain()` 翻成
+  "找不到主机 / 端口不通 / 账号密码不对 / 共享名不存在 / 超时"，
+  不把 jcifs/OkHttp 的英文栈甩给用户。
 - `/api/webdav` 的响应体超过 **20 万字符**截断（`LibraryRoutes.java:143`），给"备份文件列表"定的，片库不经过它。
 
 ### 1.7 文件名解析（前端）

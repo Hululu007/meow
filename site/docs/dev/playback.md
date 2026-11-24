@@ -196,6 +196,53 @@ Chromium/WebView2 **解得出但渲染器稳定丢 28% 帧**（25fps 只出 17fp
 只多几次 ffprobe；TV 原生播放器不走这套检测。
 
 
+### TV 原生能力：HEVC Main10 不转码（#12 / TV-1，2026-11-24）
+
+Android WebView 的 `MediaSource.isTypeSupported` 经常不报 HEVC Main10，
+但同一台机器的 ExoPlayer 走 MediaCodec 能硬解。只按 WebView 判就是
+"4K HDR 一律转码 → 1080p 8-bit"，用户看到的就是"片库都被降画质了"。
+
+现在 TV 壳提供 `nativeCaps()`（`TvBridge.java`，MediaCodecList 实测）：
+
+- 返回 `video / highBitVideo / audio` 三个数组；`highBitVideo` 只在
+  decoder 的 profileLevels 里出现 `HEVCProfileMain10*` / `AV1ProfileMain10*`
+  时才标记 —— 设备有 HEVC 不等于能解 10-bit。
+- Web 侧 `nativeCodecCaps()` 解析并缓存；老壳没有这个方法 → `probed=false`。
+- `resolvePlaybackRoute()` 新增 `nativeCaps` 输入：**WebView 解不了、原生能解
+  → 自动 `native`**（整页原生播放，原画）；原生也解不了 → 转码；
+  WebView 能解但只有音轨超纲 → 保持旧语义（提示一次 / 开了"无声自动原生"才自动）。
+- 老壳（无能力表）行为完全不变，避免升级过程中把能播的片判死。
+
+### 线路预检 + 健康排序 + 看门狗分档（#16）
+
+死线路的实际成本原来是 12–45 秒（起播 20s / 假死 12s / 总窗口 45s）。
+现在三件事一起收敛：
+
+1. **起播前预检**：`GET /api/line/probe?url=…&header=…`，后端
+   `Range: bytes=0-1` + 2 秒超时。2xx/3xx → ok；4xx/5xx/连接失败 → dead，
+   前端立刻换下一条，不再进播放器看门狗。`parse>0` 的线路不预检
+   （解析器给的地址不是最终流）；`unknown`（超时/老后端/私网）继续正常播放。
+2. **健康记忆**（`stores/lineHealth.ts`，`meow.line.health.v1`，按站 × 线路名）：
+   progress 真的推进 >3s 记成功；起播失败/预检 dead/取地址失败记失败。
+   成功一次把失败折半；30 天 TTL。
+3. **排序 + 分档**：`sortLinesByHealth()` 把稳定成功的排前、全失败的排后
+   （未验证居中，同分保持源站顺序）；`lineBudget()` 给"连续失败 ≥2 且从未成功"
+   的线路 8s/6s 短预算，其余用播放器默认 20s/12s（未验证线路不缩短 ——
+   4K 冷启动实测 10–14s，短阈值会误杀慢源）。
+
+### 离开播放页撤销转码（#15，2026-11-24）
+
+`pendingTranscode` 只覆盖"等首片"；拿到 playlist 后它被清掉，ffmpeg 仍在把整部片
+转完 —— 用户退出/关 TV 后 CPU 继续 100%。现在：
+
+- `activeTranscode` 记住"已经在边转边看"的坐标（src 或 lib+path，含 copy/repair 模式）。
+- `load()` 开头（换集/换线/重试）先 `dropActiveTranscode()`；`pagehide` /
+  组件卸载用 `cancelTranscodeOnLeave()`（`fetch keepalive`）发 DELETE。
+- TV 壳在 `MainActivity.onStop`（`isFinishing()` 时）与 `onDestroy` 前调页面
+  `window.__meowCancelTranscode()`；只是切后台不撤（用户可能马上回来）。
+- 暂停不会误杀：`Transcode.status()` 的轮询本身刷新 `lastAccess`（播完时播放器
+  每 5 秒还在拉分片/清单）；退出后轮询停止，120 秒空闲看门狗仍是最后兜底。
+
 ### 分片代理：12 槽 + 失败留痕
 
 `STREAM_SLOTS` 8→12；503 带 `Retry-After: 1` 并每 10 秒记一条日志；

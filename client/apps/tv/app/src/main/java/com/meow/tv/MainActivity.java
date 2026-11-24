@@ -1675,6 +1675,23 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * 用户真的要退出（返回键退出 / 关闭应用）→ 撤掉后端还在跑的转码（#15）。
+     *
+     * <p>只在 {@code isFinishing()} 时撤：切到后台（home/别的应用）不撤，
+     * 用户可能马上回来续看；真正没人看的情况由后端 120 秒空闲看门狗兜住。
+     * WebView 销毁前 {@code pagehide} 不保证触发，所以由原生层主动调页面入口。
+     */
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (isFinishing() && web != null) {
+            web.evaluateJavascript(
+                    "(function(){try{window.__meowCancelTranscode&&window.__meowCancelTranscode()}catch(e){}})()",
+                    null);
+        }
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
@@ -1790,6 +1807,11 @@ public class MainActivity extends Activity {
             fileChooserCallback = null;
         }
         if (web != null) {
+            // 尽力而为：onStop 已发过一次；走到这里（低内存回收/直接销毁）再试一次，
+            // 让页面用 keepalive 把 DELETE 发出去（#15）。不等回调，随后立即销毁。
+            web.evaluateJavascript(
+                    "(function(){try{window.__meowCancelTranscode&&window.__meowCancelTranscode()}catch(e){}})()",
+                    null);
             web.loadUrl("about:blank");
             web.destroy();
             web = null;

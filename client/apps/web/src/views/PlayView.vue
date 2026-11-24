@@ -12,6 +12,7 @@ import {
   fetchStateProgress,
   parsePlayLines,
   prefetchDanmaku,
+  probeLine,
   proxyDanmaku,
   proxyStream,
   sanitizeCastHeader,
@@ -20,9 +21,12 @@ import {
   cacheIdFor,
   cachedPlaylist,
   cancelTranscode,
+  cancelTranscodeOnLeave,
   fetchMediaProbe,
+  isStrmFile,
   libraryStream,
   peekMediaProbe,
+  resolveLibraryStrm,
   startTranscode,
   transcodeAvailable,
   transcodeErrorMessage,
@@ -35,7 +39,7 @@ import { isHi10p, resolvePlaybackRoute, webCanDecodeVideo, webviewAudioCodecs } 
 import { detectCodecCaps } from '@/utils/codecCaps'
 import { transcodeBadge, transcodeMediaInfo, type MediaSourceInfo } from '@/utils/mediaInfo'
 import type { MediaProbeResult } from '@/api/library'
-import { embedPlay, hasEmbedPlayer, hasNativePlayer, openNative } from '@/api/nativeBridge'
+import { embedPlay, hasEmbedPlayer, hasNativePlayer, nativeCodecCaps, openNative } from '@/api/nativeBridge'
 import { meowDiagnose } from '@/ai/tools'
 import { explainDiagnosis } from '@/ai/llm'
 import { CAUSE_LABEL, type Diagnosis } from '@/ai/diagnose'
@@ -46,6 +50,7 @@ import { getDmOffset } from '@/stores/dmOffset'
 import { isTvEnv, isTvShell, isWideLayout } from '@/compat/shell'
 import { isAndroid, isFirefox } from '@/compat/ua'
 import { getLinePref, setLinePref } from '@/stores/linePref'
+import { lineBudget, noteLineFail, noteLineOk, sortLinesByHealth } from '@/stores/lineHealth'
 import {
   clearProgress,
   episodeNumber,
@@ -112,6 +117,8 @@ function routeInput(probe: Parameters<typeof resolvePlaybackRoute>[0]['probe']) 
     preferNativeOnSilent: getPrefs().nativeOnSilent === true,
     transcodeAvailable: transcodeOk.value,
     caps: codecCaps,
+    // 原生播放器实测能力：WebView 解不了的 HEVC Main10 交给 ExoPlayer 原画播放（#12）
+    nativeCaps: nativeCodecCaps(),
     // remux 只对片库开：在线源 copy 成 HLS 的时间戳风险大、4K copy 带宽也高
     allowRemux: isLibraryPlay.value,
   }
@@ -196,6 +203,17 @@ const title = (route.query.name as string) || ''
 const epName = ref((route.query.ep as string) || '')
 /** 影片 id：从历史页直达播放时没有 list，靠它把剧集表补回来 */
 const vodId = (route.query.vod as string) || ''
+/**
+ * 当前线路的看门狗预算（#16）：未验证线路用短预算，死链更快跳走。
+ * 用 ref 而不是 computed —— 线路健康存在 localStorage，不是响应式数据；
+ * 成功/失败时手动刷新。
+ */
+const lineWatch = ref(lineBudget(site, flag.value))
+/** 本集是否已经给这条线路记过一次成功（每次换集/换线重置） */
+let lineOkNoted = false
+function refreshLineWatch() {
+  lineWatch.value = lineBudget(site, flag.value)
+}
 
 function safeDecode(s: string): string {
   if (!s.includes('%')) return s
@@ -400,6 +418,35 @@ let pendingTranscode: {
   copy?: boolean
   repair?: boolean
 } | null = null
+/**
+ * **已经在播、但后端仍在边转边看**的任务（#15）。
+ *
+ * <p>`pendingTranscode` 只覆盖"等首片"那段；拿到 playlist 后它就被清了，
+ * 而 ffmpeg 其实还在把整部片转完 —— 用户退出播放页/关 TV 后 CPU 继续 100%
+ * 直到空闲看门狗（2 分钟）。这里记住坐标，离页/切集/换线时主动 DELETE。
+ */
+let activeTranscode: {
+  src?: string
+  lib?: string
+  path?: string
+  copy?: boolean
+  repair?: boolean
+} | null = null
+
+/** 主动停掉"还在边转边看"的任务（切集/重试前调用）。 */
+function dropActiveTranscode() {
+  const t = activeTranscode
+  activeTranscode = null
+  if (t) void cancelTranscode(t)
+}
+
+/** 离页/关闭页面：keepalive 版，请求能在卸载后继续发出。 */
+function dropActiveTranscodeOnLeave() {
+  const t = activeTranscode
+  activeTranscode = null
+  if (t) cancelTranscodeOnLeave(t)
+}
+
 /** 正在等转码：加载遮罩上给一个「停止等待」入口 */
 const transcodeWaiting = ref(false)
 /** 本次成功解析的解析器名（来自 /api/parse 的 from） */
@@ -439,6 +486,21 @@ const offlinePlay = ref(false)
  * 为真时 playableSrc 取 play.value.url（转码产物），不再回落到 query.direct。
  */
 const libraryNoDirect = ref(false)
+/**
+ * `.strm` 直链解析结果（#6）。非空时这一集按**在线播放**处理：
+ * playableSrc 包代理、失败走 tryTranscode（不是片库 ffprobe 转码）。
+ */
+const libraryStrmUrl = ref('')
+/**
+ * 这一集是 `.strm` 直链（#6）。
+ *
+ * <p>存在的意义不只是判断：`.strm` 还没解析出目标地址之前，
+ * **不能把任何地址交给播放器**（直链文件本身不是媒体，播它必然 404，
+ * 错误页还会把后面的正常流程盖掉）。
+ */
+const libraryIsStrm = computed(
+  () => isLibraryPlay.value && !!libraryFile.value && isStrmFile(libraryFile.value),
+)
 /**
  * 这个片库文件当前内核根本解不了（MKV/AVI…）：**从一开始**就别把直连地址交给
  * `<video>`。
@@ -500,6 +562,22 @@ function pollTranscodeProgress(params: Record<string, string>) {
 }
 
 const playableSrc = computed(() => {
+  /*
+   * `.strm` 的目标是**外部地址**：必须包代理（源站防盗链、302、CORS 都由
+   * /api/proxy/stream 处理），不能像片库直连那样原样交给 <video>（#6）。
+   *
+   * ★ 直链还没解析出来前**不能给任何地址**：`.strm` 本身不是媒体，
+   *   直接播它必然 404（实测：播放器先挂 libraryDirect → manifestLoadError，
+   *   错误页把后面的正常流程盖掉）。这里返回空串，等 resolveLibraryStrm
+   *   回来再给代理地址。
+   */
+  if (libraryIsStrm.value) {
+    if (!libraryStrmUrl.value) return ''
+    const cur = typeof play.value?.url === 'string' ? play.value.url : ''
+    // 已经切到转码/修复产物：让它接管（否则会一直退回原直链）
+    if (cur.includes('/api/transcode')) return cur
+    return proxyStream(libraryStrmUrl.value)
+  }
   // 片库直链：后端已给成本地可播地址，**不再包代理**。
   // 转码产物可能是相对路径 /api/transcode/...（TV 走同源代理时 apiBase() 为空），
   // 相对地址交给 <video> 会按当前页面域名解析，正好命中代理，不需要也不该加前缀。
@@ -642,6 +720,7 @@ async function ensurePlaylist() {
   const want = flag.value || getLinePref(site, vodId)
   // 同一部片在本次会话内只拉一次 detail
   if (linesCache) {
+    linesCache = sortLinesByHealth(site, linesCache)
     lines.value = linesCache
     if (!playlist.value.length) {
       const line = linesCache.find((l) => l.name === want) || linesCache[0]
@@ -666,7 +745,8 @@ async function ensurePlaylist() {
     if (v.vod_pic) metaPic.value = v.vod_pic
     if (v.vod_name) metaName.value = v.vod_name
     if (v.vod_remarks) metaRemarks.value = v.vod_remarks
-    lines.value = parsePlayLines(v.vod_play_from || '', v.vod_play_url || '')
+    // 按历史成功率排序（#16）：稳定能播的排前，全失败的排后
+    lines.value = sortLinesByHealth(site, parsePlayLines(v.vod_play_from || '', v.vod_play_url || ''))
     linesCache = lines.value
     computeNewEps(v.vod_remarks || '')
     if (playlist.value.length || !lines.value.length) return
@@ -717,6 +797,11 @@ async function pickCachedPlaylist(): Promise<string> {
 
 async function load() {
   playEpoch++
+  /*
+   * 换集/换线/重试 = 上一集的转码产物作废：让后端立刻停掉旧 ffmpeg，
+   * 而不是等 120 秒空闲看门狗（#15）。必须在取新地址之前。
+   */
+  dropActiveTranscode()
   mediaInfo.value = null
   refreshSeekAt.value = 0
   dbg('load', location.hash.slice(0, 50))
@@ -728,7 +813,32 @@ async function load() {
   loadingText.value = '正在获取播放地址…'
   // 换线路/换集都是新的尝试，允许原生再兜一次
   nativeTried = false
-  // 片库直链：没有 spider 的 play 可调，地址已经在 query 里。
+  libraryStrmUrl.value = ''
+  /*
+   * `.strm`（#6）：片库里的一行直链文本。先让后端读出目标地址，
+   * 之后按**在线播放**走（代理 + 运行时兜底 + 点播式转码），
+   * 不能交给片库 ffprobe/转码 —— 那会把 .strm 当二进制媒体。
+   */
+  if (isLibraryPlay.value && libraryLib.value && isStrmFile(libraryFile.value)) {
+    loadingText.value = '正在读取直链…'
+    try {
+      const r = await resolveLibraryStrm(libraryLib.value, libraryFile.value)
+      if (!r.ok || !r.url) {
+        error.value = r.msg || '直链文件读取失败（.strm 需要一行 http(s) 地址）'
+        loading.value = false
+        return
+      }
+      libraryStrmUrl.value = r.url
+      play.value = { url: r.url } as PlayResult
+      loading.value = false
+      return
+    } catch (e) {
+      dbg('strm-err', String(e))
+      error.value = e instanceof Error ? e.message : String(e)
+      loading.value = false
+      return
+    }
+  }  // 片库直链：没有 spider 的 play 可调，地址已经在 query 里。
   // 直接构造一个只有 url 的 PlayResult 交给播放器（它有 hls.js + 原生两条路）。
   if (isLibraryPlay.value) {
     /*
@@ -867,6 +977,28 @@ async function load() {
         return
       }
       error.value = r.msg || '未获取到播放地址（可能该线路需要解析器 parse=1）'
+    }
+    /*
+     * 起播前轻量预检（#16）：死链先 GET Range: bytes=0-1，2 秒判死。
+     * 不预检 parse>0 的线路 —— 解析器给的地址不一定是最终流，结果不可信。
+     * 预检 unknown（超时/老后端/私网）继续正常播放，不误杀。
+     */
+    const pu = typeof play.value?.url === 'string' ? play.value.url : ''
+    if (pu && !needsParse(r) && /^https?:/i.test(pu)) {
+      loadingText.value = '正在检查线路…'
+      const pf = await probeLine(pu, play.value.header)
+      if (pf === 'dead') {
+        addFailedLine(flag.value)
+        const cand = nextLineCandidate.value
+        if (cand) {
+          error.value = ''
+          autoRetryHint.value = `线路「${flag.value}」不可用，正在尝试「${cand.name}」…`
+          showLineHint(cand.name)
+          switchLine(cand.name, { auto: true })
+          return
+        }
+        error.value = '这条播放地址预检失败，且没有其它线路可换'
+      }
     }
   } catch (e: any) {
     // 抛异常同样算"这条线路不可用"：后端在 id 不合法、或源站返回畸形数据时
@@ -1060,6 +1192,9 @@ function addFailedLine(name: string) {
   } catch {
     /* 存不下就算了，只影响防横跳 */
   }
+  // 跨会话的线路健康（#16）：下次进同站同线路直接排后 / 用短看门狗
+  noteLineFail(site, name)
+  if (name === flag.value) refreshLineWatch()
 }
 
 /** 还有没有没试过的线路 */
@@ -1351,6 +1486,8 @@ async function tryTranscode(src: string, copy = false, repair = false, startAt =
         return
       }
     }
+    // 已经在边转边看：记住坐标，离页/切集时主动撤（#15）
+    activeTranscode = { src, copy, repair }
     healPrev = null
     mediaInfo.value = transcodeMediaInfo(r)
     // 提示条压在单行里：HEVC 10-bit 4K → H.264 1080p（拿不到编码就退回原文案）
@@ -1556,6 +1693,8 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false, repa
         return
       }
     }
+    // 已经在边转边看：记住坐标，离页/切集时主动撤（#15）
+    activeTranscode = { lib, path: file, copy, repair }
     healPrev = null
     mediaInfo.value = transcodeMediaInfo(r)
     // 提示条压在单行里：HEVC 10-bit 4K → H.264 1080p（拿不到编码就退回原文案）
@@ -1677,6 +1816,11 @@ function onNoAudio(zeroAudio = false) {
         showSilentHint('后端不支持转码，建议用原生播放', hasNativePlayer())
         return
       }
+      // `.strm` 的目标是外部 URL，走点播式 remux（视频 copy + 音频 AAC）
+      if (libraryStrmUrl.value) {
+        void tryTranscode(libraryStrmUrl.value, true)
+        return
+      }
       if (!libraryLib.value || !libraryFile.value) return
       void tryLibraryTranscode(libraryLib.value, libraryFile.value, true)
     })
@@ -1718,6 +1862,11 @@ function onNoAudio(zeroAudio = false) {
   void ensureTranscodeProbe().then((ok) => {
     if (!ok) {
       showSilentHint('后端不支持转码，建议用原生播放', hasNativePlayer())
+      return
+    }
+    // `.strm`：转码源是它指向的外部地址，不是库里的文本文件（#6）
+    if (libraryStrmUrl.value) {
+      void tryTranscode(libraryStrmUrl.value)
       return
     }
     /*
@@ -1831,6 +1980,8 @@ function useTranscodeFromHint() {
  * 命中超纲不等运行时检测，直接进分配（TV 原生 / 转码）。
  */
 async function fetchProbeRoute() {
+  // `.strm` 不是媒体文件，ffprobe 读不出编码（#6）；交给运行时检测
+  if (libraryStrmUrl.value) return
   if (!isLibraryPlay.value || !libraryLib.value || !libraryFile.value) return
   // ★ 用「还是同一个 lib+file」判定结果是否作废，不用 epoch（2026-11-23 实测：
   //   挂载期的重复 load 会抬 epoch，把首个 probe 结果丢掉 → 预判形同虚设，
@@ -1959,15 +2110,20 @@ async function onHighDrop(p: {
    */
   refreshSeekAt.value = startAt + 2
   showSilentHint('检测到画面丢帧，正在用显卡从当前位置按原分辨率修复（分辨率不变）…', false, false)
-  if (libMode) {
-    void tryLibraryTranscode(libraryLib.value, libraryFile.value, false, true, startAt, allowHevc)
-    return
-  }
   /*
    * 用播放器当前选中的那一档变体（4K），别把母清单交给 ffmpeg（它会选 1080p）。
    * hls.js 的 level url 常被后端代理成 /api/proxy/stream?url=...，要还原成源站地址。
    */
   const level = p.levelUrl && /^https?:/i.test(p.levelUrl) ? unwrapProxyUrl(p.levelUrl) : ''
+  if (libraryStrmUrl.value) {
+    // `.strm` 与在线源同构：repair 的 src 用目标地址（level 已在上面还原）
+    void tryTranscode(level || libraryStrmUrl.value, false, true, startAt, allowHevc)
+    return
+  }
+  if (libMode) {
+    void tryLibraryTranscode(libraryLib.value, libraryFile.value, false, true, startAt, allowHevc)
+    return
+  }
   void tryTranscode(level || u, false, true, startAt, allowHevc)
 }
 
@@ -2017,6 +2173,11 @@ async function onPlayerError(payload: PlayErrorPayload | string) {
   //   网络类交给播放器自身重连和错误页的「重试」。
   if (!transcodeTried && isLibraryPlay.value && shouldTranscode(kind)) {
     transcodeTried = true
+    // `.strm` 是外部地址，转码要按点播 src 传，不能按片库文件（#6）
+    if (libraryStrmUrl.value) {
+      void tryTranscode(libraryStrmUrl.value)
+      return
+    }
     if (libraryLib.value && libraryFile.value) {
       void tryLibraryTranscode(libraryLib.value, libraryFile.value)
       return
@@ -2932,6 +3093,16 @@ function posterPic(): string {
 
 function onProgress(p: { pos: number; dur: number; final: boolean; watched?: number }) {
   notePrefetchProgress(p.pos)
+  /*
+   * 线路真的播起来了（progress 只在播放推进时发）：给这条线路记一次成功，
+   * 下次同站直接排前面、用正常看门狗预算（#16）。
+   * 片库没有"线路"概念，跳过。
+   */
+  if (!lineOkNoted && p.pos > 3 && !isLibraryPlay.value && flag.value) {
+    lineOkNoted = true
+    noteLineOk(site, flag.value)
+    refreshLineWatch()
+  }
   // 真的在播新集 → 消费掉这次"有更新"提醒（顶栏红点/收藏角标灭）。
   // 放在 progress 回调而不是起播处：到这里才确定"真的播起来了"，
   // 起播失败/秒退不算看过。
@@ -3344,6 +3515,19 @@ function switchToNextLine() {
 
 function onHide() {
   flushToHistory(true)
+  /*
+   * pagehide：页面真的要走（关 TV 端/刷新/退出 WebView）。用 keepalive 发 DELETE，
+   * 否则普通 fetch 会随文档卸载被取消，后端 ffmpeg 继续空转（#15）。
+   */
+  dropActiveTranscodeOnLeave()
+}
+
+/**
+ * TV 壳在 Activity 关闭/退后台时调（Java 侧 evaluateJavascript）。
+ * 只撤"还在跑"的转码；没有活动任务时是空操作。
+ */
+function cancelTranscodeFromShell() {
+  dropActiveTranscodeOnLeave()
 }
 
 /**
@@ -3383,6 +3567,9 @@ watch(
     resumeTip.value = null
     // 新的一集要重新计"播过 30 秒"，否则换集后再也不预取下一集
     prefetchArmed = false
+    // 换线/换集：线路成功标记与看门狗预算重算（#16）
+    lineOkNoted = false
+    refreshLineWatch()
     // 新片的进度回调要等它 loaded 之后才算数（见 progressArmed）
     progressArmed = false
     // 切集后缓存状态要重置，否则上一集的「已缓存」会显示在这一集上
@@ -3467,6 +3654,11 @@ document.addEventListener('keydown', onDocEscape)
  * 排查时在控制台读 `__playPrefetch()` 就能看到进度回调次数与最近的事件。
  */
 ;(window as any).__playPrefetch = prefetchDiag
+/*
+ * TV 壳关闭页面/退后台时的撤销入口。Java 侧在 onDestroy/onStop 里
+ * evaluateJavascript 调它 —— WebView 销毁前 pagehide 不保证触发（#15）。
+ */
+;(window as any).__meowCancelTranscode = cancelTranscodeFromShell
 onBeforeUnmount(() => {
   clearTimeout(silentHintTimer)
   // 离开播放页：还在等的转码没人要了，停掉后端 ffmpeg（别让它空转到看门狗）
@@ -3476,6 +3668,9 @@ onBeforeUnmount(() => {
     void cancelTranscode(pendingTranscode)
     pendingTranscode = null
   }
+  // 已经在边转边看的那份也要撤（#15）；SPA 内跳转时普通 DELETE 就够了
+  dropActiveTranscodeOnLeave()
+  ;(window as any).__meowCancelTranscode = null
   flushToHistory(true)
   cancelCountdown()
   clearTimeout(lineHintTimer)
@@ -3652,6 +3847,8 @@ onBeforeUnmount(() => {
       :line-name="flag"
       :can-switch-line="lines.length > 1"
       :native-available="canUseNative"
+      :startup-timeout-ms="lineWatch.startup"
+      :stall-timeout-ms="lineWatch.stall"
       :auto-retry-hint="autoRetryHint"
       :site="site"
       :vod-id="vodId"

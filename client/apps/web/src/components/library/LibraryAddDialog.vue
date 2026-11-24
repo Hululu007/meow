@@ -18,7 +18,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { backendIsLocal, isDesktop } from '@/api'
-import { fetchLibrary, fetchLibraryRoots, listLibraryRoot, saveLibrary, testLibrary, type LibraryInfo, type LibraryRoot } from '@/api/library'
+import { browseLibrary, fetchLibrary, fetchLibraryRoots, listLibraryRoot, saveLibrary, testLibrary, type LibraryInfo, type LibraryRoot } from '@/api/library'
 
 const props = withDefaults(defineProps<{ editId?: string }>(), { editId: '' })
 const emit = defineEmits<{
@@ -206,7 +206,11 @@ let pickerOpener: HTMLElement | null = null
  * <p>为什么 http 优先：端内桥给的是 Android 视角的路径，而远程后端（NAS、
  * Docker）根本不在这台机器上，桥选出来的路径后端读不了。
  */
-const pickerMode = ref<'tv' | 'http'>('tv')
+/**
+ * `net`（#5）：保存前浏览候选 SMB/WebDAV —— 不打乱表单的 base，
+ * 选中后只把相对路径写进 `root`。
+ */
+const pickerMode = ref<'tv' | 'http' | 'net'>('tv')
 const pickerRoots = ref<LibraryRoot[]>([])
 const pickerRootId = ref('')
 /** 相对当前根的路径（http 模式） */
@@ -247,6 +251,11 @@ function focusFirstDir() {
 /** 当前所在目录的绝对路径（回填 form.base 用） */
 const pickerAbs = computed(() => {
   if (pickerMode.value === 'tv') return pickerPath.value
+  if (pickerMode.value === 'net') {
+    const base = form.value.base.replace(/[\\/]+$/, '')
+    if (!base) return ''
+    return pickerRel.value ? `${base}/${pickerRel.value}` : base
+  }
   const r = pickerRoot.value
   if (!r) return ''
   const base = r.path.replace(/[\\/]+$/, '')
@@ -290,6 +299,64 @@ function loadDirs(path: string) {
   }
   pickerPath.value = path
   focusFirstDir()
+}
+
+/**
+ * 保存前浏览 SMB/WebDAV（#5）。
+ *
+ * <p>只把**相对路径**回填到 `root`，`base` 保持用户填的共享/接口地址：
+ * 后端 SMB 是 `share + root + rel`、WebDAV 是 `base + root + rel`，
+ * 如果把子目录拼进 base，再保存会把 root 语义弄丢。
+ */
+async function lsNet(rel: string) {
+  pickerLoading.value = true
+  pickerHint.value = ''
+  try {
+    const r = await browseLibrary(
+      {
+        type: type.value,
+        base: form.value.base,
+        root: '',
+        user: form.value.user,
+        domain: form.value.domain,
+        ...(form.value.pass ? { pass: form.value.pass } : {}),
+      },
+      rel,
+    )
+    if (!r.ok) {
+      pickerDirs.value = []
+      pickerHint.value = r.msg || '读取目录失败'
+    } else {
+      pickerDirs.value = (r.dirs || []).map((d) => ({ name: d.name, path: d.path }))
+    }
+    pickerRel.value = rel
+  } catch (e) {
+    pickerDirs.value = []
+    pickerRel.value = rel
+    pickerHint.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    pickerLoading.value = false
+    focusFirstDir()
+  }
+}
+
+/** 打开「浏览 SMB/WebDAV 目录」：地址没填先提示，不弹空窗。 */
+async function openNetPicker(ev?: Event) {
+  if (!form.value.base.trim()) {
+    msgOk.value = false
+    msg.value = '先填地址（SMB 写到共享名），再浏览目录'
+    return
+  }
+  pickerOpener = ev && ev.currentTarget instanceof HTMLElement ? ev.currentTarget : null
+  pickerStack.value = []
+  pickerRoots.value = []
+  pickerRootId.value = ''
+  pickerRel.value = form.value.root || ''
+  pickerDirs.value = []
+  pickerHint.value = ''
+  pickerMode.value = 'net'
+  pickerOpen.value = true
+  await lsNet(pickerRel.value)
 }
 
 async function openPicker(ev?: Event) {
@@ -373,6 +440,11 @@ function enterDir(p: string) {
     loadDirs(p)
     return
   }
+  if (pickerMode.value === 'net') {
+    // 后端返回的 path 已经是相对库根的完整相对路径，不要再拼一层
+    void lsNet(p)
+    return
+  }
   const next = pickerRel.value ? `${pickerRel.value}/${p}` : p
   void lsHttp(pickerRootId.value, next)
 }
@@ -382,6 +454,7 @@ function upDir() {
   const prev = st.pop() ?? ''
   pickerStack.value = st
   if (pickerMode.value === 'tv') loadDirs(prev)
+  else if (pickerMode.value === 'net') void lsNet(prev)
   else void lsHttp(pickerRootId.value, prev)
 }
 
@@ -394,6 +467,15 @@ function switchRoot(id: string) {
 }
 
 function chooseDir() {
+  if (pickerMode.value === 'net') {
+    // 只写 root：base 是用户填的共享/接口地址，不能被子目录覆盖
+    const rel = pickerRel.value.replace(/^\/+|\/+$/g, '')
+    form.value.root = rel
+    closeTvPicker()
+    msgOk.value = true
+    msg.value = rel ? `已选择子目录：${rel}` : '已选择根目录'
+    return
+  }
   const abs = pickerAbs.value
   if (!abs) {
     msgOk.value = false
@@ -690,6 +772,33 @@ onBeforeUnmount(() => {
             class="mt-1 w-full rounded-md border border-line bg-field px-3 py-2 font-mono text-sm outline-none focus:border-accent/60"
           />
         </label>
+
+        <!-- #5：SMB/WebDAV 保存前就能浏览 —— 填完地址点这里选子目录，
+             不用先保存再回来改，也不用猜层级。 -->
+        <div v-if="needsAuth" class="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            class="rounded-md bg-card px-3 py-1.5 text-sm text-ink-2 transition hover:bg-card-hover hover:text-ink"
+            :disabled="busy"
+            @click="openNetPicker"
+          >
+            浏览目录…
+          </button>
+          <span class="text-[length:var(--fs-mini)] text-ink-3">
+            连上后列出共享/接口里的目录，选中会填到上面的「根路径」
+          </span>
+        </div>
+
+        <p class="text-[length:var(--fs-mini)] leading-relaxed text-ink-3">
+          不知道怎么填？
+          <a
+            href="https://upchr.github.io/meow/guide/library"
+            target="_blank"
+            rel="noopener"
+            class="text-accent hover:underline"
+          >查看《片库》说明</a>
+          （SMB 要写到共享名，WebDAV 填到 /dav 这一层）。
+        </p>
 
         <div v-if="needsAuth" class="grid grid-cols-2 gap-3">
           <label class="block">

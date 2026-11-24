@@ -29,6 +29,20 @@ export interface WebCodecCaps {
 }
 
 /**
+ * 原生播放器（ExoPlayer）能力表，语义与 {@link WebCodecCaps} 一致。
+ *
+ * <p>由 TV 壳的 `nativeCaps()` 返回（MediaCodecList 实测，比 WebView 的 MSE
+ * 表可靠）。`probed=false` = 老壳没有这个方法，分配层按"未知"处理 ——
+ * 保持旧行为，不因为缺信息把用户赶去转码。
+ */
+export interface NativeCodecCaps {
+  probed: boolean
+  video: string[]
+  highBitVideo: string[]
+  audio: string[]
+}
+
+/**
  * 高位深探测用的 MIME。
  *
  * `hvc1.2.4.L153.B0` = HEVC Main10（profile 2, level 5.1）；

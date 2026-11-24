@@ -184,6 +184,15 @@ const props = withDefaults(defineProps<{
    * 父组件收到 no-audio 后落转码兜底（见 PlayView.onNoAudio）。
    */
   noAudioFallback?: boolean
+  /**
+   * 起播看门狗预算（毫秒）。0/缺省 = 20s。
+   *
+   * <p>父组件按线路健康传短值（#16）：从没播成功过的线路用 10s，
+   * 死链不用等满 20 秒；稳定成功的线路传 0 用默认值。
+   */
+  startupTimeoutMs?: number
+  /** 假死看门狗预算（毫秒）。0/缺省 = 12s（同上，未验证线路传 8s）。 */
+  stallTimeoutMs?: number
 }>(),
   // ★ autoPlay 必须显式给 true：Boolean prop 的类型默认值是 false，
   //   不写这一行的话 `props.autoPlay !== false` 永远不成立（实测踩过）。
@@ -1566,24 +1575,43 @@ let startupExtended = false
 const WATCHDOG_MAX_MS = 45_000
 
 /**
- * 清单已拿到（MANIFEST_PARSED）→ 起播预算 20s → 35s。
+ * 起播预算（#16）：父组件按线路健康传值，0/缺省 = 历史默认 20s。
+ * 下限 3s：再短会把"冷启动 4 秒的正常源"误杀。
+ */
+function startupBudgetMs(): number {
+  const v = props.startupTimeoutMs
+  return typeof v === 'number' && v >= 3_000 ? v : 20_000
+}
+
+/** 假死预算（#16）：0/缺省 = 历史默认 12s。 */
+function stallBudgetMs(): number {
+  const v = props.stallTimeoutMs
+  return typeof v === 'number' && v >= 2_000 ? v : 12_000
+}
+
+/**
+ * 清单已拿到（MANIFEST_PARSED）→ 起播预算放宽到 35s。
  *
  * <p>原来只有 20s 的固定预算：源站冷启动慢一点（4K 实测 10~14s）
  * 加上代理一跳，就会被判死；而同一时刻原生播放器等 30s 照样能起播——
  * 用户看到的就是"报错，但用原生播放器能放"。
+ *
+ * <p>#16 短预算线路也放宽：清单都打开了说明线路活着，剩下的首帧慢
+ * 交给假死看门狗（短预算仍在），不在这里把慢源误杀。
  */
 function extendStartupForManifest() {
   if (startupExtended) return
-  const rest = 35_000 - (performance.now() - loadStartedAt.value)
+  const target = Math.max(35_000, startupBudgetMs())
+  const rest = target - (performance.now() - loadStartedAt.value)
   if (rest <= 5_000) return
   startupExtended = true
   if (startupTimer !== null) clearTimeout(startupTimer)
   startupTimer = window.setTimeout(onStartupTimeout, rest)
 }
 
-/** 有分片进来 → 假死窗口重新计 12s；总时长仍受 WATCHDOG_MAX_MS 约束 */
+/** 有分片进来 → 假死窗口重新计（默认 12s，短预算线路 8s）；总时长仍受 WATCHDOG_MAX_MS 约束 */
 function extendStallForFragment() {
-  const rest = Math.min(12_000, loadStartedAt.value + WATCHDOG_MAX_MS - performance.now())
+  const rest = Math.min(stallBudgetMs(), loadStartedAt.value + WATCHDOG_MAX_MS - performance.now())
   if (rest <= 2_000) return
   if (stallTimer !== null) clearTimeout(stallTimer)
   stallTimer = window.setTimeout(onStallTimeout, rest)
@@ -1771,8 +1799,8 @@ function armWatchdogs() {
   startupExtended = false
   if (startupTimer !== null) clearTimeout(startupTimer)
   if (stallTimer !== null) clearTimeout(stallTimer)
-  startupTimer = window.setTimeout(onStartupTimeout, 20_000)
-  stallTimer = window.setTimeout(onStallTimeout, 12_000)
+  startupTimer = window.setTimeout(onStartupTimeout, startupBudgetMs())
+  stallTimer = window.setTimeout(onStallTimeout, stallBudgetMs())
   armProgressWatchdog()
 }
 

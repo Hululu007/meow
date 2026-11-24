@@ -580,6 +580,36 @@ export async function fetchPlay(
   })
 }
 
+/**
+ * 起播前线路预检（#16）：后端 GET Range: bytes=0-1，2 秒判死活。
+ *
+ * <p>为什么不让浏览器直接 fetch 源站：源站基本不给 CORS，跨域请求一律
+ * TypeError，分不出"死链"和"没带 CORS 的活链"。后端探活只看状态码，
+ * `dead` 才跳过；`unknown`（超时/私网/非 http）继续正常播放，不误杀。
+ */
+export async function probeLine(
+  url: string,
+  header?: string | Record<string, string>,
+  timeoutMs = 3000,
+): Promise<'ok' | 'dead' | 'unknown'> {
+  if (!/^https?:/i.test(url)) return 'unknown'
+  const q = new URLSearchParams({ url })
+  const h = typeof header === 'string' ? header : header ? JSON.stringify(header) : ''
+  if (h) q.set('header', h)
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), timeoutMs)
+  try {
+    const r = await fetch(`${apiBase()}/api/line/probe?${q}`, { signal: ctl.signal })
+    if (!r.ok) return 'unknown'
+    const j = (await r.json()) as { state?: string }
+    return j.state === 'dead' ? 'dead' : j.state === 'ok' ? 'ok' : 'unknown'
+  } catch {
+    return 'unknown'
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** 直播频道：CatVod 的 `urls` 里可能带 `$备用名` 后缀，由前端拆 */
 export interface LiveChannel {
   name?: string

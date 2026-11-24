@@ -20,7 +20,7 @@
  * 不改逻辑 —— 这是分配层不引入回归的机械保证。
  */
 
-import type { WebCodecCaps } from './codecCaps'
+import type { NativeCodecCaps, WebCodecCaps } from './codecCaps'
 
 export interface MediaProbe {
   acodec?: string
@@ -65,6 +65,14 @@ export interface PlaybackRouteInput {
    * 有了它才能判断"这台设备到底能不能解高位深"。
    */
   caps?: WebCodecCaps | null
+  /**
+   * 原生播放器能力（TV 壳 `nativeCaps()` 实测）。
+   *
+   * 缺省或 probed=false → 老壳，按"未知"处理（保持旧行为：能显示提示，
+   * 但不自动切原生）。有它才能回答"WebView 解不了、原生到底能不能解" ——
+   * HEVC Main10 / AC3 在 TV 上归原生、不转码，靠的就是这份表（#12）。
+   */
+  nativeCaps?: NativeCodecCaps | null
   /**
    * 允许 remux（视频 copy + 音频转 AAC）。
    *
@@ -140,6 +148,31 @@ export function webCanDecodeVideo(p: MediaProbe, i: PlaybackRouteInput): boolean
   return true
 }
 
+/**
+ * 原生播放器能不能解这个视频（含位深）。
+ *
+ * <p>没有能力表（老壳）→ 按"能"处理：旧行为本来就是"提示用户去试原生"，
+ * 不能因为缺信息把用户赶去转码。Hi10P 是原生也救不了的共同盲区。
+ */
+export function nativeCanDecodeVideo(p: MediaProbe, i: PlaybackRouteInput): boolean {
+  const vcodec = (p.vcodec || '').toLowerCase()
+  if (!vcodec) return true
+  if (isHi10p(p)) return false
+  const caps = i.nativeCaps
+  if (!caps || !caps.probed) return true
+  if (probeBitDepth(p) >= 10) return caps.highBitVideo.includes(vcodec)
+  return caps.video.includes(vcodec)
+}
+
+/** 原生播放器能不能解这个音轨（没有能力表按"能"处理）。 */
+export function nativeCanDecodeAudio(p: MediaProbe, i: PlaybackRouteInput): boolean {
+  const acodec = (p.acodec || '').toLowerCase()
+  if (!acodec) return true
+  const caps = i.nativeCaps
+  if (!caps || !caps.probed) return true
+  return caps.audio.includes(acodec)
+}
+
 export function resolvePlaybackRoute(i: PlaybackRouteInput): PlaybackRoute {
   const p = i.probe
   if (!p) return 'direct'
@@ -166,9 +199,23 @@ export function resolvePlaybackRoute(i: PlaybackRouteInput): PlaybackRoute {
   if (i.allowRemux && videoOk && !audioOk && canTranscode && !i.hasNative) return 'remux'
   /*
    * 有原生桥（电视）：原生播放器是设备硬解，拿到的是原画。
-   * 保持旧语义：默认给提示（用户点一次），开了「无声自动用原生」才自动切。
+   *
+   * ★ 新壳（nativeCaps 可用）时按实测能力分流（#12）：
+   *   · WebView 解不了、原生能解 → **自动原生**。HEVC Main10 是标准 4K HDR
+   *     编码，Android WebView 的 MSE 表经常报 false，但 ExoPlayer 能硬解；
+   *     只按 WebView 判会把 4K 砍成 1080p（用户实报"都被降画质了"）。
+   *   · 原生也解不了 → 转码（原生救不了，别让用户白点一次）。
+   *   · 视频能解、只有音轨超纲 → 保持旧语义（提示一次 / 开了自动切才自动），
+   *     因为"切到原生播放器"是整页接管，不该在用户没要求时静默发生。
    */
   if (i.hasNative) {
+    const nativeKnown = !!i.nativeCaps?.probed
+    if (nativeKnown) {
+      const nativeVideoOk = nativeCanDecodeVideo(p, i)
+      const nativeAudioOk = nativeCanDecodeAudio(p, i)
+      if (!videoOk && nativeVideoOk && nativeAudioOk) return 'native'
+      if (!nativeVideoOk || !nativeAudioOk) return canTranscode ? 'transcode' : 'native-hint'
+    }
     if (i.preferNativeOnSilent) return 'native'
     return 'native-hint'
   }

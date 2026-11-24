@@ -54,6 +54,7 @@ import {
   systemVolume,
 } from '@/api/nativeBridge'
 import { getPrefs, savePrefs } from '@/stores/prefs'
+import { isLiveBad, noteLiveFail, noteLiveOk, sortLiveByHealth } from '@/stores/liveHealth'
 import { describeSources, mergeSources, sourceCountOf, type ParsedSource } from '@/api/liveMerge'
 
 const groups = ref<LiveGroup[]>([])
@@ -464,6 +465,15 @@ function startGuideSplitResize(e: PointerEvent) {
 }
 /** 起播看门狗：3 秒没画面就判坏台 */
 let badTimer: number | undefined
+/**
+ * 已经发起 `play()` 但还没等到 `playing`（#3 ③）。
+ *
+ * <p>移动端 autoplay 策略会 reject 无手势的 `play()`，之后 `v.paused === true`
+ * 且没有任何事件 —— 缓冲看门狗原来 `if (v.paused) return` 直接跳过，
+ * 坏台看门狗又把 readyState=2 当成功，两条兜底同时失效。
+ * 这个标记让缓冲看门狗能区分"用户自己暂停"和"自动播放被拒"。
+ */
+let autoPlayPending = false
 /** 连续跳过几个坏台了。一次换台操作里连跳超过 MAX_AUTO_SKIP 就停下等人 */
 let autoSkipCount = 0
 /**
@@ -1073,7 +1083,24 @@ function uniqueOf(g?: LiveGroup): ChannelItem[] {
  *   ↑↓ 换台会在同一个台的 5 条线路之间来回跳（扫台体验很差）。
  *   去重后：一个台一行，多条 URL 合并进 urls，←→ 切线路不改变列表。
  */
-const channels = computed<ChannelItem[]>(() => uniqueOf(activeGroup.value))
+/**
+ * 频道健康版本号（#1）：健康表在 localStorage，不是响应式数据；
+ * 每次判定成功/失败 +1，列表 computed 读它才会重新排序/灰显。
+ */
+const healthRev = ref(0)
+function markLiveFail(name: string) {
+  noteLiveFail(name)
+  healthRev.value++
+}
+function markLiveOk(name: string) {
+  noteLiveOk(name)
+  healthRev.value++
+}
+
+const channels = computed<ChannelItem[]>(() => {
+  void healthRev.value
+  return sortLiveByHealth(uniqueOf(activeGroup.value))
+})
 
 /**
  * **面板右列**的台列表：跟着面板左列光标（guideGroup）走，不是跟 activeKey。
@@ -1084,7 +1111,10 @@ const channels = computed<ChannelItem[]>(() => uniqueOf(activeGroup.value))
  *   台取 channels（旧分类列表）"会让**播的台和显示的列表对不上**
  *   （实测：光标停在经典剧场，播放的却是央视频道的台）。
  */
-const guideChannels = computed<ChannelItem[]>(() => uniqueOf(groups.value[guideGroup.value]))
+const guideChannels = computed<ChannelItem[]>(() => {
+  void healthRev.value
+  return sortLiveByHealth(uniqueOf(groups.value[guideGroup.value]))
+})
 
 /**
  * 面板底部的"这一台的线路来自哪几个源"。
@@ -1107,8 +1137,19 @@ function uniqueCount(g: LiveGroup): number {
   return seen.size
 }
 
-/** 当前频道在列表里的下标；找不到为 -1 */
-const channelIndex = computed(() => current.value?.idx ?? -1)
+/**
+ * 当前频道在列表里的下标；找不到为 -1。
+ *
+ * <p>优先按台名反查而不是直接用 `current.idx`：健康表更新会触发
+ * `channels` 重排（坏台挪到末尾、刚恢复的台挪回前面），存下来的旧下标
+ * 会指向别的台，换台就跳错。去重后的列表里台名唯一，可以安全反查。
+ */
+const channelIndex = computed(() => {
+  const cur = current.value
+  if (!cur) return -1
+  const i = channels.value.findIndex((c) => c.name === cur.name)
+  return i >= 0 ? i : cur.idx
+})
 
 /** 当前用的线路下标（同一个频道有多条地址时） */
 const currentUrlIndex = computed(() => {
@@ -1760,8 +1801,21 @@ function onVideoTimeUpdate() {
  */
 function checkBufferWatchdog() {
   const v = video.value
-  if (!v || v.paused) return
+  if (!v) return
   const now = performance.now()
+  if (v.paused) {
+    /*
+     * 用户自己暂停 → 不管。
+     * 但"自动播放被策略拒绝"也是 paused（且没有任何事件），#3 ③：
+     * 起播 8 秒还没 playing、buffer 停着 → 按坏台换线/跳台，
+     * 否则永久转圈（坏台看门狗要求 readyState>=3，这里补上另一条路）。
+     */
+    if (!autoPlayPending) return
+    if (!loadStartedAt.value || now - loadStartedAt.value < 8000) return
+    autoPlayPending = false
+    if (v.readyState < 3 && v.currentTime <= 0) markBadAndAdvance(activeUrl.value)
+    return
+  }
   const stalledFor = now - lastAdvanceAt
   if (v.currentTime !== lastAdvanceCt || stalledFor <= 3000) return
   if (!buffering.value) {
@@ -1781,10 +1835,35 @@ function checkBufferWatchdog() {
 function onVideoPlaying() {
   buffering.value = false
   clearSkipError()
+  autoPlayPending = false
+  // 真的出画面了 → 清掉这个台的失败记录（#1）
+  const name = current.value?.name || ''
+  if (name) markLiveOk(name)
   // 首帧耗时（切源 → 第一次 playing）：慢源排查时比"感觉有点慢"有用
   if (firstFrameMs.value == null && loadStartedAt.value) {
     firstFrameMs.value = Date.now() - loadStartedAt.value
   }
+}
+
+/**
+ * `<video>` 原生错误兜底（#3 ①）。
+ *
+ * <p>原来模板上根本没挂 `@error`：走到 `v.src = src` 原生 HLS 分支时，
+ * MEDIA_ERR_SRC_NOT_SUPPORTED / 混合内容拦截 / HEVC 硬解失败都是**静默**的，
+ * `buffering` 永远 true，用户看到永久转圈。现在有任何媒体错误都：
+ * 写明原因 → 记一次频道失败 → 立刻按坏台流程换线路/跳台（不等 6 秒）。
+ */
+function onVideoError() {
+  const v = video.value
+  if (!v || !activeUrl.value) return
+  const code = v.error?.code || 0
+  error.value =
+    code === 4
+      ? '当前设备不支持这个频道的编码，正在换线路…'
+      : '直播流加载失败，正在换线路…'
+  buffering.value = false
+  // markBadAndAdvance 内部会记失败（别在这里重复计一次）
+  markBadAndAdvance(activeUrl.value)
 }
 
 function onStagePointerUp() {
@@ -2094,6 +2173,8 @@ function switchUrl(url: string) {
       if (data.fatal) {
         error.value = '直播流加载失败，换条线路试试'
         buffering.value = false
+        // 记录频道健康并立即换线/跳台（#1/#3：不必再等满 6 秒看门狗）
+        markBadAndAdvance(activeUrl.value)
       }
       lastHlsError.value = `${data.type}/${data.details}${data.frag ? ' @' + Math.round(data.frag.start) : ''}`
       // 分片级错误也记一条：能看出"哪个分片在 404"（hls.js 没有独立的 FRAG_LOAD_ERROR 事件，
@@ -2127,10 +2208,12 @@ function switchUrl(url: string) {
   v.muted = p.muted
   // 这里是点击触发的，属于"用户手势"，可以带声音自动播；
   // 失败（部分浏览器仍拦）就退回静音重试，并把控制权交给用户。
+  // autoPlayPending 让缓冲看门狗能识别"被策略拒绝"（#3 ③）。
+  autoPlayPending = true
   void v.play().catch(() => {
     v.muted = true
     void v.play().catch(() => {
-      /* 仍然失败就让用户点播放键 */
+      /* 仍然失败：缓冲看门狗会在 8 秒后按坏台处理 */
     })
   })
   armBadChannelWatchdog()
@@ -2157,51 +2240,71 @@ function armBadChannelWatchdog() {
     // 这期间用户已经换到别的台了，别再按旧频道判断
     if (myUrl !== activeUrl.value) return
     const v = video.value
-    if (!v || v.readyState >= 2 || v.currentTime > 0) {
+    /*
+     * ★ #3 ②：`readyState >= 2` 只代表"拿到了当前帧数据"，**不等于有画面**。
+     * 移动端常见形态：分片拉到了、readyState=2、但解码不出画面（canplay 是 3、
+     * playing 没来）—— 旧判据直接判"这个台好的"，永远不跳台也不报错。
+     * 现在要求 `readyState >= 3`（CAN_FUTURE_DATA）或时间真的往前走了。
+     */
+    if (!v || v.readyState >= 3 || v.currentTime > 0) {
       autoSkipCount = 0
       lineTryCount = 0
       clearSkipError()
+      const name = current.value?.name || ''
+      if (name) markLiveOk(name)
       return
     }
-    /*
-     * ★ 先在同台内换线路，全试完才换台（2026-11-06）。
-     *
-     * 多源合并后一个台常有 4~6 条线路（CCTV-1 实测 6 条，来自 2 个源）。
-     * 原来第一条线路 3 秒不出画面就直接跳到下一个台 —— 用户得手动
-     * 按 ← 回头切线路，多源合并"提高可播率"的收益完全没吃到。
-     *
-     * 计数分开：`lineTryCount` 管台内换线（每台最多 urls.length-1 次），
-     * `autoSkipCount` 管换台（MAX_AUTO_SKIP 次）。混用一个会让"换线尝试"
-     * 被算成"跳了 N 个台"，整组频道很快就误报"全都放不出来"。
-     */
-    const cur = current.value
-    if (cur && cur.urls.length > 1 && lineTryCount < cur.urls.length - 1) {
-      lineTryCount++
-      const nextLine = (currentUrlIndex.value + 1) % cur.urls.length
-      flashZap(`换线路 ${nextLine + 1}/${cur.urls.length} · ${cur.name}`)
-      switchUrl(cur.urls[nextLine].url)
-      armBadChannelWatchdog()
-      return
-    }
-    lineTryCount = 0
-    if (autoSkipCount >= MAX_AUTO_SKIP) {
-      error.value = `连续 ${MAX_AUTO_SKIP} 个频道都放不出来，先停在这里。可能是网络或播放列表过期了。`
-      autoSkipCount = 0
-      return
-    }
-    autoSkipCount++
-    const list = channels.value
-    if (list.length < 2) {
-      error.value = '这个频道放不出来'
-      return
-    }
-    const i = channelIndex.value
-    const next = i < 0 ? 0 : (i + 1) % list.length
-    const ch = list[next]
-    if (!ch) return
-    flashZap(`跳过坏台 · ${ch.name || '未命名'} (${next + 1}/${list.length})`)
-    void playChannel(ch)
+    markBadAndAdvance(myUrl)
   }, BAD_CHANNEL_MS)
+}
+
+/**
+ * 判坏一个台并立即换线/跳台（看门狗超时、`video.error`、自动播放被拒共用）。
+ *
+ * <p>`myUrl` 是判定时的地址：期间用户已换台就作废，避免把新台一起带跳。
+ * 失败计数落盘到 `liveHealth`（#1），列表下次直接灰显 + 排后。
+ */
+function markBadAndAdvance(myUrl: string) {
+  if (myUrl !== activeUrl.value) return
+  /*
+   * ★ 先在同台内换线路，全试完才换台（2026-11-06）。
+   *
+   * 多源合并后一个台常有 4~6 条线路（CCTV-1 实测 6 条，来自 2 个源）。
+   * 原来第一条线路 3 秒不出画面就直接跳到下一个台 —— 用户得手动
+   * 按 ← 回头切线路，多源合并"提高可播率"的收益完全没吃到。
+   *
+   * 计数分开：`lineTryCount` 管台内换线（每台最多 urls.length-1 次），
+   * `autoSkipCount` 管换台（MAX_AUTO_SKIP 次）。混用一个会让"换线尝试"
+   * 被算成"跳了 N 个台"，整组频道很快就误报"全都放不出来"。
+   */
+  const cur = current.value
+  if (cur) markLiveFail(cur.name)
+  if (cur && cur.urls.length > 1 && lineTryCount < cur.urls.length - 1) {
+    lineTryCount++
+    const nextLine = (currentUrlIndex.value + 1) % cur.urls.length
+    flashZap(`换线路 ${nextLine + 1}/${cur.urls.length} · ${cur.name}`)
+    switchUrl(cur.urls[nextLine].url)
+    armBadChannelWatchdog()
+    return
+  }
+  lineTryCount = 0
+  if (autoSkipCount >= MAX_AUTO_SKIP) {
+    error.value = `连续 ${MAX_AUTO_SKIP} 个频道都放不出来，先停在这里。可能是网络或播放列表过期了。`
+    autoSkipCount = 0
+    return
+  }
+  autoSkipCount++
+  const list = channels.value
+  if (list.length < 2) {
+    error.value = '这个频道放不出来'
+    return
+  }
+  const i = channelIndex.value
+  const next = i < 0 ? 0 : (i + 1) % list.length
+  const ch = list[next]
+  if (!ch) return
+  flashZap(`跳过坏台 · ${ch.name || '未命名'} (${next + 1}/${list.length})`)
+  void playChannel(ch)
 }
 
 /**
@@ -2572,6 +2675,7 @@ onBeforeUnmount(() => {
             class="h-full w-full bg-black object-contain"
             playsinline
             @contextmenu.prevent
+            @error="onVideoError"
             @playing="onVideoPlaying"
             @waiting="onVideoWaiting"
             @stalled="onVideoWaiting"
@@ -3046,12 +3150,19 @@ onBeforeUnmount(() => {
                 class="mb-0.5 flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition"
                 :class="[
                   ch.name === current?.name ? 'bg-accent text-on-accent' : 'text-white/80 hover:bg-white/10',
+                  isLiveBad(ch.name) && ch.name !== current?.name ? 'opacity-45' : '',
                   guideColumn === 'channel' && i === guideChannel ? 'guide-cursor' : '',
                 ]"
+                :title="isLiveBad(ch.name) ? '上次播放失败（24 小时内连续 2 次）' : ch.name"
                 @click="guideChannel = i; void guideOk()"
               >
                 <span class="w-9 shrink-0 text-[10px] opacity-60">{{ i + 1 }}</span>
                 <span class="truncate" :title="ch.name">{{ ch.name }}</span>
+                <!-- #1：运行时判过的坏台落盘到 liveHealth，列表直接呈现 -->
+                <span
+                  v-if="isLiveBad(ch.name)"
+                  class="shrink-0 rounded bg-white/10 px-1 text-[10px] text-white/60"
+                >上次不可播</span>
                 <!--
                   线路数：跨源时用主题色，同源多线用灰色。
                   ★ 不再拼「· M 源」——面板右列只有约 216px，台名一长
@@ -3079,8 +3190,13 @@ onBeforeUnmount(() => {
           v-if="!isTouch"
           class="pointer-events-none absolute bottom-4 left-4 max-w-[62%] rounded bg-black/60 px-3 py-1 text-left text-[11px] leading-snug text-white/70"
         >
+          <!--
+            #1：这两个数是**源级**统计（多少站点返回了频道），完全不碰频道 URL。
+            原来写「已试 N 源 · 无直播 M」，用户以为"源健康 = 每个台都能播"。
+            频道级可用性看台列表里的「上次不可播」标记。
+          -->
           <span v-if="stats" class="mr-2 text-white/45">
-            已试 {{ stats.tried }} 源 · 无直播 {{ stats.failed }}
+            源级：试 {{ stats.tried }} · 空 {{ stats.failed }}
           </span>
           <!-- 多源合并时把"这一台的线路都来自哪几个源"摊开：用户才知道
                「6 线」是哪来的，换线路换的是哪个源 -->

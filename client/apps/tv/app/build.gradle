@@ -127,6 +127,17 @@ android {
 dependencies {
     // 运行时模块的共享接口（宿主与模块各编一份，逐字对齐）
     implementation project(':plugin-api')
+    /*
+     * 宿主的 `core.DexJvmFix`（d2j 的 new-instance 修补）用 ASM 读 class 字节。
+     * TV 的 sourceSets 映射了 server/host/src/shared，但以前没有 asm 依赖 ——
+     * ac713d1 加入 DexJvmFix 后 TV 编不过（找不到 BasicInterpreter/BasicValue）。
+     * TV 运行期用 dex 不会调它，这里只为编译通过，jar 本身很小。
+     */
+    implementation files(
+        "$rootDir/../../../server/host/libs/asm-9.5.jar",
+        "$rootDir/../../../server/host/libs/asm-tree-9.5.jar",
+        "$rootDir/../../../server/host/libs/asm-analysis-9.5.jar",
+    )
     // 端上播放器：现在 TV 是 WebView + hls.js（网页里的 <video>），
     // 受 WebView 解码能力限制（部分盒子不支持 HEVC/AV1，也不给硬解），
     // 而且要经 JS 层转一手。ExoPlayer 直接走 MediaCodec，是电视端的正解。

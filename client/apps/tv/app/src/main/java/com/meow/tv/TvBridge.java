@@ -108,6 +108,107 @@ public class TvBridge {
     }
 
     /**
+     * 原生解码能力（ExoPlayer 走 MediaCodec，比 WebView 的 MSE 表可靠）。
+     *
+     * <p>为什么 Web 侧需要它：Android WebView 的 {@code MediaSource.isTypeSupported}
+     * 对 HEVC Main10 经常返回 false（MSE 层没开），但同一台机器的 ExoPlayer
+     * 能硬解 —— 只按 WebView 能力判会把 4K HDR 判成"只能转码"（#12）。
+     * 有了这份能力表，分配层才敢"WebView 解不了就自动交给原生"，而不是
+     * 先转码降画质。
+     *
+     * <p>返回 JSON（{@code video / highBitVideo / audio} 三个小写数组）。
+     * 取不到（MediaCodecList 异常）返回空串，Web 侧按"未知"处理，保持旧行为。
+     * 只读能力表，无副作用；仍走 trustedOrigin —— 外部页面不该探测设备编解码器。
+     */
+    @JavascriptInterface
+    public String nativeCaps() {
+        if (!trustedOrigin()) return "";
+        try {
+            java.util.LinkedHashSet<String> video = new java.util.LinkedHashSet<>();
+            java.util.LinkedHashSet<String> high = new java.util.LinkedHashSet<>();
+            java.util.LinkedHashSet<String> audio = new java.util.LinkedHashSet<>();
+            android.media.MediaCodecList list =
+                    new android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS);
+            for (android.media.MediaCodecInfo ci : list.getCodecInfos()) {
+                if (ci == null || ci.isEncoder()) continue;
+                for (String type : ci.getSupportedTypes()) {
+                    if (type == null) continue;
+                    switch (type) {
+                        case "video/avc":
+                            video.add("h264");
+                            break;
+                        case "video/hevc":
+                            video.add("hevc");
+                            try {
+                                android.media.MediaCodecInfo.CodecCapabilities cc =
+                                        ci.getCapabilitiesForType(type);
+                                for (android.media.MediaCodecInfo.CodecProfileLevel pl : cc.profileLevels) {
+                                    // Main10 才是 10-bit HDR；普通 Main 只到 8-bit，
+                                    // 不能因为设备有 HEVC 就宣称能解 Main10。
+                                    if (pl.profile == android.media.MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10
+                                            || pl.profile == android.media.MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10
+                                            || pl.profile == android.media.MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10Plus) {
+                                        high.add("hevc");
+                                    }
+                                }
+                            } catch (Throwable ignored) {
+                            }
+                            break;
+                        case "video/av01":
+                            video.add("av1");
+                            try {
+                                android.media.MediaCodecInfo.CodecCapabilities cc =
+                                        ci.getCapabilitiesForType(type);
+                                for (android.media.MediaCodecInfo.CodecProfileLevel pl : cc.profileLevels) {
+                                    if (pl.profile == android.media.MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10
+                                            || pl.profile == android.media.MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10HDR10
+                                            || pl.profile == android.media.MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10HDR10Plus) {
+                                        high.add("av1");
+                                    }
+                                }
+                            } catch (Throwable ignored) {
+                            }
+                            break;
+                        case "audio/mp4a-latm":
+                            audio.add("aac");
+                            break;
+                        case "audio/mpeg":
+                            audio.add("mp3");
+                            break;
+                        case "audio/opus":
+                            audio.add("opus");
+                            break;
+                        case "audio/vorbis":
+                            audio.add("vorbis");
+                            break;
+                        case "audio/flac":
+                            audio.add("flac");
+                            break;
+                        case "audio/ac3":
+                            audio.add("ac3");
+                            break;
+                        case "audio/eac3":
+                            audio.add("eac3");
+                            break;
+                        case "audio/vnd.dts":
+                            audio.add("dts");
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            }
+            org.json.JSONObject out = new org.json.JSONObject();
+            out.put("video", new org.json.JSONArray(video));
+            out.put("highBitVideo", new org.json.JSONArray(high));
+            out.put("audio", new org.json.JSONArray(audio));
+            return out.toString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
      * 原生播放器最近一次选中的轨道编码（面板显示「原生直出 4K HEVC」）。
      *
      * <p>只读本地 SharedPreferences，无副作用；返回空串 = 还没播过/还没探到轨道，
