@@ -170,7 +170,28 @@ static NSString *jvmLogPath(NSString *dataDir) {
             }
             jvmInstallSignalHandlers();
 
-            /* 1) 先加载 JVM 动态库（失败也只是「本地网关不可用」，App 照常进界面）。 */
+            /*
+             * 0) 探针：先 dlopen 一个 10 行的 dylib（libmeow-smoke.dylib）。
+             *    - 探针也 SIGBUS/失败 → 侧载器根本不允许加载内嵌动态库（签名问题），
+             *      「JVM 用 dylib」这条路在侧载器里走不通；
+             *    - 探针 OK、JVM dylib 崩 → 问题在 OpenJDK 这个 dylib 本身。
+             * 日志里这一行就是分水岭。
+             */
+            NSString *smokePath = [NSBundle.mainBundle.privateFrameworksPath
+                stringByAppendingPathComponent:@"libmeow-smoke.dylib"];
+            jvmLogWrite([NSString stringWithFormat:@"[meow-jvm] smoke dlopen %@\n", smokePath].UTF8String);
+            void *smokeHandle = dlopen(smokePath.fileSystemRepresentation, RTLD_NOW | RTLD_LOCAL);
+            if (smokeHandle == NULL) {
+                const char *err = dlerror();
+                jvmLogWrite([NSString stringWithFormat:@"[meow-jvm] smoke dlopen FAILED: %s\n",
+                             err ? err : "unknown"].UTF8String);
+            } else {
+                void *fn = dlsym(smokeHandle, "meow_smoke");
+                jvmLogWrite([NSString stringWithFormat:@"[meow-jvm] smoke dlopen OK (meow_smoke=%s)\n",
+                             fn ? "found" : "missing"].UTF8String);
+            }
+
+            /* 1) 再加载 JVM 动态库（失败也只是「本地网关不可用」，App 照常进界面）。 */
             NSString *dylibPath = [NSBundle.mainBundle.privateFrameworksPath
                 stringByAppendingPathComponent:@"libOpenJDK.dylib"];
             strncpy(gJvmImagePath, dylibPath.fileSystemRepresentation, sizeof(gJvmImagePath) - 1);

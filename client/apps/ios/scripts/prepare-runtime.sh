@@ -80,6 +80,14 @@ xcrun --sdk iphoneos clang -dynamiclib -arch arm64 -miphoneos-version-min=13.0 \
 [ -s "$DYLIB_DIR/libOpenJDK.dylib" ] || { echo "[ios-runtime] libOpenJDK.dylib 生成失败" >&2; exit 2; }
 echo "[ios-runtime] dylib: $(du -h "$DYLIB_DIR/libOpenJDK.dylib" | cut -f1)"
 
+# 探针 dylib（10 行 C）：用来区分「侧载器能不能 dlopen 任何内嵌动态库」
+# 与「只有 OpenJDK 这个 dylib 有问题」。真机日志里先打它。
+printf 'int meow_smoke(void){return 42;}
+' > "$DYLIB_DIR/smoke.c"
+xcrun --sdk iphoneos clang -dynamiclib -arch arm64 -miphoneos-version-min=13.0   -o "$DYLIB_DIR/libmeow-smoke.dylib" "$DYLIB_DIR/smoke.c"
+[ -s "$DYLIB_DIR/libmeow-smoke.dylib" ] || { echo "[ios-runtime] libmeow-smoke.dylib 生成失败" >&2; exit 2; }
+echo "[ios-runtime] smoke dylib: $(du -h "$DYLIB_DIR/libmeow-smoke.dylib" | cut -f1)"
+
 JHOME="$OUT/openjdk"
 rm -rf "$JHOME"
 mkdir -p "$JHOME"

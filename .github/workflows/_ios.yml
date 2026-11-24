@@ -141,6 +141,10 @@ jobs:
           du -sh "$APP"
           /usr/libexec/PlistBuddy -c "Print :MeowBuild" "$APP/Info.plist" || true
           ls "$APP/jvm" "$APP/jvm/libs" | head -40
+          echo "== frameworks =="
+          ls -lh "$APP/Frameworks" || true
+          nm -gU "$APP/Frameworks/libOpenJDK.dylib" 2>/dev/null | grep -E "_JNI_CreateJavaVM$" || true
+          nm -gU "$APP/Frameworks/libmeow-smoke.dylib" 2>/dev/null | grep -E "_meow_smoke$" || true
 
       - name: Build simulator app
         if: ${{ inputs.sim }}

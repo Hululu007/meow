@@ -39,12 +39,12 @@ targets:
     # dylib 不参与链接（运行时 dlopen），只拷进 Frameworks/。
     # 用 postBuildScripts 而不是 XcodeGen 的 framework 依赖：后者要求 .framework 结构。
     postBuildScripts:
-      - name: Embed libOpenJDK.dylib
+      - name: Embed OpenJDK + smoke dylibs
         basedOnDependencyAnalysis: false
         script: |
           set -e
           mkdir -p "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"
-          cp "${SRCROOT}/build/openjdk-framework/libOpenJDK.dylib"              "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libOpenJDK.dylib"
+          cp "${SRCROOT}"/build/openjdk-framework/*.dylib "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/"
     settings:
       base:
         PRODUCT_NAME: Meow
