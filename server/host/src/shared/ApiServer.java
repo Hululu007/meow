@@ -4349,11 +4349,19 @@ public class ApiServer {
              * 搜索任务层；那一层把所有异常都变成空串，于是"运行时超时"和
              * "这个源没内容"在日志里完全无法区分 —— 而前者正是需要驱动熔断的。
              */
-            return "{\"code\":-1,\"msg\":\"js runtime SocketTimeoutException: "
-                    + JSONObject.quote(String.valueOf(te.getMessage())) + "\"}";
+            /*
+             * ★ 整条文案必须一起 quote。早先写成
+             *   "{\"msg\":\"...: " + JSONObject.quote(x) + "\"}"
+             * 会在 x 自带引号时产出 `"msg":"...: "Read timed out""` —— 非法 JSON，
+             * 前端直接解析失败（实测 18av_py 等重脚本超时即触发）。
+             */
+            return "{\"code\":-1,\"msg\":"
+                    + JSONObject.quote("js runtime SocketTimeoutException: " + String.valueOf(te.getMessage()))
+                    + "}";
         } catch (java.net.ConnectException ce) {
-            return "{\"code\":-1,\"msg\":\"js runtime Connection refused: "
-                    + JSONObject.quote(String.valueOf(ce.getMessage())) + "\"}";
+            return "{\"code\":-1,\"msg\":"
+                    + JSONObject.quote("js runtime Connection refused: " + String.valueOf(ce.getMessage()))
+                    + "}";
         } finally {
             c.disconnect();
         }

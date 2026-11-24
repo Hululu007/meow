@@ -31,7 +31,7 @@ function getSpider(api, ext) {
   return cache.get(key)
 }
 
-async function dispatch(spider, action, body) {
+async function dispatch(spider, action, body, ext) {
   const b = body || {}
   switch (action) {
     case 'home': {
@@ -64,6 +64,24 @@ async function dispatch(spider, action, body) {
     case 'play': {
       const fn = spider.playerContent
       if (typeof fn !== 'function') return {}
+      /*
+       * vbox/Fongmi 的 JS 蜘蛛把 playerContent 写成
+       *   (vodId, sourceName, episodeId)
+       * 与 CatVod 标准 (flag, id, vipFlags) 不同。实测上游 vbox-Ai/api 的
+       * jumi/tyyszy/daishu 都是这种顺序：按标准传时第 3 参是数组，
+       * 脚本里 `episodeId.split(...)` 直接抛 "split is not a function"。
+       * 由站点 ext 显式声明 {"playArgOrder":"vbox"}，不猜。
+       */
+      let vboxOrder = false
+      try {
+        const e = ext ? JSON.parse(ext) : null
+        if (e && typeof e === 'object' && e.playArgOrder === 'vbox') vboxOrder = true
+      } catch (_) {
+        /* ext 不是 JSON（多数站点是 host 或空）——按标准顺序 */
+      }
+      if (vboxOrder) {
+        return await fn.call(spider, String(b.id ?? ''), String(b.flag ?? ''), String(b.id ?? ''))
+      }
       return await fn.call(spider, String(b.flag ?? ''), String(b.id ?? ''), b.vipFlags || [])
     }
     case 'action': {
@@ -92,7 +110,7 @@ parentPort.on('message', async (msg) => {
   try {
     if (!host) host = require('./host')
     const spider = await getSpider(api, ext)
-    const out = await dispatch(spider, action, body)
+    const out = await dispatch(spider, action, body, ext)
     parentPort.postMessage({ id, ok: true, text: toJson(out) })
   } catch (e) {
     const text = String((e && e.message) || e)

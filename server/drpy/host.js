@@ -519,6 +519,9 @@ function createSandbox(opts) {
     },
   }
   sandbox.log = (...a) => console.log('[drpy]', ...a)
+  // vbox/Fongmi 的 JS 蜘蛛习惯用 print 打日志（实测 jumi.js 等上游脚本大量调用）。
+  // 不挂这个全局会直接 ReferenceError，整站加载失败。
+  sandbox.print = (...a) => console.log('[drpy]', ...a)
   sandbox.sleep = sleepSync
   sandbox.json2str = (o) => JSON.stringify(o)
   sandbox.str2json = (s) => JSON.parse(s)
@@ -631,8 +634,18 @@ ${code}
       exported = e.default && typeof e.default === 'object' ? e.default : e
     }
     if (!exported) {
+      /*
+       * vbox/Fongmi 形态：脚本顶层 `var spider = { __jsEvalReturn(){ return {...} } }`。
+       * 它既不写 __JS_SPIDER__ 也不 module.exports，变量只在函数作用域里，
+       * 所以必须把取值逻辑拼进同一个函数体（在外面读不到）。
+       * 实测上游 vbox-Ai/api 的 sources/js/*.js 全是这种形态。
+       */
       const wrapped = vm.runInContext(`(function(__req){${source}
-; return typeof __JS_SPIDER__!=='undefined'?__JS_SPIDER__:null})`, context)
+; if (typeof __JS_SPIDER__!=='undefined' && __JS_SPIDER__) return __JS_SPIDER__;
+; if (typeof spider!=='undefined' && spider) {
+;   return typeof spider.__jsEvalReturn==='function' ? spider.__jsEvalReturn() : spider;
+; }
+; return null})`, context)
       exported = wrapped(requireModule)
     }
   } catch (e) {
