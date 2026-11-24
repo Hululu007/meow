@@ -203,4 +203,19 @@ describe('弹幕运行时：nodejs-mobile + danmu_api 载荷', () => {
     // 宿主读文件（不是 JNI 设属性）：node 比 JVM 晚起，文件随时生效
     expect(host).toContain('danmaku-host.txt')
   })
+
+  it('入口包装：node 一退 App 就退 —— 拦退出 + 换 fetch + 崩溃环保护', () => {
+    // 2026-11-24 真机 bug：nodejs-mobile 的 V8 没 WebAssembly，内置 fetch(undici)
+    // 一初始化就抛 ReferenceError，未捕获 → node 退出 → App「启动几秒自动退出」
+    expect(nodeBridge).toContain('meow-entry.cjs')
+    expect(nodeBridge).toContain('--unhandled-rejections=warn')
+    expect(nodeBridge).toContain("Object.defineProperty(globalThis, 'fetch'")
+    expect(nodeBridge).toContain("process.on('uncaughtException'")
+    expect(nodeBridge).toContain('blocked process.exit')
+    // 连续快速重启就本轮跳过 node，别让用户陷进「打开就退」
+    expect(nodeBridge).toContain('crashLooping')
+    // 探活只打根路径：拿 ?name=test 打真实搜索会点着 fetch 路径
+    expect(nodeBridge).toContain('let probe = "http://127.0.0.1:\\(port)/"')
+    expect(nodeBridge).toContain('httpAlive')
+  })
 })
