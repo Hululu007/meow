@@ -27,10 +27,12 @@ final class Bootstrap: ObservableObject {
     }
 
     private func boot() async {
+        LaunchLog.write("boot start")
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dataDir = docs.appendingPathComponent("gateway", isDirectory: true)
         try? fm.createDirectory(at: dataDir, withIntermediateDirectories: true)
+        LaunchLog.write("data dir ready: \(dataDir.path)")
 
         // 首次启动：拷一份空配置（0 站）。用户从设置页导入源包后覆盖。
         let config = dataDir.appendingPathComponent("config.sites.json")
@@ -42,13 +44,16 @@ final class Bootstrap: ObservableObject {
         guard let webRoot = Bundle.main.resourceURL?.appendingPathComponent("web"),
               fm.fileExists(atPath: webRoot.appendingPathComponent("index.html").path) else {
             message = "缺少 web 资源（先构建 client/apps/web）"
+            LaunchLog.write("web resources missing")
             return
         }
 
         do {
             try await staticServer.start(root: webRoot, port: 9979)
+            LaunchLog.write("static server on 9979")
         } catch {
             message = "静态服务启动失败：\(error.localizedDescription)"
+            LaunchLog.write("static server failed: \(error.localizedDescription)")
             return
         }
 
@@ -58,16 +63,19 @@ final class Bootstrap: ObservableObject {
         #else
         guard JvmBridge.isAvailable() else {
             message = "未内置 Java 运行时（检查 build/openjdk 与 build/jvm）"
+            LaunchLog.write("jvm resources missing")
             return
         }
         message = "正在启动 Java 宿主…"
         let javaHome = Bundle.main.resourceURL!.appendingPathComponent("openjdk").path
         let classPath = Self.hostClassPath()
+        LaunchLog.write("jvm start (classpath \(classPath.count) chars)")
         let ok: Bool = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             JvmBridge.start(withJavaHome: javaHome,
                             classPath: classPath,
                             dataDir: dataDir.path,
-                            port: 9978) { started, _ in
+                            port: 9978) { started, why in
+                LaunchLog.write("jvm start returned ok=\(started) why=\(why ?? "-")")
                 continuation.resume(returning: started)
             }
         }
@@ -76,15 +84,20 @@ final class Bootstrap: ObservableObject {
             message = "等待 API 就绪…"
             if !(await Self.waitHealth(base: base, attempts: 120)) {
                 message = "Java 宿主已启动但 /api/health 未就绪" + Self.logTailHint()
+                LaunchLog.write("health wait failed")
+            } else {
+                LaunchLog.write("health ok")
             }
         } else {
             message = "Java 宿主启动失败" + Self.logTailHint()
+            LaunchLog.write("jvm start failed")
         }
         #endif
 
         let site = Self.argValue("--site") ?? ""
         bootScript = Self.makeBootScript(base: base, site: site)
         webURL = URL(string: "http://127.0.0.1:9979/")
+        LaunchLog.write("web url set (base=\(base.isEmpty ? "none" : base))")
     }
 
     // MARK: - helpers
@@ -145,10 +158,13 @@ final class Bootstrap: ObservableObject {
         Bundle.main.infoDictionary?["MeowBuild"] as? String ?? "dev"
     }
 
-    /// 启动失败时把 JVM 日志尾部带出来（否则用户只看到「闪退」两个字）。
+    /// 启动失败时把 JVM 日志与启动日志的尾部带出来（否则用户只看到「闪退」两个字）。
     private static func logTailHint() -> String {
-        guard let tail = JvmBridge.logTail(), !tail.isEmpty else { return "" }
-        return "\n\n" + tail
+        var parts: [String] = []
+        if let jvm = JvmBridge.logTail(), !jvm.isEmpty { parts.append(jvm) }
+        let launch = LaunchLog.tail(12)
+        if !launch.isEmpty { parts.append(launch) }
+        return parts.isEmpty ? "" : "\n\n" + parts.joined(separator: "\n----\n")
     }
 
     private static func argValue(_ key: String) -> String? {

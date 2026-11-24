@@ -48,14 +48,17 @@ struct WebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            LaunchLog.write("web didFinish")
             parent.onReady()
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            LaunchLog.write("web didFail: \(error.localizedDescription)")
             parent.onError(error.localizedDescription)
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            LaunchLog.write("web didFailProvisional: \(error.localizedDescription)")
             parent.onError(error.localizedDescription)
         }
 
