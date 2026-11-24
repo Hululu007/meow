@@ -2,20 +2,18 @@
 #
 # ## 为什么需要这个脚本
 #
-# 版本号散在 **13 处**，"代码是新的、跑起来是旧行为"的事故里，有两次根因
+# 版本号散在 **10 处**，"代码是新的、跑起来是旧行为"的事故里，有两次根因
 # 就是漏改（compose 兜底、TV versionCode）。本脚本一次输入，全量替换，
 # 替换后逐处回读校验。
-#
+
 # ## 覆盖的位置（与 AGENTS.md §4.1 同步维护）
 #
 #   前端 3× package.json（client / web / desktop）
 #   tauri.conf.json + Cargo.toml + Cargo.lock（仅 meow-player 条目）
 #   apiserver.manifest.json（ApiServer.java 不再改：版本运行时读 VERSION 文件）
-#   .env / .env.example  MEOW_VERSION（.env 不入库，存在才改）
 #   client/apps/tv/app/build.gradle  versionName + versionCode
-#   docker-compose.yml / build.yml / with-sources.yml / standalone.yml
-#         MEOW_VERSION 兜底（standalone 是站点「下载即用」那份，
-#         靠这里自动跟进发版，站点构建重建时下载到的就是当前版本）
+#   docker-compose.build.yml  MEOW_VERSION 兜底（只给本地构建打 tag；
+#         拉取型 compose 与 .env.example 默认 latest，不再随版本走）
 #   fnOS：fpk/manifest 的 version
 #         （meowd 的 Cargo.toml/Cargo.lock 故意不跟版本：运行时读包内 bin/VERSION，
 #          见 client/apps/fnos/meowd/src/version.rs。构建期 build-fpk.sh 会断言
@@ -83,16 +81,9 @@ function Build-Entries([string]$Old, [string]$New, [int]$OldCode, [int]$NewCode)
         $t = $t -replace "versionName '$script:Old'", "versionName '$script:New'"
         return $t
     })
-    $list += ,@('deploy/docker/.env.example', { param($t) $t -replace "(?m)^MEOW_VERSION=$script:Old\s*$", "MEOW_VERSION=$script:New" })
-    if (Test-Path (Join-Path $script:root 'deploy/docker/.env')) {
-        $list += ,@('deploy/docker/.env', { param($t) $t -replace "(?m)^MEOW_VERSION=$script:Old\s*$", "MEOW_VERSION=$script:New" })
-    }
-    # compose 兜底跟版本走：它曾是 0.8.0 时坑过——没 .env 就拉旧镜像
-    $list += ,@('deploy/docker/docker-compose.yml', { param($t) $t.Replace("MEOW_VERSION:-$script:Old", "MEOW_VERSION:-$script:New") })
+    # compose 兜底只保留 build.yml：拉取型 compose 与 .env.example 默认 latest，
+    # 不随版本走（否则开发中一 bump 就指向还没发布的镜像 tag）
     $list += ,@('deploy/docker/docker-compose.build.yml', { param($t) $t.Replace("MEOW_VERSION:-$script:Old", "MEOW_VERSION:-$script:New") })
-    # with-sources 曾因漏在这里残留过 1.1.6（站点「下载即用」的 standalone 同理）
-    $list += ,@('deploy/docker/docker-compose.with-sources.yml', { param($t) $t.Replace("MEOW_VERSION:-$script:Old", "MEOW_VERSION:-$script:New") })
-    $list += ,@('deploy/docker/docker-compose.standalone.yml', { param($t) $t.Replace("MEOW_VERSION:-$script:Old", "MEOW_VERSION:-$script:New") })
     # fnOS fpk：manifest 是裸 `version=x.y.z`（无引号、无空格）。
     # ★ meowd 的 Cargo.toml/Cargo.lock **故意不跟版本**：版本号在运行时由包内的
     #   bin/VERSION 提供（src/version.rs），Cargo 版本冻结在 0.0.0，否则每发一版都要

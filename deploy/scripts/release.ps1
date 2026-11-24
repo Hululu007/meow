@@ -4,7 +4,7 @@
 #
 # 0.9.1–0.9.11 每次发版都是照 docs/31 的发版记录手动串十来条命令，
 # 踩过的坑（按时间序）：PC 嵌入资源因 cargo 缓存不更新、PC 构建被运行中的
-# exe 锁文件、版本号 13 处漏改、TV 包打进旧前端。本脚本把前置校验和步骤
+# exe 锁文件、版本号 10 处漏改、TV 包打进旧前端。本脚本把前置校验和步骤
 # 顺序固化下来，每步计时，产物统一落 release/v<版本>/。
 #
 # ## 用法
@@ -91,7 +91,7 @@ $OutDir = Join-Path $root "release\v$Version"
 
 Write-Host "发版版本：$Version" -ForegroundColor Cyan
 
-# 一致性是发版的地基：13 处必须同一版本，否则各产物互相认不出。
+# 一致性是发版的地基：10 处必须同一版本，否则各产物互相认不出。
 # 用子进程跑：bump-version 用 exit 表达结果，同进程 & 调用拿不到退出码。
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root $units.version.script) -Check
 if ($LASTEXITCODE -ne 0) { throw '版本号不一致，先跑 bump-version.ps1 -Version <目标>' }

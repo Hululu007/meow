@@ -232,7 +232,7 @@ Check '脚本不写死 OS 专属可执行名' {
 }
 
 # ---------------------------------------------------------------- 5. 版本一致
-Check '版本号一致（13 处）' {
+Check '版本号一致（10 处）' {
     $bump = Join-Path $root $units.version.script
     $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $bump -Check 2>&1
     if ($LASTEXITCODE -ne 0) { throw ($out -join "`n       ") }
@@ -358,7 +358,7 @@ Check '文档里的部署文件路径' {
             if ($sawChdir) { continue }
             if ($ln -match 'deploy/docker/') { continue }
             # 只查"像命令"的行：含 docker/cp/grep/cat/-f 等操作词。
-            # 纯列举（如「.env / .env.example  MEOW_VERSION」）不算命令，跳过。
+            # 纯列举（如「3× package.json」）不算命令，跳过。
             if ($ln -notmatch '(^|\s)(docker|cp|mv|cat|vi|vim|nano|source|sed|grep|bash|sh)\s|(^|\s)-f\s|--file') { continue }
             if ($ln -match $moved) {
                 $bad += "$rel`:$($i + 1)  →  $($ln.Trim())"

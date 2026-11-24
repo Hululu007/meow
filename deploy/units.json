@@ -71,6 +71,6 @@
   },
   "version": {
     "script": "deploy/scripts/bump-version.ps1",
-    "why": "版本号 13 处一次改齐（含 TV versionCode 与 compose 兜底）"
+    "why": "版本号 10 处一次改齐（含 TV versionCode 与 compose 兜底）"
   }
 }

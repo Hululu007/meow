@@ -46,7 +46,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/release.ps1 -
 | 有哪些产物 | `deploy/units.json`（PC / TV / Docker / 4 个插件 / 清单） |
 | 加一个插件怎么改 | 只改 `deploy/units.json` 加一条，然后跑 `verify.ps1` |
 | 改了脚本会不会漏改文档 | 跑 `verify.ps1`，第 3 项和第 7 项就是查这个 |
-| 版本号怎么改 | `./deploy/scripts/bump-version.ps1 -Version x.y.z`（13 处一次改齐） |
+| 版本号怎么改 | `./deploy/scripts/bump-version.ps1 -Version x.y.z`（10 处一次改齐） |
 | TV 签名会不会丢 | keystore 未入库，**必须异地备份**，见 [docs/46](../site/docs/dev/tv-signing.md) |
 
 **三条硬约束**（违反会出事）：
@@ -95,14 +95,14 @@ deploy/
     ├── verify.ps1               ← ★自检（改完脚本/文档必跑）
     ├── release.ps1              ← 本地全量发版编排
     ├── build-plugins.ps1        ← 只构建插件（CI 与本地共用）
-    ├── bump-version.ps1         ← 版本号 13 处一次改齐
+    ├── bump-version.ps1         ← 版本号 10 处一次改齐
     └── build-push-docker.ps1    ← 三镜像构建并推送
 ```
 
 > **源包服务（2026-11-11 拆分）**：主栈和 build compose 都不含 sources。
 > `docker-compose.with-sources.yml` = 主栈 + sources；
 > `docker-compose.sources.yml` = 只启动源服务（Docker Hub 镜像 `1.2.0`）。
-> 镜像内置主爬虫 + Jable + 41 站默认源；挂载自己的源包会覆盖默认源。
+> 镜像内置主爬虫 + Jable + 54 站默认源；挂载自己的源包会覆盖默认源。
 > `Dockerfile.sources`、`nginx.sources.conf`、`entrypoint.sh`、
 > `default-sources` 属于构建资源，已 gitignore，只在私仓
 > `upchr/meow-private` 维护；源包规范见 [`source-pack/`](source-pack/README.md)。
@@ -144,7 +144,7 @@ deploy/
 | 2 | 构建单元路径存在 | 脚本被移动/删除但清单没改 |
 | 3 | **全库脚本已被清单覆盖** | **新增脚本没登记**（这就是"文档记录不及时"的机器化检查） |
 | 4 | 打包脚本语法 | PS 解析失败（BOM 缺失等） |
-| 5 | 版本号一致 13 处 | 漏改（含 Cargo.lock 滞后） |
+| 5 | 版本号一致 10 处 | 漏改（含 Cargo.lock 滞后） |
 | 6 | compose 配置有效 | context/dockerfile 路径漂移 |
 | 7 | **文档里的脚本路径** | **文档过时**（引用了不存在的脚本；扫 43 份活文档 + workflow） |
 | 8 | **文档里的部署文件路径** | **命令在错误目录执行**（如根目录跑 `-f docker-compose.yml`，实测会 file not found） |
@@ -217,7 +217,7 @@ docker compose pull && docker compose up -d
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `MEOW_VERSION` | `0.9.16` | 镜像 tag；`bump-version.ps1` 一并维护 |
+| `MEOW_VERSION` | `latest` | 镜像 tag；默认跟随最新发布，要固定版本才填（`bump-version.ps1` 不再维护） |
 | `WEB_PORT` / `APISERVER_PORT` / `DRPY_PORT` / `DANMU_API_PORT` | 30010/30011/30013/30012 | 端口冲突时改 |
 | `APISERVER_BIND` | `127.0.0.1` | 给 TV / 局域网直连改 `0.0.0.0` |
 | `MEOW_APISERVER` | `http://apiserver:9979` | web 连外部后端时改绝对地址 |
@@ -237,7 +237,7 @@ docker compose pull && docker compose up -d
 ### 3.1 标准流程
 
 ```bash
-# 0. 改版本号（13 处一次改齐，含 TV versionCode 与 compose 兜底）
+# 0. 改版本号（10 处一次改齐，含 TV versionCode 与 build.yml 兜底）
 ./deploy/scripts/bump-version.ps1 -Version 0.9.17
 git diff                                # 人工过目
 # （自行 commit —— 提交节奏由人控制）
@@ -301,14 +301,15 @@ CI 发版要烧约 45 分钟额度且要盯十几分钟。**日常发版不必�
 **`bump-version.ps1`**
 
 ```powershell
-./deploy/scripts/bump-version.ps1 -Check              # 只校验 13 处是否一致
+./deploy/scripts/bump-version.ps1 -Check              # 只校验 10 处是否一致
 ./deploy/scripts/bump-version.ps1 -Version 0.9.17     # 提升
 ./deploy/scripts/bump-version.ps1 -Version 0.9.17 -DryRun   # 预演不写盘
 ```
 
-管辖 13 处：3×package.json、tauri.conf、Cargo.toml、**Cargo.lock（仅 meow-player 条目）**、
-ApiServer `VERSION`、apiserver.manifest、`.env`/`.env.example`、TV build.gradle
-（versionName + versionCode）、2 个 compose 的 `${MEOW_VERSION:-x}`。
+管辖 10 处：3×package.json、tauri.conf、Cargo.toml、**Cargo.lock（仅 meow-player 条目）**、
+apiserver.manifest、TV build.gradle（versionName + versionCode）、
+`docker-compose.build.yml` 的 `${MEOW_VERSION:-x}`、fnOS fpk manifest。
+拉取型 compose 与 `.env.example` 用 `latest`，不随版本走。
 
 `versionCode` = `major*1000 + minor*100 + patch`（0.9.17 → 917）。**拒绝降版本**。
 
@@ -397,7 +398,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/build-plugins
 # ① 只打版本标记（本地发完版常用）—— 零额度
 git tag v0.9.17 && git push origin v0.9.17
 
-# ② 要 CI 构建，必须带前缀（先对齐 13 处版本号）
+# ② 要 CI 构建，必须带前缀（先对齐 10 处版本号）
 git tag release-v0.9.17 && git push origin release-v0.9.17   # 全量
 git tag docker-v0.9.17  && git push origin docker-v0.9.17    # 只镜像
 ```
@@ -674,7 +675,7 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 
 ### 5.1 构建前
 
-- [ ] `./deploy/scripts/bump-version.ps1 -Check` 通过（13 处一致）
+- [ ] `./deploy/scripts/bump-version.ps1 -Check` 通过（10 处一致）
 - [ ] **`CHANGELOG.md` 里有本次版本的 `## x.y.z` 小节**（否则客户端弹框
       显示的是 git log 原始提交信息或模板串，见 §4.7）
 - [ ] 工作区没有未提交的意外改动（`git status`）
@@ -746,7 +747,7 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 
 ### 6.2 版本号
 
-- **唯一源** `client/package.json` 的 `version`；`bump-version.ps1` 一次改齐 **13 处**（含 TV `versionName`/`versionCode`、compose 兜底）
+- **唯一源** `client/package.json` 的 `version`；`bump-version.ps1` 一次改齐 **10 处**（含 TV `versionName`/`versionCode`、`docker-compose.build.yml` 的 tag）
 - `versionCode = major*1000 + minor*100 + patch`（1.0.9 → 1009），Android 只增
 - **一次 bump 可以打多条 tag**（都指同一个 commit），版本号天然对齐
 - `release.yml` 已加 tag 版本校验：壳 tag（release/tv/pc/fpk）必须等于 `client/package.json`；
@@ -818,7 +819,7 @@ gh release list
 
 | 现象 | 根因 | 修法 |
 |---|---|---|
-| `docker compose up -d` 拉到旧镜像 | compose 兜底 `${MEOW_VERSION:-x}` 掉队 | `bump-version.ps1` 已纳入管辖 |
+| `docker compose up -d` 拉到旧镜像 | 镜像 tag 默认 `latest`，但 `up -d` 不会重新拉已有镜像 | `docker compose pull && docker compose up -d`；要可复现就在 `.env` 钉具体版本 |
 | `Password required`（CI 登录） | `DOCKER_HUB_TOKEN` 是 Environment 级，job 未声明 `environment` | 加 `environment: dockerhub` |
 | `failed to find instance "builder"` | `setup-buildx-action` 的 builder 名不固定 | 不传 `-Builder`，让脚本自建 |
 | `pnpm` 在容器里中止 | 无 TTY | `Dockerfile.web` 里补 `ENV CI=true` |

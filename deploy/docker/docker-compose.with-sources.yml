@@ -29,7 +29,7 @@ name: meow
 
 services:
   apiserver:
-    image: ${APISERVER_IMAGE:-chrplus/meow-apiserver:${MEOW_VERSION:-1.2.21}}
+    image: ${APISERVER_IMAGE:-chrplus/meow-apiserver:${MEOW_VERSION:-latest}}
     container_name: meow-apiserver
     ports:
       # 默认只绑本机。要给 TV/局域网直连，改 APISERVER_BIND=0.0.0.0。
@@ -70,10 +70,10 @@ services:
     restart: unless-stopped
     networks: [meow]
 
-  # 源服务：镜像内置主爬虫 + Jable 扩展 + 41 站配置。
+  # 源服务：镜像内置主爬虫 + Jable 扩展 + 54 站配置。
   # 不挂载时直接使用镜像默认源；挂载完整源包时覆盖默认源。
   sources:
-    image: ${MEOW_SOURCES_IMAGE:-chrplus/meow-sources:1.2.0}
+    image: ${MEOW_SOURCES_IMAGE:-chrplus/meow-sources:latest}
     container_name: meow-sources
     ports:
       # TV / Fongmi 在局域网访问，必须绑 0.0.0.0。
@@ -88,7 +88,7 @@ services:
     networks: [meow]
 
   web:
-    image: ${WEB_IMAGE:-chrplus/meow-web:${MEOW_VERSION:-1.2.21}}
+    image: ${WEB_IMAGE:-chrplus/meow-web:${MEOW_VERSION:-latest}}
     container_name: meow-web
     ports:
       - "${WEB_PORT:-30010}:8080"

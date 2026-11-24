@@ -1,6 +1,6 @@
 # 猫窝源服务（独立启动；主栈 docker-compose.yml 不含 sources）
 #
-# 镜像已内置主爬虫 + Jable 扩展 + 41 站默认配置，不挂载即可用。
+# 镜像已内置主爬虫 + Jable 扩展 + 54 站默认配置，不挂载即可用。
 # 需要自己的完整源包时设置 MEOW_SOURCES_DIR（只读挂载到 /mounted-sources）。
 #
 # 用法：
@@ -18,7 +18,7 @@ name: meow-sources
 
 services:
   sources:
-    image: ${MEOW_SOURCES_IMAGE:-chrplus/meow-sources:1.2.0}
+    image: ${MEOW_SOURCES_IMAGE:-chrplus/meow-sources:latest}
     container_name: meow-sources
     ports:
       # TV / Fongmi 在局域网访问，必须绑 0.0.0.0。
