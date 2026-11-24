@@ -60,6 +60,9 @@ public class EmbedPlayerHost extends FrameLayout {
     private PlayerView view;
     private TextView hint;
     private ExoPlayer player;
+    /** 电源定时器到点暂停用（同页内嵌播放器）。 */
+    private static java.lang.ref.WeakReference<EmbedPlayerHost> ACTIVE =
+            new java.lang.ref.WeakReference<>(null);
     private OkHttpClient http;
     private Runnable onClosed;
     private boolean showing = false;
@@ -123,7 +126,20 @@ public class EmbedPlayerHost extends FrameLayout {
         if (posMs > 1000) player.seekTo(posMs);
         player.setPlayWhenReady(true);
         showing = true;
+        ACTIVE = new java.lang.ref.WeakReference<>(this);
         ui.postDelayed(progressTick, 12_000);
+    }
+
+    /** 倒计时到点暂停：内嵌播放器在播时返回 true（TvBridge 调）。 */
+    static boolean pauseForPowerTimer() {
+        EmbedPlayerHost h = ACTIVE.get();
+        if (h == null || !h.showing) return false;
+        ExoPlayer p = h.player;
+        if (p == null || !p.isPlaying()) return false;
+        h.ui.post(() -> {
+            if (h.player != null) h.player.setPlayWhenReady(false);
+        });
+        return true;
     }
 
     /** 收起并释放；回调网页（网页据此恢复自己的 UI 状态）。 */
@@ -138,6 +154,7 @@ public class EmbedPlayerHost extends FrameLayout {
         }
         view.setPlayer(null);
         setVisibility(GONE);
+        if (ACTIVE.get() == this) ACTIVE = new java.lang.ref.WeakReference<>(null);
         Runnable cb = onClosed;
         onClosed = null;
         if (cb != null) cb.run();

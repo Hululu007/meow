@@ -348,6 +348,105 @@ export async function systemSleep(): Promise<boolean> {
   }
 }
 
+// ---------------------------------------------------------------- 电源动作（关机 / 退出应用）
+//
+// 见 site/docs/dev/power-actions.md。TV 侧由原生层计时（WebView 退后台会节流），
+// PC 侧沿用前端计时 + Tauri 命令。
+
+/** PC：桌面端退出应用命令是否存在（只判运行时；老包调用时 reject）。 */
+export function hasDesktopQuit(): boolean {
+  // 与 hasSystemSleep 同一套运行时判据，分开命名是为了调用点语义清楚
+  return hasSystemSleep()
+}
+
+/** PC：退出应用。命令会 `app.exit(0)`，进程随即退出，promise 可能不 resolve。 */
+export async function desktopQuit(): Promise<boolean> {
+  if (!hasDesktopQuit()) return false
+  try {
+    await tauriInvoke<void>('desktop_quit')
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** TV 桥的电源能力。 */
+export interface TvPowerCaps {
+  shutdown: 'probe' | 'no'
+  quit: boolean
+}
+
+function tvPower(): Record<string, any> | null {
+  try {
+    const b = (window as unknown as { meowTv?: Record<string, any> }).meowTv
+    return b && typeof b === 'object' ? b : null
+  } catch {
+    return null
+  }
+}
+
+export function tvPowerCaps(): TvPowerCaps {
+  try {
+    const b = tvPower()
+    if (!b || typeof b.powerCaps !== 'function') return { shutdown: 'no', quit: false }
+    const v = JSON.parse(String(b.powerCaps())) as TvPowerCaps
+    return { shutdown: v.shutdown === 'probe' ? 'probe' : 'no', quit: !!v.quit }
+  } catch {
+    return { shutdown: 'no', quit: false }
+  }
+}
+
+/** 探测 root 授权（选「关机」时调；首次会弹授权框）。 */
+export function tvProbeRoot(): { ok: boolean; reason?: string } {
+  try {
+    const b = tvPower()
+    if (!b || typeof b.powerProbeRoot !== 'function') return { ok: false, reason: 'NO_BRIDGE' }
+    return JSON.parse(String(b.powerProbeRoot()))
+  } catch {
+    return { ok: false, reason: 'FAILED' }
+  }
+}
+
+// 到点的 shutdown / quit 由原生层定时器直接执行（TvBridge.powerRunnable），
+// 不在 JS 侧封装 tvShutdown / tvQuit：多一条 JS 到点路径就多一个"WebView 被节流
+// 导致定时不准"的隐患。JS 只负责设置定时与显示状态。
+
+export function tvStartPowerTimer(delayMs: number, action: string): boolean {
+  try {
+    const b = tvPower()
+    return !!b && typeof b.startPowerTimer === 'function' && !!b.startPowerTimer(delayMs, action)
+  } catch {
+    return false
+  }
+}
+
+export function tvCancelPowerTimer(): void {
+  try {
+    const b = tvPower()
+    if (b && typeof b.cancelPowerTimer === 'function') b.cancelPowerTimer()
+  } catch {
+    /* 忽略 */
+  }
+}
+
+export interface TvPowerTimerState {
+  active: boolean
+  action: string
+  remainingMs: number
+}
+
+export function tvPowerTimerState(): TvPowerTimerState {
+  try {
+    const b = tvPower()
+    if (!b || typeof b.powerTimerState !== 'function') {
+      return { active: false, action: '', remainingMs: 0 }
+    }
+    return JSON.parse(String(b.powerTimerState())) as TvPowerTimerState
+  } catch {
+    return { active: false, action: '', remainingMs: 0 }
+  }
+}
+
 // ---------------------------------------------------------------- 片库本地副本（TV）
 //
 // 片库数据全来自后端（NAS）。断网或 NAS 重启时海报墙会变灰，而"用 NAS 库"

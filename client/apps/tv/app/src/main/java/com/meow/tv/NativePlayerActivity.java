@@ -95,6 +95,9 @@ public class NativePlayerActivity extends Activity {
     public static final String EXTRA_DEBUG_STATS = "debug_stats";
 
     private ExoPlayer player;
+    /** 电源定时器到点暂停用：弱引用，避免 Activity 泄漏（见 pauseForPowerTimer）。 */
+    private static java.lang.ref.WeakReference<NativePlayerActivity> ACTIVE =
+            new java.lang.ref.WeakReference<>(null);
     private PlayerView view;
     private DanmakuOverlay danmaku;
     private OkHttpClient http;
@@ -121,6 +124,7 @@ public class NativePlayerActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        ACTIVE = new java.lang.ref.WeakReference<>(this);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
@@ -621,7 +625,23 @@ public class NativePlayerActivity extends Activity {
             player.release();
             player = null;
         }
+        if (ACTIVE.get() == this) ACTIVE = new java.lang.ref.WeakReference<>(null);
         super.onDestroy();
+    }
+
+    /**
+     * 倒计时电源动作到点暂停：原生播放页在前台时 WebView 的 pause 回推管不到 ExoPlayer，
+     * 由 TvBridge 直接调这里。返回 true 表示确实暂停了一个在播的播放器。
+     */
+    static boolean pauseForPowerTimer() {
+        NativePlayerActivity a = ACTIVE.get();
+        if (a == null || a.isFinishing()) return false;
+        ExoPlayer p = a.player;
+        if (p == null || !p.isPlaying()) return false;
+        a.ui.post(() -> {
+            if (a.player != null) a.player.setPlayWhenReady(false);
+        });
+        return true;
     }
 
     /** 供桥接层打开播放页；失败返回 false（调用方退回 WebView 播放）。 */

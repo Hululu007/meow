@@ -597,6 +597,14 @@ public class MainActivity extends Activity {
         web.evaluateJavascript(js, null);
     }
 
+    /** 供 TvBridge 的电源定时器回推结果（web 是 private，同包方法转发）。 */
+    void evalJsForPower(String js) {
+        try {
+            if (web != null) web.evaluateJavascript(js, null);
+        } catch (Throwable ignored) {
+        }
+    }
+
     private static String jsonStr(String s) {
         return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
@@ -699,6 +707,12 @@ public class MainActivity extends Activity {
 
         String fromIntent = getIntent() == null ? null : getIntent().getStringExtra("url");
         if (fromIntent != null && !fromIntent.isEmpty()) prefs.edit().putString(K_URL, fromIntent).apply();
+        // 自动化钩子：`--es api <base>` 直接写后端地址（验收/真机测试用，
+        // 省去遥控器输入）。与设置页写同一组 key，重启后按 remote 恢复。
+        String apiFromIntent = getIntent() == null ? null : getIntent().getStringExtra("api");
+        if (apiFromIntent != null && !apiFromIntent.isEmpty()) {
+            prefs.edit().putString(K_API, apiFromIntent).putString(K_MODE, "remote").apply();
+        }
         // 深链：intent 里带的 hash（VIEW 数据 URI 的 #/play/... 部分）
         String hashFromIntent = hashOf(getIntent());
         if (hashFromIntent != null) pendingHash = hashFromIntent;
