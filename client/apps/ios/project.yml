@@ -55,7 +55,9 @@ targets:
           - "$(SRCROOT)/build/jni/include"
           - "$(SRCROOT)/build/jni/include/ios"
         # F: 静态链 + 固定基址（-no_pie）
-        OTHER_LDFLAGS: "$(inherited) -Wl,-all_load $(SRCROOT)/build/libOpenJDK.a -Wl,-no_pie -lc++ -lz -liconv -framework Foundation -framework UIKit -framework WebKit -framework Network -framework Security"
+        # J: 把 __TEXT,__const 改到 __DATA,__const —— .ips 证明 NativeCallStack::EMPTY_STACK
+        # 被放在只读的 __TEXT,__const 里，而它的构造函数要写这个对象（SIGBUS）。
+        OTHER_LDFLAGS: "$(inherited) -Wl,-all_load $(SRCROOT)/build/libOpenJDK.a -Wl,-rename_section,__TEXT,__const,__DATA,__const -lc++ -lz -liconv -framework Foundation -framework UIKit -framework WebKit -framework Network -framework Security"
         GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) MEOW_JVM_STATIC=1"
         # Xcode 默认 ENABLE_PIE=YES 会加 -pie，覆盖 OTHER_LDFLAGS 里的 -no_pie
         ENABLE_PIE: NO
