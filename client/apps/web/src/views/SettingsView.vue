@@ -8,6 +8,9 @@ import AboutDialog from '@/components/common/AboutDialog.vue'
 import { useCardCols } from '@/composables/useCardCols'
 import WallpaperPicker from '@/components/common/WallpaperPicker.vue'
 import { THEME_MODES, THEME_STYLES, resolveMode } from '@/stores/theme'
+// iOS 壳：后端是 App 进程内的 JVM 网关，地址由壳写死 —— 设置页要能认出它，
+// 把「后端地址」那行换成只读展示（改了就等于把 App 指向别人的后端）。
+import { isIosShell, iosShellInfo } from '@/compat/shell'
 import type { TileAction } from '@/components/common/tile'
 import {
   apiBase,
@@ -3166,6 +3169,9 @@ const tvMode = isTvShell()
 // 运行时模块/弹幕载荷是能力（moduleCheck）：老壳没有时不显示对应分区。
 const tvModule = hasTvModule()
 const desktop = isDesktop()
+// iOS 壳：ApiServer 跑在 App 进程内（JVM），地址由壳写死 → 只读展示。
+const ios = isIosShell()
+const iosInfo = iosShellInfo()
 
 // ---------------------------------------------------------------- 本机执行（TV）
 //
@@ -5262,7 +5268,7 @@ onBeforeUnmount(() => {
         </span>
       </div>
 
-      <div class="flex flex-wrap items-center gap-2.5">
+      <div v-if="!ios" class="flex flex-wrap items-center gap-2.5">
         <span class="w-20 shrink-0 text-xs text-ink-3">后端地址</span>
         <!--
           输入框始终可编辑：插件托管时也允许改（改完点右边按钮就切到远端）。
@@ -5296,6 +5302,23 @@ onBeforeUnmount(() => {
         >
           用插件
         </button>
+      </div>
+      <!--
+        iOS 壳：后端是 App 进程内的 JVM 网关（ApiServer），端口与地址由壳决定。
+        允许改地址 = 把整个 App 指向别人的后端（本地网关还在跑但没人用它），
+        所以这里只读展示，并把运行时与版本一并给出。
+      -->
+      <div v-else class="flex flex-wrap items-center gap-2.5">
+        <span class="w-20 shrink-0 text-xs text-ink-3">本地网关</span>
+        <span
+          class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs text-ink-2"
+        >
+          {{ iosInfo.apiBase || 'http://127.0.0.1:9978' }}
+        </span>
+        <span class="text-[11px] text-ink-3">
+          {{ iosInfo.runtime || 'OpenJDK 9 Zero' }} · v{{ iosInfo.version || '—' }}
+          <template v-if="iosInfo.build"> · {{ iosInfo.build }}</template>
+        </span>
       </div>
       <p
         v-if="apiMsg"

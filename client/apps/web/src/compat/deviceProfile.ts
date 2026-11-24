@@ -5,7 +5,7 @@
  *
  * | 属性 | 取值 | 谁用 |
  * |---|---|---|
- * | `data-shell` | `web` / `tauri` / `tv` / `fpk` | 端专属入口（托盘/ExoPlayer/更新通道） |
+ * | `data-shell` | `web` / `tauri` / `tv` / `fpk` / `ios` | 端专属入口（托盘/ExoPlayer/更新通道） |
  * | `data-form` | `phone` / `tablet` / `desktop` / `tv-large` | **只影响布局密度**（列数/双栏/按钮显隐） |
  * | `data-orient` | `portrait` / `landscape` | 替代四套方向判据 |
  * | `data-input` | `touch` / `key` | 由 `inputModality` 维护（焦点环） |
@@ -27,6 +27,7 @@
 
 import {
   currentShell,
+  hasIosBridge,
   hasTvBridge,
   isTauriRuntime,
   type Shell,
@@ -82,7 +83,9 @@ function write(): void {
     ? 'tauri'
     : hasTvBridge() || isMeowTvUa()
       ? 'tv'
-      : 'web'
+      : hasIosBridge()
+        ? 'ios'
+        : 'web'
   // 已经探测到 fpk 的页面不要被下一次 resize 打回 web。
   if (root.dataset.shell !== 'fpk') root.dataset.shell = shell
   root.dataset.form = resolveForm(width, height, hasAnyFinePointer(), shell === 'tv')
@@ -90,6 +93,16 @@ function write(): void {
   // 壳是 tv 但首帧脚本没写上（UA 被改过/调试环境）时补一层；
   // 反方向不清除：?tv=1 调试与 PC 端查看电视样式都依赖它。
   if (shell === 'tv') root.dataset.tv = '1'
+}
+
+/**
+ * 重算身份并写回 `<html>`。
+ *
+ * 正常路径不需要调：壳桥在 documentStart 注入，早于本模块求值。
+ * 留着这个口是为了「桥晚到」的场景（壳在页面之后才注入）与单测。
+ */
+export function refreshShellIdentity(): void {
+  write()
 }
 
 /** 业务侧只读的形态（未安装时现算，保证单测/首屏前一致） */

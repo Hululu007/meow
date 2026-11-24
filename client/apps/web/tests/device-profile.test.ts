@@ -148,3 +148,54 @@ describe('③ 壳身份与模块能力分开（D-2）', () => {
     }
   })
 })
+
+describe('④ iOS 壳身份（IPA 内嵌 JVM 网关）', () => {
+  it('注入 meowIos 桥 → 身份是 ios，既不是 TV 也不是桌面', async () => {
+    delete document.documentElement.dataset.shell
+    ;(window as any).meowIos = {
+      platform: 'ios',
+      version: '1.2.21',
+      apiBase: 'http://127.0.0.1:9978',
+      runtime: 'OpenJDK 9 Zero（静态链接 · -Xint）',
+    }
+    try {
+      const { currentShell, isIosShell, isTvShell, isDesktopShell, iosShellInfo } =
+        await import('../src/compat/shell')
+      expect(currentShell()).toBe('ios')
+      expect(isIosShell()).toBe(true)
+      expect(isTvShell()).toBe(false)
+      expect(isDesktopShell()).toBe(false)
+      expect(iosShellInfo().apiBase).toBe('http://127.0.0.1:9978')
+    } finally {
+      delete (window as any).meowIos
+    }
+  })
+
+  it('没有桥 → 仍是 web 壳（Safari 打开同一个页面不能露出 iOS 专属入口）', async () => {
+    delete document.documentElement.dataset.shell
+    delete (window as any).meowIos
+    const { currentShell, isIosShell } = await import('../src/compat/shell')
+    expect(currentShell()).toBe('web')
+    expect(isIosShell()).toBe(false)
+  })
+
+  it('data-shell=ios 由 deviceProfile 写出（壳注入桥 → 首屏就位）', async () => {
+    delete document.documentElement.dataset.shell
+    ;(window as any).meowIos = { platform: 'ios', version: '0.0.0' }
+    try {
+      const { refreshShellIdentity } = await import('../src/compat/deviceProfile')
+      refreshShellIdentity()
+      expect(document.documentElement.dataset.shell).toBe('ios')
+    } finally {
+      delete (window as any).meowIos
+      delete document.documentElement.dataset.shell
+    }
+  })
+
+  it('isIosShell 只有一个实现（compat/shell.ts）', () => {
+    const defs = walk(SRC)
+      .filter((p) => /\.(ts|vue)$/.test(p))
+      .filter((p) => /export function isIosShell\s*\(/.test(readFileSync(p, 'utf8')))
+    expect(defs.map((p) => relative(SRC, p).split('\\').join('/'))).toEqual(['compat/shell.ts'])
+  })
+})

@@ -75,10 +75,10 @@ final class Bootstrap: ObservableObject {
             base = "http://127.0.0.1:9978"
             message = "等待 API 就绪…"
             if !(await Self.waitHealth(base: base, attempts: 120)) {
-                message = "Java 宿主已启动但 /api/health 未就绪"
+                message = "Java 宿主已启动但 /api/health 未就绪" + Self.logTailHint()
             }
         } else {
-            message = "Java 宿主启动失败（Xcode 控制台有 JNI 日志）"
+            message = "Java 宿主启动失败" + Self.logTailHint()
         }
         #endif
 
@@ -105,6 +105,12 @@ final class Bootstrap: ObservableObject {
 
     private static func makeBootScript(base: String, site: String) -> String {
         var js: [String] = []
+        // 壳身份：前端 compat/shell.ts 只认桥对象（不看 UA —— Safari 打开同一页面
+        // 仍必须是 web 壳）。桥在 WKUserScript(.atDocumentStart) 注入，早于页面脚本。
+        js.append("window.meowIos={platform:'ios',version:'\(Self.appVersion())',"
+                  + "build:'\(Self.buildId())',"
+                  + "apiBase:'\(Self.jsString(base))',"
+                  + "runtime:'OpenJDK 9 Zero（静态链接 · -Xint）'}")
         if base.isEmpty {
             js.append("localStorage.removeItem('meow.api');localStorage.removeItem('meow.api.scope')")
         } else {
@@ -122,6 +128,27 @@ final class Bootstrap: ObservableObject {
             js.append("localStorage.setItem('meow.site','\(escapedSite)')")
         }
         return "try{" + js.joined(separator: ";") + "}catch(e){}"
+    }
+
+    /// 注入到页面里的字符串要转义单引号（值来自 Bundle，不来自用户输入，但统一处理）。
+    private static func jsString(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: "'", with: "\\'")
+    }
+
+    private static func appVersion() -> String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+    }
+
+    /// 构建标识（CI 注入的 git SHA + 时间）：设置页显示它，用户装完能确认是哪个包。
+    private static func buildId() -> String {
+        Bundle.main.infoDictionary?["MeowBuild"] as? String ?? "dev"
+    }
+
+    /// 启动失败时把 JVM 日志尾部带出来（否则用户只看到「闪退」两个字）。
+    private static func logTailHint() -> String {
+        guard let tail = JvmBridge.logTail(), !tail.isEmpty else { return "" }
+        return "\n\n" + tail
     }
 
     private static func argValue(_ key: String) -> String? {

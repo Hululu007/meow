@@ -1,7 +1,65 @@
 # iOS 端接入（IPA 形态与发版）
 
-::: warning 本文是“落地契约”，不是“已支持”声明
-仓库当前**没有 iOS 工程**（`client/apps/ios/` 不存在），用户指南仍按
+::: warning 现状（2026-11-23，分支 `feat/ios-jvm`）：iOS 已有工程，但**只在实验分支**
+`client/apps/ios/` 已落地并可出未签名 IPA，**未合入 main、未上架、未真机验证**。
+本文的「落地契约」部分仍然有效；下面 §0 是与契约不一致的**已实现部分**，
+与契约冲突时以 §0 为准（其余章节保留原契约口径，标【待实现】= 代码还没写；
+标【待实测】= 没有 iPhone，无法验证）。
+:::
+
+## 零、已实现（feat/ios-jvm，实验性）
+
+iOS 壳不再只是「连远端后端」：**进程内跑着与 PC/Docker 同一份 Java 宿主**
+（`ApiServer`），源站、jar 爬虫、弹幕内置源都在手机本机执行。
+
+| 能力 | 怎么做的 | 验证到哪一步 |
+|---|---|---|
+| 本地网关 | 静态链接 **OpenJDK 9 Zero**（`libjvm.a`，无 JIT）进壳，`JNI_CreateJavaVM` 起 `ApiServer` 监听 `127.0.0.1:9978`；WKWebView 加载本地静态服务 `9979` | runner 上跑同一份 host.jar：豆瓣首页 20 条 + 截图；**真机启动未验证**（CI 没有 iPhone） |
+| 源导入 | 与 PC 同一套 `POST /api/config/import`（URL / 覆盖 / dryRun / `replaceSpider`） | 肥猫 `http://肥猫.net/tv` → 41 站；OECT 源服务 `config.all.json` → 54 站 |
+| dex 源包 | iOS 没有 fork/exec → **端内 dex2jar**（`core.Dex2JvmInProcess`，dex2jar 2.4 子集进 `jvm/libs`），`Dex2Jvm` 在 `-Dmeow.dex2jar.inprocess=true` 时反射调用它 | 肥猫顶层 dex → 893 个类；OECT 的 Jable（站点级 dex）→ 搜索 24 条 |
+| JVM 源包（class jar） | `URLClassLoader` 直接加载；**必须**带 `-XX:-BytecodeVerificationRemote`（外部 jar 的 stackmap 常不完整，否则 `VerifyError`） | OECT `spider.jar`：AppRJ 搜索 2 条（不开校验就是 VerifyError） |
+| 壳身份 | `window.meowIos` 桥（`version` / `apiBase` / `runtime`）→ `data-shell='ios'`；设置页「后端地址」改为只读（地址由壳写死） | 前端门禁 `device-profile` / `mobile-ux-polish` / `legacy-compat` 全绿 |
+| CI | `_ios.yml`（未签名 IPA）、`_ios_ui.yml`（headless Chrome 快速截图）、`_ios_verify.yml`（runner 端到端，用的是 **IPA 里那份 host.jar**） | 三条流水线绿 |
+
+**仍然缺**（与 TV 的差距，逐条都有原因）：
+
+- **转码 / MKV / FLV / DTS**：端上无 ffmpeg，只有 WebKit + AVPlayer（HLS/mp4）。
+- **本地片库**：进程内没有可浏览的系统目录（`LibraryRoots` 只在 PC 插件模式追加盘符），
+  实用路径是 WebDAV / SMB。
+- **局域网网关 / 手机推设置**：iOS 壳只绑回环，不给别的设备当后端。
+- **签名与上架**：OpenJDK 9 Zero 是 GPL-2.0+CE → 只能侧载，不能进 App Store。
+- **真机验证**：JVM 在真机上的启动、内存、后台挂起都还没测过。
+
+### 0.1 Node 运行时 / danmu_api：结论是「有，但要换实现」
+
+TV 的运行时模块 = **node 二进制 + `danmu_api` 载荷**，node 起在 `:node` 进程，
+再通过 `platform.Bridge.installDanmakuHost(...)` 把弹幕地址注入给网关里的 `ApiServer`。
+iOS 要对齐这条，拆成两问：
+
+| 问 | 结论 | 证据 |
+|---|---|---|
+| iOS 能跑 Node 吗 | **能，但不是官方 Node**。`nodejs-mobile` 有 iOS 预编译包（`v18.20.4-ios.zip`，真机 arm64 + 模拟器 arm64/x86_64），它把 V8 **配成启动即关 JIT**（interpreter only），因此不需要 iOS 禁止的可执行内存 | `doc_mobile/BUILDING.md`：「using the v8 engine configured to start with JIT disabled」；发行包里有 `nodejs-mobile-v18.20.4-ios.zip` |
+| danmu_api 能在上面跑吗 | **能**。它是纯 ESM + Node 内置模块 + 纯 JS 依赖（`https-proxy-agent` / `dotenv` / `node-fetch` / `@dan-uni/dan-any`），没有运行期 native 模块；唯一的硬编码是**代理端口 5321**（TV 的载荷已改成可配、0=关） | 本机实测：`node danmu_api/server.js`（`DANMU_API_PORT=18401`、`DANMU_API_PROXY_PORT=0`）→ `/api/v2/fongmi/danmaku?name=庆余年&episode=1` 返回 200、33.8KB 弹幕、3.3s |
+| 别的 JS 引擎行不行 | **不行（就现载荷而言）**：JavaScriptCore / QuickJS-ng / Hermes 都没有 ESM 与 Node 内置模块，而 danmu_api 是 ESM + `node:` 前缀导入 + `zlib`/`fs`/`http` | 这些引擎反而更适合「自己重写一份弹幕接口」而不是「跑现成载荷」 |
+
+**接口已经现成**：宿主侧 `ApiServer` 认 `meow.danmaku.bundled` 系统属性
+（`bundledDanmakuHost()`，与 TV 的 `Bridge.installDanmakuHost` 等价），
+值形如 `http://127.0.0.1:<port>/api/v2/fongmi/danmaku?name={name}&episode={episode}`。
+所以 iOS 侧只要：起 node → 探到端口 → 设这个属性（JNI 里一句
+`System.setProperty` 即可），宿主立刻改用端内弹幕源。
+
+**已落地 / 待落地**：
+
+- 已落地：`client/apps/ios/scripts/prepare-node-runtime.sh`（下载 + 挑真机/模拟器
+  两份 framework + 报告）、`.github/workflows/_ios_node.yml`（macOS runner 上
+  核对 `node_start` 导出符号并做一次模拟器链接冒烟）。
+- 待落地：framework 进 IPA 链接、`NodeBridge`（起 node / 探端口 / 设属性）、
+  弹幕载荷（`node_modules` 113MB，**必须**像 TV 那样首启下载，不能打进包里）。
+
+---
+
+::: warning 以下为「落地契约」原文
+仓库主分支当前**没有 iOS 工程**（`client/apps/ios/` 不存在），用户指南仍按
 「iPhone / iPad 用 Safari + 添加到主屏幕」写。
 本文定义**如果按 TV APK 的形态做 iOS 壳**：工程结构、能力边界、IPA 构建与发版 CI、
 签名与验收红线。标【待实现】= 代码还没写；标【待实测】= 没有 iPhone，无法验证。
@@ -18,10 +76,12 @@ TV 端已经有完整的一套「壳」：`client/apps/tv` 是 Android WebView �
 
 1. **能对齐的**：同一份 Web 前端、同一个后端、同一个「壳 + JS 桥 + 设置页」形态，
    以及同一条 `tag → 构建 → draft Release → Publish → 清单` 发版节奏。
-2. **对不齐的**：TV 的端内网关与 dex jar 执行在 iOS 上**没有对应物**——没有 JVM、
-   禁止动态加载可执行代码，iOS 壳只能连后端、不能端内跑源。TV 的 Node 模块是
-   Android APK，不能直接搬；iOS 用 nodejs-mobile **进程内嵌 libnode** 跑
-   `danmu_api`（见 §3.7），这是唯一可行的「内置 Node」形态。
+2. **对不齐的**：TV 的端内网关与 dex jar 执行在 iOS 上**曾经**没有对应物——没有 JVM、
+   禁止动态加载可执行代码，iOS 壳只能连后端、不能端内跑源。
+   ★ 这条已被 §0 推翻：`feat/ios-jvm` 用**静态链接的 OpenJDK 9 Zero**把同一份
+   `ApiServer` 搬进了进程（无 JIT、不需要可执行内存），端内 dex→class 也用
+   **端内 dex2jar 库**解决（不能 fork/exec）。TV 的 Node 模块是 Android APK，
+   搬不了；`danmu_api` 那部分见 §3.7 与 §0 的「仍然缺」。
 3. **真正的分水岭是签名**：没有 $99 账号，CI 只能产出**未签名 IPA**，用户必须用
    自己的 Apple ID 在电脑上签（AltStore / Sideloadly，7 天有效）。
    所以 IPA **不是自更新通道**，`packages.json` 也不该收它。
