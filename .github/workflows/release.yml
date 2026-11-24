@@ -1,7 +1,8 @@
 name: release
 
-# 公开壳发布：只构建不依赖源包的产物（Web/PC/TV/apiserver 插件）。
+# 公开壳发布：只构建不依赖源包的产物（Web/PC/TV/iOS/apiserver 插件）。
 # 真实 config / spider jar / payload 不在公开库，也不进 Release。
+# iOS 产的是**未签名** IPA（端内 OpenJDK Zero，GPL-2.0+CE），只能侧载。
 on:
   push:
     tags:
@@ -47,6 +48,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       tv: ${{ steps.scope.outputs.tv }}
       pc: ${{ steps.scope.outputs.pc }}
+      ios: ${{ steps.scope.outputs.ios }}
       plugins: ${{ steps.scope.outputs.plugins }}
       plugins_only: ${{ steps.scope.outputs.plugins_only }}
       docker: ${{ steps.scope.outputs.docker }}
@@ -93,20 +95,20 @@ jobs:
           set -euo pipefail
           set_out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            set_out tv true; set_out pc true; set_out plugins true; set_out release false
+            set_out tv true; set_out pc true; set_out ios true; set_out plugins true; set_out release false
             set_out plugins_only ''
             set_out docker '${{ inputs.docker }}'; set_out tvplugins '${{ inputs.tv_plugins }}'
             exit 0
           fi
           TAG="${GITHUB_REF#refs/tags/}"
           case "$TAG" in
-            release-v[0-9]*)    set_out tv true;  set_out pc true;  set_out plugins true;  set_out docker true;  set_out tvplugins false; set_out release true;  set_out plugins_only '' ;;
-            tv-v[0-9]*)         set_out tv true;  set_out pc false; set_out plugins false; set_out docker false; set_out tvplugins false; set_out release true;  set_out plugins_only apiserver ;;
-            pc-v[0-9]*)         set_out tv false; set_out pc true;  set_out plugins true;  set_out docker false; set_out tvplugins false; set_out release true;  set_out plugins_only apiserver ;;
-            plugins-v[0-9]*)    set_out tv false; set_out pc false; set_out plugins true;  set_out docker false; set_out tvplugins false; set_out release true;  set_out plugins_only '' ;;
-            tv-plugins-v[0-9]*) set_out tv false; set_out pc false; set_out plugins false; set_out docker false; set_out tvplugins true;  set_out release true;  set_out plugins_only '' ;;
+            release-v[0-9]*)    set_out tv true;  set_out pc true;  set_out ios true;  set_out plugins true;  set_out docker true;  set_out tvplugins false; set_out release true;  set_out plugins_only '' ;;
+            tv-v[0-9]*)         set_out tv true;  set_out pc false; set_out ios false; set_out plugins false; set_out docker false; set_out tvplugins false; set_out release true;  set_out plugins_only apiserver ;;
+            pc-v[0-9]*)         set_out tv false; set_out pc true;  set_out ios false; set_out plugins true;  set_out docker false; set_out tvplugins false; set_out release true;  set_out plugins_only apiserver ;;
+            plugins-v[0-9]*)    set_out tv false; set_out pc false; set_out ios false; set_out plugins true;  set_out docker false; set_out tvplugins false; set_out release true;  set_out plugins_only '' ;;
+            tv-plugins-v[0-9]*) set_out tv false; set_out pc false; set_out ios false; set_out plugins false; set_out docker false; set_out tvplugins true;  set_out release true;  set_out plugins_only '' ;;
             # ★ 只重建 Docker 三镜像（2026-11-12 补回）：不建 GitHub Release、不改 packages.json。
-            docker-v[0-9]*)     set_out tv false; set_out pc false; set_out plugins false; set_out docker true;  set_out tvplugins false; set_out release false; set_out plugins_only '' ;;
+            docker-v[0-9]*)     set_out tv false; set_out pc false; set_out ios false; set_out plugins false; set_out docker true;  set_out tvplugins false; set_out release false; set_out plugins_only '' ;;
             *) echo "::error::无法识别的 tag：$TAG"; exit 1 ;;
           esac
 
@@ -202,6 +204,22 @@ jobs:
     uses: ./.github/workflows/_tv_plugins.yml
     secrets: inherit
 
+  # ── iOS 未签名 IPA（2026-11-24 接入）────────────────────────────────────
+  # 端内 OpenJDK 9 Zero + 同一份 ApiServer：主线现在带 iOS 工程，
+  # 全量发版要像 TV/PC 一样有 IPA，不再靠 feat/ios-jvm 的 push 单独出包。
+  # 只跑全量（release-v*）与手动 dispatch；tv-v*/pc-v* 等单链不带，
+  # 因为 macOS runner 计时按 2× 算，不该为不带 iOS 的发版付这笔。
+  # 产物名 Meow-unsigned.ipa 由 publish 的 `*.ipa` 收进主 Release。
+  ios:
+    name: iOS IPA
+    needs: plan
+    if: ${{ needs.plan.outputs.ios == 'true' }}
+    uses: ./.github/workflows/_ios.yml
+    with:
+      sim: false
+      nojvm: false
+    secrets: inherit
+
   plugins:
     name: 插件
     needs: plan
@@ -241,11 +259,13 @@ jobs:
     # ★ fpk 也进 needs（2026-11-13 用户口径）：全量 Release 必须自带 fnOS 包，
     #   不另出 fpk-v* Release —— 用户下载/归档只认一个 Release，
     #   和 TV/PC 的包同级。副作用：fpk 失败 = 这轮不建 Release（和 web/tv/pc 同语义）。
-    needs: [plan, web, tv, pc, plugins, docker, tv_plugins, fpk]
+    # ★ ios 同样进 needs（2026-11-24）：全量发版必须带未签名 IPA，失败同样不建 Release。
+    needs: [plan, web, tv, pc, ios, plugins, docker, tv_plugins, fpk]
     if: ${{ !cancelled() && github.event_name == 'push' && needs.plan.outputs.release == 'true'
             && needs.web.result != 'failure' && needs.web.result != 'cancelled'
             && needs.tv.result != 'failure' && needs.tv.result != 'cancelled'
             && needs.pc.result != 'failure' && needs.pc.result != 'cancelled'
+            && needs.ios.result != 'failure' && needs.ios.result != 'cancelled'
             && needs.plugins.result != 'failure' && needs.plugins.result != 'cancelled'
             && needs.docker.result != 'failure' && needs.docker.result != 'cancelled'
             && needs.tv_plugins.result != 'failure' && needs.tv_plugins.result != 'cancelled'
@@ -270,9 +290,11 @@ jobs:
           # ★ 含 .fpk：全量时 fpk job 的 artifact（fpk-x86 / fpk-arm）也在这个 run 里，
           #   fnOS 包跟 TV/PC 的包同级放主 Release（2026-11-13 用户口径）。
           #   单链 tv-v*/pc-v* 等没有 fpk artifact，find 不会命中，行为不变。
-          find dist -type f \( -name '*.apk' -o -name '*.exe' -o -name '*.zip' -o -name '*.fpk' \) -exec cp {} upload/ \; || true
+          # ★ 含 .ipa（2026-11-24）：iOS job 上传 ios-ipa-<run>，同样进主 Release。
+          find dist -type f \( -name '*.apk' -o -name '*.exe' -o -name '*.zip' -o -name '*.fpk' -o -name '*.ipa' \) -exec cp {} upload/ \; || true
           ls -la upload
           # 公开壳发布守卫：绝不允许源包混进 Release
+          # （.ipa 里也不该有：iOS 载荷只有 host.jar + danmu-api 运行时，仍在 IP 外）
           if find upload -type f \( -name 'spider*.jar' -o -name 'config.sites.json' -o -name 'node-payload-danmu.zip' \) | grep -q .; then
             echo "::error::公开 Release 里出现源包文件"; exit 1
           fi
@@ -398,6 +420,7 @@ jobs:
             | `apiserver-*.zip` | PC 后端插件 |
             | `drpy-*.zip` / `danmu-api-*.zip` / `node-*.zip` / `ffmpeg-*.zip` | PC 插件 |
             | `meow_*.fpk` | fnOS 套件（x86 / arm） |
+            | `Meow-unsigned.ipa` | iOS 空壳（**未签名**，LiveContainer / 自签侧载；OpenJDK Zero 为 GPL-2.0+CE，不能上架） |
             | `packages.json` | 客户端更新清单 |
             | `SHA256SUMS.txt` | 校验 |
 

@@ -1,11 +1,23 @@
 name: _ios
 
 # 真机未签名 IPA：内嵌 OpenJDK 9 Zero + ApiServer。
-# 默认 push 只跑 IPA（缓存命中后约 2–3 分钟）；模拟器截图是可选输入 sim=true。
+#
+# ★ 2026-11-24 起接入主发版链：release.yml 的 `ios` job 用 workflow_call 调本文件，
+#   `release-v*` 全量 tag 会带出 IPA，与 TV/PC/fpk 同页发布；不再靠
+#   feat/ios-jvm 的 push 单独出包（分支已合入 main）。
+#   只想给自己装一个时，在 Actions 页面手动 dispatch 本 workflow。
 # 快速 UI 截图见 _ios_ui.yml（不构建 App，60–120 秒）。
 on:
-  push:
-    branches: [feat/ios-jvm]
+  workflow_call:
+    inputs:
+      sim:
+        description: 同时构建模拟器包并截图（约 +4 分钟）
+        type: boolean
+        default: false
+      nojvm:
+        description: 排障变体：不链接静态 JVM（用来二分「闪退是否来自 JVM」）
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       sim:

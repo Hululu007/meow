@@ -361,6 +361,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/build-plugins
 | TV | `猫窝-TV-0.9.17.apk` | `meow-TV-0.9.17.apk` |
 | PC 安装包 | `猫窝_0.9.17_x64-setup.exe` | `meow-setup-0.9.17.exe` |
 | PC 裸 exe | `猫窝-裸exe-0.9.17.exe` | `meow-bare-0.9.17.exe` |
+| iOS（未签名） | —（CI 专属） | `Meow-unsigned.ipa` |
 | 插件 | `apiserver-0.9.17.zip` 等 | 同左 |
 
 **为什么不一样**：GitHub 把非 ASCII 附件名转义成 `-`/`_`（实测显示成
@@ -376,14 +377,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/build-plugins
 | 触发 | 实际跑的 job | 建 Release | 发 Publish 后的 sync scope | 实测 |
 |---|---|---|---|---|
 | **`v1.0.10`**（无前缀） | **什么都不跑**——纯版本标记 | ❌ | — | 0 |
-| `release-v1.0.10` | docker + tv + pc_shell + plugins（**4 个 PC 插件**；tv-node 归 `tv-plugins-v*`）+ **fpk ×2（x86/arm，Publish 后写 FnDepot + fpk-updates）** | ✅ draft | `meow-pc` `meow-tv` `plugins` + fpk 两条索引 | **9m58s**（1.2.4 实测） |
+| `release-v1.0.10` | docker + tv + pc_shell + **ios（未签名 IPA）** + plugins（**4 个 PC 插件**；tv-node 归 `tv-plugins-v*`）+ **fpk ×2（x86/arm，Publish 后写 FnDepot + fpk-updates）** | ✅ draft | `meow-pc` `meow-tv` `plugins` + fpk 两条索引 | **9m58s**（1.2.4 实测；iOS 另加约 2–13 min，macOS runner 2× 计费） |
 | `tv-v1.0.10` | tv（**不含模块**） | ✅ draft | `meow-tv` | 2.7 min |
 | `tv-plugins-v18.20.4.1`（示例） | tv_plugins（模块 ×3 ABI）；tag 用模块版本，不是壳版本 | ✅ draft | `tv-module`（只模块三条） | 163 s |
 | `pc-v1.0.10` | pc_shell + plugins（**仅 apiserver**） | ✅ draft | `meow-pc` `plugins` | 13 min（Windows ×2） |
 | `plugins-v1.0.10`（示例） | plugins（**4 个 PC 插件**，Windows runner，无壳；tv-node 不在此链）；tag 可用插件批次版本 | ✅ draft | `plugins` | 5 min+ |
 | `docker-v1.0.10` | docker（三镜像推 Hub） | ❌ | — | 6 min |
 | `fpk-v1.0.10` | 另一 workflow：fpk plan + build(x86/arm) + **本 tag 的 draft Release**（补包用；全量 `release-v*` 会调它构建但包进主 Release） | ✅ draft（仅单链） | 不走 sync-packages；**Publish 后**写 FnDepot + fpk-updates | ~3m |
-| `workflow_dispatch`（release.yml） | 勾选 docker/tv/pc/plugins | ❌ | — | 按勾选 |
+| `workflow_dispatch`（release.yml） | tv/pc/**ios**/plugins 全跑（docker、tv_plugins 按勾选） | ❌ | — | 按勾选 |
 | `tv-verify-1.0.10` | 什么都不跑——前缀后不是数字 | ❌ | — | 0 |
 
 **三条铁律**
