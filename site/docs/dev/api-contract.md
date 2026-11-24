@@ -199,17 +199,26 @@ Cache-Control: no-store, no-cache, must-revalidate
 `GET` 回最近一次摘要；从未导入 → `{"ok":true,"imported":false}`。
 坏 JSON / 缺 url / 非 http(s) → 400；拉取失败 / 非 JSON → 502。
 
-### 2.8 `POST /api/config/depot`（多仓探测，只读）
+### 2.8 `POST /api/config/depot`（多仓探测）与 `GET`（缓存）
 
 ```json
-{"url":"https://…/tvboxmuti.json"}
-→ {"ok":true,"entries":[{"name":"仓1","url":"…","ok":true,"sites":151,"csp":96,
-   "inJar":96,"direct":0,"hint":"可用 96 站"}]}
+POST {"url":"https://…/tvboxmuti.json"}
+→ {"ok":true,"index":"…","active":"","probedAt":1732…,
+   "entries":[{"name":"仓1","url":"…","ok":true,"sites":151,"csp":96,
+               "inJar":96,"direct":0,"hint":"可用 96 站"}]}
+
+GET  → {"ok":true,"cached":true,"index":"…","active":"…","probedAt":…,
+        "stale":false,"entries":[…]}
 ```
 
-只读：不写 `config.sites.json`、不重建站点表。单仓地址也接受（回一条 `name:"当前地址"`）。
-`inJar + direct` 才是「导入后真能用几站」，排序按它，不按 `sites`。
-非 POST → 405；非 http(s) → 400；拉取失败 → 502。
+- `POST` 探测：只读 `config.sites.json`、不重建站点表；单仓地址也接受（回一条
+  `name:"当前地址"`）。`inJar + direct` 才是「导入后真能用几站」，排序按它。
+- 探测结果落盘 `config.depot.json`（`{index,probedAt,active,entries}`），
+  `GET` 不传 url 直接回缓存；探测超过 24h 只标 `stale`（不删）。
+- `entries[].ok` 可能缺失：由“直接导入索引”生成的缓存条目录有 `name/url`，
+  `ok` 未知（显示「未探测」）。
+- `POST` 非 http(s) → 400；拉取失败 → 502。`GET` 无缓存 → `cached:false, entries:[]`。
+- 导入接口（2.7）成功时额外回 `active`（当前生效的仓），并更新这份缓存。
 
 ### 2.9 `GET/POST/DELETE /api/config/backup`
 

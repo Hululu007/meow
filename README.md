@@ -65,7 +65,7 @@ TV   ─┘
 | CatVod spider jar（`csp_*`） | JVM `Class.forName` / TV `DexClassLoader` |
 | drpy `.js` | `server/drpy` 外挂 Node 运行时 |
 | 苹果CMS 直连（`type: 1`） | 按 CMS 协议直接拉取 |
-| 多仓索引（`{"urls":[...]}`） | 导入时逐个探测仓库是否可用 |
+| 多仓索引（`{"urls":[...]}`） | 逐仓探测可用性；仓库列表持久化，可一键切仓（同一时刻一个仓生效） |
 | `/config.json` | CatVod 出口配置，可导入站点/直播/解析表 |
 
 源由用户自行准备；仓库不附带任何站点配置、spider jar 或第三方令牌。
