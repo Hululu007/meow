@@ -54,6 +54,37 @@ if (-not $baseline.packages) {
 $changed = $ChangedIds.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
 $bad = @()
 
+# 当前源码里的版本（2026-11-24 补）。
+#
+# 原实现只拿**基线版本**跟壳版本比，于是「插件源一改就必红」——它根本读不到
+# 这次到底有没有升版本（drpy 0.1.0→0.1.1 也照样拦，1.2.22 发版实测）。
+# 判据改成：当前版本 ≠ 基线版本 = 已升版本，通过。
+function Get-CurrentUnitVersion([string]$id) {
+    $root = Join-Path $PSScriptRoot '..\..'
+    switch ($id) {
+        'drpy' {
+            $p = Join-Path $root 'server\plugin-manifests\drpy.manifest.json'
+            if (Test-Path $p) {
+                return [string](([IO.File]::ReadAllText($p, [Text.Encoding]::UTF8) | ConvertFrom-Json).version)
+            }
+        }
+        'danmu-api' {
+            $p = Join-Path $root 'server\plugin-manifests\danmu-api.manifest.json'
+            if (Test-Path $p) {
+                return [string](([IO.File]::ReadAllText($p, [Text.Encoding]::UTF8) | ConvertFrom-Json).version)
+            }
+        }
+        'ffmpeg' {
+            $p = Join-Path $root 'server\build-plugin-ffmpeg.ps1'
+            if (Test-Path $p) {
+                $m = [regex]::Match([IO.File]::ReadAllText($p, [Text.Encoding]::UTF8), '"version"\s*:\s*"([^"]+)"')
+                if ($m.Success) { return $m.Groups[1].Value }
+            }
+        }
+    }
+    return ''
+}
+
 foreach ($id in $changed) {
     # tv-node 的三个 ABI 在清单里是 tv-node-<abi>，按前缀聚合成一个单元判
     $ids = if ($id -eq 'tv-node') {
@@ -70,6 +101,12 @@ foreach ($id in $changed) {
         # 版本等于壳版本 = 随壳发布（如 apiserver），内容本来就会变，不判
         if ($oldVer -eq $Version) {
             Write-Host "  · $k：版本跟壳走（$oldVer），跳过" -ForegroundColor DarkGray
+            continue
+        }
+        # 当前源码里的版本已不同于基线 = 这次确实升了版本
+        $newVer = Get-CurrentUnitVersion $id
+        if ($newVer -and $newVer -ne $oldVer) {
+            Write-Host "  · $k：$oldVer → $newVer（已升版本，通过）" -ForegroundColor DarkGray
             continue
         }
         $bad += [pscustomobject]@{ Id = $k; Version = $oldVer }
