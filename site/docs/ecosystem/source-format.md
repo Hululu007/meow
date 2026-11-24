@@ -326,7 +326,7 @@ docker compose -f docker-compose.sources.yml up -d
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 \
   -f Dockerfile.sources \
-  -t chrplus/meow-sources:2.0.0 -t chrplus/meow-sources:latest --push .
+  -t chrplus/meow-sources:2.0.1 -t chrplus/meow-sources:latest --push .
 ```
 
 ### 校验与更新

@@ -132,7 +132,7 @@ compose 分工：
 - `docker-compose.with-sources.yml`：主栈 + sources 一键启动；
 - `docker-compose.sources.yml`：只启动源服务。
 
-官方镜像 `chrplus/meow-sources:latest`（当前指向 2.0.0）内置主爬虫 + Jable 扩展 + 54 站默认源；
+官方镜像 `chrplus/meow-sources:latest`（当前指向 2.0.1）内置主爬虫 + Jable 扩展 + 54 站默认源；
 自定义完整源包通过 `/mounted-sources` 只读挂载覆盖。`Dockerfile.sources` /
 `nginx.sources.conf` / `entrypoint.sh` / `default-sources` 是私仓构建资源，
 已在公开库 gitignore。
