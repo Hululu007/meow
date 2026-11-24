@@ -1024,10 +1024,22 @@ function play(filePath: string) {
     direct: u,
   }
   if (g) {
-    query.name = libraryDanmakuTitle(scrapeTitleOf(g) || g.title, trail.value.map((t) => t.name))
+    const showTitle = libraryDanmakuTitle(scrapeTitleOf(g) || g.title, trail.value.map((t) => t.name))
+    query.name = showTitle
     const cur = g.files.find((x) => x.path === filePath)
     if (cur) query.ep = libraryEpisodeLabel(cur)
     query.list = JSON.stringify(g.files.map((x) => ({ name: libraryEpisodeLabel(x), url: x.path })))
+    /*
+     * 片库也要进历史/续播（2026-11-23）：
+     *   · vod = `库id|剧目录`，作为这部片稳定的历史键（file 只是单集坐标）
+     *   · id  = 相对文件路径，历史里按 ep_url 存，回来时能精确对上同一集
+     *   · pic = 已刮削的海报（有就带上，历史卡片不空）
+     */
+    const dir = filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : ''
+    query.vod = `${currentLib.value}|${dir}`
+    query.id = filePath
+    const pic = posterOf(scrapeTitleOf(g), g.year)
+    if (pic) query.pic = pic
   }
   void router.push({ name: 'play', params: { site: '__library__' }, query })
 }

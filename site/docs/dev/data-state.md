@@ -97,6 +97,18 @@ PC / fnOS 的插件宿主在插件就绪后把地址写进 `policy.json` 的指�
 5 秒心跳在 `VideoPlayer.onTimeUpdate`（`>= 5` 才发，`VideoPlayer.vue:2082`）；进度节流落盘时 `notify:false`，
 不触发 WebDAV 上传（`history.ts:135-163`），否则播放全程每 5 秒就 PUT 一次整份历史。
 
+**片库没有 VOD 的 `site/vod_id`**，用固定键让同一套 `saveProgress/applyResume` 直接复用：
+
+| 字段 | 片库取值 | 例 |
+|---|---|---|
+| `site` / 历史 `siteName` | `__library__` / 「片库」 | — |
+| `vod_id` | `<库id>\|<剧目录>`（`LibraryView.play()` 写） | `libmwpo31pz\|武林外传` |
+| `ep_url` | 相对库根的**文件**路径 | `武林外传/01.mp4` |
+| 续播入口 | `HistoryView.open()` 按 `site==='__library__'` 特判，重建 `#/play/__library__?library=…&file=…` | — |
+
+切集时 `vod/id` 必须带进 query（`PlayView.switchEpisode` 的片库分支），否则换集后进度落到
+另一条 key 上；历史卡片的「详情」则跳回片库目录 `#/library?lib=…&path=<剧目录>`。
+
 ## 六、什么能安全删除
 
 ```bash

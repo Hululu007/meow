@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { clearHistory, listHistory, pushHistory, removeHistory, type HistoryItem } from '@/stores/history'
 import PosterImage from '@/components/common/PosterImage.vue'
 import { fetchDetail } from '@/api'
+import { libraryStream } from '@/api/library'
 import { dailySeries, fmtDuration, overview, summary } from '@/stores/watchStats'
 import type { StatsOverview } from '@/stores/watchStats'
 import WatchStatsPanel from '@/components/common/WatchStatsPanel.vue'
@@ -240,7 +241,37 @@ function fmtTime(at: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+/** 片库历史：vod_id = `库id|剧目录`，ep_url = 相对文件路径 */
+function libraryOf(it: HistoryItem): { lib: string; dir: string } | null {
+  if (it.site !== '__library__') return null
+  const i = (it.vod_id || '').indexOf('|')
+  if (i <= 0) return null
+  return { lib: it.vod_id.slice(0, i), dir: it.vod_id.slice(i + 1) }
+}
+
 function open(it: HistoryItem) {
+  /*
+   * 片库（2026-11-23）：没有 spider 的 play，直接按 library/file 重新拼流地址；
+   * id 带文件路径，播放页用它匹配续播进度（ep_url 同一口径）。
+   */
+  const l = libraryOf(it)
+  if (l && it.ep_url) {
+    router.push({
+      name: 'play',
+      params: { site: '__library__' },
+      query: {
+        library: l.lib,
+        file: it.ep_url,
+        direct: libraryStream(l.lib, it.ep_url),
+        name: it.vod_name,
+        ep: it.ep || '',
+        vod: it.vod_id,
+        id: it.ep_url,
+        pic: it.vod_pic || undefined,
+      },
+    })
+    return
+  }
   // 有播放进度就直达播放页，否则回详情页挑线路
   if (it.ep_url && it.flag) {
     router.push({
@@ -267,6 +298,12 @@ function open(it: HistoryItem) {
 /** 打开详情页（次级入口，不进播放页） */
 function openDetail(it: HistoryItem, ev: Event) {
   ev.stopPropagation()
+  const l = libraryOf(it)
+  if (l) {
+    // 片库没有 VOD 详情页：深链回片库对应目录
+    router.push({ name: 'library', query: { lib: l.lib, path: l.dir } })
+    return
+  }
   router.push({
     name: 'detail',
     params: { site: it.site, id: it.vod_id },

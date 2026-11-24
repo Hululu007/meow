@@ -41,7 +41,8 @@ describe('片库弹幕检索名/集标签', () => {
 
 describe('片库 → 播放页带齐弹幕/预取所需的上下文', () => {
   it('进播放页带上 name / ep / list', () => {
-    expect(LIB).toContain('query.name = libraryDanmakuTitle')
+    expect(LIB).toContain('const showTitle = libraryDanmakuTitle(scrapeTitleOf(g)')
+    expect(LIB).toContain('query.name = showTitle')
     expect(LIB).toContain('libraryEpisodeLabel(cur)')
     expect(LIB).toContain('query.list = JSON.stringify')
   })

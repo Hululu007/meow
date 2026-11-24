@@ -293,6 +293,23 @@ const refreshSeekAt = ref(0)
 let staleRefreshBusy = false
 
 /**
+ * 两台设备同时要 4K 硬转：后端只允许一路，第二台会得到 hw_busy。
+ * 不再直接丢错误页，而是给用户两个真实选择：
+ *   · 排队：每 15 秒重试一次（最多 5 分钟），前一台结束就自动接上；
+ *   · 换 1080p：切到同片的第一条非 4K 线路（保留当前集）。
+ */
+const busyHint = ref(false)
+const busyRetries = ref(0)
+const BUSY_RETRY_MS = 15_000
+const BUSY_MAX_RETRIES = 20
+const busyRetrying = ref(false)
+let busyTimer: number | undefined
+let busyKind: 'vod' | 'lib' = 'vod'
+let busySrc = ''
+let busyLib = ''
+let busyFile = ''
+
+/**
  * 源地址中途过期（403）→ 重新调 play 拿新 token，在原位置续播。
  *
  * 只在"已经成功播过分片后遇到 403"时由播放器触发（见 VideoPlayer 的 stale-src），
@@ -548,6 +565,8 @@ const danmakuUrl = computed(() => {
 let linesCache: Array<{ name: string; episodes: Array<{ name: string; url: string }> }> | null = null
 
 async function ensurePlaylist() {
+  // 片库的剧集表由 LibraryView 随 query.list 带过来，没有 spider 可补
+  if (isLibraryPlay.value) return
   if (!vodId) return
   // 没显式指定线路时，优先用用户上次在这部片上选过的（找不到名字就退回第一条）
   const want = flag.value || getLinePref(site, vodId)
@@ -846,6 +865,9 @@ function switchEpisode(i: number) {
         direct: file ? libraryStream(libraryLib.value, file) : undefined,
         name: title,
         ep: target.name,
+        vod: vodId || undefined,
+        id: file || undefined,
+        pic: metaPic.value || undefined,
         list: playlist.value.length ? JSON.stringify(playlist.value) : undefined,
       },
     })
@@ -1098,7 +1120,9 @@ async function tryTranscode(src: string) {
   transcodeWaiting.value = true
   errorSource.value = 'play'
   hopError.value = ''
-  loadingText.value = '正在准备播放（这个格式需要转码，已转部分可边看边转）…'
+  loadingText.value = busyRetrying.value
+    ? `排队中：另一台设备正在转 4K（第 ${busyRetries.value} 次重试）…`
+    : '正在准备播放（这个格式需要转码，已转部分可边看边转）…'
   error.value = ''
   try {
     // 首次响应只代表"任务已排上"，要等分片落盘到能起播
@@ -1114,6 +1138,9 @@ async function tryTranscode(src: string) {
       undefined,
       headerStr,
     )
+    ;(window as unknown as { __meowLastTranscode?: unknown }).__meowLastTranscode = {
+      ok: r.ok, state: r.state, code: r.code, error: r.error,
+    }
     if (myEpoch !== playEpoch) {
       // 已经切集/换线：后端任务没人要了，停掉（仍在跑才停，转完的留着）
       if (r.state === 'running') void cancelTranscode({ src })
@@ -1121,6 +1148,10 @@ async function tryTranscode(src: string) {
     }
     pendingTranscode = null
     transcodeWaiting.value = false
+    busyRetrying.value = false
+    busyRetries.value = 0
+    clearTimeout(busyTimer)
+    busyHint.value = false
     /*
      * 转码失败**不能覆盖播放器给的原因**。
      *
@@ -1130,6 +1161,27 @@ async function tryTranscode(src: string) {
      * 现在：主文案保留播放器的原因，转码失败只作为第二行（按 code 说人话）。
      */
     if (!r.ok || r.state === 'failed' || !r.playlist) {
+      if (r.code === 'hw_busy') {
+        // 不是源/编码问题：另一台设备在转 4K。给"排队/换 1080p"两个选择。
+        hopError.value = ''
+        error.value = ''
+        loadingText.value = ''
+        transcodeWaiting.value = false
+        busyKind = 'vod'
+        busySrc = src
+        // 清掉播放器的"解码失败"错误页，否则它会盖住下面的排队/换线选择
+        player.value?.stop?.()
+        ;(window as unknown as { __meowBusy?: unknown }).__meowBusy = {
+          at: Date.now(), retrying: busyRetrying.value, code: r.code,
+        }
+        if (busyRetrying.value) scheduleBusyRetry()
+        else busyHint.value = true
+        return
+      }
+      // 排队中遇到别的失败（源挂/没 ffmpeg）：收起排队浮层，按原错误流程走
+      busyHint.value = false
+      busyRetrying.value = false
+      clearTimeout(busyTimer)
       hopError.value = !r.playlist
         ? transcodeErrorMessage(r)
         : (r.error || '转码失败')
@@ -1243,7 +1295,9 @@ async function tryLibraryTranscode(lib: string, file: string) {
   // 从这一刻起不再把 query.direct 交给播放器（否则 <video> 会一直重试直连，
   // 转码好了也播不到；见 playableSrc 里的注释）
   libraryNoDirect.value = true
-  loadingText.value = '直连播不了，正在启动转码（可边转边看）…'
+  loadingText.value = busyRetrying.value
+    ? `排队中：另一台设备正在转 4K（第 ${busyRetries.value} 次重试）…`
+    : '直连播不了，正在启动转码（可边转边看）…'
   error.value = ''
   try {
     const r = await waitLibraryTranscode(lib, file, (sec, ph, stalled) => {
@@ -1257,6 +1311,19 @@ async function tryLibraryTranscode(lib: string, file: string) {
     pendingTranscode = null
     transcodeWaiting.value = false
     if (r.state === 'failed' || !r.playlist) {
+      if (r.code === 'hw_busy') {
+        error.value = ''
+        loadingText.value = ''
+        busyKind = 'lib'
+        busyLib = lib
+        busyFile = file
+        if (busyRetrying.value) scheduleBusyRetry()
+        else busyHint.value = true
+        return
+      }
+      busyHint.value = false
+      busyRetrying.value = false
+      clearTimeout(busyTimer)
       // 按后端 code 说人话（slow_4k / no_ffmpeg / source_timeout…）
       error.value = transcodeErrorMessage(r)
       // 收掉整页加载遮罩：否则 error 分支会被「loading && !src」遮住，
@@ -2048,6 +2115,60 @@ function syncNativeTracks() {
   }
 }
 
+/** 同片里第一条非 4K 线路（用于"自动降 1080p"） */
+function lowerLineName(): string {
+  const ls = (lines.value || []).filter(
+    (l) => l.name !== flag.value && !/4k|2160|uhd|原盘/i.test(l.name),
+  )
+  return ls[0]?.name || ''
+}
+
+const lowerLine = computed(() => lowerLineName())
+
+function scheduleBusyRetry() {
+  clearTimeout(busyTimer)
+  busyTimer = window.setTimeout(() => {
+    if (!busyRetrying.value) return
+    busyRetries.value++
+    if (busyRetries.value > BUSY_MAX_RETRIES) {
+      busyRetrying.value = false
+      transcodeWaiting.value = false
+      loadingText.value = ''
+      error.value = '排队超时：另一台设备仍在转码，稍后再试或换 1080p 线路'
+      return
+    }
+    loadingText.value = `排队中：另一台设备正在转 4K（第 ${busyRetries.value} 次重试）…`
+    transcodeWaiting.value = true
+    if (busyKind === 'lib') void tryLibraryTranscode(busyLib, busyFile)
+    else void tryTranscode(busySrc)
+  }, BUSY_RETRY_MS)
+}
+
+function startBusyQueue() {
+  // 浮层保持可见、文案切到"排队中"：不依赖加载遮罩（直连失败后 src 还在，
+  // loading 遮罩不显示，用户会以为点了没反应）
+  busyHint.value = true
+  busyRetrying.value = true
+  busyRetries.value = 0
+  scheduleBusyRetry()
+}
+
+function cancelBusyQueue() {
+  busyRetrying.value = false
+  clearTimeout(busyTimer)
+  busyHint.value = false
+}
+
+function switchToLowerLine() {
+  const n = lowerLineName()
+  if (!n) {
+    showSilentHint('没有找到非 4K 线路，可以排队等前一台结束', false, false)
+    return
+  }
+  cancelBusyQueue()
+  switchLine(n)
+}
+
 /**
  * 从原生层回到网页时把进度带回来（2026-11-23 实报「退回来进度不带回」）。
  *
@@ -2357,7 +2478,7 @@ function flushToHistory(final: boolean, info?: { pos: number; dur: number }) {
   pushHistory(
     {
       site,
-      siteName: store.currentSite?.name || site,
+      siteName: isLibraryPlay.value ? '片库' : (store.currentSite?.name || site),
       vod_id: vodId,
       vod_name: displayTitle(),
       vod_pic: posterPic(),
@@ -2383,7 +2504,7 @@ function flushToHistory(final: boolean, info?: { pos: number; dur: number }) {
  * 但原来只取了剧集表就把响应扔了 —— 于是历史里那条记录的海报
  * 永远是空的（实测：10 条历史 10 条 vod_pic 为空）。
  */
-const metaPic = ref('')
+const metaPic = ref((route.query.pic as string) || '')
 const metaName = ref('')
 const metaRemarks = ref('')
 
@@ -2605,6 +2726,8 @@ async function prefetchNextPlay() {
 
 /** 播到一定进度后触发下集地址预取（每集只触发一次） */
 function maybePrefetchNextPlay(pos: number) {
+  // 片库没有 /api/{site}/play 可取，下一集地址就是本地文件，不需要预取
+  if (isLibraryPlay.value) return
   if (!Number.isFinite(pos) || pos < PLAY_PREFETCH_AFTER_SEC) return
   // 已触发过就不再进（进度心跳 5 秒一次，否则会把诊断记录刷满）
   if (prefetchArmed) return
@@ -3444,6 +3567,48 @@ onBeforeUnmount(() => {
         class="shrink-0 text-xs text-ink-3 transition hover:text-ink"
         @click="silentHint = ''; silentHintNative = false; silentHintTranscode = false"
       >
+        ✕
+      </button>
+    </div>
+
+    <!--
+      两台设备抢 4K 硬转（2026-11-23）：后端只放行一路，第二路会回 hw_busy。
+      直接丢错误页等于逼用户换片；这里给"排队等"和"降 1080p"两个真实选择。
+    -->
+    <div
+      v-if="busyHint"
+      data-busy-hint
+      class="absolute bottom-28 left-1/2 z-40 flex max-w-[94%] -translate-x-1/2 items-center gap-3 whitespace-nowrap rounded-xl border border-white/10 bg-black/88 px-4 py-2.5 text-sm text-ink shadow-2xl backdrop-blur-xl"
+    >
+      <span class="min-w-0 text-ink-2">
+        {{ busyRetrying
+          ? `排队中：另一台设备正在转 4K（已重试 ${busyRetries} 次，每 15 秒一次）`
+          : '另一台设备正在转 4K' }}
+      </span>
+      <button
+        v-if="!busyRetrying"
+        class="shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-medium whitespace-nowrap text-on-accent transition hover:bg-accent-dim"
+        data-tv-first
+        @click="startBusyQueue"
+      >
+        排队重试
+      </button>
+      <button
+        v-else
+        class="shrink-0 rounded-md bg-white/10 px-3 py-1.5 text-xs font-medium whitespace-nowrap text-ink-2 transition hover:bg-white/20"
+        @click="cancelBusyQueue"
+      >
+        取消排队
+      </button>
+      <button
+        v-if="lowerLine"
+        class="shrink-0 rounded-md bg-accent/15 px-3 py-1.5 text-xs font-medium whitespace-nowrap text-accent transition hover:bg-accent/25"
+        data-tv-first
+        @click="switchToLowerLine"
+      >
+        换 {{ lowerLine }}
+      </button>
+      <button class="shrink-0 text-xs text-ink-3 transition hover:text-ink" @click="cancelBusyQueue">
         ✕
       </button>
     </div>
