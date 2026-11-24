@@ -156,6 +156,40 @@ function webLog(msg: string) {
 }
 
 /**
+ * 客户端日志上送宿主（iOS 真机排障，2026-11-24）。
+ *
+ * WKWebView 里的 JS 异常 / 路由懒加载失败只进 Safari 控制台，端上拿不到；
+ * 真机只能靠 PC 远程读 `/api/logs`。这里把错误 POST 给宿主，日志页就有 `[web]` 行。
+ *
+ * 三条约束：①绝不抛出（这条通道不能成为新的错误源）；②每分钟最多 20 条，
+ * 报错风暴不许把宿主 2000 条的环形缓冲冲掉；③正文截断 600 字。
+ */
+let clientLogWindow = { at: 0, n: 0 }
+export function reportClientLog(
+  level: 'info' | 'warn' | 'error',
+  text: string,
+  tag = 'web',
+): void {
+  try {
+    const now = Date.now()
+    if (now - clientLogWindow.at > 60_000) clientLogWindow = { at: now, n: 0 }
+    if (++clientLogWindow.n > 20) return
+    const msg = String(text || '').slice(0, 600)
+    if (!msg) return
+    void fetch(`${base()}/api/_clientlog`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level, tag, text: msg }),
+      keepalive: true,
+    }).catch(() => {
+      /* 宿主没这条端点（旧版）/ 网络断了：静默 */
+    })
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
  * 连续网络级失败计数（10 秒窗口）。
  *
  * 10 秒内 ≥5 次「连 HTTP 响应都没拿到」= 不是某个接口坏了，而是**内核网络进程

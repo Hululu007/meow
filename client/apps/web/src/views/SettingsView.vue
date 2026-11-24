@@ -3652,8 +3652,9 @@ refreshDebug()
 
 // ---------------------------------------------------------------- iOS 调试（排障用）
 //
-// iOS 给不了 TV 那种「开关远程调试」：端内网关只绑 127.0.0.1，node 与 JVM 都在
-// App 进程里，没有可被外部工具接管的常驻调试进程。所以这里给**排障三件套**：
+// iOS 给不了 TV 那种「开关远程调试」：端内网关虽然监听 0.0.0.0（同一 Wi-Fi 可直连 9978），
+// 但 iOS 一切后台就挂起 App，监听套接字随之消失，没有可常驻的调试进程；
+// 也没有 TV DebugServer 那套 MCP（19777）。所以这里给**排障三件套**：
 // 运行信息（构建号/端口/运行时）、复制诊断（带最近日志，直接粘给开发）、重载界面。
 // 「图片全碎 / 按钮没反应」这类问题多半是内核网络进程被系统回收，重载即恢复。
 
@@ -3667,6 +3668,24 @@ const iosDiag = computed(() => {
     runtime: String(info.runtime || ''),
   }
 })
+
+/**
+ * 保持亮屏（2026-11-24 用户要求）。
+ *
+ * iOS 息屏 = App 被系统挂起 = 端内网关（9978）的监听套接字全部消失，
+ * 远程调试立刻断。iOS 没有「后台常驻监听」的合法通道，所以唯一可靠的
+ * 办法是别让屏幕自动锁；状态由壳持久化（UserDefaults），这里只读写。
+ */
+const keepAwake = ref(iosShellInfo().keepAwake !== false)
+function setKeepAwake(v: boolean) {
+  keepAwake.value = v
+  try {
+    // 桥不存在（模拟器/旧包）时静默：不影响其它功能
+    ;(window as any).meowIos?.setKeepAwake?.(v)
+  } catch {
+    /* ignore */
+  }
+}
 
 async function copyIosDiagnostics() {
   const lines: string[] = []
@@ -8141,7 +8160,7 @@ onBeforeUnmount(() => {
           </p>
         </div>
 
-        <!-- iOS：没有可外部接管的调试端口（网关只绑回环），给排障三件套 -->
+        <!-- iOS：没有常驻调试进程（切后台即挂起），给排障三件套 -->
         <div v-else class="mt-2 space-y-2">
           <div class="space-y-1">
             <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] text-ink-3">
@@ -8167,6 +8186,20 @@ onBeforeUnmount(() => {
               重载界面
             </button>
           </div>
+          <!-- 远程调试必须让屏幕别自动锁：息屏 = App 挂起 = 网关端口消失 -->
+          <div class="flex items-center justify-between gap-3 rounded-lg bg-field px-3 py-2">
+            <div class="min-w-0">
+              <div class="text-xs">保持亮屏</div>
+              <div class="text-[11px] leading-relaxed text-ink-3">
+                远程调试期间防止自动锁屏；息屏后 iOS 会挂起应用，网关端口随之消失
+              </div>
+            </div>
+            <ToggleSwitch
+              :model-value="keepAwake"
+              label="保持亮屏"
+              @update:model-value="setKeepAwake"
+            />
+          </div>
           <p v-if="diagMsg" class="text-[11px] text-accent">{{ diagMsg }}</p>
         </div>
 
@@ -8189,8 +8222,8 @@ onBeforeUnmount(() => {
             每次开启都会换新令牌，关闭后服务立即停止。
           </template>
           <template v-else-if="debugPlatform === 'ios'">
-            网关只绑 127.0.0.1、外部工具接不进来；「图片全碎 / 按钮没反应」多半是内核网络进程被系统回收，
-            点「重载界面」即恢复。
+            同一 Wi-Fi 下可用 http://设备IP:9978 直连调试（App 需保持前台，切后台会被系统挂起）；
+            「图片全碎 / 按钮没反应」多半是内核网络进程被系统回收，点「重载界面」即恢复。
           </template>
           <template v-else>
             只监听 127.0.0.1，不对外网开放。

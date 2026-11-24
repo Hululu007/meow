@@ -55,6 +55,9 @@ final class Bootstrap: ObservableObject {
         try? fm.createDirectory(at: dataDir, withIntermediateDirectories: true)
         LaunchLog.write("data dir ready: \(dataDir.path)")
 
+        // 远程调试要求屏幕别自动锁：息屏 = App 挂起 = 网关端口消失（重启后自动恢复上次选择）
+        ScreenAwake.restore()
+
         // 首次启动：拷一份空配置（0 站）。用户从设置页导入源包后覆盖。
         let config = dataDir.appendingPathComponent("config.sites.json")
         if !fm.fileExists(atPath: config.path),
@@ -157,6 +160,14 @@ final class Bootstrap: ObservableObject {
          */
         js.append("window.meowIos.setOrientation=function(m){try{"
                   + "window.webkit.messageHandlers.meowIos.postMessage({op:'orientation',value:String(m||'')})"
+                  + "}catch(e){}}")
+        /*
+         * 保持亮屏桥：iOS 息屏 = App 挂起 = 网关端口消失，远程调试直接断。
+         * 界面上给一个开关（维护 → 调试），状态持久化在 UserDefaults。
+         */
+        js.append("window.meowIos.keepAwake=\(ScreenAwake.isOn ? "true" : "false")")
+        js.append("window.meowIos.setKeepAwake=function(on){try{"
+                  + "window.webkit.messageHandlers.meowIos.postMessage({op:'keepAwake',value:!!on})"
                   + "}catch(e){}}")
         if base.isEmpty {
             js.append("localStorage.removeItem('meow.api');localStorage.removeItem('meow.api.scope')")

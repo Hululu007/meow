@@ -35,6 +35,7 @@ import {
   pushStatePrefs,
   pushStateProgress,
   removeStateFavorite,
+  reportClientLog,
   stateCapabilitySettled,
   SYNCED_PREF_KEYS,
   tauriInvoke,
@@ -64,6 +65,38 @@ if (new URLSearchParams(location.search).get('tv') === '1') {
 
 // 诊断钩子必须在任何业务代码之前装：要捕获启动期的错误与请求
 installDiagnostics()
+/*
+ * iOS 真机排障：JS 异常 / 未处理的 Promise / 路由失败都上送宿主。
+ * WKWebView 的控制台在端上拿不到，只能靠这条通道在「维护 → 日志」里看。
+ * 例：底栏点了没反应 = 懒加载 chunk 失败，这里会留下 `router: ...` 一行。
+ */
+window.addEventListener('error', (e) => {
+  reportClientLog('error', `${e.message} @ ${e.filename}:${e.lineno}`)
+})
+window.addEventListener('unhandledrejection', (e) => {
+  reportClientLog('error', `unhandledrejection: ${String((e as PromiseRejectionEvent).reason)}`)
+})
+router.onError((err) => {
+  const msg = String((err as { message?: string })?.message || err)
+  reportClientLog('error', `router: ${msg}`)
+  /*
+   * 懒加载 chunk 拉不到（发版换了 hash、旧页面还开着 / 静态服务漏了文件）：
+   * vue-router 会静默中止导航 —— 用户看到的就是「点底栏没反应」。
+   * 整页重载一次就能拿到新 chunk；10 秒内只试一次，避免坏包死循环。
+   */
+  if (/dynamically imported module|Importing a module script failed|Loading chunk/i.test(msg)) {
+    try {
+      const key = 'meow.chunkReloadAt'
+      const last = Number(sessionStorage.getItem(key) || 0)
+      if (Date.now() - last > 10_000) {
+        sessionStorage.setItem(key, String(Date.now()))
+        location.reload()
+      }
+    } catch {
+      /* 隐私模式没有 sessionStorage：不重载 */
+    }
+  }
+})
 // 外部 MCP 的工具桥（docs/47 §1.8）：把 9 个 meow_* 挂到 window，
 // 壳（PC 的 pc_eval / TV 的 tv_eval）注入脚本即可调用，业务逻辑不必在壳里重写。
 installToolBridge()

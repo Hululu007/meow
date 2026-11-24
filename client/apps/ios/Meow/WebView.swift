@@ -60,9 +60,16 @@ struct WebView: UIViewRepresentable {
                 LaunchLog.write("[web] \(message.body)")
             case "meowIos":
                 if let dict = message.body as? [String: Any],
-                   let op = dict["op"] as? String,
-                   op == "orientation" {
-                    ShellOrientation.apply(dict["value"] as? String ?? "")
+                   let op = dict["op"] as? String {
+                    switch op {
+                    case "orientation":
+                        ShellOrientation.apply(dict["value"] as? String ?? "")
+                    case "keepAwake":
+                        // 远程调试必须让屏幕别自动锁：息屏 = App 挂起 = 网关端口消失
+                        ScreenAwake.apply(dict["value"] as? Bool ?? false)
+                    default:
+                        break
+                    }
                 }
             default:
                 break

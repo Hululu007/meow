@@ -34,6 +34,8 @@ const webViewSwift = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'WebView.s
 const bootstrapSwift = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'Bootstrap.swift'))
 const nodeBridge = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'NodeBridge.swift'))
 const jvmBridgeM = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'JvmBridge.m'))
+const screenAwake = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'ScreenAwake.swift'))
+const webMain = read(join(WEB, 'src', 'main.ts'))
 const iosNative = read(join(ROOT, 'server', 'host', 'src', 'shared', 'platform', 'IosNative.java'))
 const projectYml = read(join(ROOT, 'client', 'apps', 'ios', 'project.yml'))
 const danmuScript = read(join(ROOT, 'client', 'apps', 'ios', 'scripts', 'prepare-danmu-payload.sh'))
@@ -255,6 +257,39 @@ describe('iOS 维护 → 调试（对齐 TV 的入口）', () => {
     expect(view).toContain('copyIosDiagnostics')
     expect(view).toContain('复制诊断')
     expect(view).toContain('重载界面')
+  })
+})
+
+describe('iOS 远程调试：保持亮屏（2026-11-24）', () => {
+  it('壳用 isIdleTimerDisabled 阻止自动锁屏（息屏 = 挂起 = 端口消失）', () => {
+    expect(screenAwake).toContain('isIdleTimerDisabled')
+    expect(screenAwake).toContain('meow.keepAwake')
+    expect(bootstrapSwift).toContain('ScreenAwake.restore()')
+    // 桥：注入当前状态 + 写方法
+    expect(bootstrapSwift).toContain('window.meowIos.keepAwake=')
+    expect(bootstrapSwift).toContain("op:'keepAwake'")
+    expect(webViewSwift).toContain('case "keepAwake"')
+  })
+
+  it('设置页能开关（默认开，持久化在壳里）', () => {
+    expect(view).toContain('保持亮屏')
+    expect(view).toContain('setKeepAwake')
+    expect(view).toContain('iosShellInfo().keepAwake')
+  })
+})
+
+describe('客户端日志上送：真机 JS 错误进宿主日志（2026-11-24）', () => {
+  it('宿主有 /api/_clientlog，按 level 落环形缓冲', () => {
+    expect(host).toContain('"/api/_clientlog".equals(path)')
+    expect(host).toContain('core.LogBuffer.error(tag, text)')
+  })
+
+  it('页面把 JS 异常与路由失败上送，chunk 失败自动重载一次', () => {
+    expect(api).toContain('export function reportClientLog')
+    expect(webMain).toContain("window.addEventListener('error'")
+    expect(webMain).toContain('unhandledrejection')
+    expect(webMain).toContain('router.onError')
+    expect(webMain).toContain('meow.chunkReloadAt')
   })
 })
 

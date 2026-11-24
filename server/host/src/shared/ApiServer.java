@@ -1411,6 +1411,37 @@ public class ApiServer {
             ex.close();
             return;
         }
+        /*
+         * 客户端日志上送（iOS 真机排障，2026-11-24）。
+         *
+         * <p>为什么需要：WKWebView 里的 JS 异常（比如懒加载 chunk 失败导致
+         * 「点底栏没反应」）只进 Safari 控制台，端上根本拿不到；真机只能靠
+         * PC 远程读 /api/logs。页面把错误 POST 到这里，日志页就能看到 [web] 行。
+         *
+         * <p>不写磁盘、不进访问日志；正文截断 600 字，坏 JSON 直接忽略。
+         */
+        if ("/api/_clientlog".equals(path)) {
+            try {
+                String body = read(ex.getRequestBody());
+                JSONObject in = new JSONObject(body == null || body.trim().isEmpty() ? "{}" : body);
+                String level = in.optString("level", "info");
+                String tag = in.optString("tag", "web");
+                String text = in.optString("text", "");
+                if (text.length() > 600) text = text.substring(0, 600);
+                if (!text.isEmpty()) {
+                    if ("error".equals(level)) core.LogBuffer.error(tag, text);
+                    else if ("warn".equals(level)) core.LogBuffer.warn(tag, text);
+                    else core.LogBuffer.info(tag, text);
+                }
+            } catch (Throwable ignored) {
+                // 客户端日志永远不能影响主流程
+            }
+            byte[] ok = "ok".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            ex.sendResponseHeaders(200, ok.length);
+            ex.getResponseBody().write(ok);
+            ex.close();
+            return;
+        }
         // 访问日志：TV/PC 排查"配了地址但没反应"时，先看这里有没有请求进来。
         // 只打路径不打 query（弹幕/代理的 query 里有长 URL，会淹没日志）。
         System.out.println("[req] " + method + " " + path);
@@ -4339,6 +4370,62 @@ public class ApiServer {
      *
      * <p>空 body 违反 HTTP API 契约，兜底成空结构后客户端能正常走"无数据"分支。
      */
+    /**
+     * detail 返回的线路表缓存：`site|vod_id` → `vod_play_from` 按 `$$$` 拆分后的列表。
+     *
+     * <p><b>为什么必须缓存</b>：CatVod 的 {@code playerContent(flag, id, flags)}
+     * 第三个参数就是这张线路表。部分 spider（实测 AppRJ / Jpys / AppGet）
+     * 在内部用 {@code flags.indexOf(flag)} 的结果去取 {@code vod_play_url}
+     * 的第 N 组地址 —— 传空 List 时下标是 -1，直接
+     * {@code ArrayIndexOutOfBoundsException}。前端逐条线路都收到「该线路暂不可用」，
+     * 用户看到的就是「所有线路都播不了」，而弹幕正常（弹幕不走这条链路）。
+     *
+     * <p>上限 256 条 LRU：一个剧 4~10 条线路，足够覆盖「详情 → 播放」的窗口，
+     * 又不会把几十个站点的详情常驻内存（iOS 的 JVM 堆只有 ~500MB）。
+     */
+    private static final Map<String, List<String>> PLAY_FLAGS =
+            new LinkedHashMap<String, List<String>>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, List<String>> eldest) {
+                    return size() > 256;
+                }
+            };
+
+    /** 从 detailContent 的响应里抽取每个条目的线路表（只取前 32 条，批量详情够用）。 */
+    private static void rememberPlayFlags(String site, String detailJson) {
+        if (detailJson == null || detailJson.isEmpty()) return;
+        try {
+            JSONArray list = new JSONObject(detailJson).optJSONArray("list");
+            if (list == null) return;
+            int n = Math.min(list.length(), 32);
+            for (int i = 0; i < n; i++) {
+                JSONObject v = list.optJSONObject(i);
+                if (v == null) continue;
+                String from = v.optString("vod_play_from", "");
+                String id = v.optString("vod_id", "");
+                if (from.isEmpty() || id.isEmpty()) continue;
+                List<String> flags = new ArrayList<>();
+                for (String f : from.split("\\$\\$\\$")) {
+                    if (!f.isEmpty()) flags.add(f);
+                }
+                if (flags.isEmpty()) continue;
+                synchronized (PLAY_FLAGS) {
+                    PLAY_FLAGS.put(site + "|" + id, flags);
+                }
+            }
+        } catch (Throwable ignored) {
+            // 缓存失败不影响详情响应；play 时会退化到原来的空表行为
+        }
+    }
+
+    /** 取缓存；未命中返回空表（与历史行为一致，再靠 play 里的补详情重试兜底）。 */
+    private static List<String> playFlagsFor(String site, String id) {
+        synchronized (PLAY_FLAGS) {
+            List<String> v = PLAY_FLAGS.get(site + "|" + id);
+            return v == null ? new ArrayList<String>() : v;
+        }
+    }
+
     private static String emptyFallback(String action, String raw) {
         if (raw != null && !raw.trim().isEmpty()) return raw;
         switch (action) {
@@ -4389,7 +4476,9 @@ public class ApiServer {
                     java.util.List<String> ids = (t.startsWith("{") || t.startsWith("["))
                             ? new ArrayList<>(Arrays.asList(id))
                             : new ArrayList<>(Arrays.asList(id.split(",")));
-                    return str(method(o, "detailContent", List.class).invoke(o, ids));
+                    String raw = str(method(o, "detailContent", List.class).invoke(o, ids));
+                    rememberPlayFlags(site, raw);
+                    return raw;
                 }
                 case "search": {
                     String wd = b.optString("wd", "");
@@ -4399,14 +4488,44 @@ public class ApiServer {
                 case "play": {
                     String flag = b.optString("flag", "");
                     String id = b.optString("id", "");
+                    /*
+                     * ★ CatVod 的第三个参数是「详情里所有线路的 flag」。
+                     * 有些 spider（实测 AppRJ / Jpys / AppGet）在 playerContent 里
+                     * 用 flag 在 flags 里的下标去取 vod_play_url 的第 N 组，
+                     * 传空 List 就等于让它们拿 -1 当地址下标 →
+                     * ArrayIndexOutOfBoundsException → 前端逐条提示"该线路暂不可用"，
+                     * 用户看到的就是"所有线路都播不了"（弹幕却正常，因为弹幕不走这条）。
+                     * flags 由 detail 时缓存，详见 rememberPlayFlags()。
+                     */
+                    java.util.List<String> flags = playFlagsFor(site, id);
                     try {
                         return normalizePlay(str(method(o, "playerContent", String.class, String.class, List.class)
-                                .invoke(o, flag, id, new ArrayList<String>())));
+                                .invoke(o, flag, id, flags)));
                     } catch (java.lang.reflect.InvocationTargetException ite) {
                         // 某些 spider 的 playerContent 对 id 格式很敏感（例如 Jpys 会抛
                         // ArrayIndexOutOfBoundsException）。这里降级成一条可读错误，
                         // 而不是让整个请求 500，前端可以提示用户换线路。
                         Throwable cause = ite.getCause() == null ? ite : ite.getCause();
+                        /*
+                         * 缓存没热的情况（重启后从历史/收藏直接进播放页，没先拉 detail）：
+                         * 补一次 detailContent 把 flags 建起来，再重试一次。
+                         * 只在「空 flags + 越界」时做，正常播放不付这个代价。
+                         */
+                        if (flags.isEmpty() && cause instanceof ArrayIndexOutOfBoundsException) {
+                            try {
+                                java.util.List<String> ids = new ArrayList<>(Arrays.asList(id.split(",")));
+                                String raw = str(method(o, "detailContent", List.class).invoke(o, ids));
+                                rememberPlayFlags(site, raw);
+                                java.util.List<String> again = playFlagsFor(site, id);
+                                if (!again.isEmpty()) {
+                                    return normalizePlay(str(method(o, "playerContent",
+                                            String.class, String.class, List.class)
+                                            .invoke(o, flag, id, again)));
+                                }
+                            } catch (Throwable ignored) {
+                                // 补详情的失败不覆盖原始错误：原始错误更有诊断价值
+                            }
+                        }
                         return new JSONObject()
                                 .put("parse", 1)
                                 .put("url", "")
