@@ -47,10 +47,25 @@ sources/
 |---|---|---|
 | Fongmi / TVBox | `spider` + 可选站点 `jar` | Android `DexClassLoader` |
 | 猫窝 TV | 同上；站点无 `jar` 时回退顶层 `spider` | `DexClassLoader`，不转换 |
-| 猫窝 JVM | 优先 `spiderJvm`；没有则 `spider` | `URLClassLoader`；dex 由 `Dex2Jvm` 导入期转换 |
+| 猫窝 JVM | 优先 `spiderJvm`；没有则 `spider` | `URLClassLoader`；dex 由 `Dex2Jvm` 转换（导入期 + 挂载前 `convertLocal`） |
 
 因此 **`spiderJvm` 不是必需产物**。推荐 `config.all.json` 不写它，让 JVM 走统一
 的 dex2jvm 链路；只有在明确要优化 JVM 冷导入时才加。
+
+**JVM 端启动参数必须带** `-XX:+UnlockDiagnosticVMOptions -XX:-BytecodeVerificationRemote`：
+
+- 原因：源包的类多数由 dex2jar 转出，stackmap 不完整，默认校验直接
+  `VerifyError: Expecting a stackmap frame at branch target`（实测落在 `merge/c/c.i`）；
+  关掉后实测 114 个源里 53 个可用，未出现 JVM 崩溃。只关"远程类"校验，JDK 自带类仍校验。
+- 位置：PC `server/plugin-manifests/apiserver.manifest.json` 的 `args`、
+  Docker `deploy/docker/Dockerfile.apiserver` 的 ENTRYPOINT、fpk
+  `client/apps/fnos/meowd/src/supervisor.rs`。三处缺一，对应端的外部源就整体不可用。
+
+**转换后的字节码修补**：`Dex2Jvm` 转完会调 `core.DexJvmFix`。d2j 2.4 会把 dex 里
+`new-instance C` + `invoke-direct Object.<init>` 翻成 `new java/lang/Object`，实例
+类型错成 Object → JVM 端「能搜不能播」（`ArrayStoreException: java.lang.Object`），
+TV 不受影响。肥猫那版 jar 的 `AppDrama`（干饭/一碗/再来/行动）就是踩这个。
+修补失败保留原产物，缓存键带 `-fix1`；细节见 `deploy/source-pack/README.md` §10.1。
 
 ## 三、OECT / Docker 上的源服务
 
@@ -72,7 +87,7 @@ docker compose -f docker-compose.sources.yml up -d --build
 源服务的关键变量：
 
 ```bash
-# 可选：挂载自己的完整源包；不挂载就用镜像内置的 41 站（含 Jable）
+# 可选：挂载自己的完整源包；不挂载就用镜像内置的 54 站（含 Jable）
 MEOW_SOURCES_DIR=/vol2/1000/meow-sources
 # 内置源生成 jar 绝对地址用；TV/Fongmi 必须填局域网地址
 MEOW_SOURCES_BASE=http://192.168.1.20:18080
@@ -90,14 +105,14 @@ MEOW_SOURCES_PORT=18080
 | `Dockerfile.sources` / `nginx.sources.conf` / `entrypoint.sh` / `default-sources` | ❌ gitignore | ✅ 构建资源 |
 | `.dockerignore` | ❌ gitignore | ✅ 构建资源 |
 
-官方镜像（多架构 amd64/arm64，内置主爬虫 + Jable + 41 站默认源）：
+官方镜像（多架构 amd64/arm64，内置主爬虫 + Jable + 54 站默认源）：
 
 ```bash
-docker pull chrplus/meow-sources:1.2.0
+docker pull chrplus/meow-sources:latest
 docker run -d --name meow-sources \
   -p 18080:8080 \
   -e MEOW_SOURCES_BASE=http://192.168.1.20:18080 \
-  chrplus/meow-sources:1.2.0
+  chrplus/meow-sources:latest
 ```
 
 要使用自己的完整源包：
@@ -107,19 +122,24 @@ docker run -d --name meow-sources \
   -p 18080:8080 \
   -e MEOW_SOURCES_BASE=http://192.168.1.20:18080 \
   -v /vol2/1000/meow-sources:/mounted-sources:ro \
-  chrplus/meow-sources:1.2.0
+  chrplus/meow-sources:latest
 ```
 
 要点：
 
-- 镜像默认源已包含 **主爬虫 + Jable 扩展 + 41 站配置**；挂载
+- 镜像默认源已包含 **主爬虫 + Jable 扩展 + 54 站配置**；挂载
   `/mounted-sources` 时整目录覆盖默认源。
 - 健康检查同时要求 `source-pack.json` 和 `config.all.json` 可读；只有旧
   `config.all.json`、没有规范清单的目录会被判未规范化。
 - 找不到文件必须 404，不能回落 `index.html`（否则客户端把 HTML 当 JSON/jar）。
 - 开源版改 nginx 规则要改私仓构建资源后重新推镜像；私仓版改
   `nginx.sources.conf` 后 `up -d --build`。
-- 只换挂载的源包文件不需要重启 nginx。
+- 换挂载目录里的源包文件后**必须重启容器**：entrypoint
+  （`/docker-entrypoint.d/40-meow-sources.sh`）只在启动时把 `/mounted-sources/*`
+  复制进 `/usr/share/nginx/html`，不重启就一直供旧文件（实测 2026-11-23：改完
+  `config.all.json` 后 curl 到的还是旧 sha256，`up -d --force-recreate` 才变）。
+  也不要把挂载目标改成 `/usr/share/nginx/html` —— 那是只读挂载，entrypoint 的
+  `cp` 会失败并让容器进入重启循环（同一轮实测）。
 - `with-sources` 使用主栈的 `meow` 网络；`sources` 独立启动时只暴露 18080。
 
 systemd 仅作无 Docker 环境备用，启动 `python3 -m http.server 18080` 即可；生产推荐

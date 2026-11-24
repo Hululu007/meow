@@ -87,7 +87,24 @@ TV 端只读 `spider`，Fongmi 也一样——它们不认 `spiderJvm`。
 | 下载 | 按 URL 拉取；已有同 md5 缓存则跳过 |
 | 校验 | md5 不匹配 → **拒绝加载**（不会用半截文件启动） |
 | 缓存 | 落在 `data/jars/` |
+| 转换 | JVM 读 dex 时先 `Dex2Jvm` 转 class（导入期 + 挂载前各一次），缓存键带 `-fix1` |
 | 装载 | JVM：`URLClassLoader`；TV：`DexClassLoader` |
+
+### 转换后的字节码修补
+
+`Dex2Jvm` 转完会跑一遍 `core.DexJvmFix`。原因是 `d2j-dex2jar 2.4` 的一个翻译缺陷：
+dex 里合法的 `new-instance C` + `invoke-direct {v}, Object.<init>()V` 会被翻成
+`new java/lang/Object`，实例运行时类型错成 `Object`，之后调用 `C.f()` 或塞进 `C[]`
+就抛 `ArrayStoreException: java.lang.Object`。
+
+症状是**搜索、首页都正常，只有详情/播放报错，且只在 JVM 端**（TV 吃 dex 不受影响）。
+实测肥猫那版 jar 的 `AppDrama`（干饭/一碗/再来/行动）就是这样：能搜不能播。
+
+修补用 ASM 做数据流：给每个 `new Object` 打标记，顺着栈/局部变量追到第一次把它当
+接收者的 `invokevirtual`，owner 就是真实类；只改 `NEW` 的类型，保留原
+`Object.<init>` super 调用。**尽力而为** —— 任何异常都保留原产物，不让补丁把本来
+能用的 dex 源弄挂。换 jar 后若怀疑还有残留，按 `deploy/source-pack/README.md`
+§10.1 的 `javap` 命令核。
 
 ### ClassLoader 只装一次
 

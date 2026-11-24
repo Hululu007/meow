@@ -79,7 +79,20 @@ Fongmi、猫窝 TV 和猫窝 JVM 都会按 jar URL 缓存。只替换服务器�
 ```
 
 - 站点级 `jar` 也必须是 dex；class-only 的站点 jar 在 TV/Fongmi 无法加载。
-- JVM 会把每个不同的 dex jar 各自转换并缓存。
+- JVM 会把每个不同的 dex jar 各自转换并缓存：**不只是导入期**，
+  `Jars` 挂载前会调 `Dex2Jvm.convertLocal`（所以直接改 `config.sites.json`、
+  或用源服务下发的站点级 dex 也会被转）。转换产物在 `<data>/jars/converted/`，
+  缓存键 = sha256 + 转换器指纹（带 `-fix1` 后缀，见下条）。
+- **转换产物会被 `core.DexJvmFix` 自动修补 d2j 的翻译缺陷**：dex 里合法的
+  `new-instance C` + `invoke-direct {v}, Object.<init>()V` 会被 d2j 2.4 翻成
+  `new java/lang/Object`，实例运行时类型错成 `Object` —— JVM 端调用 `C.f()`、
+  或把对象塞进 `C[]` 时抛 `ArrayStoreException: java.lang.Object`。
+  实测肥猫那版 jar 里 `AppDrama`（干饭/一碗/再来/行动）的 detail/player 全中招：
+  **能搜不能播，TV（直接吃 dex）却正常**。修补尽力而为（失败保留原产物），
+  只改「真实类直接继承 Object」的点位；缓存键带 `-fix1`，升级后不会命中旧的坏产物。
+- **JVM 端启动必须关 jar 内字节码校验**（`-XX:+UnlockDiagnosticVMOptions
+  -XX:-BytecodeVerificationRemote`）：dex2jar 产物的 stackmap 不完整，默认校验会
+  `VerifyError`。三处参数位置见 `AGENTS.md` §4.12。
 - 不要给每个站点重复写同一个 `spider-dex.jar`：省略 `jar` 更省流量，也更不容易漏改。
 
 ## 5. `source-pack.json`
@@ -101,7 +114,7 @@ Fongmi、猫窝 TV 和猫窝 JVM 都会按 jar URL 缓存。只替换服务器�
     {
       "name": "spider-dex.jar",
       "role": "dex-spider",
-      "bytes": 820924,
+      "bytes": 1704212,
       "md5": "…",
       "sha256": "…"
     }
@@ -119,7 +132,7 @@ compose 分工：
 - `docker-compose.with-sources.yml`：主栈 + sources 一键启动；
 - `docker-compose.sources.yml`：只启动源服务。
 
-官方镜像 `chrplus/meow-sources:1.2.0` 内置主爬虫 + Jable 扩展 + 41 站默认源；
+官方镜像 `chrplus/meow-sources:latest`（当前指向 2.0.0）内置主爬虫 + Jable 扩展 + 54 站默认源；
 自定义完整源包通过 `/mounted-sources` 只读挂载覆盖。`Dockerfile.sources` /
 `nginx.sources.conf` / `entrypoint.sh` / `default-sources` 是私仓构建资源，
 已在公开库 gitignore。
@@ -153,6 +166,26 @@ curl -fsS http://<HOST>:18080/config.all.json
 `configs.content`，私仓版改 `nginx.sources.conf` 后重建镜像。
 **不要**把源包放进 `meow-web` 的 web 根目录。
 
+### 同步 latest（发新版本必做）
+
+多架构镜像**不能** `docker tag` 后 `push`——那会把 manifest list 覆盖成单架构。
+用仓库侧复制，保留所有平台：
+
+```bash
+docker buildx imagetools create \
+  -t chrplus/meow-sources:latest \
+  chrplus/meow-sources:<版本>
+```
+
+2026-11-23 的教训：2.0.0 推送时漏了 latest，`latest` 停在 11-11 的旧构建
+（41 站），而 2.0.0 是 54 站。镜像内容里 `config.all.json` 的站点数可直接验证：
+
+```bash
+docker run --rm -d -p 18080:8080 --name src-check chrplus/meow-sources:latest
+curl -s http://127.0.0.1:18080/config.all.json | grep -o '"key"' | wc -l
+docker rm -f src-check
+```
+
 ## 8. Fongmi 兼容字段
 
 `config.all.json` 使用 CatVod 标准字段：
@@ -183,3 +216,48 @@ python3 deploy/source-pack/validate.py --dir /vol2/1000/meow-sources \
 - Fongmi 兼容性 warning（`proxy` 形态、缺失 `key/name/api` 等）。
 
 退出码非 0 即不通过。
+
+## 10. jar 从哪来、类名会漂
+
+`spider-dex.jar` / `spider.jar` 是**上游仓的 dex jar** 及其 `d2j-dex2jar` 转换产物，
+不是手写。上游会重构类名，**换 jar 时必须重跑一遍全站可用性探测，不能只换文件**。
+
+2026-11-23 那版（125 类）相对旧快照（47 类）的实测映射：
+
+| 旧类名 | 新类名 | 说明 |
+|---|---|---|
+| `Dm84` | `AnimeBashi` | 动漫巴士 |
+| `GuaziTY` | `SportsGuazi` | 瓜子体育 |
+| `Kanqiu` | `Sports88` | 看球 |
+| `Jianpian` | `JianPian` | 荐片（新类只吃 JSON ext，给 URL 字符串会 `JSONException`） |
+| `AppDrama2` | `AppDrama` | 干饭/行动/再来/一碗 |
+| `PanSearch` | `PanSou` | 盘搜 |
+| `AppFQ` | — | 番薯，新版没有对应，直接消失 |
+
+另外两条硬事实：
+
+- **同一站点的 `ext` 也可能换格式**，一律以上游仓里的 `ext` 为准，不要沿用旧包的。
+- 两个版本的 `merge/*` 混淆包**同名不同实现、互不兼容**，所以不能把两批类合进
+  一个 jar；换 jar 是**整体替换**（实测 `merge/c/c`：旧版 3 字段 vs 新版 14 字段）。
+
+### 10.1 d2j 会翻错 `new-instance`（2026-11-24 实测）
+
+新版混淆器给没有显式构造器的类写成
+`new-instance C` + `invoke-direct {v}, Object.<init>()V`（dex 合法，ART 下实例仍是 C）。
+`d2j-dex2jar 2.4` 按构造器目标推断类型，翻成 `new java/lang/Object` —— JVM 上实例
+类型真成了 `Object`，后续 `invokevirtual C.f` / `aastore` 进 `C[]` 直接
+`ArrayStoreException: java.lang.Object`。
+
+症状很有欺骗性：**搜索正常、首页正常，只有详情/播放报错**，而且只在 JVM 端
+（TV/Fongmi 吃 dex 完全正常）。肥猫那版 125 个类里命中 17 个类、37 个点位，
+`AppDrama` 的 detailContent/playerContent/categoryContent 全在名单里。
+
+处理方式：`core.DexJvmFix` 在转换后自动修（数据流把每个 `new Object` 追到
+真实接收者类，只改 NEW 的类型）。**手工换 jar 时不要绕过它**——用旧的
+`spider.jar`（已经翻错的那份）就会带着 bug 一起发出去。校验方法：
+
+```bash
+# 命中数应为 0；非 0 说明遇到未修补的点位
+javap -p -c -cp . com.github.catvod.spider.AppDrama | grep -c "new .*java/lang/Object"
+```
+

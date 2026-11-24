@@ -199,6 +199,7 @@ public final class Dex2Jvm {
                 target.delete();
                 return Converted.failed(err);
             }
+            applyJvmFix(target);
             return Converted.converted(target.toURI().toString());
         } catch (Throwable t) {
             return Converted.failed(t.getClass().getSimpleName() + ": " + t.getMessage());
@@ -245,6 +246,7 @@ public final class Dex2Jvm {
                 out.delete();
                 return src;
             }
+            applyJvmFix(out);
             return out;
         } catch (Throwable t) {
             return src;
@@ -254,6 +256,30 @@ public final class Dex2Jvm {
     private static File validCache(File f) {
         if (!f.isFile() || f.length() == 0) return null;
         return validate(f) == null ? f : null;
+    }
+
+    /**
+     * d2j 产物的已知翻译缺陷修补（详见 {@link DexJvmFix}）。
+     *
+     * <p>dex 里的 {@code new-instance C} + {@code invoke-direct Object.&lt;init&gt;}
+     * 会被翻成 {@code new java/lang/Object}，实例运行时类型错成 Object ——
+     * 表现为 JVM 端「能搜不能播」（{@code ArrayStoreException: java.lang.Object}）。
+     * 肥猫那版 spider.jar 的 {@code AppDrama}（干饭/一碗/再来/行动）就是踩这个。
+     *
+     * <p>修补是**尽力而为**：任何异常都保留原产物，绝不能因为补丁把
+     * 本来能用的 dex 源弄挂。
+     */
+    private static void applyJvmFix(File jar) {
+        try {
+            DexJvmFix.Result r = DexJvmFix.patchJar(jar);
+            if (r == null) {
+                LogBuffer.warn("dex2jvm", "字节码修补跳过（jar 不可写或被占用）: " + jar.getName());
+            } else if (r.sites > 0) {
+                LogBuffer.info("dex2jvm", "修补 d2j 翻译缺陷 " + r + " ← " + jar.getName());
+            }
+        } catch (Throwable t) {
+            LogBuffer.warn("dex2jvm", "字节码修补异常（保留原产物）: " + t.getClass().getSimpleName());
+        }
     }
 
     /** 找同一源在缓存文件被占用时写下的代数副本（base + "." + nano + ".jar"）。 */
@@ -462,20 +488,23 @@ public final class Dex2Jvm {
 
     /** 缓存键里的转换器标识（目录形态取 lib/dex-tools-*.jar 的文件名）。 */
     private static String toolTag(File tool) {
+        // -fix1：产出经过 {@link DexJvmFix} 修补，与"裸 d2j 产物"不是同一种东西，
+        // 缓存键必须区分——否则升级后还会命中旧的坏 jar（用户看不到修复）。
+        String suffix = "-fix1";
         try {
             if (tool.isDirectory()) {
                 File lib = new File(tool, "lib");
                 File[] jars = lib.listFiles((d, n) ->
                         n.startsWith("dex-tools") && n.endsWith(".jar"));
                 if (jars != null && jars.length > 0) {
-                    return sanitize(jars[0].getName().replaceFirst("\\.jar$", ""));
+                    return sanitize(jars[0].getName().replaceFirst("\\.jar$", "")) + suffix;
                 }
             } else {
-                return sanitize(tool.getName().replaceFirst("\\.(sh|bat|jar)$", ""));
+                return sanitize(tool.getName().replaceFirst("\\.(sh|bat|jar)$", "")) + suffix;
             }
         } catch (Throwable ignored) {
         }
-        return "dex2jar";
+        return "dex2jar" + suffix;
     }
 
     private static String sanitize(String s) {
