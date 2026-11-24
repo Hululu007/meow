@@ -1485,6 +1485,16 @@ export interface ConfigImportResult {
   }
   /** 导入后留下的旧配置快照（供「恢复上一次配置」） */
   backup?: ConfigBackupInfo
+  /**
+   * 后台导入的状态（`GET /api/config/import` 返回）。
+   *
+   * 确认导入走后台线程：iOS 上 dex2jar 转换要 1~2 分钟，同步等响应的话
+   * 客户端会先断（服务端只剩 Broken pipe）。`pending:true` 时要继续轮询。
+   */
+  state?: 'idle' | 'running' | 'done' | 'error'
+  pending?: boolean
+  /** 后台导入已跑了多久（毫秒），仅 running 时有 */
+  elapsedMs?: number
 }
 
 /** 导入前的配置快照。`exists:false` 表示没有可回滚的版本。 */
@@ -1541,6 +1551,13 @@ export async function importConfig(
     dryRun?: boolean
     /** 用导入配置的顶层 spider 覆盖本地（源包迁移时必须为 true） */
     replaceSpider?: boolean
+    /**
+     * true = 后台导入：服务端立刻回 202 `{ok, pending:true}`，真正写入在后台
+     * 线程里跑，结果用 {@link getImportJobState} 轮询。
+     *
+     * 只对确认导入有意义（dryRun 预览不转换 jar，本来就快）。
+     */
+    background?: boolean
   } = {},
 ): Promise<ConfigImportResult> {
   return request<ConfigImportResult>('/api/config/import', {
@@ -1552,9 +1569,21 @@ export async function importConfig(
       dryRun: !!opts.dryRun,
       proxies: configProxies(),
       replaceSpider: !!opts.replaceSpider,
+      background: !!opts.background,
     },
     timeout: 120_000,
   })
+}
+
+/**
+ * 后台导入的进度/结果（`GET /api/config/import`）。
+ *
+ * 与 {@link getLastConfigImport} 的区别：这个**不吞异常** —— 轮询循环要靠
+ * 「这次请求失败」来决定是否下一轮重试，把错误变成 `{imported:false}`
+ * 会让循环误以为导入没发生。
+ */
+export async function getImportJobState(): Promise<ConfigImportResult> {
+  return request<ConfigImportResult>('/api/config/import', { timeout: 20_000 })
 }
 
 // ---------------------------------------------------------------- 直播源（config.lives）

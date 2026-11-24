@@ -956,6 +956,23 @@ html[data-tv='1'] {
 }
 
 /*
+ * iOS 壳（WKWebView）：输入控件字号不得低于 16px。
+ *
+ * 踩过（2026-11-24 真机）：WebKit 在聚焦 input/textarea/select 时，若字号
+ * < 16px 会把整页自动放大（键盘收起后不还原），搜索框、配置地址、片库路径
+ * 一碰就错位。index.html 首帧脚本里同时锁了 maximum-scale=1 —— 两道一起上，
+ * 因为部分内核对 maximum-scale 不买账。
+ *
+ * 只抬字号，不动高度：输入框尺寸仍由各自的 padding/height 类决定。
+ * 选择器特异性 (0,1,2) 高于 Tailwind 的单类工具类，不需要 !important。
+ */
+html[data-shell='ios'] input:not([type='checkbox']):not([type='radio']):not([type='range']),
+html[data-shell='ios'] textarea,
+html[data-shell='ios'] select {
+  font-size: 16px;
+}
+
+/*
  * TV 上隐藏某控件（遥控器用不到它，留着只会让焦点多走一格）。
  *
  * 目前只有播放器音量条：TV 的音量由遥控器独立的音量键交给系统处理，

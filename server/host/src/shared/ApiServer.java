@@ -13130,8 +13130,92 @@ public class ApiServer {
     /** 串行化「写配置文件 + 重建站点表」这一段，见 handleConfigImport 里的说明。 */
     private static final Object IMPORT_LOCK = new Object();
 
+    /**
+     * 后台导入的状态：idle | running | done | error。
+     *
+     * <p>只允许一个导入在跑（再点一次就返回 already，前端继续轮询同一份结果）。
+     * 读写在 HTTP 线程与导入线程之间跨线程，所以是 volatile；状态本身只是
+     * 一个枚举串，不需要加锁读。
+     */
+    private static volatile String importJobState = "idle";
+    private static volatile long importJobStartedAt;
+
     /** 导入前的配置快照文件名（只留一份，语义是"撤销上一次导入"）。 */
     private static final String CONFIG_BACKUP = "config.sites.json.bak";
+
+    /**
+     * 起一个后台导入线程并立刻返回。
+     *
+     * <p>内部复用同一个 {@link #handleConfigImport(HttpExchange)}：给它一个
+     * {@link core.MemoryExchange} 当交换对象，响应写进内存缓冲区，再由本方法
+     * 解析成 {@code lastImport}。这样导入逻辑只有一份，不存在"后台版"与
+     * "同步版"行为漂移。
+     *
+     * @return 给客户端的应答：{@code {ok:true, pending:true}}，已有导入在跑时
+     *         额外带 {@code already:true}
+     */
+    private static String startImportJob(String body) throws Exception {
+        /*
+         * 去掉 background 标记再进后台。
+         *
+         * 不去掉会自己调自己：handleConfigImport 读到 background=true 又转回
+         * 本方法，看到状态是 running 就回 {pending:true, already:true} ——
+         * 外层把它当成"成功"，state 变 done 而一样都没导入（实测踩到）。
+         */
+        String jobBody = body;
+        try {
+            JSONObject jb = new JSONObject(body);
+            jb.remove("background");
+            jobBody = jb.toString();
+        } catch (Exception ignored) {
+            // body 不是 JSON：交给 handleConfigImport 报 400
+        }
+        final String effectiveBody = jobBody;
+        synchronized (IMPORT_LOCK) {
+            if ("running".equals(importJobState)) {
+                return new JSONObject().put("ok", true).put("pending", true)
+                        .put("already", true).toString();
+            }
+            importJobState = "running";
+            importJobStartedAt = System.currentTimeMillis();
+        }
+        Thread worker = new Thread(() -> {
+            core.MemoryExchange mx = new core.MemoryExchange("/api/config/import", "POST", effectiveBody);
+            try {
+                handleConfigImport(mx);
+                if (mx.responseCode() == 202) {
+                    // 兜底：真进了"又开始一个后台任务"的死循环，别把它当成功
+                    importJobState = "error";
+                    lastImport = new JSONObject().put("ok", false)
+                            .put("msg", "后台导入没有执行（background 标记未被清除）");
+                    return;
+                }
+                JSONObject res = mx.responseJson();
+                if (res == null) {
+                    res = new JSONObject().put("ok", false)
+                            .put("msg", "导入线程没有产出 JSON 响应（HTTP " + mx.responseCode() + "）");
+                }
+                // 成功路径里 handleConfigImport 已经把 lastImport 设成完整结果；
+                // 失败路径（4xx/5xx）的响应体就是错误对象，也要让 GET 读得到。
+                if (!res.optBoolean("ok")) lastImport = res;
+                importJobState = res.optBoolean("ok") ? "done" : "error";
+                if (!res.optBoolean("ok")) {
+                    platform.Bridge.log("[import] background failed: " + res.optString("msg", ""));
+                }
+            } catch (Throwable err) {
+                importJobState = "error";
+                try {
+                    lastImport = new JSONObject().put("ok", false).put("msg", String.valueOf(err));
+                } catch (Exception ignored) {
+                    // org.json 的 put 声明了受检异常；这里已经在错误路径上，别再抛
+                }
+                platform.Bridge.log("[import] background threw: " + err);
+            }
+        }, "meow-import");
+        worker.setDaemon(true);
+        worker.start();
+        return new JSONObject().put("ok", true).put("pending", true).toString();
+    }
 
     /**
      * 把当前 config.sites.json 存成备份。
@@ -13482,6 +13566,29 @@ public class ApiServer {
         return s.length() > 80 ? s.substring(0, 80) + "…" : s;
     }
 
+    /** 内容像网页（而不是 JSON 配置）？只认标签开头，避免把 base64 伪装误判。 */
+    private static boolean looksLikeHtml(String s) {
+        if (s == null) return false;
+        String t = s.trim();
+        if (!t.startsWith("<")) return false;
+        String head = t.substring(0, Math.min(t.length(), 400)).toLowerCase(java.util.Locale.ROOT);
+        return head.contains("<html") || head.contains("<!doctype")
+                || head.contains("<body") || head.contains("<head");
+    }
+
+    /** `http://host` / `http://host/` → `http://host/tv`；已有路径的地址原样返回。 */
+    private static String appendTvPath(String url) {
+        try {
+            java.net.URI u = new java.net.URI(url);
+            String path = u.getPath();
+            if (path != null && !path.isEmpty() && !"/".equals(path)) return url;
+            String base = url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+            return base + "/tv";
+        } catch (Exception e) {
+            return url;
+        }
+    }
+
     /**
      * 导入外部 CatVod 配置。
      *
@@ -13496,15 +13603,47 @@ public class ApiServer {
     private static void handleConfigImport(HttpExchange ex) throws Exception {
         if ("GET".equalsIgnoreCase(ex.getRequestMethod())) {
             JSONObject cur = lastImport;
+            JSONObject out = cur == null ? new JSONObject() : new JSONObject(cur.toString());
             if (cur == null) {
-                sendJson(ex, 200, new JSONObject().put("ok", true).put("imported", false).toString());
-                return;
+                out.put("ok", true);
+                out.put("imported", false);
             }
-            sendJson(ex, 200, cur.toString());
+            /*
+             * 后台导入的进度：前端确认导入后轮询这里。
+             * state = idle | running | done | error；pending=true 就继续等。
+             * 老客户端不读这两个字段，行为不变。
+             */
+            out.put("state", importJobState);
+            out.put("pending", "running".equals(importJobState));
+            if ("running".equals(importJobState)) {
+                out.put("elapsedMs", System.currentTimeMillis() - importJobStartedAt);
+            }
+            sendJson(ex, 200, out.toString());
             return;
         }
 
         String body = read(ex.getRequestBody());
+
+        /*
+         * 后台导入：先回 202，导入在后台线程里跑，前端轮询 GET 取结果。
+         *
+         * 为什么必须分开：确认导入要下载源 jar + dex2jar 转换（见 Dex2Jvm），
+         * iOS 的 Zero 解释执行一次 30s~2min，WKWebView 的 fetch 等不到那么久。
+         * 同步路径下客户端一断，服务端写响应就抛 Broken pipe，用户看到"导入失败"，
+         * 配置一个字节都没写（2026-11-24 真机实测 jvm.log 的栈就是这样）。
+         * 预览（dryRun）不转换 jar，本来就快，不走后台。
+         */
+        boolean background = false;
+        try {
+            JSONObject peek = body == null || body.trim().isEmpty() ? null : new JSONObject(body);
+            background = peek != null && peek.optBoolean("background", false);
+        } catch (Exception ignored) {
+            // body 不是 JSON：交给下面的正常路径去报 400
+        }
+        if (background) {
+            sendJson(ex, 202, startImportJob(body));
+            return;
+        }
         String url;
         /*
          * 导入策略：
@@ -13580,6 +13719,27 @@ public class ApiServer {
             return;
         }
 
+        /*
+         * 粘的是站点首页、不是配置文件时，自动补一次 `/tv` 再试。
+         *
+         * 踩过（2026-11-24 真机）：用户填 `http://肥猫.net`（首页是 HTML，
+         * 配置在 `/tv`），旧逻辑直接报 `not a JSON config`，用户不知道要加路径，
+         * 只能猜"是不是源挂了"。只在「URL 没有路径 + 内容确实是网页」时补，
+         * 有路径的地址（用户已指明）一律不动。
+         */
+        if (looksLikeHtml(raw)) {
+            String alt = appendTvPath(url);
+            if (!alt.equals(url)) {
+                String retry = fetchTextAccel(alt, IMPORT_TIMEOUT_MS, proxies);
+                if (retry != null && !retry.trim().isEmpty() && !looksLikeHtml(retry)) {
+                    System.out.println("[import] html at root, retry with " + alt);
+                    raw = retry;
+                    url = alt;
+                    configBase = alt;
+                }
+            }
+        }
+
         JSONObject doc;
         try {
             doc = parseJsonLoose(raw);
@@ -13630,9 +13790,20 @@ public class ApiServer {
             return;
         }
 
-        // JVM 导入期预处理：只有 classes.dex 的 jar 先转成 class jar，
-        // 再写回 spiderJvm / 站点 jar；Android 端跳过。
-        JSONObject dex2jvm = core.Dex2Jvm.rewrite(doc, configBase);
+        /*
+         * JVM 导入期预处理：只有 classes.dex 的 jar 先转成 class jar，
+         * 再写回 spiderJvm / 站点 jar；Android 端跳过。
+         *
+         * ★ dryRun（读取并预览）不做这一步：转换要下载 jar 再跑 dex2jar，
+         *   iOS 的 Zero 解释执行一次 30s~2min，而预览只需要站点表和 diff。
+         *   带着它一起跑的直接后果（2026-11-24 真机实测）：WKWebView 等不到
+         *   就断开，服务端写响应抛 Broken pipe，界面报"读取失败"，而配置
+         *   一个字节都没写。转换留到确认导入时做，那一趟走后台线程（见顶部
+         *   background 分支），客户端只轮询进度。
+         */
+        JSONObject dex2jvm = preview
+                ? new JSONObject().put("skipped", "dryRun")
+                : core.Dex2Jvm.rewrite(doc, configBase);
 
         java.util.Set<String> jarClasses = jarSpiderClasses();
         invalidateConfigTables();

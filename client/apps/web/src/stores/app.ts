@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { apiBase, fetchSites, isDesktop, isLoopbackUrl, ping } from '@/api'
+import { isIosShell } from '@/compat/shell'
 import type { Site } from '@/api/types'
 
 /**
@@ -9,16 +10,22 @@ import type { Site } from '@/api/types'
  * 竞态。手填了回环地址时 `initBackend()` 以前会立刻返回，`store.boot()` 随即
  * ping 一个还没监听的端口 → 首页闪「后端未连接」，用户要点两次重试才进。
  * 这里多给 3 次机会（400ms 间隔，总约 1.2 秒），覆盖正常的 JVM 启动窗口。
+ *
+ * <p><b>iOS 也要重试</b>（2026-11-24）：iOS 的宿主是进程内的 JVM 线程，导入源包时
+ * dex2jar 会把它压住几十秒 —— 从设置页返回首页正好赶上，ping 超时就会被报成
+ * 「连不上后端」，用户以为整个后端挂了（真机实测报障）。给 3 次 × 1.2 秒，
+ * 转换还在跑时先等一等，别急着下结论。
  */
 async function pingWithStartupRetry(): Promise<boolean> {
-  const attempts = isDesktop() ? 4 : 1
+  const attempts = isDesktop() || isIosShell() ? 4 : 1
+  const gap = isIosShell() ? 1200 : 400
   for (let i = 0; i < attempts; i++) {
     try {
       if (await ping()) return true
     } catch {
       // 网络层错误（Failed to fetch）与「返回 false」同等对待，继续重试
     }
-    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 400))
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, gap))
   }
   return false
 }

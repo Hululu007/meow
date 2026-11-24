@@ -67,6 +67,7 @@ import {
   fetchLives,
   fetchLivePlaylist,
   getConfigBackup,
+  getImportJobState,
   getLastConfigImport,
   importConfig,
   probeConfigDepot,
@@ -2645,6 +2646,42 @@ async function doPreviewImport() {
   }
 }
 
+/**
+ * 轮询后台导入，直到有结果（或超时）。
+ *
+ * 为什么要轮询而不是等那个 POST 响应：确认导入要下载源 jar + dex2jar 转换，
+ * iOS 上（OpenJDK Zero 解释执行）一次 1~2 分钟很正常。同步等响应的话
+ * WKWebView 的 fetch 会先断开，服务端写响应抛 Broken pipe，界面只能报
+ * "导入失败"——而配置其实正在写（2026-11-24 真机实测）。
+ *
+ * 单次轮询失败不判死：后端正忙时 GET 也可能超时，下一轮继续。
+ */
+async function waitImportJob(): Promise<ConfigImportResult> {
+  const started = Date.now()
+  let lastErr = ''
+  for (;;) {
+    const elapsed = Date.now() - started
+    if (elapsed > 300_000) {
+      throw new Error(
+        `等了 ${Math.round(elapsed / 1000)} 秒还没结束（后台仍在跑，稍后看站点明细）${
+          lastErr ? '：' + lastErr : ''
+        }`,
+      )
+    }
+    cfgMsg.value = `正在导入…已 ${Math.round(elapsed / 1000)} 秒（首次导入要转换源 jar，iOS 上可能 1–2 分钟）`
+    // 先查再等：Android/TV 上 dex2jvm 是空操作，导入毫秒级完成，
+    // 先 sleep 一秒会让用户白等一下
+    try {
+      const s = await getImportJobState()
+      lastErr = ''
+      if (!s.pending && s.state !== 'running') return s
+    } catch (e: any) {
+      lastErr = e?.message || String(e)
+    }
+    await new Promise((r) => setTimeout(r, 800))
+  }
+}
+
 /** 第二步：确认写入。按面板当前所选策略执行（不是读取时那份）。 */
 async function doImportConfig() {
   const url = cfgPreview.value?.url || cfgUrl.value.trim()
@@ -2660,16 +2697,29 @@ async function doImportConfig() {
     return
   }
   cfgBusy.value = true
-  cfgMsg.value = ''
+  cfgMsg.value = '正在导入…'
   try {
-    const r = await importConfig(url, {
+    const started = await importConfig(url, {
       mode: importMode.value,
       onConflict: importConflict.value,
       replaceSpider: cfgReplaceSpider.value,
+      background: true,
     })
+    if (!started.ok) {
+      cfgMsgOk.value = false
+      cfgMsg.value = started.msg || '导入失败'
+      return
+    }
+    // 新后端回 pending:true（后台线程在跑）；老后端直接给最终结果
+    const r = started.pending ? await waitImportJob() : started
     if (!r.ok) {
       cfgMsgOk.value = false
       cfgMsg.value = r.msg || '导入失败'
+      return
+    }
+    if (!r.imported) {
+      cfgMsgOk.value = false
+      cfgMsg.value = r.msg || '导入没有生效，请重试'
       return
     }
     cfgMsgOk.value = true

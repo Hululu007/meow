@@ -79,6 +79,7 @@ server/host/src/shared/core/Jars.java
 server/host/src/shared/core/Library.java
 server/host/src/shared/core/LibraryRoots.java
 server/host/src/shared/core/LogBuffer.java
+server/host/src/shared/core/MemoryExchange.java
 server/host/src/shared/core/PosterStore.java
 server/host/src/shared/core/Scrape.java
 server/host/src/shared/core/Transcode.java

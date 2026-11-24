@@ -61,7 +61,8 @@ describe('桌面端启动竞态的门禁', () => {
 
   it('store.boot 桌面端先重试，且回环地址给友好错误', () => {
     expect(store).toContain('pingWithStartupRetry')
-    expect(store).toContain('isDesktop() ? 4 : 1')
+    // iOS 壳（进程内 JVM，导入时会被 dex2jar 压住几十秒）也要重试 —— 2026-11-24
+    expect(store).toContain('isDesktop() || isIosShell() ? 4 : 1')
     expect(store).toContain('暂时没有响应')
     // 不能再把裸 Failed to fetch 当用户文案
     expect(store).not.toContain("this.error = isDesktop()\n            ? where")

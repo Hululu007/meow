@@ -1,7 +1,8 @@
 # iOS 端接入（IPA 形态与发版）
 
-::: warning 现状（2026-11-23，分支 `feat/ios-jvm`）：iOS 已有工程，但**只在实验分支**
-`client/apps/ios/` 已落地并可出未签名 IPA，**未合入 main、未上架、未真机验证**。
+::: warning 现状（2026-11-24，分支 `feat/ios-jvm`）：iOS 已有工程，**真机已跑通本地网关**
+`client/apps/ios/` 已落地并可出未签名 IPA，**未合入 main、未上架**。
+真机（LiveContainer 侧载）验证到：JVM 启动、`/api/health` ok、豆瓣首页出数据、源导入能写盘。
 本文的「落地契约」部分仍然有效；下面 §0 是与契约不一致的**已实现部分**，
 与契约冲突时以 §0 为准（其余章节保留原契约口径，标【待实现】= 代码还没写；
 标【待实测】= 没有 iPhone，无法验证）。
@@ -14,8 +15,8 @@ iOS 壳不再只是「连远端后端」：**进程内跑着与 PC/Docker 同一
 
 | 能力 | 怎么做的 | 验证到哪一步 |
 |---|---|---|
-| 本地网关 | 静态链接 **OpenJDK 9 Zero**（`libjvm.a`，无 JIT）进壳，`JNI_CreateJavaVM` 起 `ApiServer` 监听 `127.0.0.1:9978`；WKWebView 加载本地静态服务 `9979` | runner 上跑同一份 host.jar：豆瓣首页 20 条 + 截图；**真机启动未验证**（CI 没有 iPhone） |
-| 源导入 | 与 PC 同一套 `POST /api/config/import`（URL / 覆盖 / dryRun / `replaceSpider`） | 肥猫 `http://肥猫.net/tv` → 41 站；OECT 源服务 `config.all.json` → 54 站 |
+| 本地网关 | 静态链接 **OpenJDK 9 Zero**（`libjvm.a`，无 JIT）进壳，`JNI_CreateJavaVM` 起 `ApiServer` 监听 `127.0.0.1:9978`；WKWebView 加载本地静态服务 `9979` | **真机已跑通**（LiveContainer 侧载）：`/api/health` ok、豆瓣首页出数据；Static JVM 的 `__TEXT,__const` 必须 `-rename_section` 到 `__DATA,__const`（否则 dyld 初始化写只读页 → SIGBUS） |
+| 源导入 | 与 PC 同一套 `POST /api/config/import`（URL / 覆盖 / dryRun / `replaceSpider`）；**确认导入走后台线程 + 轮询**（见 §0.2） | 肥猫 `http://肥猫.net/tv` → 41 站；OECT 源服务 `config.all.json` → 54 站；真机踩过「转换太久被客户端超时」 |
 | dex 源包 | iOS 没有 fork/exec → **端内 dex2jar**（`core.Dex2JvmInProcess`，dex2jar 2.4 子集进 `jvm/libs`），`Dex2Jvm` 在 `-Dmeow.dex2jar.inprocess=true` 时反射调用它 | 肥猫顶层 dex → 893 个类；OECT 的 Jable（站点级 dex）→ 搜索 24 条 |
 | JVM 源包（class jar） | `URLClassLoader` 直接加载；**必须**带 `-XX:-BytecodeVerificationRemote`（外部 jar 的 stackmap 常不完整，否则 `VerifyError`） | OECT `spider.jar`：AppRJ 搜索 2 条（不开校验就是 VerifyError） |
 | 壳身份 | `window.meowIos` 桥（`version` / `apiBase` / `runtime`）→ `data-shell='ios'`；设置页「后端地址」改为只读（地址由壳写死） | 前端门禁 `device-profile` / `mobile-ux-polish` / `legacy-compat` 全绿 |
@@ -28,7 +29,21 @@ iOS 壳不再只是「连远端后端」：**进程内跑着与 PC/Docker 同一
   实用路径是 WebDAV / SMB。
 - **局域网网关 / 手机推设置**：iOS 壳只绑回环，不给别的设备当后端。
 - **签名与上架**：OpenJDK 9 Zero 是 GPL-2.0+CE → 只能侧载，不能进 App Store。
-- **真机验证**：JVM 在真机上的启动、内存、后台挂起都还没测过。
+- **后台挂起 / 内存**：启动与导入已真机验证过；后台被系统挂起后 JVM 线程能否恢复还没测。
+
+### 0.2 真机第一轮暴露的四个问题（2026-11-24）
+
+首包能进首页之后用户报的四个问题。全都不是崩溃，日志里能对上证据：
+
+| 现象 | 真因 | 修法 |
+|---|---|---|
+| 刘海挡住顶栏 | `WebView` 带了 `.ignoresSafeArea()`，而 WKWebView 自己的 `contentInsetAdjustmentBehavior` 是 `.never` | `RootView.swift` 去掉忽略安全区（黑底仍铺满），页面整块落在安全区内 |
+| 点输入框整页放大、键盘收起不还原 | WebKit 对字号 <16px 的输入控件聚焦时自动 zoom | `index.html` 首帧脚本认出 `window.meowIos` → `maximum-scale=1`；`tokens.css` 把 `html[data-shell='ios']` 下的输入控件抬到 16px |
+| 导入报「读取失败」，服务端日志却是 `Broken pipe` | `dryRun` 也跑 `Dex2Jvm.rewrite`（下载 jar + dex2jar），Zero 上几十秒；客户端先断 → 响应写不出去 → 配置一个字节都没写 | ① 预览不再转换 jar（回 `dex2jvm: {skipped:"dryRun"}`）；② 确认导入改后台线程，`GET /api/config/import` 轮询 `state/pending`，界面显示已用秒数 |
+| 导入后回首页显示「连不上后端」 | 后端还在转换，首页 ping 超时被当成断连 | iOS 壳也走启动重试（4 次 × 1.2 秒）；导入期间界面持续显示进度，不再误导 |
+
+附带的兼容：粘站点首页（`http://肥猫.net`）时，后端检测到内容是 HTML 且 URL 没有路径，
+自动补 `/tv` 再拉一次 —— 用户不需要知道配置文件的真实路径。
 
 ### 0.1 Node 运行时 / danmu_api：结论是「有，但要换实现」
 
