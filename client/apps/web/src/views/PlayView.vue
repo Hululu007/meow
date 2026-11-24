@@ -2157,6 +2157,15 @@ async function onPlayerError(payload: PlayErrorPayload | string) {
   //   （见 useNativePlayer），用户想试才点。换线路 / 转码兜底不变。
   const kind = isPlayErrorPayload(payload) ? payload.kind : 'unknown'
   const msg = isPlayErrorPayload(payload) ? payload.msg : String(payload)
+  /*
+   * `.strm` 的地址通常是**时效链接**（网盘签名几十分钟就过期）。
+   * 打不开时要说清"是直链过期了、不是播放器坏了"，否则用户只会一直重试。
+   */
+  if (libraryIsStrm.value && (kind === 'http' || kind === 'network' || kind === 'stall')) {
+    playError.value = `直链打不开（.strm 里的地址多半已过期，需要重新生成直链）\n${msg}`
+    hopError.value = ''
+    return
+  }
   playError.value = msg
   hopError.value = ''
 

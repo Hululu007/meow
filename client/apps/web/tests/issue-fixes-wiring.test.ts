@@ -192,6 +192,8 @@ describe('#6：片库 .strm 直链', () => {
     expect(PLAY).toContain('libraryStrmUrl')
     expect(PLAY).toContain('proxyStream(libraryStrmUrl.value)')
     expect(PLAY).toContain('isStrmFile(libraryFile.value)')
+    // 直链过期要有专门文案（.strm 里通常是时效链接）
+    expect(PLAY).toContain('直链打不开（.strm 里的地址多半已过期')
     const i = PLAY.indexOf('async function fetchProbeRoute')
     expect(PLAY.slice(i, i + 280)).toContain('libraryStrmUrl.value')
   })
