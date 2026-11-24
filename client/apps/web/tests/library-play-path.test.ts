@@ -84,7 +84,7 @@ describe('片库转码兜底：必须用 lib+path', () => {
   it('ffmpeg 缺失时给出可执行建议（不能只报"找不到 ffmpeg"）', () => {
     const code = codeOnly(PLAY)
     const i = code.indexOf('async function tryLibraryTranscode')
-    const body = code.slice(i, i + 1800)
+    const body = code.slice(i, i + 2600)
     // 2026-11-20 起文案收口到 library.ts 的 transcodeErrorMessage（按后端 code 映射），
     // PlayView 只负责把结果渲染出来，所以这里锁"委托"而不是锁具体句子。
     expect(body).toContain('transcodeErrorMessage(r)')

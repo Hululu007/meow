@@ -92,15 +92,15 @@ describe('取消语义：切集/换线/离开页面要真的停掉后端任务',
   })
 
   it('切集/卸载时按 src 或 lib+path 取消（前端拿不到 job id）', () => {
-    expect(PLAY).toContain('cancelTranscode({ src })')
-    expect(PLAY).toContain('cancelTranscode({ lib, path: file })')
+    expect(PLAY).toMatch(/cancelTranscode\(\{ src[,}]/)
+    expect(PLAY).toMatch(/cancelTranscode\(\{ lib, path: file[,}]/)
     expect(PLAY).toContain('if (pendingTranscode) {')
     expect(LIB).toContain('export async function cancelTranscode')
   })
 
   it('后端 DELETE 接受 src / lib+path，按幂等键反推 id', () => {
-    expect(API).toContain('core.Transcode.idFor(src)')
-    expect(API).toContain('core.Transcode.idFor("lib|" + delLib + "|" + delPath)')
+    expect(API).toContain('core.Transcode.idFor(src, preferCopy, repair)')
+    expect(API).toContain('core.Transcode.idFor("lib|" + delLib + "|" + delPath, preferCopy, repair)')
   })
 })
 

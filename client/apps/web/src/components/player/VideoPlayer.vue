@@ -5661,6 +5661,14 @@ function checkVideoDrops() {
     : null
   if (!q || q.totalVideoFrames < 150) return
   const ratio = q.droppedVideoFrames / q.totalVideoFrames
+  // 调试可见（pc_eval 直接读；不影响播放）
+  ;(window as unknown as { __dropGuard?: unknown }).__dropGuard = {
+    t: +v.currentTime.toFixed(1),
+    dropped: q.droppedVideoFrames,
+    total: q.totalVideoFrames,
+    ratio: +ratio.toFixed(3),
+    reported: dropReported,
+  }
   if (ratio > 0.15) {
     dropReported = true
     emit('high-drop', {

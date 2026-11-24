@@ -335,6 +335,9 @@ let busyKind: 'vod' | 'lib' = 'vod'
 let busySrc = ''
 let busyLib = ''
 let busyFile = ''
+/** 排队重试要沿用原任务的模式（copy/repair 的幂等键不同，丢了会起成另一个任务） */
+let busyCopy = false
+let busyRepair = false
 
 /**
  * 源地址中途过期（403）→ 重新调 play 拿新 token，在原位置续播。
@@ -363,7 +366,17 @@ async function onStaleSrc(p: { at: number; http: number }) {
     }, 10_000)
   }
 }
-let pendingTranscode: { src?: string; lib?: string; path?: string } | null = null
+/**
+ * 正在等的转码任务坐标。copy / repair 必须跟着一起记：
+ * 后端幂等键含模式，取消时不带模式会停错任务（2026-11-24）。
+ */
+let pendingTranscode: {
+  src?: string
+  lib?: string
+  path?: string
+  copy?: boolean
+  repair?: boolean
+} | null = null
 /** 正在等转码：加载遮罩上给一个「停止等待」入口 */
 const transcodeWaiting = ref(false)
 /** 本次成功解析的解析器名（来自 /api/parse 的 from） */
@@ -497,6 +510,13 @@ const playableSrc = computed(() => {
   // 自家的 /api 路径（转码产物、缓存清单）已经是"本机可播地址"，再套 proxyStream
   // 只会得到一层 url= 编码，播放器解析不到相对分片。
   if (url.startsWith('/api/')) return url
+  /*
+   * 自家后端的**绝对**地址（转码产物 /api/transcode/...）也不能套代理：
+   * 包一层会变成 /api/proxy/stream?url=http://127.0.0.1:9979/... → 回环地址
+   * 被 SSRF 防线拒（实测：4K 自愈切到转封装后画面还停在旧源）。
+   */
+  const apiRoot = apiBase().replace(/\/+$/, '')
+  if (apiRoot && url.startsWith(apiRoot + '/api/')) return url
   if (!url || !/^https?:/i.test(url)) return ''
   return proxyStream(url, play.value?.header)
 })
@@ -1039,6 +1059,8 @@ const hopError = ref('')
 const transcodeOk = ref<boolean | null>(null)
 /** 高丢帧自愈要求的最小输出高度（0 = 不检查）；tryTranscode 读一次就清零 */
 let healMinHeight = 0
+/** 自愈前的播放地址：转封装失败/被降分辨率时原样恢复，不把用户丢到错误页 */
+let healPrev: { url: string; header?: string } | null = null
 
 async function ensureTranscodeProbe(): Promise<boolean> {
   if (transcodeOk.value !== null) return transcodeOk.value
@@ -1152,17 +1174,19 @@ function tryNative() {
  *
  * 已转好的分片是增量的：前几个分片就绪即可起播，不用等整片转完。
  */
-async function tryTranscode(src: string, copy = false) {
+async function tryTranscode(src: string, copy = false, repair = false) {
   const minH = healMinHeight
   healMinHeight = 0
   const myEpoch = playEpoch
-  pendingTranscode = { src }
+  pendingTranscode = { src, copy, repair }
   transcodeWaiting.value = true
   errorSource.value = 'play'
   hopError.value = ''
   loadingText.value = busyRetrying.value
     ? `排队中：另一台设备正在转 4K（第 ${busyRetries.value} 次重试）…`
-    : '正在准备播放（这个格式需要转码，已转部分可边看边转）…'
+    : repair
+      ? '正在用显卡按原分辨率重编码（修复丢帧，分辨率不变）…'
+      : '正在准备播放（这个格式需要转码，已转部分可边看边转）…'
   error.value = ''
   try {
     // 首次响应只代表"任务已排上"，要等分片落盘到能起播
@@ -1178,13 +1202,14 @@ async function tryTranscode(src: string, copy = false) {
       undefined,
       headerStr,
       copy,
+      repair,
     )
     ;(window as unknown as { __meowLastTranscode?: unknown }).__meowLastTranscode = {
       ok: r.ok, state: r.state, code: r.code, error: r.error,
     }
     if (myEpoch !== playEpoch) {
       // 已经切集/换线：后端任务没人要了，停掉（仍在跑才停，转完的留着）
-      if (r.state === 'running') void cancelTranscode({ src })
+      if (r.state === 'running') void cancelTranscode({ src, copy, repair })
       return
     }
     pendingTranscode = null
@@ -1202,6 +1227,29 @@ async function tryTranscode(src: string, copy = false) {
      * 现在：主文案保留播放器的原因，转码失败只作为第二行（按 code 说人话）。
      */
     if (!r.ok || r.state === 'failed' || !r.playlist) {
+      /*
+       * 自愈失败（探测不到头/源站限流/拿不到同一档变体）：**恢复原样播放**，
+       * 不把用户丢到错误页 —— 卡顿总比"播放失败"好，而且用户还能自己换线路。
+       */
+      if (healPrev) {
+        const pv = healPrev
+        healPrev = null
+        transcodeTried = false
+        hopError.value = ''
+        error.value = ''
+        playError.value = ''
+        loadingText.value = ''
+        transcodeWaiting.value = false
+        play.value = { url: pv.url, header: pv.header } as PlayResult
+        showSilentHint(
+          repair && r.code === 'no_repair_encoder'
+            ? '这个源的时间轴特殊，当前后端没有硬件编码器，无法在不降画质的前提下修复'
+            : '原画转封装不可用，继续原样播放',
+          false,
+          false,
+        )
+        return
+      }
       if (r.code === 'hw_busy') {
         // 不是源/编码问题：另一台设备在转 4K。给"排队/换 1080p"两个选择。
         hopError.value = ''
@@ -1210,6 +1258,8 @@ async function tryTranscode(src: string, copy = false) {
         transcodeWaiting.value = false
         busyKind = 'vod'
         busySrc = src
+        busyCopy = copy
+        busyRepair = repair
         // 清掉播放器的"解码失败"错误页，否则它会盖住下面的排队/换线选择
         player.value?.stop?.()
         ;(window as unknown as { __meowBusy?: unknown }).__meowBusy = {
@@ -1234,7 +1284,10 @@ async function tryTranscode(src: string, copy = false) {
     libraryAhead.value = r.readySeconds || 0
     libraryTotalDuration.value = r.duration || 0
     if (r.duration && r.readySeconds && r.readySeconds < r.duration - 5) {
-      pollTranscodeProgress({ src })
+      pollTranscodeProgress({
+        src,
+        ...(repair ? { repair: '1' } : copy ? { copy: '1' } : {}),
+      })
     }
     /*
      * ★ 原画转封装的硬门槛（2026-11-24）：请求了 copy 就必须真的是 copy，
@@ -1246,12 +1299,26 @@ async function tryTranscode(src: string, copy = false) {
       const curH = minH || document.querySelector('video')?.videoHeight || 0
       const outH = Number(r.outHeight || 0)
       if (r.copyVideo !== true || (curH > 0 && outH > 0 && outH < curH)) {
-        void cancelTranscode({ src })
+        void cancelTranscode({ src, copy })
         showSilentHint('该源无法原画转封装，已保持原样播放（避免降画质）', false, false)
         transcodeTried = false
         return
       }
+    } else if (repair) {
+      /*
+       * 修复转码的硬门槛：**分辨率不许降**（2026-11-24 用户口径：宁可卡也不降画质）。
+       * 后端 repair 分支不做任何缩放，这里再兜一层，防止将来改坏后静默降级。
+       */
+      const curH = minH || document.querySelector('video')?.videoHeight || 0
+      const outH = Number(r.outHeight || 0)
+      if (curH > 0 && outH > 0 && outH < curH) {
+        void cancelTranscode({ src, repair })
+        showSilentHint('修复输出被降了分辨率，已停止并保持原样播放', false, false)
+        transcodeTried = false
+        return
+      }
     }
+    healPrev = null
     mediaInfo.value = transcodeMediaInfo(r)
     // 提示条压在单行里：HEVC 10-bit 4K → H.264 1080p（拿不到编码就退回原文案）
     const badge = transcodeBadge(mediaInfo.value)
@@ -1260,9 +1327,12 @@ async function tryTranscode(src: string, copy = false) {
       : r.copyVideo
         // remux：视频原样 copy（原画），只把音轨转成 AAC
         ? '已转封装播放（原画视频，仅音轨转 AAC）'
-        : badge
-          ? `已转码播放（${badge}）`
-          : '已转码播放（源文件未改动）'
+        : repair
+          // 修复：分辨率不变、显卡重编（源头码流结构问题，copy 修不了）
+          ? `已按原分辨率修复播放（${badge || '显卡重编码'}，分辨率不变）`
+          : badge
+            ? `已转码播放（${badge}）`
+            : '已转码播放（源文件未改动）'
     clearTimeout(lineHintTimer)
     lineHintTimer = window.setTimeout(() => (transcodeHint.value = ''), 8000)
     // 播放器直接吃后端给的清单地址；hls.js 会按需拉分片
@@ -1344,12 +1414,12 @@ function unsupportedContainer(url: string): boolean {
  * 实测 WebView 110 能播大多数 MKV/H265，先直连才是对的；
  * 只有真的报错了才需要转码。
  */
-async function tryLibraryTranscode(lib: string, file: string, copy = false) {
+async function tryLibraryTranscode(lib: string, file: string, copy = false, repair = false) {
   dbg('startTranscode', file)
   // 转码一旦开始，之前那条错误页要收掉（否则错误页盖着、用户在等转码却看着报错）
   playError.value = ''
   const myEpoch = playEpoch
-  pendingTranscode = { lib, path: file }
+  pendingTranscode = { lib, path: file, copy, repair }
   transcodeWaiting.value = true
   errorSource.value = 'play'
   // 从这一刻起不再把 query.direct 交给播放器（否则 <video> 会一直重试直连，
@@ -1357,26 +1427,50 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false) {
   libraryNoDirect.value = true
   loadingText.value = busyRetrying.value
     ? `排队中：另一台设备正在转 4K（第 ${busyRetries.value} 次重试）…`
-    : '直连播不了，正在启动转码（可边转边看）…'
+    : repair
+      ? '正在用显卡按原分辨率重编码（修复丢帧，分辨率不变）…'
+      : '直连播不了，正在启动转码（可边转边看）…'
   error.value = ''
   try {
     const r = await waitLibraryTranscode(lib, file, (sec, ph, stalled) => {
       if (myEpoch !== playEpoch) return
       loadingText.value = transcodePhaseText(sec, ph, stalled)
-    }, undefined, copy)
+    }, undefined, copy, repair)
     if (myEpoch !== playEpoch) {
-      if (r.state === 'running') void cancelTranscode({ lib, path: file })
+      if (r.state === 'running') void cancelTranscode({ lib, path: file, copy, repair })
       return
     }
     pendingTranscode = null
     transcodeWaiting.value = false
     if (r.state === 'failed' || !r.playlist) {
+      // 高丢帧自愈失败：恢复原样播放（不把用户丢到错误页，卡顿也比重来好）
+      if (healPrev) {
+        const pv = healPrev
+        healPrev = null
+        transcodeTried = false
+        libraryNoDirect.value = false
+        error.value = ''
+        playError.value = ''
+        loadingText.value = ''
+        transcodeWaiting.value = false
+        play.value = { url: pv.url, header: pv.header } as PlayResult
+        showSilentHint(
+          repair && r.code === 'no_repair_encoder'
+            ? '这个文件的时间轴特殊，当前后端没有硬件编码器，无法在不降画质的前提下修复'
+            : '原分辨率修复不可用，继续原样播放',
+          false,
+          false,
+        )
+        return
+      }
       if (r.code === 'hw_busy') {
         error.value = ''
         loadingText.value = ''
         busyKind = 'lib'
         busyLib = lib
         busyFile = file
+        busyCopy = copy
+        busyRepair = repair
         if (busyRetrying.value) scheduleBusyRetry()
         else busyHint.value = true
         return
@@ -1395,7 +1489,11 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false) {
     libraryAhead.value = r.readySeconds || 0
     libraryTotalDuration.value = r.duration || 0
     if (r.duration && r.readySeconds && r.readySeconds < r.duration - 5) {
-      pollTranscodeProgress({ lib, path: file })
+      pollTranscodeProgress({
+        lib,
+        path: file,
+        ...(repair ? { repair: '1' } : copy ? { copy: '1' } : {}),
+      })
     }
     /*
      * 片库 remux 同样有"必须真 copy、且不能降分辨率"的硬门槛：
@@ -1405,12 +1503,23 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false) {
       const curH = document.querySelector('video')?.videoHeight || 0
       const outH = Number(r.outHeight || 0)
       if (r.copyVideo !== true || (curH > 0 && outH > 0 && outH < curH)) {
-        void cancelTranscode({ lib, path: file })
+        void cancelTranscode({ lib, path: file, copy })
         showSilentHint('该文件无法原画转封装，已保持原样播放（避免降画质）', false, false)
         transcodeTried = false
         return
       }
+    } else if (repair) {
+      // 修复转码同样不许降分辨率（片库 4K 源）
+      const curH = healMinHeight || document.querySelector('video')?.videoHeight || 0
+      const outH = Number(r.outHeight || 0)
+      if (curH > 0 && outH > 0 && outH < curH) {
+        void cancelTranscode({ lib, path: file, repair })
+        showSilentHint('修复输出被降了分辨率，已停止并保持原样播放', false, false)
+        transcodeTried = false
+        return
+      }
     }
+    healPrev = null
     mediaInfo.value = transcodeMediaInfo(r)
     // 提示条压在单行里：HEVC 10-bit 4K → H.264 1080p（拿不到编码就退回原文案）
     const badge = transcodeBadge(mediaInfo.value)
@@ -1419,9 +1528,11 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false) {
       : r.copyVideo
         // remux：视频原样 copy（原画），只把音轨转成 AAC
         ? '已转封装播放（原画视频，仅音轨转 AAC）'
-        : badge
-          ? `已转码播放（${badge}）`
-          : '已转码播放（源文件未改动）'
+        : repair
+          ? `已按原分辨率修复播放（${badge || '显卡重编码'}，分辨率不变）`
+          : badge
+            ? `已转码播放（${badge}）`
+            : '已转码播放（源文件未改动）'
     clearTimeout(lineHintTimer)
     lineHintTimer = window.setTimeout(() => (transcodeHint.value = ''), 8000)
     play.value = { url: absoluteApi(r.playlist) } as PlayResult
@@ -1712,6 +1823,26 @@ async function fetchProbeRoute() {
  *
  * 只对点播直链生效：片库已走 remux/直连策略；转码产物本身不再自愈。
  */
+/**
+ * 把后端的代理地址还原成源站真实地址。
+ *
+ * 为什么需要：hls.js 的 `levels[i].url` 可能是 `/api/proxy/stream?url=...`
+ * （后端把变体清单也代理了），把它交给转码会被 SSRF 防线拒掉（回环地址），
+ * 自愈就会失败并把用户丢到错误页。取 url 参数里的真实变体地址才对。
+ */
+function unwrapProxyUrl(u: string): string {
+  try {
+    const x = new URL(u, location.origin)
+    if (x.pathname === '/api/proxy/stream') {
+      const real = x.searchParams.get('url') || ''
+      if (/^https?:/i.test(real)) return real
+    }
+  } catch {
+    /* 解析失败就用原值 */
+  }
+  return u
+}
+
 async function onHighDrop(p: {
   dropped: number
   total: number
@@ -1720,24 +1851,45 @@ async function onHighDrop(p: {
   height?: number
 }) {
   if (transcodeTried) return
-  if (isLibraryPlay.value) return
+  const libMode = isLibraryPlay.value
   const u = typeof play.value?.url === 'string' ? play.value.url : ''
-  // 已经是转码产物/转码请求（query 或 path 两种形态）→ 不再套娃
-  if (!u || !/^https?:/i.test(u) || u.includes('/api/transcode')) return
+  if (libMode) {
+    if (!libraryLib.value || !libraryFile.value) return
+  } else if (!u || !/^https?:/i.test(u) || u.includes('/api/transcode')) {
+    // 已经是转码产物/转码请求（query 或 path 两种形态）→ 不再套娃
+    return
+  }
   /*
    * ★ transcodeOk 初值是 null（还没探过后端），不能直接 `!transcodeOk.value`
    *   判断 —— 那会在第一次卡顿时直接 return（实测踩过：自愈一次都没触发）。
    */
   const ok = await ensureTranscodeProbe()
+  ;(window as unknown as { __highDrop?: unknown }).__highDrop = {
+    p, u, ok, transcodeTried, lib: libMode,
+  }
   if (!ok || transcodeTried) return
   dbg('highDrop', JSON.stringify(p))
   transcodeTried = true
   refreshSeekAt.value = lastTickPos > 1 ? lastTickPos : 0
   healMinHeight = p.height && p.height > 0 ? p.height : 0
-  showSilentHint('检测到画面丢帧，正在切换原画转封装（画面不重编码）…', false, false)
-  // 用播放器当前选中的那一档变体（4K），别把母清单交给 ffmpeg（它会选 1080p）
-  const src = p.levelUrl && /^https?:/i.test(p.levelUrl) ? p.levelUrl : u
-  void tryTranscode(src, true)
+  healPrev = { url: u, header: typeof play.value?.header === 'string' ? play.value.header : undefined }
+  /*
+   * ★ 原画转封装（copy）修不了这种丢帧（2026-11-24 实测）：
+   *   某 4K 源整段 GOP 全是 B 帧（has_b_frames=5），Chromium 解得出但渲染
+   *   稳定丢 28% 帧；copy 保留码流结构，重封装后照样丢。只有**保持原分辨率
+   *   用显卡重编**（NVENC，4K 仍是 4K）实测丢帧 0。所以自愈改走 repair。
+   */
+  showSilentHint('检测到画面丢帧，正在用显卡按原分辨率重编码（分辨率不变）…', false, false)
+  if (libMode) {
+    void tryLibraryTranscode(libraryLib.value, libraryFile.value, false, true)
+    return
+  }
+  /*
+   * 用播放器当前选中的那一档变体（4K），别把母清单交给 ffmpeg（它会选 1080p）。
+   * hls.js 的 level url 常被后端代理成 /api/proxy/stream?url=...，要还原成源站地址。
+   */
+  const level = p.levelUrl && /^https?:/i.test(p.levelUrl) ? unwrapProxyUrl(p.levelUrl) : ''
+  void tryTranscode(level || u, false, true)
 }
 
 async function onPlayerError(payload: PlayErrorPayload | string) {
@@ -2264,8 +2416,8 @@ function scheduleBusyRetry() {
     }
     loadingText.value = `排队中：另一台设备正在转 4K（第 ${busyRetries.value} 次重试）…`
     transcodeWaiting.value = true
-    if (busyKind === 'lib') void tryLibraryTranscode(busyLib, busyFile)
-    else void tryTranscode(busySrc)
+    if (busyKind === 'lib') void tryLibraryTranscode(busyLib, busyFile, busyCopy, busyRepair)
+    else void tryTranscode(busySrc, busyCopy, busyRepair)
   }, BUSY_RETRY_MS)
 }
 

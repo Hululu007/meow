@@ -46,9 +46,9 @@ describe('转码不再卡死/并发', () => {
   it('串行由 startFfmpeg 统一执行（硬件任务抢占，软件任务不打断观看者）', () => {
     // 2026-11-23：ensure() 的串行决策下沉到 startFfmpeg（probe 之后才知道要不要硬解）
     const ensure = T.slice(T.indexOf('public static Job ensure('), T.indexOf('public static Job ensureLocal('))
-    expect(ensure).toContain('startFfmpeg(j, ff, sourceUrl, false)')
+    expect(ensure).toMatch(/startFfmpeg\(j, ff, (sourceUrl|playSrc), false\)/)
     const start = T.slice(T.indexOf('private static void startFfmpeg'), T.indexOf('private static void pump'))
-    expect(start).toContain('stopOtherJobs(j.id, hw)')
+    expect(start).toContain('stopOtherJobs(j.id, hw || j.repair)')
     const stop = T.slice(T.indexOf('private static boolean stopOtherJobs'), T.indexOf('private static Path dirOf'))
     // 不再按"最近播放"永久放行（旧事故根因），但"正在被观看 + 新任务是软件任务"要放行
     expect(stop).not.toContain('recentlyPlayed')

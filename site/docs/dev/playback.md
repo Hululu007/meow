@@ -130,14 +130,33 @@ PC 的 WebView2 实测能解 `hvc1.2.4.L153.B0`（`MediaSource.isTypeSupported` 
 **硬门槛**：请求了 copy 就必须 `copyVideo=true` 且输出高度不低于源画面，
 否则取消任务、保持原样播放 —— 宁可不自愈，也不静默降画质。
 
-### 高丢帧自愈（4K 源时间轴有缝）
+### 高丢帧自愈：原分辨率显卡重编（repair，2026-11-24 定案）
 
-实测某 4K 源：整集 874 片、EXTINF 1.16~5.16s 参差、每片边界丢 1 帧，
-Chromium 渲染器丢帧 28.7%（25fps 只出 17.7fps）；同一 App 的 1080p 线路丢 0。
-`VideoPlayer` 每 5 秒采样 `getVideoPlaybackQuality()`，丢帧率 >15% 且已播 12 秒
-就发 `high-drop`，父组件用**播放器当前选中的那一档变体地址**（`hls.levels[i].url`）
-起后端 remux，并从当前位置续播。用母清单会让 ffmpeg 选到第一个变体（常见 1080p），
-所以必须传变体地址。
+实测某 4K 源：整段 GOP 全是 B 帧（一集 125 帧里 124 个 B、`has_b_frames=5`），
+Chromium/WebView2 **解得出但渲染器稳定丢 28% 帧**（25fps 只出 17fps）；同一画面
+用 NVENC 重编一遍（仍是 4K HEVC）丢帧 0。对照实验：换容器（TS→MP4）、去音轨、
+`avoid_negative_ts`、`copy` 全部无效；换 H.264 4K 或干净的 HEVC 4K 都不丢。
+
+所以自愈**不能再走原画转封装（copy）**——copy 保留码流结构，重封装后照样丢。
+现在 `VideoPlayer` 每 5 秒采样 `getVideoPlaybackQuality()`，丢帧率 >15% 且已播 12 秒
+就发 `high-drop`，父组件请求 **repair**：
+
+- 后端 `hlsCommand` 的 repair 分支：**保持源分辨率**（不加任何 `-vf scale`），
+  用显卡编码（NVENC → QSV → AMF，HEVC 优先），按源高度给码率
+  （4K 16M / 1440p 10M / 1080p 6M）；NVENC 还要 `-forced-idr 1`，
+  否则关键帧 10 秒一个、分片全是 10 秒，起播多等 10 秒。
+- 没有硬件编码器时**直接失败**（`no_repair_encoder`），前端恢复原样播放并说明原因——
+  绝不偷偷缩到 1080p（那是用户明确拒绝的降级），也不做软件 4K 重编（追不上实时）。
+- **模式参与幂等键**：`idFor(src, copy, repair)`，copy / repair 的产物不能与普通转码
+  互相复用；status / DELETE / start 必须带同一模式，否则会查到别的任务、停错进程。
+- 前端硬门槛：repair 输出高度低于源画面就取消并保持原样播放。
+- 用**播放器当前选中的那一档变体地址**（`hls.levels[i].url`）而不是母清单：
+  母清单会让 ffmpeg 选到第一个变体（常见 1080p）。代理后的 level url
+  （`/api/proxy/stream?url=…`）要先还原成源站地址，否则 SSRF 防线会拒。
+- 后端 `action=caps` 增加 `encoders` / `hwEnc`，前端据此判断能不能原分辨率修丢帧。
+
+片库同样走这条路（`ensureLocal` 的 repair 分支是同一套命令）。
+
 
 ### 分片代理：12 槽 + 失败留痕
 

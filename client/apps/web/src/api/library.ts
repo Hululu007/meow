@@ -686,9 +686,12 @@ export async function startLibraryTranscode(
   path: string,
   /** copy=1：视频原样 copy、只转音频（remux；画面零损失） */
   copy = false,
+  /** repair=1：保持原分辨率用显卡重编（治"能解但持续丢帧"的 4K 源） */
+  repair = false,
 ): Promise<TranscodeResult> {
   const q = new URLSearchParams({ lib, path })
-  if (copy) q.set('copy', '1')
+  if (repair) q.set('repair', '1')
+  else if (copy) q.set('copy', '1')
   const r = await fetch(`${apiBase()}/api/transcode?${q}`)
   if (!r.ok) {
     // 后端 stage 前的预检（ffmpeg 缺失等）返回 502 + 人话 msg——
@@ -848,12 +851,16 @@ export async function waitLibraryTranscode(
   onProgress?: TranscodeProgress,
   timeoutMs = TRANSCODE_BASE_MS,
   copy = false,
+  repair = false,
 ): Promise<TranscodeResult> {
   return waitTranscodeCore(
     {
-      start: () => startLibraryTranscode(lib, path, copy),
+      start: () => startLibraryTranscode(lib, path, copy, repair),
       poll: async () => {
+        // 模式参与后端幂等键：轮询必须带同一个模式，否则查到的是别的任务
         const q = new URLSearchParams({ lib, path, mode: 'status' })
+        if (repair) q.set('repair', '1')
+        else if (copy) q.set('copy', '1')
         const r = await fetch(`${apiBase()}/api/transcode?${q}`)
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return (await r.json()) as TranscodeResult
@@ -876,6 +883,9 @@ export async function cancelTranscode(t: {
   src?: string
   lib?: string
   path?: string
+  /** 与 start 时一致的模式（后端幂等键含模式，不带会停错任务） */
+  copy?: boolean
+  repair?: boolean
 }): Promise<boolean> {
   const q = new URLSearchParams()
   if (t.id) q.set('id', t.id)
@@ -884,6 +894,8 @@ export async function cancelTranscode(t: {
     q.set('lib', t.lib)
     q.set('path', t.path)
   } else return false
+  if (t.repair) q.set('repair', '1')
+  else if (t.copy) q.set('copy', '1')
   try {
     const r = await fetch(`${apiBase()}/api/transcode?${q}`, { method: 'DELETE' })
     return r.ok
@@ -896,11 +908,13 @@ export async function startTranscode(
   src: string,
   header = '',
   copy = false,
+  repair = false,
 ): Promise<TranscodeResult> {
   const q = new URLSearchParams({ src })
   // 源站要求的 UA/Referer：转码是后端自己拉流，不带就是 404（咕噜4K 实测）
   if (header) q.set('header', header)
-  if (copy) q.set('copy', '1')
+  if (repair) q.set('repair', '1')
+  else if (copy) q.set('copy', '1')
   const r = await fetch(`${apiBase()}/api/transcode?${q}`)
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   return (await r.json()) as TranscodeResult
@@ -915,12 +929,15 @@ export async function waitTranscode(
   timeoutMs = TRANSCODE_BASE_MS,
   header = '',
   copy = false,
+  repair = false,
 ): Promise<TranscodeResult> {
   return waitTranscodeCore(
     {
-      start: () => startTranscode(src, header, copy),
+      start: () => startTranscode(src, header, copy, repair),
       poll: async () => {
         const q = new URLSearchParams({ src, mode: 'status' })
+        if (repair) q.set('repair', '1')
+        else if (copy) q.set('copy', '1')
         const r = await fetch(`${apiBase()}/api/transcode?${q}`)
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return (await r.json()) as TranscodeResult

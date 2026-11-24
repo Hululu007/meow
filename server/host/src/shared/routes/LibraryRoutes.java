@@ -799,6 +799,9 @@ public final class LibraryRoutes {
         }
         // 幂等键用 lib|path 而不是临时文件路径：临时文件会被清，键要稳定
         String key = "lib|" + libId + "|" + libPath;
+        // 模式参与幂等键（2026-11-24）：copy / repair 的产物不能和普通转码互相复用
+        boolean preferCopy = "1".equals(q.get("copy"));
+        boolean repair = "1".equals(q.get("repair"));
         /*
          * ★ status 轮询必须排在「取源」之前（S1，2026-11-17 复查发现）。
          *
@@ -808,7 +811,8 @@ public final class LibraryRoutes {
          * 现在轮询只读内存状态，完全不碰源。
          */
         if ("status".equalsIgnoreCase(q.getOrDefault("mode", ""))) {
-            core.Transcode.Job j = core.Transcode.status(core.Transcode.idFor(key));
+            core.Transcode.Job j = core.Transcode.status(
+                    core.Transcode.idFor(key, preferCopy, repair));
             Api.sendJson(ex, 200, j == null
                     ? new JSONObject().put("ok", true).put("state", "idle").toString()
                     : core.Transcode.toJson(j).toString());
@@ -861,9 +865,8 @@ public final class LibraryRoutes {
                     "{\"code\":-1,\"msg\":\"WebDAV 片库请直接用 src 传流地址\"}");
             return;
         }
-        // copy=1：客户端要求 remux（视频原样 copy，只转音频）
-        boolean preferCopy = "1".equals(q.get("copy"));
-        core.Transcode.Job j = core.Transcode.ensureLocal(source, key, preferCopy);
+        // copy=1 remux / repair=1 原分辨率重编（修复丢帧）
+        core.Transcode.Job j = core.Transcode.ensureLocal(source, key, preferCopy, repair);
         Api.sendJson(ex, 200, core.Transcode.toJson(j).toString());
     }
 

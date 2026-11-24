@@ -12249,6 +12249,13 @@ public class ApiServer {
         String id = trimToEmpty(q.get("id"));
         String delLib = trimToEmpty(q.get("lib"));
         String delPath = trimToEmpty(q.get("path"));
+        /*
+         * 模式（copy / repair）参与幂等键（2026-11-24）：同一个源可能既有普通
+         * 转码产物又有修复产物，status / DELETE / start 必须用同一个模式算 id，
+         * 否则轮询会查到别的任务、取消会停错进程。
+         */
+        boolean preferCopy = "1".equals(q.get("copy"));
+        boolean repair = "1".equals(q.get("repair"));
 
         if ("DELETE".equalsIgnoreCase(method)) {
             /*
@@ -12257,9 +12264,11 @@ public class ApiServer {
              * 那个已经没人等的 ffmpeg（否则它会白转到看门狗 10 分钟）。
              */
             String cid = id;
-            if (cid.isEmpty() && !src.isEmpty()) cid = core.Transcode.idFor(src);
+            if (cid.isEmpty() && !src.isEmpty()) {
+                cid = core.Transcode.idFor(src, preferCopy, repair);
+            }
             if (cid.isEmpty() && !delLib.isEmpty() && !delPath.isEmpty()) {
-                cid = core.Transcode.idFor("lib|" + delLib + "|" + delPath);
+                cid = core.Transcode.idFor("lib|" + delLib + "|" + delPath, preferCopy, repair);
             }
             boolean ok = !cid.isEmpty() && core.Transcode.cancel(cid);
             sendJson(ex, ok ? 200 : 404, new JSONObject().put("ok", ok).toString());
@@ -12302,7 +12311,8 @@ public class ApiServer {
         boolean statusOnly = "status".equalsIgnoreCase(q.getOrDefault("mode", ""))
                 || "/api/transcode/status".equals(ex.getRequestURI().getPath());
         if (statusOnly) {
-            core.Transcode.Job j = core.Transcode.status(core.Transcode.idFor(src));
+            core.Transcode.Job j = core.Transcode.status(
+                    core.Transcode.idFor(src, preferCopy, repair));
             if (j == null) {
                 sendJson(ex, 200, new JSONObject().put("ok", true).put("state", "idle").toString());
                 return;
@@ -12310,9 +12320,8 @@ public class ApiServer {
             sendJson(ex, 200, core.Transcode.toJson(j).toString());
             return;
         }
-        // copy=1：客户端明确要求 remux（视频原样 copy，只转音频）
-        boolean preferCopy = "1".equals(q.get("copy"));
-        core.Transcode.Job j = core.Transcode.ensure(src, false, srcHeader, preferCopy);
+        // copy=1 remux（视频原样 copy）/ repair=1 原分辨率重编（修复丢帧）
+        core.Transcode.Job j = core.Transcode.ensure(src, false, srcHeader, preferCopy, repair);
         sendJson(ex, 200, core.Transcode.toJson(j).toString());
     }
 
