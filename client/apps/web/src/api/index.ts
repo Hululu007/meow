@@ -155,6 +155,28 @@ function webLog(msg: string) {
   }
 }
 
+/**
+ * 连续网络级失败计数（10 秒窗口）。
+ *
+ * 10 秒内 ≥5 次「连 HTTP 响应都没拿到」= 不是某个接口坏了，而是**内核网络进程
+ * 被系统回收**（iOS 内存压力下常见）。症状成对出现：图片突然全碎 + 按钮点了没反应。
+ * 这里抛事件让 App 弹一条「重载即恢复」的横幅，别让用户以为是图/按钮坏了。
+ */
+let netFailStamps: number[] = []
+function noteNetFailure() {
+  const now = Date.now()
+  netFailStamps = netFailStamps.filter((t) => now - t < 10_000)
+  netFailStamps.push(now)
+  if (netFailStamps.length >= 5) {
+    netFailStamps = []
+    try {
+      window.dispatchEvent(new CustomEvent('meow:net-unhealthy'))
+    } catch {
+      /* 非浏览器环境（测试）忽略 */
+    }
+  }
+}
+
 // ---------------------------------------------------------------- 启动引导
 
 export interface PluginInfo {
@@ -480,6 +502,7 @@ async function requestUncached<T>(
           ? `timeout ${timeout}ms`
           : String((e as { message?: unknown })?.message ?? e)
       webLog(`fetch ${method} ${base()}${path} failed after ${Date.now() - startedAt}ms: ${why}`)
+      noteNetFailure()
     }
     throw e
   } finally {

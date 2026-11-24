@@ -84,6 +84,15 @@ struct WebView: UIViewRepresentable {
             parent.onError(error.localizedDescription)
         }
 
+        /// 渲染/网络进程被系统回收（内存压力下 iOS 会直接杀）。
+        ///
+        /// 症状是「页面还在但所有图片碎了、按钮点了没反应」或者白屏。WKWebView 不会
+        /// 自己恢复，只能 reload —— reload 会重建进程。（2026-11-24 真机反馈）
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            LaunchLog.write("web content process terminated; reload")
+            webView.reload()
+        }
+
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction,
                      windowFeatures: WKWindowFeatures) -> WKWebView? {

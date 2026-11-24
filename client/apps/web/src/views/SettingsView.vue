@@ -11,6 +11,8 @@ import { THEME_MODES, THEME_STYLES, resolveMode } from '@/stores/theme'
 // iOS 壳：后端是 App 进程内的 JVM 网关，地址由壳写死 —— 设置页要能认出它，
 // 把「后端地址」那行换成只读展示（改了就等于把 App 指向别人的后端）。
 import { isIosShell, iosShellInfo } from '@/compat/shell'
+import { uaText } from '@/compat/ua'
+import { fetchServerLogs } from '@/api/logs'
 import type { TileAction } from '@/components/common/tile'
 import {
   apiBase,
@@ -3567,9 +3569,15 @@ async function payloadInstall() {
 //          关掉它等于把自己被控制的能力切断，而打开它的唯一办法是重启应用；
 //          做成开关只会让用户以为"关掉还能再打开"。所以 PC 端只读展示状态。
 //   Web —— 用不上：浏览器沙箱里起不了 TCP 监听，也没有可被控制的应用窗口。
-const debugPlatform = computed<'tv' | 'pc' | null>(() => {
+const debugPlatform = computed<'tv' | 'pc' | 'ios' | null>(() => {
   if (tvMode) return 'tv'
   if (desktop) return 'pc'
+  /*
+   * iOS：端内网关只绑回环、也起不了 TV 那种 MCP 进程，给不了「开关」；
+   * 但排障必须有一个入口 —— 只读展示运行信息 + 复制诊断 + 重载界面
+   * （用户 2026-11-24 要求对齐 TV 的「维护 → 调试」）。
+   */
+  if (ios) return 'ios'
   return null
 })
 
@@ -3641,6 +3649,72 @@ function refreshDebug() {
   else if (debugPlatform.value === 'pc') void refreshPcDebug()
 }
 refreshDebug()
+
+// ---------------------------------------------------------------- iOS 调试（排障用）
+//
+// iOS 给不了 TV 那种「开关远程调试」：端内网关只绑 127.0.0.1，node 与 JVM 都在
+// App 进程里，没有可被外部工具接管的常驻调试进程。所以这里给**排障三件套**：
+// 运行信息（构建号/端口/运行时）、复制诊断（带最近日志，直接粘给开发）、重载界面。
+// 「图片全碎 / 按钮没反应」这类问题多半是内核网络进程被系统回收，重载即恢复。
+
+const diagMsg = ref('')
+const iosDiag = computed(() => {
+  const info = iosShellInfo()
+  return {
+    build: String(info.build || ''),
+    version: String(info.version || ''),
+    apiBase: String(info.apiBase || ''),
+    runtime: String(info.runtime || ''),
+  }
+})
+
+async function copyIosDiagnostics() {
+  const lines: string[] = []
+  lines.push('## 猫窝 iOS 诊断')
+  lines.push(`时间: ${new Date().toISOString()}`)
+  lines.push(`构建: ${iosDiag.value.build || '?'}  版本: ${iosDiag.value.version || '?'}`)
+  lines.push(`网关: ${iosDiag.value.apiBase || '(空)'}  运行时: ${iosDiag.value.runtime || '?'}`)
+  lines.push(`页面: ${location.href}  壳: ${document.documentElement.dataset.shell || '?'}`)
+  lines.push(`UA: ${uaText()}`)
+  try {
+    const r = await fetchServerLogs({ limit: 120 })
+    if (r.state === 'ok' && r.data) {
+      lines.push('')
+      lines.push(`## 服务端日志（最近 ${r.data.items.length} 条）`)
+      for (const it of r.data.items) {
+        lines.push(`${new Date(it.at).toISOString()} [${it.level}] ${it.tag}: ${it.text}`)
+      }
+    } else {
+      lines.push(`## 服务端日志不可用：${r.state} ${r.detail || ''}`)
+    }
+  } catch (e: any) {
+    lines.push(`## 服务端日志异常：${e?.message || e}`)
+  }
+  const text = lines.join('\n')
+  try {
+    await navigator.clipboard.writeText(text)
+    diagMsg.value = `已复制 ${text.length} 字符，可直接粘贴发给开发`
+  } catch {
+    // WKWebView 里 clipboard 可能被拒：退化成 textarea + execCommand
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+      diagMsg.value = `已复制 ${text.length} 字符（兼容模式）`
+    } catch {
+      diagMsg.value = '复制失败：请到「运行日志」页手动查看'
+    }
+  }
+}
+
+function reloadWebView() {
+  location.reload()
+}
 /** 远程调试剩余时间每分钟刷新一次（只有 TV 有意义） */
 let dbgTimer: number | undefined
 
@@ -8019,16 +8093,22 @@ onBeforeUnmount(() => {
       <!-- ── 远程调试（TV / PC）：原独立分区，归到维护 ── -->
       <template v-if="debugPlatform">
         <div class="set-sub mt-3">
-          <span class="font-medium text-ink-2">远程调试</span>
+          <span class="font-medium text-ink-2">调试</span>
           <span>
             {{
               debugPlatform === 'tv'
                 ? '局域网 PC 可读取状态 / 截图 / 派发按键'
-                : '内置 MCP 服务，供外部工具读取状态 / 截图 / 派发按键'
+                : debugPlatform === 'ios'
+                  ? '运行信息 · 复制诊断 · 重载界面'
+                  : '内置 MCP 服务，供外部工具读取状态 / 截图 / 派发按键'
             }}
           </span>
           <span class="flex-1" />
-          <span class="text-[11px]" :class="dbg.running ? 'text-accent' : 'text-ink-3'">
+          <span
+            v-if="debugPlatform !== 'ios'"
+            class="text-[11px]"
+            :class="dbg.running ? 'text-accent' : 'text-ink-3'"
+          >
             {{ dbg.running ? '运行中' : dbg.enabled ? '待生效' : '已关闭' }}
           </span>
         </div>
@@ -8048,7 +8128,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- PC：只读。地址 + 探测区间给客户端抄 -->
-        <div v-else class="mt-2 space-y-1.5">
+        <div v-else-if="debugPlatform === 'pc'" class="mt-2 space-y-1.5">
           <div>
             <span class="mb-1 block text-[11px] text-ink-3">服务地址</span>
             <code class="select-all rounded bg-field px-2 py-1 text-xs text-accent">
@@ -8059,6 +8139,35 @@ onBeforeUnmount(() => {
             端口可能顺延，客户端在 {{ dbg.portRange }} 区间探测
             <code class="rounded bg-field px-1">/health</code>
           </p>
+        </div>
+
+        <!-- iOS：没有可外部接管的调试端口（网关只绑回环），给排障三件套 -->
+        <div v-else class="mt-2 space-y-2">
+          <div class="space-y-1">
+            <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] text-ink-3">
+              <span>构建 <code class="select-all text-accent">{{ iosDiag.build || '?' }}</code></span>
+              <span>版本 {{ iosDiag.version || '?' }}</span>
+            </div>
+            <div class="text-[11px] text-ink-3">
+              网关 <code class="select-all text-accent">{{ iosDiag.apiBase || '(未就绪)' }}</code>
+            </div>
+            <div class="text-[11px] text-ink-3">{{ iosDiag.runtime }}</div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-dim"
+              @click="copyIosDiagnostics()"
+            >
+              复制诊断
+            </button>
+            <button
+              class="rounded-md bg-card px-3 py-1.5 text-xs hover:bg-card-hover"
+              @click="reloadWebView()"
+            >
+              重载界面
+            </button>
+          </div>
+          <p v-if="diagMsg" class="text-[11px] text-accent">{{ diagMsg }}</p>
         </div>
 
         <!-- 令牌要能被抄写：投影仪上没有 adb，验收方只能看屏幕。
@@ -8078,6 +8187,10 @@ onBeforeUnmount(() => {
         <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
           <template v-if="debugPlatform === 'tv'">
             每次开启都会换新令牌，关闭后服务立即停止。
+          </template>
+          <template v-else-if="debugPlatform === 'ios'">
+            网关只绑 127.0.0.1、外部工具接不进来；「图片全碎 / 按钮没反应」多半是内核网络进程被系统回收，
+            点「重载界面」即恢复。
           </template>
           <template v-else>
             只监听 127.0.0.1，不对外网开放。

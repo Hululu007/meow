@@ -769,7 +769,7 @@ public class ApiServer {
         String envBind = System.getenv("MEOW_BIND");
         if (envBind != null && !envBind.trim().isEmpty()) bind = envBind.trim();
 
-        listen(bind, port, 16);
+        listen(bind, port, 48);
         STARTED_AT = System.currentTimeMillis();
         logStartupTail(port);
     }
@@ -894,26 +894,38 @@ public class ApiServer {
         keeper.start();
 
         Thread watchdog = new Thread(() -> {
-            int fails = 0;
+            int dead = 0;
             long lastBeat = 0;
+            long lastBusy = 0;
             for (;;) {
                 try {
                     Thread.sleep(15_000L);
-                    boolean ok = probeHealth(port);
-                    if (ok) {
-                        fails = 0;
-                        long now = System.currentTimeMillis();
+                    int st = probeState(port);
+                    long now = System.currentTimeMillis();
+                    if (st > 0) {
+                        dead = 0;
                         if (now - lastBeat >= 60_000L) {
                             lastBeat = now;
                             System.out.println("[hb] ok threads=" + Thread.activeCount()
                                     + " sites=" + siteCount());
                         }
+                    } else if (st == 0) {
+                        /*
+                         * 连得上但没响应 = 线程池满了（长流/慢源），**不是监听死了**。
+                         * 这里绝对不能重绑：重绑会掐掉所有在途的视频流，用户看到的就是
+                         * "看着看着所有线路都播不出来"（2026-11-24 真机）。
+                         */
+                        dead = 0;
+                        if (now - lastBusy >= 60_000L) {
+                            lastBusy = now;
+                            System.out.println("[busy] gateway saturated (probe timed out), skip rebind");
+                        }
                     } else {
-                        fails++;
-                        System.out.println("[watchdog] self-probe failed x" + fails);
-                        if (fails >= 2) {
+                        dead++;
+                        System.out.println("[watchdog] connect failed x" + dead);
+                        if (dead >= 2) {
                             rebindListener(bind, port, threads);
-                            fails = 0;
+                            dead = 0;
                         }
                     }
                 } catch (InterruptedException ignored) {
@@ -927,19 +939,32 @@ public class ApiServer {
     }
 
     /** 真发一次 HTTP 请求（只连上不算数：分发线程死了 backlog 仍会接连接）。 */
-    private static boolean probeHealth(int port) {
+    /**
+     * 探活三态：**1 = 有 HTTP 响应；0 = 连上了但没响应（线程池满了）；-1 = 连不上（监听没了）**。
+     *
+     * <p>为什么必须分开（2026-11-24 真机）：iOS 上视频分片走 `/api/proxy/stream`，
+     * Zero 解释执行下每片要几秒、还一直占着网关线程。十几路之后线程池（16）满了，
+     * 新连接进得来但没人处理 —— 旧探活把这种情况当"监听死了"直接重绑，
+     * **把正在播的流全掐了**，而真正要做的只是"别在忙的时候动它"。
+     */
+    private static int probeState(int port) {
         java.net.Socket s = new java.net.Socket();
         try {
-            s.connect(new InetSocketAddress("127.0.0.1", port), 1500);
-            s.setSoTimeout(3000);
+            try {
+                s.connect(new InetSocketAddress("127.0.0.1", port), 1200);
+            } catch (Throwable refused) {
+                return -1;
+            }
+            s.setSoTimeout(2500);
             s.getOutputStream().write(("GET /api/_hb HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                     + "Connection: close\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));
             s.getOutputStream().flush();
             java.io.InputStream in = s.getInputStream();
             int c = in.read();
-            return c == 'H';
+            return c == 'H' ? 1 : 0;
         } catch (Throwable t) {
-            return false;
+            // 连上了但读超时/被重置：多半是忙，不是死
+            return 0;
         } finally {
             try {
                 s.close();

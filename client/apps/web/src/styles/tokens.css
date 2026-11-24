@@ -996,6 +996,28 @@ html[data-shell='ios'] .has-tabbar {
 }
 
 /*
+ * 弹层避让安全区（移动端通用，不只 iOS）。
+ *
+ * 用户 2026-11-24 指出：弹框有的还是压在刘海/Home 条上，而且 Android 挖孔屏、
+ * 手机浏览器同样会遇到 —— 所以按**宽度**给，不按壳身份。
+ *
+ * 为什么能一条规则覆盖：所有弹框都 Teleport 到 body，遮罩根节点就是
+ * `body > .fixed`（播放器伪全屏在 #app 里，不会命中；底部标签栏也是 #app 内）。
+ * 用 `max()` 而不是直接覆盖：遮罩原来靠 `px-5 py-8` 留白，非刘海设备上
+ * env() 是 0，直接覆盖会把留白清零。
+ *
+ * 只到 767px：TV / PC 的宽度在 768 以上，弹层按原样（且 Chromium 66 不支持 max()）。
+ */
+@media (max-width: 767px) {
+  body > .fixed {
+    padding-top: max(env(safe-area-inset-top), 2rem);
+    padding-right: max(env(safe-area-inset-right), 1.25rem);
+    padding-bottom: max(env(safe-area-inset-bottom), 2rem);
+    padding-left: max(env(safe-area-inset-left), 1.25rem);
+  }
+}
+
+/*
  * TV 上隐藏某控件（遥控器用不到它，留着只会让焦点多走一格）。
  *
  * 目前只有播放器音量条：TV 的音量由遥控器独立的音量键交给系统处理，

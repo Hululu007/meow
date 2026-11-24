@@ -118,6 +118,9 @@ enum NodeBridge {
             let argv: [UnsafeMutablePointer<CChar>?] = [
                 strdup("node"),
                 strdup("--unhandled-rejections=warn"),
+                // 与 JVM(512m)、WKWebView 同住一个进程：V8 默认堆上限很大（~1.5G），
+                // 让它按需长会挤压 WebKit 的图像解码，真机表现是「图片突然全碎」。
+                strdup("--max-old-space-size=160"),
                 strdup(entryPath),
                 nil,
             ]

@@ -841,6 +841,21 @@ watch(
         </div>
       </div>
 
+      <!--
+        刷新失败但旧列表还在：**必须给反馈**（2026-11-24 用户报「刷新按钮无效」）。
+        原来只在 list 为空时显示错误，列表非空时刷新失败界面一动不动 —— 用户
+        以为按钮是坏的。这里在网格上方补一条可重试的提示。
+      -->
+      <div
+        v-if="error && list?.length"
+        class="mb-2 flex items-center gap-2 rounded-md border border-hot/30 bg-hot/10 px-3 py-2 text-xs text-ink"
+      >
+        <span class="min-w-0 flex-1 leading-snug">刷新失败：{{ error }}</span>
+        <button class="shrink-0 rounded bg-card px-2 py-1 text-[11px]" @click="loadHome()">
+          重试
+        </button>
+      </div>
+
       <div class="poster-grid" :style="colsStyle(cols)">
         <div v-for="item in list" :key="item.vod_id" class="fade-up">
           <PosterCard :item="item" :site="site" @open="remember" />

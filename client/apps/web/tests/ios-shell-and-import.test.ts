@@ -22,6 +22,9 @@ const read = (p: string) => readFileSync(p, 'utf8').replace(/\r\n/g, '\n')
 
 const api = read(join(WEB, 'src', 'api', 'index.ts'))
 const view = read(join(WEB, 'src', 'views', 'SettingsView.vue'))
+const app = read(join(WEB, 'src', 'App.vue'))
+const homeView = read(join(WEB, 'src', 'views', 'HomeView.vue'))
+const playView = read(join(WEB, 'src', 'views', 'PlayView.vue'))
 const html = read(join(WEB, 'index.html'))
 const tokens = read(join(WEB, 'src', 'styles', 'tokens.css'))
 const host = read(join(ROOT, 'server', 'host', 'src', 'shared', 'ApiServer.java'))
@@ -148,7 +151,7 @@ describe('宿主保活：进程活着就不许 VM 退（导入完成后网关消
     expect(host).toContain('meow-host-keeper')
     expect(host).toContain('keeper.setDaemon(false)')
     expect(host).toContain('meow-host-watchdog')
-    expect(host).toContain('probeHealth(port)')
+    expect(host).toContain('probeState(port)')
     expect(host).toContain('rebindListener')
     // 探活要走一条不刷访问日志的轻路径
     expect(host).toContain('/api/_hb')
@@ -217,5 +220,55 @@ describe('弹幕运行时：nodejs-mobile + danmu_api 载荷', () => {
     // 探活只打根路径：拿 ?name=test 打真实搜索会点着 fetch 路径
     expect(nodeBridge).toContain('let probe = "http://127.0.0.1:\\(port)/"')
     expect(nodeBridge).toContain('httpAlive')
+    // 与 JVM/WKWebView 同进程：V8 堆要设上限，否则挤爆 WebKit 的图像解码
+    expect(nodeBridge).toContain('--max-old-space-size=160')
+  })
+})
+
+describe('移动端安全区：弹层（不只 iOS）', () => {
+  it('body > .fixed 遮罩让出安全区，非刘海设备保留原留白', () => {
+    // 用户 2026-11-24：弹框有的还压在刘海/Home 条上，Android 挖孔屏同样有
+    expect(tokens).toContain('body > .fixed {')
+    expect(tokens).toContain('max(env(safe-area-inset-top), 2rem)')
+    expect(tokens).toContain('@media (max-width: 767px)')
+  })
+})
+
+describe('内核网络进程被回收：可恢复（图片全碎 + 按钮无反应）', () => {
+  it('网络失败计数 → 横幅 → 重载；渲染进程终止自动 reload', () => {
+    expect(api).toContain("'meow:net-unhealthy'")
+    expect(api).toContain('noteNetFailure()')
+    expect(app).toContain('netBroken')
+    expect(app).toContain('reloadPage')
+    expect(webViewSwift).toContain('webViewWebContentProcessDidTerminate')
+  })
+
+  it('刷新失败但旧列表还在时给反馈（不然「刷新」看着像坏的）', () => {
+    expect(homeView).toContain('刷新失败：')
+    expect(homeView).toContain('@click="loadHome()"')
+  })
+})
+
+describe('iOS 维护 → 调试（对齐 TV 的入口）', () => {
+  it('运行信息 + 复制诊断 + 重载界面', () => {
+    expect(view).toContain("if (ios) return 'ios'")
+    expect(view).toContain('copyIosDiagnostics')
+    expect(view).toContain('复制诊断')
+    expect(view).toContain('重载界面')
+  })
+})
+
+describe('视频播放：iOS 媒体不走 JVM 代理 + 网关线程池', () => {
+  it('无 header 的媒体直连，有 header 才代理', () => {
+    // Zero 下 JVM 代理 ~100KB/s，HLS 起不来，还会占死线程池
+    expect(playView).toContain("if (isIosShell() && !String(play.value?.header || '').trim()) return url")
+    expect(playView).toContain('import { isIosShell, isTvEnv, isTvShell, isWideLayout }')
+  })
+
+  it('探活分三态：忙不重绑（重绑会掐掉在播的流）', () => {
+    expect(host).toContain('private static int probeState(int port)')
+    expect(host).toContain('return -1')
+    expect(host).toContain('[busy] gateway saturated')
+    expect(host).toContain('listen(bind, port, 48)')
   })
 })
