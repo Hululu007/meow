@@ -34,8 +34,19 @@ targets:
       - path: build/jvm
         type: folder
         buildPhase: resources
+      # 弹幕载荷（danmu_api，TV/PC 同一个 zip 解开）：首次启动拷到 Documents 再跑。
+      # 40MB 左右；没有它时 NodeBridge 直接跳过，弹幕退回宿主内置源。
+      - path: build/danmu-api
+        type: folder
+        buildPhase: resources
       - path: build/config.sites.example.json
         buildPhase: resources
+    dependencies:
+      # 端内 Node 运行时（nodejs-mobile，V8 关 JIT）。是**动态库**（CI 里 file 确认
+      # 过 "dynamically linked shared library"），必须 embed，否则启动时 dyld 找不到。
+      - framework: build/node/NodeMobile.framework
+        embed: true
+        codeSign: false
     # F 变体：静态链接 + -no_pie。
     # 依据：E 的 .ips 崩在 OpenJDK 的 logging 全局构造器（LogTagSet ->
     # MemTracker -> NativeCallStack），写入 __LINKEDIT 只读页 —— 典型的

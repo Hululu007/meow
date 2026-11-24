@@ -47,6 +47,40 @@ public final class Bridge {
     }
 
     /**
+     * 大文件下载钩子（目前只有 iOS 装）。
+     *
+     * <p><b>为什么值得单独开一个口子</b>：源 jar 常是 1~5MB，JVM 走
+     * {@code HttpsURLConnection} 在 iOS 的 Zero 解释执行下要十几秒（TLS 与
+     * 大文件 IO 都是纯解释），而壳里一条 NSURLSession 是秒级。下载只是搬运，
+     * 没有平台语义，适合交给原生；失败一律回退 JVM 路径，功能不受影响。
+     */
+    public interface Downloader {
+        boolean download(String url, String destPath) throws Exception;
+    }
+
+    private static volatile Downloader downloader;
+
+    /** 装下载钩子（只装一次；后装的被忽略）。 */
+    public static void installDownloader(Downloader d) {
+        if (downloader == null) downloader = d;
+    }
+
+    public static boolean hasDownloader() {
+        return downloader != null;
+    }
+
+    /** 交给原生下载；没装钩子或失败都返回 false（调用方回退自己的实现）。 */
+    public static boolean nativeDownload(String url, String destPath) {
+        Downloader d = downloader;
+        if (d == null) return false;
+        try {
+            return d.download(url, destPath);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
      * 本机运行时模块提供的弹幕服务地址（TV：node 模块里的 danmu_api）。
      *
      * <p><b>为什么是"每次问一次"而不是启动时定一次</b>：端口是探出来的

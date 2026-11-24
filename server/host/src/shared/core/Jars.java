@@ -405,6 +405,22 @@ public final class Jars {
 
     /** 下载一个候选到 .part；HTTP 错误、超限、HTML 错误页都抛异常。 */
     private static void downloadTo(File part, String url) throws Exception {
+        /*
+         * iOS：先让壳用 NSURLSession 下。
+         *
+         * Zero 解释执行下 JVM 的 TLS + 大文件 IO 要十几秒，原生是秒级；
+         * 失败（或下回来是 HTML 错误页）就落回下面的 JVM 路径，功能不变。
+         */
+        if (platform.Bridge.hasDownloader()) {
+            try {
+                if (platform.Bridge.nativeDownload(url, part.getAbsolutePath())) {
+                    long len = part.length();
+                    if (len > 0 && len <= 64L * 1024 * 1024 && !looksLikeHtml(part)) return;
+                }
+            } catch (Throwable ignored) {
+                // 落到 JVM 路径
+            }
+        }
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(url).openConnection();

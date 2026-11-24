@@ -29,6 +29,11 @@ const jars = read(join(ROOT, 'server', 'host', 'src', 'shared', 'core', 'Jars.ja
 const rootView = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'RootView.swift'))
 const webViewSwift = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'WebView.swift'))
 const bootstrapSwift = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'Bootstrap.swift'))
+const nodeBridge = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'NodeBridge.swift'))
+const jvmBridgeM = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'JvmBridge.m'))
+const iosNative = read(join(ROOT, 'server', 'host', 'src', 'shared', 'platform', 'IosNative.java'))
+const projectYml = read(join(ROOT, 'client', 'apps', 'ios', 'project.yml'))
+const danmuScript = read(join(ROOT, 'client', 'apps', 'ios', 'scripts', 'prepare-danmu-payload.sh'))
 const player = read(join(WEB, 'src', 'components', 'player', 'VideoPlayer.vue'))
 const appStore = read(join(WEB, 'src', 'stores', 'app.ts'))
 
@@ -69,7 +74,8 @@ describe('导入：后台执行 + 轮询（客户端不再等长请求）', () =
 
   it('预览（dryRun）不下载/不转换 jar —— 它才是慢的那一段', () => {
     expect(host).toContain('"skipped", "dryRun"')
-    expect(host).toContain('preview\n                ? new JSONObject().put("skipped", "dryRun")')
+    expect(host).toContain('dex2jvm = new JSONObject().put("skipped", "dryRun")')
+    expect(host).toContain('} else if (deferConvert) {')
   })
 
   it('前端确认导入带 background，并轮询到结果再报成功', () => {
@@ -161,5 +167,40 @@ describe('播放页全屏（iOS 只能伪全屏 + 原生转屏）', () => {
     expect(player).toContain('ios.setOrientation(mode)')
     expect(bootstrapSwift).toContain('meowIos.setOrientation')
     expect(webViewSwift).toContain('ShellOrientation.apply')
+  })
+})
+
+describe('导入提速：延迟转换 + 原生下载', () => {
+  it('站点表先落盘，jar 转换在后台继续（state=converting）', () => {
+    expect(host).toContain('_deferred')
+    expect(host).toContain('runDeferredConversion')
+    expect(host).toContain('importJarPending')
+    expect(host).toContain('writeJarPendingMarker')
+    expect(host).toContain('resumePendingJarConversion')
+    // 转换窗口内站点不能从列表里消失
+    expect(host).toContain('if (importJarPending && CONFIG_SITE_KEYS.contains(key)) return true;')
+    expect(api).toContain("'converting'")
+    expect(view).toContain("s.state === 'converting'")
+  })
+
+  it('iOS 用原生 NSURLSession 下 jar，失败自动回退 JVM', () => {
+    expect(host).toContain('installDownloader(platform.IosNative::download)')
+    expect(jars).toContain('Bridge.nativeDownload(url, part.getAbsolutePath())')
+    expect(iosNative).toContain('public static native boolean download')
+    expect(jvmBridgeM).toContain('meowNativeDownload')
+    expect(jvmBridgeM).toContain('RegisterNatives')
+  })
+})
+
+describe('弹幕运行时：nodejs-mobile + danmu_api 载荷', () => {
+  it('载荷打进包、首启拷到 Documents，健康后把地址写给宿主', () => {
+    expect(projectYml).toContain('build/danmu-api')
+    expect(projectYml).toContain('NodeMobile.framework')
+    expect(danmuScript).toContain('danmu_api/server.js')
+    expect(nodeBridge).toContain('@_silgen_name("node_start")')
+    expect(nodeBridge).toContain('/api/v2/fongmi/danmaku')
+    expect(nodeBridge).toContain('danmaku-host.txt')
+    // 宿主读文件（不是 JNI 设属性）：node 比 JVM 晚起，文件随时生效
+    expect(host).toContain('danmaku-host.txt')
   })
 })

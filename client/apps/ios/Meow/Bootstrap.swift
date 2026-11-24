@@ -116,6 +116,14 @@ final class Bootstrap: ObservableObject {
         bootScript = Self.makeBootScript(base: base, site: site)
         webURL = URL(string: "http://127.0.0.1:9979/")
         LaunchLog.write("web url set (base=\(base.isEmpty ? "none" : base))")
+
+        #if !targetEnvironment(simulator)
+        /*
+         * 端内弹幕载荷（nodejs-mobile + danmu_api）：后台起，不挡界面。
+         * 起不来只写日志 —— JVM 宿主会继续用内置弹幕源。
+         */
+        NodeBridge.startIfPossible()
+        #endif
     }
 
     // MARK: - helpers

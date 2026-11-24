@@ -1552,12 +1552,17 @@ export interface ConfigImportResult {
    * 确认导入走后台线程：iOS 上 dex2jar 转换要 1~2 分钟，同步等响应的话
    * 客户端会先断（服务端只剩 Broken pipe）。`pending:true` 时要继续轮询。
    */
-  state?: 'idle' | 'running' | 'done' | 'error'
+  state?: 'idle' | 'running' | 'converting' | 'done' | 'error'
   pending?: boolean
   /** 后台导入已跑了多久（毫秒），仅 running 时有 */
   elapsedMs?: number
   /** 后台导入当前阶段（读配置 / 下载并转换源 jar / 写入配置） */
   phase?: string
+  /**
+   * true = 站点表已落盘，源 jar 转换在后台继续（state 会先到 `converting`）。
+   * 这期间直连站/原生站可用，jar 站等转换完成自动可用。
+   */
+  deferred?: boolean
 }
 
 /** 导入前的配置快照。`exists:false` 表示没有可回滚的版本。 */

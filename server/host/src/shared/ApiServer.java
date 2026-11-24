@@ -753,6 +753,16 @@ public class ApiServer {
             } catch (NumberFormatException ignored) {
             }
         }
+        /*
+         * iOS：把源 jar 的下载交给原生（NSURLSession）。
+         *
+         * Zero 解释执行下 JVM 的 TLS 与大文件 IO 都很贵（1~5MB 的 jar 要十几秒），
+         * 原生是秒级。原生注册失败 / 下载出错时 Bridge.nativeDownload 返回 false，
+         * Jars 会回退到原来的 HttpURLConnection 路径，功能不受影响。
+         */
+        if (System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("ios")) {
+            platform.Bridge.installDownloader(platform.IosNative::download);
+        }
         // 参数就绪后再做依赖 DataPaths 的初始化（静态块里做会丢掉 --data-dir）
         boot();
         String bind = "0.0.0.0";
@@ -841,6 +851,7 @@ public class ApiServer {
         core.Transcode.killStaleTranscodes();
         HOST = server;
         startHostKeeper(bind, port, threads);
+        resumePendingJarConversion();
         return server;
     }
 
@@ -7607,10 +7618,26 @@ public class ApiServer {
         }
         try {
             String v = System.getProperty("meow.danmaku.bundled", "");
-            return v == null ? "" : v.trim();
-        } catch (Throwable t) {
-            return "";
+            if (v != null && !v.trim().isEmpty()) return v.trim();
+        } catch (Throwable ignored) {
         }
+        /*
+         * 文件兜底（iOS 壳）：端内 node 起来后由壳写 data/danmaku-host.txt。
+         *
+         * 为什么不用 JNI 设系统属性：node 比 JVM 晚起，属性只能设一次、异常难兜底；
+         * 文件是壳与宿主之间唯一不依赖 JNI 的通道，node 什么时候好就什么时候写，
+         * 宿主每次请求重读（文件几百字节，弹幕请求很少）。
+         */
+        try {
+            java.io.File f = core.DataPaths.file("danmaku-host.txt");
+            if (f != null && f.isFile() && f.length() > 0 && f.length() < 4096) {
+                String v = new String(java.nio.file.Files.readAllBytes(f.toPath()),
+                        StandardCharsets.UTF_8).trim();
+                if (!v.isEmpty()) return v;
+            }
+        } catch (Throwable ignored) {
+        }
+        return "";
     }
 
     /** 这个 host 是不是本机回环（本机服务的失败不该进 5 分钟冷却）。 */
@@ -13293,6 +13320,19 @@ public class ApiServer {
      */
     private static volatile String importJobPhase = "";
 
+    /**
+     * 端上还有一次「配置里的 dex jar 正在（或等待）转换」。
+     *
+     * <p>延迟转换（2026-11-24）：后台导入先把站点表落盘、立即回成功，jar 转换
+     * 在同一个后台线程里继续。这段窗口里类还没加载，但站点**不能从列表里消失**
+     * ——否则用户看到"导入成功但 0 站"。所以 {@link #siteImplemented} 在这个
+     * 标志为真时，对配置里声明过的站点直接放行（真正调用失败时由报错兜底）。
+     */
+    private static volatile boolean importJarPending;
+
+    /** 延迟转换用的配置基址（相对 jar 地址要按它补全）。 */
+    private static volatile String importJobConfigBase = "";
+
     /** 导入前的配置快照文件名（只留一份，语义是"撤销上一次导入"）。 */
     private static final String CONFIG_BACKUP = "config.sites.json.bak";
 
@@ -13319,6 +13359,12 @@ public class ApiServer {
         try {
             JSONObject jb = new JSONObject(body);
             jb.remove("background");
+            /*
+             * 标记"这批由后台线程处理"：handleConfigImport 看到它就把 jar 转换
+             * 推迟到写盘之后（先让用户拿到站点表，转换在后台继续，界面显示
+             * "转换中"）。同步客户端（CI / 老前端）不带这个标记，仍然一次做完。
+             */
+            jb.put("_deferred", true);
             jobBody = jb.toString();
         } catch (Exception ignored) {
             // body 不是 JSON：交给 handleConfigImport 报 400
@@ -13352,7 +13398,13 @@ public class ApiServer {
                 // 成功路径里 handleConfigImport 已经把 lastImport 设成完整结果；
                 // 失败路径（4xx/5xx）的响应体就是错误对象，也要让 GET 读得到。
                 if (!res.optBoolean("ok")) lastImport = res;
-                importJobState = res.optBoolean("ok") ? "done" : "error";
+                if (res.optBoolean("ok") && res.optBoolean("deferred")) {
+                    // 站点表已经落盘；转换继续在**同一个后台线程**里跑完
+                    importJobState = "converting";
+                    runDeferredConversion();
+                } else {
+                    importJobState = res.optBoolean("ok") ? "done" : "error";
+                }
                 if (!res.optBoolean("ok")) {
                     platform.Bridge.log("[import] background failed: " + res.optString("msg", ""));
                 }
@@ -13369,6 +13421,112 @@ public class ApiServer {
         worker.setDaemon(true);
         worker.start();
         return new JSONObject().put("ok", true).put("pending", true).toString();
+    }
+
+    /** 待转换标记文件：`<data>/import-jar.pending`（内容 = 配置基址）。 */
+    private static java.io.File jarPendingMarker() {
+        try {
+            return core.DataPaths.file("import-jar.pending");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static void writeJarPendingMarker(String base) {
+        java.io.File f = jarPendingMarker();
+        if (f == null) return;
+        try {
+            java.nio.file.Files.write(f.toPath(),
+                    String.valueOf(base == null ? "" : base)
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void clearJarPendingMarker() {
+        java.io.File f = jarPendingMarker();
+        if (f != null) f.delete();
+    }
+
+    /**
+     * 延迟转换：把 config 里的 dex jar 转成 class 并挂回去。
+     *
+     * <p>为什么要延迟（2026-11-24 用户点单）：iOS 端内 dex2jar 一次 1~2 分钟。
+     * 导入先把站点表落盘、立刻回成功，用户马上能用直连站/原生站；jar 站在转换
+     * 完成后自动变得可用（转换窗口内站点不会从列表消失，见 importJarPending）。
+     *
+     * <p>转换失败不回滚配置：站点声明还在，重新导入（转换缓存命中）即可；
+     * 状态里带 error + 原文，前端能看见。
+     */
+    private static void runDeferredConversion() {
+        String base = importJobConfigBase == null ? "" : importJobConfigBase;
+        importJobPhase = "转换源 jar（后台，1~2 分钟）";
+        importJarPending = true;
+        long t0 = System.currentTimeMillis();
+        try {
+            JSONObject d2j;
+            synchronized (IMPORT_LOCK) {
+                invalidateConfigTables();
+                JSONObject cfg = loadConfigSites();
+                d2j = core.Dex2Jvm.rewrite(cfg, base);
+                if (!core.DataPaths.write("config.sites.json", cfg.toString())) {
+                    throw new java.io.IOException("cannot write config.sites.json");
+                }
+                core.Jars.reload();
+                rebuildSites();
+            }
+            d2j.put("ms", System.currentTimeMillis() - t0);
+            importJarPending = false;
+            clearJarPendingMarker();
+            JSONObject cur = lastImport == null ? new JSONObject() : new JSONObject(lastImport.toString());
+            cur.put("dex2jvm", d2j);
+            lastImport = cur;
+            importJobState = "done";
+            importJobPhase = "完成";
+            System.out.println("[import] deferred conversion done in "
+                    + (System.currentTimeMillis() - t0) + "ms");
+            core.LogBuffer.info("dex2jvm", "deferred done: " + d2j);
+        } catch (Throwable t) {
+            importJobState = "error";
+            importJarPending = false;
+            clearJarPendingMarker();
+            try {
+                JSONObject cur = lastImport == null ? new JSONObject() : new JSONObject(lastImport.toString());
+                cur.put("ok", false);
+                cur.put("imported", true);
+                cur.put("msg", "源 jar 转换失败：" + t);
+                lastImport = cur;
+            } catch (Exception ignored) {
+                // org.json 的 put 声明了受检异常；错误路径上别再抛
+            }
+            platform.Bridge.log("[import] deferred conversion failed: " + t);
+        }
+    }
+
+    /**
+     * 上次跑到一半的延迟转换（App 被杀 / 崩溃）→ 启动后接着做。
+     *
+     * <p>判据是标记文件：只在「确实有配置写进去了、jar 还没转完」时存在。
+     * 转完（成功或失败）都会删掉，所以正常启动不会多打一次转包。
+     */
+    private static void resumePendingJarConversion() {
+        if (!core.Jars.isJvm()) return;
+        java.io.File marker = jarPendingMarker();
+        if (marker == null || !marker.isFile()) return;
+        String base = "";
+        try {
+            base = new String(java.nio.file.Files.readAllBytes(marker.toPath()),
+                    java.nio.charset.StandardCharsets.UTF_8).trim();
+        } catch (Throwable ignored) {
+        }
+        importJobConfigBase = base;
+        importJobState = "converting";
+        importJarPending = true;
+        importJobPhase = "转换源 jar（上次未完成）";
+        Thread t = new Thread(ApiServer::runDeferredConversion, "meow-import-resume");
+        t.setDaemon(true);
+        t.start();
+        System.out.println("[import] resume pending jar conversion");
     }
 
     /**
@@ -13769,7 +13927,7 @@ public class ApiServer {
              */
             out.put("state", importJobState);
             out.put("pending", "running".equals(importJobState));
-            if ("running".equals(importJobState)) {
+            if ("running".equals(importJobState) || "converting".equals(importJobState)) {
                 out.put("elapsedMs", System.currentTimeMillis() - importJobStartedAt);
                 out.put("phase", importJobPhase);
             }
@@ -13812,6 +13970,11 @@ public class ApiServer {
         String mode = "replace";
         String onConflict = "keep";
         boolean dryRun = false;
+        /**
+         * 内部标记（只有 startImportJob 会写）：站点表先落盘，jar 转换留到写完之后。
+         * 同步客户端不带它，一次做完（CI 与老前端行为不变）。
+         */
+        boolean deferred = false;
         List<String> proxiesParsed = new ArrayList<>();
         // 请求体是否明确带了 proxies：带了才更新 jar 的加速候选。
         // 老客户端不带这个字段，不能当成"用户关掉了加速"把已存配置清空。
@@ -13830,6 +13993,7 @@ public class ApiServer {
                 onConflict = oc.toLowerCase();
             }
             dryRun = in.optBoolean("dryRun", false);
+            deferred = in.optBoolean("_deferred", false);
             proxiesParsed = proxiesFromBody(in);
             hasProxies = in.has("proxies");
             replaceSpider = in.optBoolean("replaceSpider", false);
@@ -13956,11 +14120,27 @@ public class ApiServer {
          *   一个字节都没写。转换留到确认导入时做，那一趟走后台线程（见顶部
          *   background 分支），客户端只轮询进度。
          */
-        if (!preview) importJobPhase = "下载并转换源 jar（iOS 慢，可能要 1~2 分钟）";
+        final boolean deferConvert = deferred && !preview;
+        if (!preview) {
+            importJobPhase = deferConvert ? "写入配置" : "下载并转换源 jar（iOS 慢，可能要 1~2 分钟）";
+        }
         long d2jStart = System.currentTimeMillis();
-        JSONObject dex2jvm = preview
-                ? new JSONObject().put("skipped", "dryRun")
-                : core.Dex2Jvm.rewrite(doc, configBase);
+        JSONObject dex2jvm;
+        if (preview) {
+            dex2jvm = new JSONObject().put("skipped", "dryRun");
+        } else if (deferConvert) {
+            /*
+             * 延迟转换：这里只写站点表，jar 转换交给后台线程（startImportJob →
+             * runDeferredConversion）。iOS 上 dex2jar 要 1~2 分钟，用户没必要
+             * 盯着它——先拿到 41 站，jar 站在转换完成后自动可用。
+             */
+            dex2jvm = new JSONObject().put("deferred", true);
+            importJobConfigBase = configBase;
+            writeJarPendingMarker(configBase);
+            importJarPending = true;
+        } else {
+            dex2jvm = core.Dex2Jvm.rewrite(doc, configBase);
+        }
         // 耗时写进结果：真机上"导入慢"到底是下载还是转换，下一次一眼能分开
         dex2jvm.put("ms", System.currentTimeMillis() - d2jStart);
         if (!preview) importJobPhase = "写入配置";
@@ -14234,6 +14414,8 @@ public class ApiServer {
                 .put("skipped", skipped)
                 .put("depot", depotOut)
                 .put("dex2jvm", dex2jvm)
+                // true = 站点表已落盘，jar 转换在后台继续（前端要显示"转换中"）
+                .put("deferred", deferConvert)
                 // 导入完成后也回一份 diff：用户要知道"这次到底加了什么、丢了什么"，
                 // 而不是只看到一个站点总数
                 .put("diff", diff)
@@ -14333,6 +14515,14 @@ public class ApiServer {
     private static boolean siteImplemented(String key) {
         if (key == null || key.isEmpty()) return false;
         if (sources.NativeSources.get(key) != null) return true;
+        /*
+         * 延迟转换窗口内（jar 还在后台转）不能把配置里声明的站点判成"没实现"。
+         *
+         * 否则导入成功后站点列表反而少一半（实测就是这样：类没加载 → 41 个
+         * spar_x 全被过滤），用户以为导入失败。真正调用时类不存在会由
+         * /api/<site>/... 的报错兜底，比"从列表里消失"好查得多。
+         */
+        if (importJarPending && CONFIG_SITE_KEYS.contains(key)) return true;
         if (spiderClassPresent(key)) return true;
         String api = API.get(key);
         return api != null && !api.isEmpty() && !api.startsWith("csp_");

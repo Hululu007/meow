@@ -89,6 +89,61 @@ static NSString *jvmLogPath(NSString *dataDir) {
     return [dataDir stringByAppendingPathComponent:@"jvm.log"];
 }
 
+/*
+ * 原生下载（源 jar）。
+ *
+ * JVM 侧 platform.IosNative.download 由 RegisterNatives 指到这里：在**调用线程**上
+ * 同步等 NSURLSession 下完（调用方是导入/转换的后台线程，不是主线程，允许阻塞）。
+ * 失败返回 false，Jars 会回退到自己的 HttpURLConnection 路径 —— 功能不受影响。
+ */
+static jboolean meowNativeDownload(JNIEnv *env, jclass cls, jstring jurl, jstring jdest) {
+    (void)cls;
+    if (jurl == NULL || jdest == NULL) return JNI_FALSE;
+    const char *curl = (*env)->GetStringUTFChars(env, jurl, NULL);
+    const char *cdest = (*env)->GetStringUTFChars(env, jdest, NULL);
+    if (curl == NULL || cdest == NULL) {
+        if (curl) (*env)->ReleaseStringUTFChars(env, jurl, curl);
+        if (cdest) (*env)->ReleaseStringUTFChars(env, jdest, cdest);
+        return JNI_FALSE;
+    }
+    NSString *url = [NSString stringWithUTF8String:curl];
+    NSString *dest = [NSString stringWithUTF8String:cdest];
+    (*env)->ReleaseStringUTFChars(env, jurl, curl);
+    (*env)->ReleaseStringUTFChars(env, jdest, cdest);
+    if (url.length == 0 || dest.length == 0) return JNI_FALSE;
+
+    __block BOOL ok = NO;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    cfg.timeoutIntervalForRequest = 60;
+    cfg.timeoutIntervalForResource = 300;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:url]];
+    req.timeoutInterval = 60;
+    [req setValue:@"meow-spider-jar/1" forHTTPHeaderField:@"User-Agent"];
+    [[session downloadTaskWithRequest:req
+                    completionHandler:^(NSURL *loc, NSURLResponse *resp, NSError *err) {
+                        (void)resp;
+                        if (loc != nil && err == nil) {
+                            NSFileManager *fm = [NSFileManager defaultManager];
+                            [fm removeItemAtPath:dest error:NULL];
+                            ok = [fm moveItemAtURL:loc
+                                              toURL:[NSURL fileURLWithPath:dest]
+                                              error:NULL];
+                        } else if (err != nil) {
+                            char buf[256];
+                            const char *why = err.localizedDescription.UTF8String;
+                            snprintf(buf, sizeof(buf), "[meow-jvm] native download failed: %s\n",
+                                     why != NULL ? why : "?");
+                            jvmLogWrite(buf);
+                        }
+                        dispatch_semaphore_signal(sem);
+                    }] resume];
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)300 * NSEC_PER_SEC));
+    [session finishTasksAndInvalidate];
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
 #endif
 
 @implementation JvmBridge
@@ -325,6 +380,29 @@ static NSString *jvmLogPath(NSString *dataDir) {
                 }
                 if ((*env)->ExceptionCheck(env)) {
                     (*env)->ExceptionDescribe(env);
+                    (*env)->ExceptionClear(env);
+                }
+            }
+
+            /*
+             * 注册原生下载：platform.IosNative.download → NSURLSession。
+             *
+             * 为什么值得：源 jar 常 1~5MB，Zero 解释执行下 JVM 的 TLS 与大文件 IO
+             * 要十几秒，原生是秒级。类不存在（旧 jar）就跳过，Jars 会走自己的
+             * HttpURLConnection —— 注册失败不影响功能。
+             */
+            {
+                jclass iosNative = (*env)->FindClass(env, "platform/IosNative");
+                if (iosNative != NULL) {
+                    JNINativeMethod methods[1];
+                    methods[0].name = (char *)"download";
+                    methods[0].signature = (char *)"(Ljava/lang/String;Ljava/lang/String;)Z";
+                    methods[0].fnPtr = (void *)meowNativeDownload;
+                    jint rc = (*env)->RegisterNatives(env, iosNative, methods, 1);
+                    jvmLogWrite(rc == JNI_OK ? "[meow-jvm] native download registered\n"
+                                             : "[meow-jvm] native download register FAILED\n");
+                    (*env)->DeleteLocalRef(env, iosNative);
+                } else {
                     (*env)->ExceptionClear(env);
                 }
             }

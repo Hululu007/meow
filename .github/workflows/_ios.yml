@@ -95,6 +95,31 @@ jobs:
       - name: Prepare OpenJDK 9 Zero + libOpenJDK.a
         run: bash client/apps/ios/scripts/prepare-runtime.sh
 
+      # 端内 Node 运行时（nodejs-mobile，52MB 动态库）+ 弹幕载荷（danmu_api，~40MB）
+      - name: Cache node runtime + danmu payload
+        id: nodepayload
+        uses: actions/cache@v4
+        with:
+          path: |
+            client/apps/ios/build/node
+            client/apps/ios/build/danmu-api
+          key: ios-node-danmu-${{ hashFiles('client/apps/ios/scripts/prepare-node-runtime.sh', 'client/apps/ios/scripts/prepare-danmu-payload.sh') }}
+
+      - name: Prepare Node runtime + danmu payload
+        if: steps.nodepayload.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          bash client/apps/ios/scripts/prepare-node-runtime.sh
+          bash client/apps/ios/scripts/prepare-danmu-payload.sh
+
+      - name: Verify node + payload staged
+        run: |
+          set -euo pipefail
+          test -d client/apps/ios/build/node/NodeMobile.framework || { echo "NodeMobile.framework missing"; exit 1; }
+          test -f client/apps/ios/build/danmu-api/danmu_api/server.js || { echo "danmu payload missing"; exit 1; }
+          file client/apps/ios/build/node/NodeMobile.framework/NodeMobile
+          du -sh client/apps/ios/build/node/NodeMobile.framework client/apps/ios/build/danmu-api
+
       - name: Generate Xcode project
         run: |
           set -euo pipefail

@@ -2670,21 +2670,29 @@ async function waitImportJob(): Promise<ConfigImportResult> {
         }`,
       )
     }
-    cfgMsg.value = `正在导入…已 ${Math.round(elapsed / 1000)} 秒（首次导入要转换源 jar，iOS 上可能 1–2 分钟）`
     // 先查再等：Android/TV 上 dex2jvm 是空操作，导入毫秒级完成，
     // 先 sleep 一秒会让用户白等一下
     try {
       const s = await getImportJobState()
       lastErr = ''
-      if (!s.pending && s.state !== 'running') return s
-      // 后端报了阶段就用它（下载/转换/写入），比只报秒数更能说明"卡在哪"
-      if (s.phase) {
-        cfgMsg.value = `正在导入… ${s.phase}（已 ${Math.round(elapsed / 1000)} 秒）`
+      if (s.state === 'converting') {
+        /*
+         * 站点表已经写进去了（导入本身成功），只是源 jar 还在后台转。
+         * 这一档要单独说清楚：用户能立刻用直连站/原生站，jar 站转完自动可用。
+         */
+        cfgMsg.value = `站点已导入；源 jar 后台转换中…已 ${Math.round(elapsed / 1000)} 秒（完成后自动可用）`
+      } else if (s.pending || s.state === 'running') {
+        // 后端报了阶段就用它（下载/转换/写入），比只报秒数更能说明"卡在哪"
+        cfgMsg.value = s.phase
+          ? `正在导入… ${s.phase}（已 ${Math.round(elapsed / 1000)} 秒）`
+          : `正在导入…已 ${Math.round(elapsed / 1000)} 秒`
+      } else {
+        return s
       }
     } catch (e: any) {
       lastErr = e?.message || String(e)
     }
-    await new Promise((r) => setTimeout(r, 800))
+    await new Promise((r) => setTimeout(r, 900))
   }
 }
 

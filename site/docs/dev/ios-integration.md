@@ -94,6 +94,32 @@ iOS 要对齐这条，拆成两问：
   `meowIos.setOrientation` 桥让原生转横屏（`ShellOrientation.swift`，iOS 16+ 用
   `requestGeometryUpdate`）。进播放页的自动横屏沿用原有 `tryLandscape()`。
 
+### 0.4 导入提速 + 弹幕运行时落地（2026-11-24 晚）
+
+**导入为什么要动**：端内 dex2jar 在 Zero 解释执行下是桌面的 ~25 倍
+（桌面实测 6.0s / 1.15MB jar → 端上 ~150s）。三条都上了：
+
+| 做法 | 效果 | 备注 |
+|---|---|---|
+| **延迟转换** | 导入先落站点表、立刻回成功；jar 转换在同一后台线程里继续（`state=converting`，界面显示「源 jar 后台转换中…已 N 秒」） | 转换窗口内站点**不能从列表消失**（`importJarPending` → `siteImplemented` 放行配置里声明过的站）；App 被杀后启动会 `resumePendingJarConversion` 接着做 |
+| **原生下载** | jar 走壳的 NSURLSession（JNI `RegisterNatives` → `platform.IosNative.download`），失败自动回退 JVM 的 HttpURLConnection | 只影响"新 jar"；下载只是搬运，没有平台语义 |
+| **STORED 不压缩** | 端内 dex2jar 输出不压缩，Zero 下省掉 deflate 的十几秒 | 产物 1.82MB（原来 1.76MB 压缩版），读的时候也省 inflate |
+
+**弹幕运行时（对齐 TV 的「运行时模块 + 载荷」）**：
+- **运行时**：nodejs-mobile 的 `NodeMobile.framework`（真机 arm64、52MB 动态库）
+  以 `embed` 方式进 IPA；对外只有 `node_start(argc, argv)` 一个 C 符号。
+- **载荷**：TV/PC 用的同一个 `danmu-api-1.0.0.zip`（构建脚本
+  `prepare-danmu-payload.sh` 解开成 `build/danmu-api` 打进 IPA，~40MB），
+  首次启动拷到 Documents 再跑。
+- **接法**：node 起在 `127.0.0.1:19321`（`DANMU_API_PORT`/`DANMU_API_BIND`/
+  `DANMU_API_PROXY_PORT=0`/`SOURCE_ORDER` 与 TV manifest 一致）；探活通过后把
+  `http://127.0.0.1:19321/api/v2/fongmi/danmaku?name={name}&episode={episode}`
+  写进 `gateway/danmaku-host.txt`，宿主 `bundledDanmakuHost()` 每次请求重读这个文件。
+  **为什么走文件而不是 JNI 设系统属性**：node 比 JVM 晚起，属性只能设一次、
+  异常难兜底；文件是壳与宿主之间唯一不依赖 JNI 的通道。
+- **失败兜底**：载荷没打进包 / node 起不来 / 端口不通 → 只写日志，宿主继续用
+  **内置弹幕源**（弹弹play 官方 + 6 个镜像）。弹幕功能不受影响。
+
 ---
 
 ::: warning 以下为「落地契约」原文
