@@ -92,6 +92,13 @@ function Build-Entries([string]$Old, [string]$New, [int]$OldCode, [int]$NewCode)
     $list += ,@('client\apps\fnos\fpk\manifest', {
         param($t) $t -replace ("(?m)^version=" + [regex]::Escape($script:Old) + "\s*$"), "version=$script:New"
     })
+    # ★ iOS 壳 Info.plist（2026-11-24 补）：漏了它，发出去的 IPA 里版本永远停在旧值
+    #   （1.2.22 预览版实测：包内 CFBundleShortVersionString 还是 1.2.21，
+    #    「维护 → 调试」显示的版本也跟着错）。
+    $list += ,@('client\apps\ios\Meow\Info.plist', {
+        param($t)
+        $t -replace ("(<key>CFBundleShortVersionString</key>\s*<string>)" + [regex]::Escape($script:Old) + "(</string>)"), "`$1$script:New`$2"
+    })
     return $list
 }
 
