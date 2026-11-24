@@ -50,7 +50,8 @@ Web 端检查 `web` 容器能否连到 `apiserver`：页面能开但接口 503�
   `http://localhost:30010`；或者直接开家里 NAS 上已有的实例，Mac 上什么都不用装。
 - **iPhone / iPad**：Safari 打开 `http://<后端 IP>:30010`，用「分享 → 添加到主屏幕」当 App 用。
 
-没有 macOS 桌面应用（`.dmg`）与 iOS App，也暂无发布计划。启动步骤见
+没有 macOS 桌面应用（`.dmg`），也不打算做；**iOS 有 IPA 在实验分支**（未进主线、未发官方资产），
+进度与边界见 [应用计划](/reference/roadmap)。启动步骤见
 [Web / Docker](/guide/web-docker)，平台限制见 [已知限制](/reference/limits#在-iphone-和-ipad-上)。
 
 ## 源与配置

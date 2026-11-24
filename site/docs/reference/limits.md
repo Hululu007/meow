@@ -39,7 +39,8 @@
 
 ### 在 iPhone 和 iPad 上
 
-iOS 没有客户端，只能走 Safari。以下四条是平台边界，不是 bug：
+官方路径只有 Safari（IPA 在实验分支，进度见 [应用计划](/reference/roadmap)）。
+以下四条是平台边界，不是 bug：
 
 | 限制 | 表现 | 说明 |
 |---|---|---|

@@ -1,0 +1,13 @@
+# Issue 入口分流：空白 issue 关掉，按模板进对应通道
+blank_issues_enabled: false
+
+contact_links:
+  - name: 先查常见问题（装不上 / 白屏 / 站点全红）
+    url: https://upchr.github.io/meow/guide/faq.html
+    about: 按症状索引查一遍，很多问题这里有现成答案
+  - name: 提 Issue 要带什么（诊断手册）
+    url: https://upchr.github.io/meow/reference/diagnostics.html#提-issue-要带什么
+    about: 日志位置、/api/health 怎么看、播放错误怎么分类
+  - name: 应用计划（哪些在做、哪些不做）
+    url: https://upchr.github.io/meow/reference/roadmap.html
+    about: 提功能请求之前先看这里，避免和已在做的重复

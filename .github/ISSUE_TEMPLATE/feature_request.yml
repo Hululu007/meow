@@ -1,0 +1,61 @@
+name: 功能请求
+description: 想要的新能力或体验改进
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提之前先看 [应用计划](https://upchr.github.io/meow/reference/roadmap.html)：
+        已经在做、或明确不做的，会在那里写明。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么问题
+      description: 写使用场景，不要只写「加个 XX 功能」
+      placeholder: 每次想搜同一个演员都要先退回搜索页，希望播放页能直接搜
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: 现在怎么绕过
+      description: 有替代做法也写一下，方便判断优先级
+      render: text
+
+  - type: dropdown
+    id: platforms
+    attributes:
+      label: 涉及哪些端
+      multiple: true
+      options:
+        - Windows PC
+        - Android TV / 投影仪
+        - Android 手机 / 平板
+        - Web（Docker）
+        - 飞牛 fnOS
+        - 都要
+    validations:
+      required: true
+
+  - type: dropdown
+    id: help
+    attributes:
+      label: 能帮忙测试吗
+      description: 有设备能验证的请求，排期会靠前
+      options:
+        - 可以，有对应设备能测
+        - 可以，但只有浏览器
+        - 只能等成品
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 这不是求源包 / 求配置 / 破解类需求（项目不提供内容源）
+          required: true

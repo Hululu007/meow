@@ -171,6 +171,7 @@ const referenceSidebar = [
   {
     text: '项目信息',
     items: [
+      { text: '应用计划', link: '/reference/roadmap' },
       { text: '安全与隐私', link: '/reference/security' },
       { text: '已知限制', link: '/reference/limits' },
       { text: '术语表', link: '/reference/glossary' },

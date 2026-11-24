@@ -122,7 +122,8 @@ PC / TV 的填写位置见 [PC 桌面端 · 改用别人的后端](/guide/pc) �
 
 ### 在 iPhone 和 iPad 上
 
-iOS 没有客户端 App（落地契约见开发文档 [iOS 壳](/dev/ios-integration)，尚未实现）。
+**官方路径是 Safari**（IPA 工程在实验分支，进度与边界见 [应用计划](/reference/roadmap)、
+技术契约见 [iOS 端接入](/dev/ios-integration)）。
 用 **Safari** 打开 `http://<后端所在机器的 IP>:30010`（**别写 `localhost`**，那指手机自己），
 底部「分享」→「添加到主屏幕」→ 命名「猫窝」，以后从主屏图标进无地址栏全屏。
 

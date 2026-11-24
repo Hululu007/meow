@@ -26,7 +26,7 @@
 | Docker 容器 / 端口 / `.env` 键 | `guide/web-docker.md`、`guide/quick-start.md`、`reference/downloads.md`、`dev/docker.md` |
 | PC 插件流程、端口回退、安装包形态 | `guide/pc.md`、`ecosystem/plugins.md` |
 | TV 安装、遥控、网关、运行时模块 | `guide/tv.md`、`ecosystem/runtime-module.md`、`dev/tv-integration.md` |
-| iOS 壳 / IPA 发版（签名、资产名、端支持） | `dev/ios-integration.md`、`reference/downloads.md`、`reference/compatibility.md`、`guide/faq.md` |
+| iOS 壳 / IPA 发版（签名、资产名、端支持） | `dev/ios-integration.md`、`reference/downloads.md`、`reference/compatibility.md`、`guide/faq.md`、`reference/roadmap.md` |
 | 投屏（DLNA / 应用内会话）| `guide/playback.md`、`dev/casting.md` |
 | config 字段（`spider` / `spiderJvm` / `sites` / `parses` …） | `ecosystem/source-format.md`、`guide/source-pack.md` |
 | 导入选项（`mode` / `onConflict` / `replaceSpider`） | `guide/source-pack.md` |
@@ -37,6 +37,8 @@
 | 鉴权范围 / 令牌语义（谁能调什么） | `dev/api-contract.md` §1.2、`dev/architecture.md` §6.1、`dev/public-deployment.md`、`dev/fnos-gateway-auth.md` |
 | MCP 工具、调试入口、AI skill | `guide/automation.md`、`dev/ai-assistant.md` §2.7、`dev/testing.md` |
 | 已知缺陷新增或修复 | `reference/limits.md`、`guide/faq.md` |
+| 能力状态 / 排期变更（在做、计划中、不做） | `reference/roadmap.md`，以及 `reference/compatibility.md` 对应的状态标记 |
+| Issue 模板 / 反馈流程 | `.github/ISSUE_TEMPLATE/`、`reference/contributing.md` |
 | 许可条款、第三方代码 | `reference/license.md` |
 | 弹幕（渲染、默认优先级、屏蔽词） | `guide/playback.md`、`dev/danmaku.md` |
 | 倒计时电源动作（关机 / 休眠 / 退出应用） | `guide/playback.md`、`dev/power-actions.md`、`dev/tv-integration.md` |

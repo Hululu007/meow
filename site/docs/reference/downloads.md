@@ -14,6 +14,7 @@
 
 - 不确定该走哪条路：先看 [快速开始 · 路线选择](/guide/quick-start#路线选择)。
 - 已经装过、只是想升级：看 [升级与迁移](/guide/upgrade)，不用重新下。
+- iPhone / iPad 的 IPA **还没发**（实验分支里在做），现在用 Safari；进度见 [应用计划](/reference/roadmap)。
 
 ## 去哪里下
 

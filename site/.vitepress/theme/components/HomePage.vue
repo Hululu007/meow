@@ -24,6 +24,7 @@ function onSpotlight(e: PointerEvent) {
 const sourcePack = withBase('/guide/source-pack.html')
 const downloads = withBase('/reference/downloads.html')
 const limits = withBase('/reference/limits.html')
+const roadmap = withBase('/reference/roadmap.html')
 const license = withBase('/reference/license.html')
 </script>
 
@@ -118,6 +119,8 @@ const license = withBase('/reference/license.html')
         </div>
         <div class="mw-cta-meta">
           <a :href="limits">已知限制</a>
+          <span aria-hidden="true">·</span>
+          <a :href="roadmap">应用计划</a>
           <span aria-hidden="true">·</span>
           <a :href="license">许可与免责</a>
           <span aria-hidden="true">·</span>

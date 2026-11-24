@@ -1,0 +1,84 @@
+name: 客户端 Bug
+description: 白屏、崩溃、播放 / 弹幕 / 片库行为不对，且不是源站失效
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先做两件事，能省一轮来回：
+
+        1. 按 [常见问题](https://upchr.github.io/meow/guide/faq.html) 的症状索引查一遍；
+        2. 确认不是源站失效——同一站点在 TVBox / Fongmi / 影视仓里也打不开，就是上游问题，
+           请改用「源与站点」模板。
+
+        **不要贴源包、站点配置、token 或带域名的完整日志。**
+
+  - type: dropdown
+    id: client
+    attributes:
+      label: 哪个端
+      options:
+        - Windows PC
+        - Android TV / 投影仪 / 盒子
+        - Android 手机 / 平板
+        - Web（Docker 部署）
+        - 飞牛 fnOS
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 设置页底部或安装包名里的版本；插件问题写插件版本（应用与插件版本不必一致）
+      placeholder: "1.2.21"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从哪个页面开始、点了什么、稳定复现还是偶发
+      placeholder: |
+        1. 打开「片库」
+        2. 点「添加片库」，选 SMB
+        3. 填完地址点「测试连接」
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期与实际
+      placeholder: |
+        预期：测试连接通过
+        实际：弹「连接失败」，后端日志见下
+    validations:
+      required: true
+
+  - type: textarea
+    id: health
+    attributes:
+      label: /api/health 返回（后端相关问题必填）
+      description: Web 用 `curl -s http://<IP>:30011/api/health`；PC 的端口可能顺延，见诊断手册
+      render: json
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志片段（脱敏后）
+      description: "Web：`docker compose logs --tail 200 apiserver`；PC：插件详情里的日志；TV：`adb logcat`。删掉域名、token、源包地址。"
+      render: text
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 同一站点在其它客户端也失效，我会改用「源与站点」模板
+          required: false
+        - label: 内容已脱敏，不含源包 / 站点配置 / token / 真实域名
+          required: true

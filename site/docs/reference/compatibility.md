@@ -66,13 +66,13 @@ class jar），要么把 `spider` 直接指向 class jar。
 | 飞牛 fnOS | 应用中心套件 | ✅ 官方包 |
 | NAS / 服务器 / Linux | Docker 四容器 + 浏览器 | ✅ 官方镜像（amd64 / arm64） |
 | macOS（Apple Silicon / Intel） | Docker 四容器 + 浏览器 | ⭕ 可用，无桌面应用 |
-| iPhone / iPad | Safari + 添加到主屏幕 | ⭕ 可用，无客户端 App |
+| iPhone / iPad | Safari + 添加到主屏幕；IPA 在实验分支 | ⭕ 浏览器可用 · 🧪 IPA 未发布 |
 | 电视自带系统（Tizen / webOS） | — | ❌ 不支持 |
 
 ⭕ = 功能完整（搜索、播放、弹幕、片库、直播、AI、转码），只是没有原生壳。
-macOS 与 iOS 不发布原生包：两者都没有官方验证条件，不发布未经验证的安装包。
-启动步骤见 [Web / Docker](/guide/web-docker)，平台限制见
-[已知限制 → 在 iPhone 和 iPad 上](/reference/limits#在-iphone-和-ipad-上)。
+macOS 不发布原生包（没有官方验证条件）；iOS 的 IPA 在实验分支，未发布官方资产，
+边界与进度见 [应用计划](/reference/roadmap)。启动步骤见 [Web / Docker](/guide/web-docker)，
+平台限制见 [已知限制 → 在 iPhone 和 iPad 上](/reference/limits#在-iphone-和-ipad-上)。
 
 ## 怎么判断自己能不能用
 

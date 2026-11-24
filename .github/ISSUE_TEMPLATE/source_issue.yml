@@ -1,0 +1,69 @@
+name: 源与站点
+description: 某个站点搜索为空、详情打不开、取不到播放地址（先确认不是客户端 bug）
+title: "[source] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **先分清是谁的问题**：同一份源包在 TVBox / Fongmi / 影视仓等其它客户端里也失效 →
+        上游站点问题，客户端改不了。只有「其它客户端正常、猫窝不行」才可能是客户端兼容性问题。
+
+  - type: input
+    id: site
+    attributes:
+      label: 站点名
+      description: 写站点显示名即可，**不要贴完整配置或 ext**
+      placeholder: 某某影视
+    validations:
+      required: true
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: 症状
+      options:
+        - 搜索一直为空
+        - 能搜到，但详情页空白
+        - 详情正常，但取不到播放地址
+        - 能播但黑屏 / 没声音
+        - 其它
+    validations:
+      required: true
+
+  - type: dropdown
+    id: client
+    attributes:
+      label: 在哪个端复现
+      options:
+        - Windows PC
+        - Android TV / 投影仪
+        - Android 手机 / 平板
+        - Web（Docker）
+        - 飞牛 fnOS
+    validations:
+      required: true
+
+  - type: textarea
+    id: compare
+    attributes:
+      label: 其它客户端对比
+      description: 同一份配置在 TVBox / Fongmi / 影视仓里能不能用？只有这个站不行，还是这类站都不行？
+      placeholder: 同一配置在 Fongmi 里能搜到；猫窝 PC 搜索为空
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志片段（脱敏后）
+      description: 删掉域名、token、源包地址
+      render: text
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 内容已脱敏，不含源包 / ext / token / 真实域名
+          required: true

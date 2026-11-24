@@ -1,8 +1,11 @@
 # iOS 端接入（IPA 形态与发版）
 
 ::: warning 本文是“落地契约”，不是“已支持”声明
-仓库当前**没有 iOS 工程**（`client/apps/ios/` 不存在），用户指南仍按
-「iPhone / iPad 用 Safari + 添加到主屏幕」写。
+**主线（`main`）没有 iOS 工程**：`client/apps/ios/` 不存在，官方路径仍是
+「iPhone / iPad 用 Safari + 添加到主屏幕」。
+可跑的工程在实验分支 [`feat/ios-jvm`](https://github.com/upchr/meow/tree/feat/ios-jvm/client/apps/ios)
+（端内 OpenJDK Zero 跑 `ApiServer`），未进主线、未发官方 IPA；进度见
+[应用计划](/reference/roadmap)。
 本文定义**如果按 TV APK 的形态做 iOS 壳**：工程结构、能力边界、IPA 构建与发版 CI、
 签名与验收红线。标【待实现】= 代码还没写；标【待实测】= 没有 iPhone，无法验证。
 :::
