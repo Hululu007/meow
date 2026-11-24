@@ -6560,7 +6560,7 @@ defineExpose({
 
     <!-- 顶部标题栏 -->
     <div
-      class="meow-ctrl-bar absolute inset-x-0 top-0 z-30 flex items-center gap-3 bg-gradient-to-b from-black/75 to-transparent pb-10 pr-4 pt-3 sm:pr-5 sm:pt-4"
+      class="meow-ctrl-bar meow-ctrl-mask-top absolute inset-x-0 top-0 z-30 flex items-center gap-3 pb-10 pr-4 pt-3 sm:pr-5 sm:pt-4"
       :class="[
         showCtrl ? 'opacity-100' : 'pointer-events-none invisible opacity-0',
         isDesktopShell() ? 'pl-24' : 'pl-4 sm:pl-5',
@@ -6576,7 +6576,7 @@ defineExpose({
       -->
       <button
         v-if="showBackButton"
-        class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 backdrop-blur transition hover:bg-white/20"
+        class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 transition hover:bg-white/20"
         aria-label="返回"
         @click="leavePlayback()"
       >
@@ -6590,7 +6590,13 @@ defineExpose({
         @dblclick="toggleMaximizeOnDblClick"
       >
         <div class="truncate text-[14px] font-medium sm:text-[15px]">{{ title }}</div>
-        <div class="text-[11px] text-ink-3">
+        <!--
+          副标题提到 ink-2（白 72%）而不是 ink-3（白 55%）：顶栏这行压在
+          视频画面上，亮场景下 55% 白算出来只有 ≈1.9:1（2026-11-24 实报
+          「弹幕 0 条 看不见」）。遮罩已改成带平台段的 .meow-ctrl-mask-top，
+          两边一起才把对比度拉回 ≈4:1。
+        -->
+        <div class="text-[11px] text-ink-2">
           <template v-if="dmEmpty && !dmLoading">
             <span class="text-amber-400/90">弹幕加载失败（重试中…）</span>
           </template>
@@ -6606,7 +6612,7 @@ defineExpose({
              按了只弹"不能投屏"的按钮上，和当年返回键的坑一模一样。 -->
       <button
         v-if="canCast"
-        class="relative grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 backdrop-blur transition hover:bg-white/20"
+        class="relative grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 transition hover:bg-white/20"
         :class="casting ? 'text-accent' : ''"
         :aria-label="casting ? '正在投屏' : '投屏'"
         :title="casting ? '正在投屏' : '投屏到电视'"
@@ -6678,7 +6684,7 @@ defineExpose({
       @click.self="seekDialog = false"
     >
       <div
-        class="w-full max-w-[18rem] rounded-xl border border-white/10 bg-black/90 p-4 text-ink shadow-2xl backdrop-blur-xl"
+        class="w-full max-w-[18rem] rounded-xl border border-white/10 bg-black/90 p-4 text-ink shadow-2xl"
       >
         <p class="text-xs text-white/60">跳到指定时间</p>
         <input
@@ -7059,7 +7065,7 @@ defineExpose({
 
     <!-- 底部控制栏 -->
     <div
-      class="meow-ctrl-bar meow-ctrl-mask absolute inset-x-0 bottom-0 z-30 px-3 pb-2.5 pt-16 sm:px-5 sm:pb-4 sm:pt-20"
+      class="meow-ctrl-bar meow-ctrl-mask absolute inset-x-0 bottom-0 z-30 px-3 pb-2.5 pt-10 sm:px-5 sm:pb-4 sm:pt-12"
       :class="showCtrl ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
       data-ctrl-root
     >
@@ -7221,7 +7227,7 @@ defineExpose({
             </svg>
           </button>
           <button
-            class="flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20 backdrop-blur"
+            class="flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20"
             :class="showEpPanel ? 'bg-white/20' : ''"
             title="选集"
             @click.stop="toggleEpPanel($event)"
@@ -7239,7 +7245,7 @@ defineExpose({
         <!-- 线路（紧跟选集右侧；与选集独立，单集时也能换线路） -->
         <button
           v-if="canPickLine"
-          class="hidden shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20 backdrop-blur sm:flex"
+          class="hidden shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20 sm:flex"
           :class="showLinePanel ? 'bg-white/20' : ''"
           title="切换线路"
           @click.stop="toggleLinePanel($event)"
@@ -7257,7 +7263,7 @@ defineExpose({
         -->
         <button
           v-if="nativeAvailable"
-          class="hidden shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20 backdrop-blur sm:flex"
+          class="hidden shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20 sm:flex"
           title="用原生播放器播放"
           @click.stop="emit('nativePlay')"
         >
@@ -7276,7 +7282,7 @@ defineExpose({
         -->
         <template v-if="site && vodId">
           <button
-            class="hidden h-7 shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 text-[11px] transition hover:bg-white/20 backdrop-blur lg:flex"
+            class="hidden h-7 shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 text-[11px] transition hover:bg-white/20 lg:flex"
             :class="marks.intro ? 'text-accent' : 'text-ink-3 hover:text-ink'"
             :title="
               marks.intro
@@ -7291,7 +7297,7 @@ defineExpose({
             <span class="tabular-nums">{{ marks.intro ? fmtClock(marks.intro) : '片头' }}</span>
           </button>
           <button
-            class="hidden h-7 shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 text-[11px] transition hover:bg-white/20 backdrop-blur lg:flex"
+            class="hidden h-7 shrink-0 items-center gap-1 rounded-md bg-white/10 px-2 text-[11px] transition hover:bg-white/20 lg:flex"
             :class="marks.outro ? 'text-accent' : 'text-ink-3 hover:text-ink'"
             :title="
               marks.outro
@@ -7312,8 +7318,17 @@ defineExpose({
         <div class="min-w-0 flex-1" />
 
         <!-- 弹幕开关（高频，常驻） -->
+        <!--
+          控制栏里的按钮一律**不挂 backdrop-blur**（2026-11-24 用户实报）：
+          老内核（投影仪 Chromium 66）的 legacy 层会把 `.backdrop-blur` 的
+          背景改写成实色 --color-elevated，于是「弹 / 搜索 / 1x」变成一块块
+          深蓝，跟开着的青色「弹」和白色图标对不上。去掉后各按钮保留自己的
+          bg-white/10、bg-player/20，与现代内核一致。
+          另外它们本来就压在 0.63~0.72 的深色遮罩上，10% 白已经够，模糊
+          在这层纱上贡献≈0，去掉还省掉播放中每帧的 backdrop-filter 开销。
+        -->
         <button
-          class="hit-44 shrink-0 rounded-md px-2 py-1.5 text-xs font-medium transition backdrop-blur"
+          class="hit-44 shrink-0 rounded-md px-2 py-1.5 text-xs font-medium transition"
           :class="dmOn ? 'bg-player/20 text-player' : 'bg-white/10 text-ink-3'"
           :title="dmOn ? '关闭弹幕' : '开启弹幕'"
           @click="toggleDanmaku"
@@ -7323,7 +7338,7 @@ defineExpose({
 
         <!-- 弹幕搜索：自动抓不到时的手动兜底，紧邻开关 -->
         <button
-          class="hidden h-7 w-7 shrink-0 place-items-center rounded-md bg-white/10 transition hover:bg-white/20 backdrop-blur sm:grid"
+          class="hidden h-7 w-7 shrink-0 place-items-center rounded-md bg-white/10 transition hover:bg-white/20 sm:grid"
           title="搜索弹幕"
           @click.stop="openDmSearch()"
         >
@@ -7399,7 +7414,7 @@ defineExpose({
     <div
       v-if="showHelp"
       data-panel="help"
-      class="absolute bottom-16 z-40 max-h-[calc(100%-5rem)] w-[20rem] overflow-y-auto rounded-xl border border-white/10 bg-black/92 p-3 text-ink shadow-2xl backdrop-blur-xl"
+      class="absolute bottom-16 z-40 max-h-[calc(100%-5rem)] w-[20rem] overflow-y-auto rounded-xl border border-white/10 bg-black/92 p-3 text-ink shadow-2xl"
       :style="panelStyle('help')"
       data-tv-scope
       @click.stop
@@ -7430,11 +7445,19 @@ defineExpose({
       </p>
     </div>
 
-    <!-- 二级菜单：重播 / 刷新 / 弹幕搜索 / 弹幕设置 / 字幕 / 画中画 -->
+    <!--
+      二级菜单：重播 / 刷新 / 弹幕搜索 / 弹幕设置 / 字幕 / 画中画
+
+      ★ 播放器里的浮层一律**不挂 backdrop-blur-xl**（2026-11-24）：底色已经是
+        bg-black/90~92，模糊本身看不出差别；但老内核（投影仪 Chromium 66）的
+        legacy 层会把 `.backdrop-blur*` 的背景改写成实色 --color-elevated，
+        结果弹层从"近黑"变成"深蓝"，与现代内核明显不同色（用户实报）。
+        同理，控制栏里的按钮也都不挂 backdrop-blur。
+    -->
     <div
       v-if="showMore"
       data-panel="more"
-      class="absolute bottom-16 z-40 max-h-[calc(100%-5rem)] w-44 overflow-y-auto rounded-xl border border-white/10 bg-black/90 p-1 text-ink shadow-2xl backdrop-blur-xl"
+      class="absolute bottom-16 z-40 max-h-[calc(100%-5rem)] w-44 overflow-y-auto rounded-xl border border-white/10 bg-black/90 p-1 text-ink shadow-2xl"
       :style="panelStyle('more')"
       data-tv-scope
       @click.stop
@@ -7767,7 +7790,7 @@ defineExpose({
     <div
       v-if="showLinePanel"
       data-panel="line"
-      class="absolute bottom-20 z-40 flex max-h-[calc(100%-6rem)] w-[22rem] max-w-[calc(100%-1rem)] flex-col rounded-xl border border-white/10 bg-black/90 p-3 text-ink backdrop-blur-xl"
+      class="absolute bottom-20 z-40 flex max-h-[calc(100%-6rem)] w-[22rem] max-w-[calc(100%-1rem)] flex-col rounded-xl border border-white/10 bg-black/90 p-3 text-ink"
       :style="panelStyle('line')"
       data-tv-scope
       @click.stop
@@ -7816,7 +7839,7 @@ defineExpose({
     <div
       v-if="showEpPanel"
       data-panel="ep"
-      class="absolute bottom-20 z-40 flex max-h-[calc(100%-6rem)] w-[22rem] max-w-[calc(100%-1rem)] flex-col rounded-xl border border-white/10 bg-black/90 p-3 text-ink backdrop-blur-xl"
+      class="absolute bottom-20 z-40 flex max-h-[calc(100%-6rem)] w-[22rem] max-w-[calc(100%-1rem)] flex-col rounded-xl border border-white/10 bg-black/90 p-3 text-ink"
       :style="panelStyle('ep')"
       data-tv-scope
       @click.stop
@@ -7862,7 +7885,7 @@ defineExpose({
     <div
       v-if="showDmPanel"
       data-panel="dm"
-      class="absolute bottom-20 z-40 max-h-[calc(100%-6rem)] w-[19rem] max-w-[calc(100%-1rem)] overflow-y-auto rounded-xl border border-white/10 bg-black/90 p-3.5 text-ink backdrop-blur-xl"
+      class="absolute bottom-20 z-40 max-h-[calc(100%-6rem)] w-[19rem] max-w-[calc(100%-1rem)] overflow-y-auto rounded-xl border border-white/10 bg-black/90 p-3.5 text-ink"
       :style="panelStyle('dm')"
       data-tv-scope
       @click.stop

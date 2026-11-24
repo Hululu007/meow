@@ -123,7 +123,7 @@ onBeforeUnmount(() => {
   <div ref="root" class="relative">
     <button
       type="button"
-      class="hit-44 flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20 backdrop-blur"
+      class="hit-44 flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs text-ink transition hover:bg-white/20"
       @click.stop="toggle"
     >
       {{ display }}

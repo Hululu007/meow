@@ -237,19 +237,108 @@ describe('④ 播放器底栏遮罩', () => {
   const player = read('src/components/player/VideoPlayer.vue')
   const css = read('src/styles/tokens.css')
 
-  it('底栏用 .meow-ctrl-mask，且渐变底部接近全黑', () => {
+  it('底栏用 .meow-ctrl-mask，且渐变是「薄纱」不是「黑板」', () => {
     expect(player).toContain('meow-ctrl-bar meow-ctrl-mask absolute inset-x-0 bottom-0')
     const i = css.indexOf('.meow-ctrl-mask')
     expect(i).toBeGreaterThan(0)
     const block = css.slice(i, css.indexOf('}', i))
     expect(block).toContain('linear-gradient')
-    expect(block).toContain('rgba(0, 0, 0, 0.96)')
-    // 按钮行落在整条栏 25%~50% 高度处，这一段不透明度低于 0.86 时亮场景下按钮背后会透出画面
-    expect(block).toContain('rgba(0, 0, 0, 0.86) 50%')
+    /*
+     * 2026-11-24 用户实报「底栏太不透明，不像影视 app 的透明效果」。
+     * 旧版峰值 0.96 → 整条栏是一块实心黑板，亮画面被切掉一大块。
+     * 影视 app（爱奇艺/腾讯视频）的底栏是薄纱：峰值 ≤0.75，画面透得过来。
+     */
+    const alphas = [...block.matchAll(/rgba\(0, 0, 0, ([\d.]+)\)/g)].map((m) => Number(m[1]))
+    expect(alphas.length).toBeGreaterThanOrEqual(6)
+    expect(Math.max(...alphas)).toBeLessThanOrEqual(0.75)
     // 顶部要完全透明，否则底栏上沿会有一条硬边
     expect(block).toContain('rgba(0, 0, 0, 0) 100%')
     // 高度来源是控制栏 padding（渐变靠 padding 撑开）
-    expect(player).toContain('pb-2.5 pt-16 sm:px-5 sm:pb-4 sm:pt-20')
+    // 2026-11-24：从 pt-16/sm:pt-20（栏高 178）压到 pt-10/sm:pt-12（≈141）。
+    // 那 64/80px 是纯渐变留白，**和峰谷热图无关**（热图占的是进度条组的 pt-5）。
+    expect(player).toContain('pb-2.5 pt-10 sm:px-5 sm:pb-4 sm:pt-12')
+  })
+
+  it('顶栏遮罩用「带平台段」的渐变（文字行在衰减区里，线性渐变必踩空）', () => {
+    // 顶栏文字在整条栏的中间，不像底栏贴在最暗的底部
+    expect(player).toContain('meow-ctrl-bar meow-ctrl-mask-top absolute inset-x-0 top-0')
+    // 旧写法：from-black/75 → transparent，文字行落在 ≈0.39 的位置（对比度 ≈1.9:1）
+    expect(player).not.toContain('bg-gradient-to-b from-black/75 to-transparent')
+
+    const i = css.indexOf('.meow-ctrl-mask-top')
+    expect(i).toBeGreaterThan(0)
+    const block = css.slice(i, css.indexOf('}', i))
+    expect(block).toContain('linear-gradient')
+    expect(block).toContain('to bottom')
+    const alphas = [...block.matchAll(/rgba\(0, 0, 0, ([\d.]+)\)/g)].map((m) => Number(m[1]))
+    expect(alphas.length).toBeGreaterThanOrEqual(6)
+    // 前 1/3 基本不掉（平台段）——否则文字行又会踩空
+    expect(alphas[1]).toBeGreaterThanOrEqual(0.55)
+    expect(alphas[2]).toBeGreaterThanOrEqual(0.45)
+    // 底部仍要完全透明，不能有硬边
+    expect(block).toContain('rgba(0, 0, 0, 0) 100%')
+    // 副标题必须用 ink-2（白 72%）而不是 ink-3（白 55%）
+    expect(player).toContain('text-[11px] text-ink-2')
+  })
+
+  it('控制栏 / 播放器浮层不挂 backdrop-blur（老内核会被刷成实色 --color-elevated）', () => {
+    /*
+     * ★ 2026-11-24 用户实报：投影仪（Chromium 66，legacy 层开着）下
+     *   「弹 / 搜索 / 1x」变成一块块深蓝，和现代内核的浅色玻璃不一样。
+     *
+     *   根因不是 bg-white/10 坏了（Tailwind 给了 `#ffffff1a` 的 @supports 兜底），
+     *   而是 legacy-css.css §7：老内核对 `.backdrop-blur*` 一律
+     *   `background-color: var(--color-elevated)`（#242838 深蓝），把按钮自己
+     *   的 bg-white/10、以及「弹」开着的 bg-player/20 全刷掉。
+     *
+     *   修法：这些元素压在控制栏的深色遮罩上（0.63~0.72），模糊贡献≈0，
+     *   直接不挂 backdrop-blur —— 现代内核观感不变，老内核也不会被改色。
+     *   顺带省掉播放中每帧的 backdrop-filter 重算。
+     */
+    // 注释里会提到 backdrop-blur 说明原因，所以只查 class 属性里的真实类名
+    const blurInClass = (src: string) => /class="[^"]*\bbackdrop-blur/.test(src)
+
+    const topBar = player.slice(
+      player.indexOf('meow-ctrl-mask-top absolute inset-x-0 top-0'),
+      player.indexOf('<!-- 缓冲中'),
+    )
+    expect(topBar.length).toBeGreaterThan(200)
+    expect(blurInClass(topBar)).toBe(false)
+
+    // ★ 锚点必须用底栏那一行的 class：`data-ctrl-root` 在 script 里也出现
+    //   （querySelector），从它切会把整段模板都框进来
+    const bottomBar = player.slice(
+      player.indexOf('meow-ctrl-bar meow-ctrl-mask absolute inset-x-0 bottom-0'),
+      player.indexOf('<!-- 快捷键说明'),
+    )
+    expect(bottomBar.length).toBeGreaterThan(2000)
+    expect(blurInClass(bottomBar)).toBe(false)
+
+    // 倍速触发器与播放器浮层（原先全是 backdrop-blur-xl，legacy 下会变深蓝）
+    expect(blurInClass(read('src/components/player/RateSelect.vue'))).toBe(false)
+    for (const m of player.matchAll(/class="([^"]*)"/g)) {
+      expect(m[1]).not.toContain('backdrop-blur-xl')
+    }
+  })
+
+  it('遮罩变薄后可读性靠文字投影，不靠 filter（投影仪 Chromium 66 成本）', () => {
+    // 影视 app 底栏的做法：字有影，而不是背后涂黑
+    expect(css).toContain('text-shadow')
+    // 浅色卡片自带底色，深色投影叠上去会发灰 → 单独清掉
+    expect(css).toContain('.meow-ctrl-bar .meow-light-card')
+    /*
+     * ★ 2026-11-24：控制栏里**不许出现 filter / backdrop-filter**。
+     *   两者在 Chromium 66（投影仪 Android 9）上会给元素开独立 render
+     *   surface，播放中进度条每帧动一次就整体重算 → 掉帧。
+     *   `text-shadow` 是文字绘制期属性，不开层。
+     *   实测（近纯白画面定格）：按钮行落在渐变 0.70~0.63，白图标对比度
+     *   ≈7:1，加不加 drop-shadow 肉眼无差别 —— 所以那层 filter 是纯成本。
+     */
+    const barRules = [...css.matchAll(/\.meow-ctrl-(?:mask|bar)[^{]*\{([^}]*)\}/g)]
+      .map((m) => m[1])
+      .join('\n')
+    expect(barRules).not.toContain('backdrop-filter')
+    expect(barRules).not.toMatch(/filter\s*:/)
   })
 
   it('封面上的浮层不用主题墨色（浅色主题下深字压黑底 = 看不见）', () => {

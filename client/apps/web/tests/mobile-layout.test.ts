@@ -324,7 +324,8 @@ describe('移动端播放页：全屏时的返回出口', () => {
     // 删掉了「控制栏收起时单独浮一个返回键」：播放中左上角不该留按钮挡画面
     expect(player).not.toContain('showFloatingBack')
     // 唯一的返回键在顶栏里，而顶栏容器由 showCtrl 控制显隐
-    const topBar = player.indexOf('meow-ctrl-bar absolute inset-x-0 top-0')
+    // ★ 2026-11-24：顶栏遮罩从 Tailwind 的 bg-gradient-to-b 换成 .meow-ctrl-mask-top
+    const topBar = player.indexOf('meow-ctrl-bar meow-ctrl-mask-top absolute inset-x-0 top-0')
     expect(topBar).toBeGreaterThan(0)
     const backBtn = player.indexOf('v-if="showBackButton"', topBar)
     expect(backBtn).toBeGreaterThan(topBar)
