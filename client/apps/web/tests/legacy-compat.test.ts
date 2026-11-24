@@ -500,7 +500,11 @@ describe('新 API 使用门禁（Chromium 66）', () => {
     }
   }
   walk(SRC)
-  const all = sources.join('\n')
+  // 注释里提到 API 名不算「使用」：appUpdate.ts 的「不用 globalThis」注释
+  // 曾把 globalThis 门禁顶成假红（2026-11-24 修回 \b 边界后暴露）。
+  const stripComments = (x: string): string =>
+    x.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+  const all = stripComments(sources.join('\n'))
 
   /** api：展示名；pattern：源码里的调用形态；marker：补丁里的实现标记；since：起始版本 */
   const WATCH: Array<{ api: string; pattern: RegExp; marker: string; since: number }> = [
@@ -519,7 +523,7 @@ describe('新 API 使用门禁（Chromium 66）', () => {
     { api: 'Array.prototype.toSorted', pattern: /\.toSorted\s*\(/, marker: '@@none@@', since: 110 },
     { api: 'Array.prototype.toReversed', pattern: /\.toReversed\s*\(/, marker: '@@none@@', since: 110 },
     // globalThis 是 Chrome 71+ 的全局标识符；Chromium 66 上引用即 ReferenceError
-    { api: 'globalThis', pattern: /globalThis/, marker: '@@none@@', since: 71 },
+    { api: 'globalThis', pattern: /\bglobalThis\b/, marker: '@@none@@', since: 71 },
   ]
 
   it('源码用到的每个新 API 都必须在 legacyPolyfills 里有实现', () => {

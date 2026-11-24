@@ -193,7 +193,9 @@ jobs:
     uses: ./.github/workflows/_docker.yml
     with:
       version: ${{ needs.plan.outputs.version }}
-      latest: true
+      # ★ 默认 true；预览验证期把仓库变量 MEOW_PUSH_LATEST 设为 false，
+      #   只推版本号镜像、不动 docker:latest（避免验证版被所有用户拉到）。
+      latest: ${{ vars.MEOW_PUSH_LATEST != 'false' }}
     secrets:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
 

@@ -81,6 +81,11 @@ try {
         New-Item -ItemType Directory -Path $depTmp -Force | Out-Null
         Push-Location $depTmp
         & "$javaHome\bin\jar" xf $_.FullName
+        # ★ asm/gson 等依赖自带 module-info.class：并进 fat jar 会把它变成模块，
+        #   随后 `jar --main-class ApiServer` 报「ApiServer: unnamed package」
+        #   （默认包里的类不能当模块主类）—— 2026-11-24 发版实测。
+        Get-ChildItem -Path $depTmp -Recurse -Filter 'module-info.class' -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
         # 关键：必须在这里删，而不是合并完再删。
         # bcprov.jar 是签名 jar，它解出来的 META-INF/*.SF 会跟着 Copy-Item 一起
         # 进入合并目录；如果只在最后删一次，某些依赖的签名已覆盖同名条目，
@@ -217,7 +222,7 @@ if (Test-Path $spiderJar) {
 }
 
 # 加密 Guard 壳：unidbg 解密 + dex2jar + 字节码修复（独立子进程）
-$guardBuild = Join-Path $root 'tools\guarduild-guard-helper.ps1'
+$guardBuild = Join-Path $root 'tools\guard\build-guard-helper.ps1'
 if (Test-Path $guardBuild) {
     Write-Host "`n[guard] 构建加密 Guard helper..." -ForegroundColor Yellow
     & powershell -NoProfile -ExecutionPolicy Bypass -File $guardBuild

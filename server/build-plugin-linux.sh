@@ -43,6 +43,9 @@ for dep in "$ROOT"/host/libs/*.jar; do
         cd "$d"
         jar xf "$dep"
         rm -f META-INF/*.SF META-INF/*.RSA META-INF/*.DSA
+        # asm/gson 等依赖自带 module-info.class：并进 fat jar 会把它变成模块，
+        # 随后 `jar --main-class ApiServer` 报「unnamed package」（默认包类不能当模块主类）。
+        find . -name module-info.class -delete
     )
     cp -r "$d/." "$TMP/classes/"
 done

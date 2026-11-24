@@ -266,7 +266,7 @@ describe('AI 面板契约（docs/47 §三）', () => {
     expect(PANEL).toContain('z-[60]')
     // 只看 class 属性里的实际用法；注释里提到 z-50 是说明为什么不用它
     const classAttrs = [...PANEL.matchAll(/class="([^"]*)"/g)].map((m) => m[1]).join(' ')
-    expect(classAttrs, 'FAB 不能用 z-50，会盖住播放器的 z-40 面板').not.toMatch(/z-50/)
+    expect(classAttrs, 'FAB 不能用 z-50，会盖住播放器的 z-40 面板').not.toMatch(/\bz-50\b/)
   })
 
   it('播放页隐藏 FAB（那里已有四块浮层在抢位）', () => {

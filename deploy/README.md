@@ -387,6 +387,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/build-plugins
 | `workflow_dispatch`（release.yml） | tv/pc/**ios**/plugins 全跑（docker、tv_plugins 按勾选） | ❌ | — | 按勾选 |
 | `tv-verify-1.0.10` | 什么都不跑——前缀后不是数字 | ❌ | — | 0 |
 
+**预览验证期不推 latest**：仓库变量 `MEOW_PUSH_LATEST=false` 时，`docker` job 只推版本号镜像、
+不更新 `docker:latest`（Release 本身是 draft，也不会成为 GitHub Latest）。
+验证通过、正式发布前删掉该变量即可恢复默认（不设 = true）。
+
 **三条铁律**
 
 1. **单链也建 Release**（除 docker）——2026-11 起，`publish` 的门槛从"必须 `release-v*`"改成"任一条被选中且没有 failure/cancelled"；没选中的链是 `skipped`，视为通过。
