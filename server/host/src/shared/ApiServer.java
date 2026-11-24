@@ -2704,6 +2704,11 @@ public class ApiServer {
              *   （导入报告还写着"苹果CMS直连"），但 call() 没有 http 分支 →
              *   落到 jar 分支撞 ClassNotFoundException，每个站烧满超时还污染健康分。
              */
+            // 加密 Guard 源：交给独立 companion 进程（宿主内直接跑会被自身 HTTP 栈打断）。
+            // 放在原生源之后，保证 Douban 这类 NativeSource 优先。
+            String guardOut = core.Jars.forwardGuard(site, action, body);
+            if (guardOut != null) return guardOut;
+
             String directApi = API.get(site);
             if (directApi != null && directApi.startsWith("http")) {
                 String out = sources.CmsSource.invoke(directApi, action, body);

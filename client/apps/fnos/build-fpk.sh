@@ -172,6 +172,10 @@ grep -q 'src="/app/meow/assets/' "$SRC/client/apps/web/dist/index.html" || {
 }
 cp -r "$SRC/client/apps/web/dist/." "$PKG/app/web/"
 cp "$JAR" "$PKG/app/seed/apiserver/apiserver.jar"
+if [ -d "$SRC/server/host/guard-libs" ]; then
+    mkdir -p "$PKG/app/seed/apiserver/guard-libs"
+    cp -a "$SRC/server/host/guard-libs/." "$PKG/app/seed/apiserver/guard-libs/"
+fi
 # 后端版本文件：ApiServer 运行时读它（与 bin/VERSION 同一套思路），
 # 这样 jar 本身与版本无关，插件/Docker 的源码-hash 缓存才能跨版本复用。
 printf '%s\n' "$APP_VER" > "$PKG/app/seed/apiserver/VERSION"

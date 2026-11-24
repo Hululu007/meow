@@ -14,6 +14,8 @@ public class View {
   public interface OnClickListener { void onClick(View v); }
   public interface OnFocusChangeListener { void onFocusChange(View v, boolean hasFocus); }
   public interface OnKeyListener { boolean onKey(View v, int keyCode, KeyEvent e); }
+  public interface OnLongClickListener { boolean onLongClick(View v); }
+  public interface OnTouchListener { boolean onTouch(View v, MotionEvent e); }
 
   private ViewParent parent;
   private ViewGroup.LayoutParams params;

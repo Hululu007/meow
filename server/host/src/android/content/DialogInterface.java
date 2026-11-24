@@ -7,4 +7,5 @@ public interface DialogInterface {
   interface OnDismissListener { void onDismiss(DialogInterface d); }
   interface OnShowListener { void onShow(DialogInterface d); }
   interface OnClickListener { void onClick(DialogInterface d, int which); }
+  interface OnKeyListener { boolean onKey(DialogInterface d, int keyCode, android.view.KeyEvent e); }
 }

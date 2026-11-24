@@ -1,5 +1,6 @@
 package android.widget;
 import android.content.Context;
+import android.view.KeyEvent;
 import android.view.View;
 
 public class TextView extends View {
@@ -20,4 +21,6 @@ public class TextView extends View {
   public void setLines(int n) {}
   public void setMaxLines(int n) {}
   public void setEllipsize(Object e) {}
+
+  public interface OnEditorActionListener { boolean onEditorAction(TextView v, int actionId, KeyEvent event); }
 }

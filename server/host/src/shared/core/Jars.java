@@ -168,15 +168,27 @@ public final class Jars {
             try {
                 File f = prepare(spec);
                 if (f == null) continue;
-                /*
-                 * 站点级 dex jar（实测 Jable 的 spider-ext-dex.jar）在这条路径上
-                 * 不会经过导入流程的 Dex2Jvm.rewrite —— 直接挂 dex 会让
-                 * URLClassLoader 加载失败，表现是「该源在当前构建不可用」。
-                 * 已经是 class jar / 非 JVM / 工具缺失时原样返回。
-                 */
-                f = Dex2Jvm.convertLocal(f);
-                LOADERS.add(new URLClassLoader(new URL[]{f.toURI().toURL()}, Jars.class.getClassLoader()));
-                LogBuffer.info("jar", "已挂载 " + f.getName() + "（" + f.length() + "B）");
+                boolean guard = isJvm() && isGuardShell(f);
+                if (guard) {
+                    File payload = materializeGuard(f);
+                    if (payload == null) {
+                        LogBuffer.warn("jar", "加密 Guard 壳解密失败，跳过 " + shortSpec(spec));
+                        continue;
+                    }
+                    f = payload;
+                } else {
+                    /*
+                     * 站点级 dex jar（实测 Jable 的 spider-ext-dex.jar）在这条路径上
+                     * 不会经过导入流程的 Dex2Jvm.rewrite —— 直接挂 dex 会让
+                     * URLClassLoader 加载失败，表现是「该源在当前构建不可用」。
+                     * 已经是 class jar / 非 JVM / 工具缺失时原样返回。
+                     */
+                    f = Dex2Jvm.convertLocal(f);
+                }
+                URLClassLoader loader = new URLClassLoader(new URL[]{f.toURI().toURL()}, Jars.class.getClassLoader());
+                LOADERS.add(loader);
+                if (guard) registerGuardLoader(loader, f);
+                LogBuffer.info("jar", (guard ? "已挂载加密源 " : "已挂载 ") + f.getName() + "（" + f.length() + "B）");
             } catch (Throwable t) {
                 LogBuffer.warn("jar", "准备失败 " + shortSpec(spec) + " → " + t);
             }
@@ -192,7 +204,14 @@ public final class Jars {
      * 于是 Bili/Hxq 的 play 返回 {@code http://127.0.0.1:-1/proxy?...}，播放必坏。
      * 直接在类加载后写私有静态字段 {@code a}，让 {@code getPort()} 跳过扫描。
      */
+    private static volatile int PROXY_PORT;
+
+    public static int proxyPort() {
+        return PROXY_PORT;
+    }
+
     public static void pinProxyPort(int port) {
+        if (port > 0) PROXY_PORT = port;
         if (!isJvm() || port <= 0) return;
         try {
             Class<?> c;
@@ -213,6 +232,15 @@ public final class Jars {
 
     /** 在已挂载的外部 jar 里找类；找不到返回 null（调用方决定抛什么）。 */
     public static Class<?> load(String fqcn) {
+        Class<?> c = loadExact(fqcn);
+        // 加密 Guard 壳解出来的 payload 去掉了 Guard 后缀（XxxGuard -> Xxx）
+        if (c == null && fqcn != null && fqcn.endsWith("Guard")) {
+            c = loadExact(fqcn.substring(0, fqcn.length() - 5));
+        }
+        return c;
+    }
+
+    private static Class<?> loadExact(String fqcn) {
         if (fqcn == null || LOADERS.isEmpty()) return null;
         for (URLClassLoader l : LOADERS) {
             try {
@@ -222,6 +250,92 @@ public final class Jars {
             }
         }
         return null;
+    }
+
+    // ---------------------------------------------------------------- 加密 Guard 壳（JVM）
+
+    /** 供 ApiServer 在 newInstance 之前调用；命中原生加密源返回 true。 */
+    public static boolean initGuardPayload(Class<?> c) {
+        Class<?> g = guardClass();
+        if (g == null || c == null) return false;
+        try {
+            boolean is = (Boolean) g.getMethod("isGuardPayload", Class.class).invoke(null, c);
+            if (!is) return false;
+            g.getMethod("initPayload", ClassLoader.class).invoke(null, c.getClassLoader());
+            return true;
+        } catch (Throwable t) {
+            LogBuffer.warn("jar", "Guard 初始化失败：" + t);
+            return false;
+        }
+    }
+
+    private static Class<?> guardClass() {
+        if (!isJvm()) return null;
+        try {
+            return Class.forName("jvm.GuardShell");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static boolean isGuardShell(File f) {
+        Class<?> g = guardClass();
+        if (g == null) return false;
+        try {
+            return (Boolean) g.getMethod("isGuard", File.class).invoke(null, f);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static File materializeGuard(File f) {
+        Class<?> g = guardClass();
+        if (g == null) return null;
+        try {
+            return (File) g.getMethod("materialize", File.class).invoke(null, f);
+        } catch (Throwable t) {
+            LogBuffer.warn("jar", "Guard 解密调用失败：" + t);
+            return null;
+        }
+    }
+
+    private static void registerGuardLoader(ClassLoader loader, File payload) {
+        Class<?> g = guardClass();
+        if (g == null) return;
+        try {
+            g.getMethod("register", ClassLoader.class, File.class).invoke(null, loader, payload);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** guard 站点转发到 companion；非 guard 返回 null。 */
+    public static String forwardGuard(String site, String action, String body) {
+        if (!isJvm() || site == null) return null;
+        Class<?> g = guardClass();
+        if (g == null) return null;
+        String base = site;
+        int hash = base.indexOf('#');
+        if (hash > 0) base = base.substring(0, hash);
+        if (base.isEmpty()) return null;
+        Class<?> c = load("com.github.catvod.spider." + base);
+        if (c == null || !isGuardPayloadClass(c)) return null;
+        try {
+            return (String) g.getMethod("forward", Class.class, String.class, String.class, String.class)
+                    .invoke(null, c, site, action, body);
+        } catch (Throwable t) {
+            LogBuffer.warn("jar", "guard 转发失败：" + t);
+            return null;
+        }
+    }
+
+    public static boolean isGuardPayloadClass(Class<?> c) {
+        Class<?> g = guardClass();
+        if (g == null || c == null) return false;
+        try {
+            return (Boolean) g.getMethod("isGuardPayload", Class.class).invoke(null, c);
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     // ---------------------------------------------------------------- 内部
@@ -486,15 +600,5 @@ public final class Jars {
         } catch (Throwable e) {
             return false;
         }
-    }
-
-    /**
-     * main 线暂不包含 Guard 解密实现（在独立分支开发）。
-     *
-     * <p>ApiServer 的 seedJarInitBeforeInstance 会先问这一句；这里安全返回 false，
-     * 让普通 jar 继续走 Init 注入。Guard 分支合入时用真实实现替换本方法。
-     */
-    public static boolean initGuardPayload(Class<?> c) {
-        return false;
     }
 }
