@@ -1322,6 +1322,15 @@ let hideTimer: number | undefined
 /** 高丢帧自愈：定时采样 + 每个源只报一次 */
 let dropGuardTimer: number | undefined
 let dropReported = false
+/*
+ * 低端设备收敛（2026-11-24）：
+ *   · 起播 15 秒内不判（解码器初始化天然丢帧）；
+ *   · 连续两个采样窗口都超阈值才报（单窗口抖动不算）；
+ *   · 缓冲垫 <4 秒时归为网络/缓冲问题，不白转一次 4K。
+ */
+let dropBaselineTotal = -1
+let dropBaselineDropped = -1
+let dropBadStreak = 0
 /** 当前选中的清晰度变体地址（高丢帧自愈转封装时用它，避免 ffmpeg 选到低码率变体） */
 let activeLevelUrl = ''
 
@@ -1776,6 +1785,9 @@ function setupSource(url: string) {
   nativeSrcFallbackTried = false
   endedSent = false
   dropReported = false
+  dropBaselineTotal = -1
+  dropBaselineDropped = -1
+  dropBadStreak = 0
   activeLevelUrl = ''
   // 新源要重新自动起播（见 onLoaded 里 didAutoStart 的注释）
   didAutoStart = false
@@ -5655,26 +5667,65 @@ function clearDmRetry() {
 function checkVideoDrops() {
   const v = video.value
   if (!v || v.paused || dropReported) return
-  if (v.currentTime < 12) return
+  // 起播阶段（解码器初始化/首片填充）天然丢帧，15 秒内不判
+  if (v.currentTime < 15) return
   const q = typeof v.getVideoPlaybackQuality === 'function'
     ? v.getVideoPlaybackQuality()
     : null
-  if (!q || q.totalVideoFrames < 150) return
-  const ratio = q.droppedVideoFrames / q.totalVideoFrames
+  if (!q) return
+  /*
+   * 第一次采样只建基线：totalVideoFrames 是**累计值**，直接算会把 0~15 秒
+   * 起播期的丢帧也算进来（低端设备上很容易被误判成整片丢帧）。
+   */
+  if (dropBaselineTotal < 0) {
+    dropBaselineTotal = q.totalVideoFrames
+    dropBaselineDropped = q.droppedVideoFrames
+    return
+  }
+  const total = q.totalVideoFrames - dropBaselineTotal
+  const dropped = q.droppedVideoFrames - dropBaselineDropped
+  dropBaselineTotal = q.totalVideoFrames
+  dropBaselineDropped = q.droppedVideoFrames
+  // 窗口太短（标签页被节流/刚恢复）不判
+  if (total < 40) return
+  const winRatio = dropped / total
+  const cumRatio = q.totalVideoFrames > 0
+    ? q.droppedVideoFrames / q.totalVideoFrames
+    : 0
+  let ahead = 0
+  try {
+    const b = v.buffered
+    if (b.length > 0) ahead = Math.max(0, b.end(b.length - 1) - v.currentTime)
+  } catch {
+    /* buffered 读不到就不做缓冲门禁 */
+  }
   // 调试可见（pc_eval 直接读；不影响播放）
   ;(window as unknown as { __dropGuard?: unknown }).__dropGuard = {
     t: +v.currentTime.toFixed(1),
     dropped: q.droppedVideoFrames,
     total: q.totalVideoFrames,
-    ratio: +ratio.toFixed(3),
+    ratio: +cumRatio.toFixed(3),
+    winRatio: +winRatio.toFixed(3),
+    ahead: +ahead.toFixed(1),
+    streak: dropBadStreak,
     reported: dropReported,
   }
-  if (ratio > 0.15) {
+  /*
+   * 缓冲垫不足先不判：这更像网络/分片问题（`bufferStalledError` 那条链路负责），
+   * 4K 转码解决不了，还会在低端后端白烧一次编码。
+   */
+  if (ahead < 4) {
+    dropBadStreak = 0
+    return
+  }
+  if (winRatio > 0.15) dropBadStreak++
+  else dropBadStreak = 0
+  if (dropBadStreak >= 2) {
     dropReported = true
     emit('high-drop', {
       dropped: q.droppedVideoFrames,
       total: q.totalVideoFrames,
-      ratio,
+      ratio: cumRatio,
       levelUrl: activeLevelUrl,
       height: v.videoHeight,
     })
@@ -5684,7 +5735,8 @@ function checkVideoDrops() {
 onMounted(() => {
   // 换集后恢复上一次的全屏状态（伪全屏，不需要用户手势）
   void restoreFsIntent()
-  dropGuardTimer = window.setInterval(checkVideoDrops, 5000)
+  // 3 秒一窗：15 秒后连续两窗命中 ≈ 18~21 秒触发，比 5 秒窗更早但不牺牲稳定性
+  dropGuardTimer = window.setInterval(checkVideoDrops, 3000)
   const v = video.value
   const s = stage.value
   if (s) {

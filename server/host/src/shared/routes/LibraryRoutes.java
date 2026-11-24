@@ -802,6 +802,8 @@ public final class LibraryRoutes {
         // 模式参与幂等键（2026-11-24）：copy / repair 的产物不能和普通转码互相复用
         boolean preferCopy = "1".equals(q.get("copy"));
         boolean repair = "1".equals(q.get("repair"));
+        // 客户端 HEVC 能力（同 ApiServer：不传按 true 保持旧行为）
+        boolean allowHevc = !"0".equals(q.get("hev"));
         /*
          * ★ status 轮询必须排在「取源」之前（S1，2026-11-17 复查发现）。
          *
@@ -874,7 +876,8 @@ public final class LibraryRoutes {
             startSec = 0;
         }
         startSec = Math.max(0, Math.min(startSec, 24 * 3600));
-        core.Transcode.Job j = core.Transcode.ensureLocal(source, key, preferCopy, repair, startSec);
+        core.Transcode.Job j = core.Transcode.ensureLocal(source, key, preferCopy, repair, startSec,
+                allowHevc);
         Api.sendJson(ex, 200, core.Transcode.toJson(j).toString());
     }
 

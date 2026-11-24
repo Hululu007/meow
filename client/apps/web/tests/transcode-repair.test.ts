@@ -29,13 +29,13 @@ describe('4K 丢帧修复：原分辨率显卡重编', () => {
     expect(i).toBeGreaterThan(-1)
     // 只取 repair 分支本体：后面紧跟的 rkmpp 分支里有 scale_rkrga，别算进来
     const body = T.slice(i, T.indexOf('} else if (hw) {', i))
-    expect(body).toContain('repairEncoder(ff)')
+    expect(body).toMatch(/repairEncoder\(ff, p == null \? "" : p\.vcodec, allowHevc\)/)
     // 不能加缩放滤镜：4K 必须还是 4K（缩到 1080p 等于降画质）。
     // 注意注释里会出现 zscale（HDR 说明），所以只检查真正的滤镜参数。
     expect(body).not.toContain('cmd.add("-vf")')
     expect(body).not.toContain('scale=')
     // 码率按源高度给（4K 16M），且 NVENC 要强制关键帧才能 2 秒分片
-    expect(body).toContain('repairBitrate(p == null ? 0 : p.height)')
+    expect(body).toContain('repairBitrate(p, enc)')
     expect(body).toContain('forced-idr')
   })
 
@@ -49,7 +49,7 @@ describe('4K 丢帧修复：原分辨率显卡重编', () => {
     // 2026-11-24 实报：探测超时被报成"没有硬件编码器"，用户看到的提示完全错
     expect(T).toContain('probe_failed')
     expect(T).toContain('no_repair_encoder')
-    const i = T.indexOf('if (repair && repairEncoder(ff) == null)')
+    const i = T.indexOf('if (repair && repairEncoder(ff, probe == null ? "" : probe.vcodec, allowHevc) == null)')
     expect(i).toBeGreaterThan(-1)
     const body = T.slice(i, i + 700)
     expect(body).toContain('无法在不降分辨率的前提下修复')
@@ -94,5 +94,51 @@ describe('4K 丢帧修复：原分辨率显卡重编', () => {
     expect(PLAY).toContain('无法在不降画质的前提下修复')
     // 前端还有第二道门槛：修复输出高度低于源画面就取消
     expect(PLAY).toContain('修复输出被降了分辨率，已停止并保持原样播放')
+  })
+})
+
+describe('低端设备收敛（2026-11-24）', () => {
+  const API = readFileSync(
+    join(REPO, 'server', 'host', 'src', 'shared', 'ApiServer.java'),
+    'utf8',
+  )
+  const LIB = readFileSync(
+    join(REPO, 'server', 'host', 'src', 'shared', 'routes', 'LibraryRoutes.java'),
+    'utf8',
+  )
+  const VP = readFileSync(
+    join(REPO, 'client', 'apps', 'web', 'src', 'components', 'player', 'VideoPlayer.vue'),
+    'utf8',
+  )
+
+  it('修复码率跟随源（1.5x，按高度夹上下限），不再固定 16M', () => {
+    expect(T).toContain('repairTargetBps')
+    expect(T).toContain('src * 1.5')
+    expect(T).toContain('p.bitRate = srcBitRate')
+    // H.264 4K 封 12M
+    expect(T).toContain('enc.startsWith("h264")')
+    // 旧的写死 16M/24M 分支必须消失
+    expect(T).not.toContain('if (h >= 2000) return "16M"')
+    expect(T).not.toContain('if (h >= 2000) return "24M"')
+  })
+
+  it('同编码优先 + 客户端 HEVC 能力门禁', () => {
+    expect(T).toContain('H264_ENCS')
+    expect(T).toContain('HEVC_ENCS')
+    expect(T).toContain('allowHevc')
+    expect(T).toContain('if (!allowHevc && c.startsWith("hevc")) continue;')
+    expect(API).toContain('allowHevc')
+    expect(API).toContain('q.get("hev")')
+    expect(LIB).toContain('q.get("hev")')
+    expect(PLAY).toContain('clientCanHevc')
+    expect(PLAY).toContain('allowHevc')
+  })
+
+  it('丢帧判定收紧：15 秒起判 + 连续两窗 + 缓冲垫 <4s 不判', () => {
+    expect(VP).toContain('dropBadStreak')
+    expect(VP).toContain('ahead < 4')
+    expect(VP).toContain('v.currentTime < 15')
+    expect(VP).toContain('dropBadStreak >= 2')
+    expect(VP).toContain('setInterval(checkVideoDrops, 3000)')
   })
 })

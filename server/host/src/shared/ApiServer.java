@@ -12258,6 +12258,8 @@ public class ApiServer {
          */
         boolean preferCopy = "1".equals(q.get("copy"));
         boolean repair = "1".equals(q.get("repair"));
+        // 客户端能否解 HEVC（新前端按端侧实测传；旧客户端不传 = true，保持原行为）
+        boolean allowHevc = !"0".equals(q.get("hev"));
 
         if ("DELETE".equalsIgnoreCase(method)) {
             /*
@@ -12331,7 +12333,8 @@ public class ApiServer {
             startSec = 0;
         }
         startSec = Math.max(0, Math.min(startSec, 24 * 3600));
-        core.Transcode.Job j = core.Transcode.ensure(src, false, srcHeader, preferCopy, repair, startSec);
+        core.Transcode.Job j = core.Transcode.ensure(src, false, srcHeader, preferCopy, repair,
+                startSec, allowHevc);
         sendJson(ex, 200, core.Transcode.toJson(j).toString());
     }
 

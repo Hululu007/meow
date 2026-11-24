@@ -116,6 +116,12 @@ function routeInput(probe: Parameters<typeof resolvePlaybackRoute>[0]['probe']) 
     allowRemux: isLibraryPlay.value,
   }
 }
+/** 客户端能否解 HEVC：repair 的输出编码门禁（低端 TV 只出 H.264） */
+function clientCanHevc(): boolean {
+  if (!codecCaps.probed) return false
+  return codecCaps.video.includes('hevc') || codecCaps.highBitVideo.includes('hevc')
+}
+
 /** 「已转码播放」提示：用户要知道画面为什么晚了几秒才出 */
 const transcodeHint = ref('')
 
@@ -352,6 +358,9 @@ let busyFile = ''
 /** 排队重试要沿用原任务的模式（copy/repair 的幂等键不同，丢了会起成另一个任务） */
 let busyCopy = false
 let busyRepair = false
+/** 排队重试同样要沿用起点与 HEVC 能力（否则会从 0 起转 / 输出错编码） */
+let busyStart = 0
+let busyHevc = true
 
 /**
  * 源地址中途过期（403）→ 重新调 play 拿新 token，在原位置续播。
@@ -1191,7 +1200,8 @@ function tryNative() {
  *
  * 已转好的分片是增量的：前几个分片就绪即可起播，不用等整片转完。
  */
-async function tryTranscode(src: string, copy = false, repair = false, startAt = 0) {
+async function tryTranscode(src: string, copy = false, repair = false, startAt = 0,
+                            allowHevc = true) {
   const minH = healMinHeight
   healMinHeight = 0
   const myEpoch = playEpoch
@@ -1221,6 +1231,7 @@ async function tryTranscode(src: string, copy = false, repair = false, startAt =
       copy,
       repair,
       startAt,
+      allowHevc,
     )
     ;(window as unknown as { __meowLastTranscode?: unknown }).__meowLastTranscode = {
       ok: r.ok, state: r.state, code: r.code, error: r.error,
@@ -1280,6 +1291,8 @@ async function tryTranscode(src: string, copy = false, repair = false, startAt =
         busySrc = src
         busyCopy = copy
         busyRepair = repair
+        busyStart = startAt
+        busyHevc = allowHevc
         // 清掉播放器的"解码失败"错误页，否则它会盖住下面的排队/换线选择
         player.value?.stop?.()
         ;(window as unknown as { __meowBusy?: unknown }).__meowBusy = {
@@ -1435,7 +1448,7 @@ function unsupportedContainer(url: string): boolean {
  * 只有真的报错了才需要转码。
  */
 async function tryLibraryTranscode(lib: string, file: string, copy = false, repair = false,
-                                  startAt = 0) {
+                                  startAt = 0, allowHevc = true) {
   dbg('startTranscode', file)
   // 转码一旦开始，之前那条错误页要收掉（否则错误页盖着、用户在等转码却看着报错）
   playError.value = ''
@@ -1456,7 +1469,7 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false, repa
     const r = await waitLibraryTranscode(lib, file, (sec, ph, stalled) => {
       if (myEpoch !== playEpoch) return
       loadingText.value = transcodePhaseText(sec, ph, stalled)
-    }, undefined, copy, repair, startAt)
+    }, undefined, copy, repair, startAt, allowHevc)
     if (myEpoch !== playEpoch) {
       if (r.state === 'running') void cancelTranscode({ lib, path: file, copy, repair })
       return
@@ -1493,6 +1506,8 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false, repa
         busyFile = file
         busyCopy = copy
         busyRepair = repair
+        busyStart = startAt
+        busyHevc = allowHevc
         if (busyRetrying.value) scheduleBusyRetry()
         else busyHint.value = true
         return
@@ -1935,6 +1950,8 @@ async function onHighDrop(p: {
    */
   const nowPos = Math.max(lastTickPos || 0, Number(player.value?.getTime?.() || 0))
   const startAt = Math.max(0, Math.floor(nowPos) - 8)
+  // 低端设备（解不了 HEVC）让后端 repair 只出 H.264，避免"修完更卡/黑屏"
+  const allowHevc = clientCanHevc()
   /*
    * 修复流的可播范围是 [startAt, 已转出]：切换后不能直接 seek 回当前点
    * （转码刚起步，那个位置还没转出来，会卡住）。从 startAt+2 起播，
@@ -1943,7 +1960,7 @@ async function onHighDrop(p: {
   refreshSeekAt.value = startAt + 2
   showSilentHint('检测到画面丢帧，正在用显卡从当前位置按原分辨率修复（分辨率不变）…', false, false)
   if (libMode) {
-    void tryLibraryTranscode(libraryLib.value, libraryFile.value, false, true, startAt)
+    void tryLibraryTranscode(libraryLib.value, libraryFile.value, false, true, startAt, allowHevc)
     return
   }
   /*
@@ -1951,7 +1968,7 @@ async function onHighDrop(p: {
    * hls.js 的 level url 常被后端代理成 /api/proxy/stream?url=...，要还原成源站地址。
    */
   const level = p.levelUrl && /^https?:/i.test(p.levelUrl) ? unwrapProxyUrl(p.levelUrl) : ''
-  void tryTranscode(level || u, false, true, startAt)
+  void tryTranscode(level || u, false, true, startAt, allowHevc)
 }
 
 async function onPlayerError(payload: PlayErrorPayload | string) {
@@ -2478,8 +2495,11 @@ function scheduleBusyRetry() {
     }
     loadingText.value = `排队中：另一台设备正在转 4K（第 ${busyRetries.value} 次重试）…`
     transcodeWaiting.value = true
-    if (busyKind === 'lib') void tryLibraryTranscode(busyLib, busyFile, busyCopy, busyRepair)
-    else void tryTranscode(busySrc, busyCopy, busyRepair)
+    if (busyKind === 'lib') {
+      void tryLibraryTranscode(busyLib, busyFile, busyCopy, busyRepair, busyStart, busyHevc)
+    } else {
+      void tryTranscode(busySrc, busyCopy, busyRepair, busyStart, busyHevc)
+    }
   }, BUSY_RETRY_MS)
 }
 

@@ -78,6 +78,11 @@ public final class Transcode {
         boolean repair = false;
         /** repair 从源的第几秒开始（0 = 从头）。前端播放时间 = 修复流时间 + startOffset。 */
         int startOffset = 0;
+        /**
+         * 客户端能否解 HEVC（2026-11-24）。旧客户端不传，默认 true 保持原行为；
+         * 新前端按端侧实测能力传 false 时，repair 只出 H.264（低端 TV 安全）。
+         */
+        boolean allowHevc = true;
         /** 已回退过几次（只回退一次，避免来回折腾）。 */
         int hwRetry = 0;
         /** 短产出自动重试次数（回环流断开会让 ffmpeg 正常退出但只转出一段）。 */
@@ -640,6 +645,12 @@ public final class Transcode {
      */
     public static Job ensure(String sourceUrl, boolean forceVideo, String headerJson,
                              boolean preferCopy, boolean repair, int startSec) {
+        return ensure(sourceUrl, forceVideo, headerJson, preferCopy, repair, startSec, true);
+    }
+
+    /** allowHevc=false：repair 只出 H.264（客户端解不了 HEVC 时用）。 */
+    public static Job ensure(String sourceUrl, boolean forceVideo, String headerJson,
+                             boolean preferCopy, boolean repair, int startSec, boolean allowHevc) {
         String id = idFor(sourceUrl, preferCopy, repair);
         /*
          * 单集锁（S1，2026-11-17）：前端 start 请求与 2 秒一次的轮询可能
@@ -647,12 +658,12 @@ public final class Transcode {
          */
         synchronized (lockFor(id)) {
             return ensure0(sourceUrl, forceVideo, id,
-                    headerJson == null ? "" : headerJson, preferCopy, repair, startSec);
+                    headerJson == null ? "" : headerJson, preferCopy, repair, startSec, allowHevc);
         }
     }
 
     private static Job ensure0(String sourceUrl, boolean forceVideo, String id, String headerJson,
-                               boolean preferCopy, boolean repair, int startSec) {
+                               boolean preferCopy, boolean repair, int startSec, boolean allowHevc) {
         Job found = JOBS.get(id);
         if (found != null) {
             if ("running".equals(found.state)) {
@@ -698,6 +709,7 @@ public final class Transcode {
              * 全拿不到 —— 重启应用后播放已转好的 remux 会被判成"无法原画转封装"。
              */
             j.repair = repair;
+            j.allowHevc = allowHevc;
             if (repair) j.startOffset = readStartOffset(id);
             String ff0 = ffmpegPath();
             if ((preferCopy || repair) && j.probeSnap == null && !ff0.isEmpty()) {
@@ -767,7 +779,7 @@ public final class Transcode {
             System.err.println("[transcode] job " + id + " repair probe failed");
             return j;
         }
-        if (repair && repairEncoder(ff) == null) {
+        if (repair && repairEncoder(ff, probe == null ? "" : probe.vcodec, allowHevc) == null) {
             /*
              * 没有硬件编码器时**不做软件 4K 重编**（x86 上也许能跑，但 4K 软编
              * 追不上播放；ARM NAS 上必死）。直接失败，让前端恢复原样播放并提示，
@@ -804,6 +816,7 @@ public final class Transcode {
         }
         j.probeSnap = probe;
         j.repair = repair;
+        j.allowHevc = allowHevc;
         j.startOffset = repair ? Math.max(0, startSec) : 0;
         /*
          * 中途修复：先生成"0..startOffset"的黑场填充。失败就退回从头修
@@ -850,15 +863,21 @@ public final class Transcode {
     /** startSec &gt; 0：修复从第 startSec 秒开始（片库同样支持中途续修）。 */
     public static Job ensureLocal(String source, String key, boolean preferCopy, boolean repair,
                                   int startSec) {
+        return ensureLocal(source, key, preferCopy, repair, startSec, true);
+    }
+
+    /** allowHevc=false：repair 只出 H.264（客户端解不了 HEVC 时用）。 */
+    public static Job ensureLocal(String source, String key, boolean preferCopy, boolean repair,
+                                  int startSec, boolean allowHevc) {
         String id = idFor(key, preferCopy, repair);
         // 单集锁：与 ensure 同理（幂等键是 lib|path，同一集并发点击只起一个任务）
         synchronized (lockFor(id)) {
-            return ensureLocal0(source, key, id, preferCopy, repair, startSec);
+            return ensureLocal0(source, key, id, preferCopy, repair, startSec, allowHevc);
         }
     }
 
     private static Job ensureLocal0(String source, String key, String id, boolean preferCopy,
-                                    boolean repair, int startSec) {
+                                    boolean repair, int startSec, boolean allowHevc) {
         Job found = JOBS.get(id);
         if (found != null) {
             if ("running".equals(found.state)) {
@@ -897,6 +916,7 @@ public final class Transcode {
             j.lastAccess = System.currentTimeMillis();
             // 同 ensure0：复用磁盘产物也要有 probe/模式元数据，否则 copy/repair 门槛失效
             j.repair = repair;
+            j.allowHevc = allowHevc;
             if (repair) j.startOffset = readStartOffset(id);
             String ff0 = ffmpegPath();
             if ((preferCopy || repair) && j.probeSnap == null && !ff0.isEmpty()) {
@@ -941,12 +961,12 @@ public final class Transcode {
             System.err.println("[transcode] job " + id + " repair probe failed");
             return j;
         }
-        if (repair && repairEncoder(ff) == null) {
+        if (repair && repairEncoder(ff, probe == null ? "" : probe.vcodec, allowHevc) == null) {
             j.state = "failed";
             j.phase = "failed";
             j.code = "no_repair_encoder";
             j.error = "这台后端没有可用的硬件编码器（NVENC/QSV/AMF），"
-                    + "无法在不降分辨率的前提下修复该片源。";
+                    + "或客户端解不了可用的输出编码，无法在不降分辨率的前提下修复该片源。";
             System.err.println("[transcode] job " + id + " repair rejected: no hw encoder");
             return j;
         }
@@ -972,6 +992,7 @@ public final class Transcode {
         stopOtherJobs(j.id, hwCapable);
         j.probeSnap = probe;
         j.repair = repair;
+        j.allowHevc = allowHevc;
         j.startOffset = repair ? Math.max(0, startSec) : 0;
         if (j.repair && j.startOffset > 1 && !ensureFiller(j, ff, j.startOffset)) {
             j.startOffset = 0;
@@ -1094,6 +1115,8 @@ public final class Transcode {
         String colorTransfer = "";
         /** 音频声道数（2 / 6 / 8…）。 */
         int channels;
+        /** 源码率（bps，format 级）。探不到 = 0（HLS 常见），修复码率改按高度给。 */
+        long bitRate;
         String detail = "";
     }
 
@@ -1437,17 +1460,26 @@ public final class Transcode {
             List<String> d = new ArrayList<>();
             d.add(fp);
             d.add("-v"); d.add("error");
-            d.add("-show_entries"); d.add("format=duration");
+            d.add("-show_entries"); d.add("format=duration,bit_rate");
             d.add("-of"); d.add("csv=p=0");
             addHttpInputOptions(d, source, header);
             d.add(source);
-            // 这条只影响进度条总长（UI），不值得让它拖慢起播：12 秒拿不到就用 0
+            // 这条只影响进度条总长（UI）与修复码率，不值得拖慢起播：12 秒拿不到就用 0
             String dOut = runCapture(d, 12);
             double dur = 0;
+            long srcBitRate = 0;
             if (dOut != null) {
-                try {
-                    dur = Double.parseDouble(dOut.trim().split("[,\s]+")[0]);
-                } catch (Exception ignored) {
+                /*
+                 * ffprobe 的 format 字段按结构体顺序输出（bit_rate 在 duration 前），
+                 * 但不同版本可能不同；用数值大小区分（码率 ≥ 100kbps，时长远小于它）。
+                 */
+                for (String tok : dOut.trim().split("[,\s]+")) {
+                    try {
+                        double val = Double.parseDouble(tok);
+                        if (val >= 100_000) srcBitRate = (long) val;
+                        else if (dur == 0) dur = val;
+                    } catch (Exception ignored) {
+                    }
                 }
             }
             String acodec = "";
@@ -1462,6 +1494,7 @@ public final class Transcode {
             p.vcodec = vcodec;
             p.pixFmt = pixFmt;
             p.acodec = acodec;
+            p.bitRate = srcBitRate;
             /*
              * copy 只对 8-bit 4:2:0 成立（2026-11-23 片库 10-bit 实报）：
              * Hi10P（yuv420p10le）浏览器解不了、rkmpp 也解不了，原样 copy
@@ -1559,7 +1592,8 @@ public final class Transcode {
         cleanSegments(j.id);
         j.hw = hw;
         j.ffPath = ff;
-        List<String> cmd = hlsCommand(ff, j.id, source, p, hw, j.header, j.repair, j.startOffset);
+        List<String> cmd = hlsCommand(ff, j.id, source, p, hw, j.header, j.repair, j.startOffset,
+                j.allowHevc);
         java.nio.file.Files.createDirectories(dirOf(j.id));
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectErrorStream(true);
@@ -1578,7 +1612,8 @@ public final class Transcode {
         th.setDaemon(true);
         th.start();
         System.err.println("[transcode] start " + j.id + " hw=" + hw
-                + (j.repair ? " (repair " + repairEncoder(ff) + ")" : "")
+                + (j.repair ? " (repair "
+                        + repairEncoder(ff, p == null ? "" : p.vcodec, j.allowHevc) + ")" : "")
                 + (hw ? " (" + p.vcodec + "_rkmpp)" : ""));
     }
 
@@ -1773,17 +1808,15 @@ public final class Transcode {
     }
 
     /** 本机可用的修复编码器（只认显卡编码；缓存一次，ffmpeg 不会中途装/卸）。 */
-    private static volatile String REPAIR_ENC = null;
+    private static volatile java.util.List<String> REPAIR_ENCS = null;
     private static volatile boolean REPAIR_ENC_PROBED = false;
+    private static final String[] H264_ENCS = {"h264_nvenc", "h264_qsv", "h264_amf"};
+    private static final String[] HEVC_ENCS = {"hevc_nvenc", "hevc_qsv", "hevc_amf"};
 
-    /**
-     * 选一个**显卡编码器**做原分辨率修复。
-     *
-     * <p>顺序：HEVC 优先（4K 同画质文件更小），H.264 兜底；NVIDIA(QSV/AMF) 依次。
-     * 不返回 libx264/libx265 —— 4K 软编追不上实时，等于把"卡顿"换成"等半天"。
-     */
-    private static String repairEncoder(String ff) {
-        if (REPAIR_ENC_PROBED) return REPAIR_ENC;
+    private static java.util.List<String> repairEncoders(String ff) {
+        if (REPAIR_ENC_PROBED) {
+            return REPAIR_ENCS == null ? java.util.Collections.emptyList() : REPAIR_ENCS;
+        }
         /*
          * ★ 只有拿到 -encoders 输出才写缓存（2026-11-24 实测踩过）：
          * 冷启动/杀软扫描 105MB 的 ffmpeg.exe 时 runCapture 可能超时返回 null，
@@ -1792,34 +1825,83 @@ public final class Transcode {
          */
         try {
             String enc = runCapture(new ArrayList<>(List.of(ff, "-hide_banner", "-encoders")), 30);
-            if (enc == null) return REPAIR_ENC;
-            REPAIR_ENC_PROBED = true;
+            if (enc == null) {
+                return REPAIR_ENCS == null ? java.util.Collections.emptyList() : REPAIR_ENCS;
+            }
+            java.util.List<String> found = new java.util.ArrayList<>();
             for (String cand : new String[]{
                     "hevc_nvenc", "h264_nvenc", "hevc_qsv", "h264_qsv", "hevc_amf", "h264_amf"}) {
-                if (enc.contains(cand)) {
-                    REPAIR_ENC = cand;
-                    break;
-                }
+                if (enc.contains(cand)) found.add(cand);
             }
+            REPAIR_ENCS = found;
+            REPAIR_ENC_PROBED = true;
+            if (!found.isEmpty()) System.err.println("[transcode] repair encoders = " + found);
         } catch (Throwable ignored) {
-            return REPAIR_ENC;
+            return REPAIR_ENCS == null ? java.util.Collections.emptyList() : REPAIR_ENCS;
         }
-        if (REPAIR_ENC != null) System.err.println("[transcode] repair encoder = " + REPAIR_ENC);
-        return REPAIR_ENC;
+        return REPAIR_ENCS;
     }
 
-    /** 修复编码的目标码率：按**源**高度给，4K 给 16M（实测 4K HEVC 16M 观感无损）。 */
-    private static String repairBitrate(int h) {
-        if (h >= 2000) return "16M";
-        if (h >= 1400) return "10M";
-        return "6M";
+    /**
+     * 选修复编码器：**同编码优先** + 客户端能力门禁（2026-11-24 低端设备收敛）。
+     *
+     * <ul>
+     *   <li>H.264 源 → 先 H.264（客户端一定能解）；没有 H.264 硬编且客户端允许 HEVC 才退 HEVC。</li>
+     *   <li>HEVC/AV1 源 → 客户端允许 HEVC 时先 HEVC（省带宽、保留 10-bit/HDR），否则 H.264。</li>
+     * </ul>
+     *
+     * <p>不返回 libx264/libx265 —— 4K 软编追不上实时，等于把"卡顿"换成"等半天"。
+     */
+    private static String repairEncoder(String ff, String srcCodec, boolean allowHevc) {
+        java.util.List<String> list = repairEncoders(ff);
+        if (list.isEmpty()) return null;
+        String v = srcCodec == null ? "" : srcCodec.toLowerCase();
+        boolean srcHigh = v.contains("hevc") || v.contains("h265") || v.contains("av1");
+        String[] first = (srcHigh && allowHevc) ? HEVC_ENCS : H264_ENCS;
+        String[] second = (srcHigh && allowHevc) ? H264_ENCS : HEVC_ENCS;
+        for (String c : first) {
+            if (list.contains(c)) return c;
+        }
+        // 回退到另一族：只有客户端允许 HEVC 时才允许退到 HEVC
+        for (String c : second) {
+            if (!allowHevc && c.startsWith("hevc")) continue;
+            if (list.contains(c)) return c;
+        }
+        return null;
+    }
+
+    /**
+     * 修复目标码率（bps）：**跟随源**（1.5 倍），再按输出高度夹上下限。
+     *
+     * <p>低端设备收敛（2026-11-24）：原来固定 4K=16M，而很多在线 4K 源只有 3~4M，
+     * 等于把码率放大 4~5 倍（缓存 46 分钟约 5GB、弱 Wi-Fi 直接缓冲）。
+     */
+    private static long repairTargetBps(Probe p, String enc) {
+        long h = p == null ? 0 : p.height;
+        long src = p == null ? 0 : p.bitRate;
+        long cap = h >= 2000 ? 16_000_000L : h >= 1400 ? 12_000_000L : h >= 900 ? 8_000_000L : 4_000_000L;
+        long floor = h >= 2000 ? 6_000_000L : h >= 1400 ? 5_000_000L : h >= 900 ? 3_000_000L : 2_000_000L;
+        // H.264 4K 给到 16M 的收益很低，封 12M
+        if (enc != null && enc.startsWith("h264")) cap = Math.min(cap, 12_000_000L);
+        long target = src > 100_000 ? Math.round(src * 1.5) : (cap * 3) / 4;
+        target = Math.max(floor, Math.min(cap, target));
+        return target;
+    }
+
+    private static String mbps(long bps) {
+        return ((bps + 500_000L) / 1_000_000L) + "M";
+    }
+
+    /** 修复编码的目标码率：跟随源（见 {@link #repairTargetBps}）。 */
+    private static String repairBitrate(Probe p, String enc) {
+        return mbps(repairTargetBps(p, enc));
     }
 
     /** 修复编码的峰值码率（VBR 上限，防止复杂场景糊）。 */
-    private static String repairMaxrate(int h) {
-        if (h >= 2000) return "24M";
-        if (h >= 1400) return "15M";
-        return "9M";
+    private static String repairMaxrate(Probe p, String enc) {
+        // 峰值只给 1.25x：NVENC 的 VBV 在 2 秒分片里会贴近 maxrate，
+        // 1.5x（如 12M→18M）对弱 Wi-Fi 仍然偏高（实测分片 18.6M）。
+        return mbps(repairTargetBps(p, enc) * 5 / 4);
     }
 
     /** 硬编码率分档（按**输出**高度；硬解路径最高出 1080p）。 */
@@ -1953,7 +2035,8 @@ public final class Transcode {
             + "请改用「原生播放器」（投影仪可硬解 4K），或换 1080p / H.264 线路。";
 
     private static List<String> hlsCommand(String ff, String id, String source, Probe p, boolean hw,
-                                           String header, boolean repair, int startSec) {
+                                           String header, boolean repair, int startSec,
+                                           boolean allowHevc) {
         List<String> cmd = new ArrayList<>();
         boolean http = source.startsWith("http://") || source.startsWith("https://");
         cmd.add(ff);
@@ -2018,7 +2101,7 @@ public final class Transcode {
              * HDR 源保留 10-bit 交给浏览器 tone map：4K 上跑 zscale 软 tonemap
              * 追不上实时，反而会重新引入卡顿。
              */
-            String enc = repairEncoder(ff);
+            String enc = repairEncoder(ff, p == null ? "" : p.vcodec, allowHevc);
             cmd.add("-pix_fmt"); cmd.add(
                     (p != null && isHdr(p) && enc != null && enc.startsWith("hevc"))
                             ? "p010le" : "yuv420p");
@@ -2026,9 +2109,9 @@ public final class Transcode {
             if (enc != null && enc.endsWith("_nvenc")) {
                 cmd.add("-preset"); cmd.add("p5");
                 cmd.add("-rc"); cmd.add("vbr");
-                cmd.add("-b:v"); cmd.add(repairBitrate(p == null ? 0 : p.height));
-                cmd.add("-maxrate"); cmd.add(repairMaxrate(p == null ? 0 : p.height));
-                cmd.add("-bufsize"); cmd.add(repairMaxrate(p == null ? 0 : p.height));
+                cmd.add("-b:v"); cmd.add(repairBitrate(p, enc));
+                cmd.add("-maxrate"); cmd.add(repairMaxrate(p, enc));
+                cmd.add("-bufsize"); cmd.add(repairMaxrate(p, enc));
                 /*
                  * 实测（2026-11-24）：hevc_nvenc 默认不认 force_key_frames，
                  * 10 秒才出一个关键帧 → 分片全是 10 秒，修复起播要多等 10 秒。
@@ -2037,10 +2120,10 @@ public final class Transcode {
                 cmd.add("-forced-idr"); cmd.add("1");
             } else if (enc != null && enc.endsWith("_qsv")) {
                 cmd.add("-preset"); cmd.add("medium");
-                cmd.add("-b:v"); cmd.add(repairBitrate(p == null ? 0 : p.height));
+                cmd.add("-b:v"); cmd.add(repairBitrate(p, enc));
             } else {
                 cmd.add("-quality"); cmd.add("balanced");
-                cmd.add("-b:v"); cmd.add(repairBitrate(p == null ? 0 : p.height));
+                cmd.add("-b:v"); cmd.add(repairBitrate(p, enc));
             }
             if (p != null && isHdr(p)) {
                 cmd.add("-color_primaries"); cmd.add("bt2020");
@@ -2441,7 +2524,8 @@ public final class Transcode {
                 o.put("outPixfmt", p.pixFmt);
                 o.put("outHeight", p.height);
             } else if (j.repair) {
-                String enc = repairEncoder(j.ffPath.isEmpty() ? ffmpegPath() : j.ffPath);
+                String enc = repairEncoder(j.ffPath.isEmpty() ? ffmpegPath() : j.ffPath,
+                        p.vcodec, j.allowHevc);
                 o.put("outVcodec", enc != null && enc.startsWith("hevc") ? "hevc" : "h264");
                 o.put("outPixfmt", "yuv420p");
                 // 修复必须保持分辨率：前端拿它做"不许降画质"的硬门槛

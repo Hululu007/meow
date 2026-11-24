@@ -690,10 +690,13 @@ export async function startLibraryTranscode(
   repair = false,
   /** 修复起点（秒）：已看到中途就从当前位置起转，前端补黑场保持时间轴绝对 */
   start = 0,
+  /** 客户端能否解 HEVC；false 时后端 repair 只出 H.264（低端设备安全） */
+  allowHevc = true,
 ): Promise<TranscodeResult> {
   const q = new URLSearchParams({ lib, path })
   if (repair) {
     q.set('repair', '1')
+    q.set('hev', allowHevc ? '1' : '0')
     if (start > 1) q.set('start', String(Math.floor(start)))
   } else if (copy) q.set('copy', '1')
   const r = await fetch(`${apiBase()}/api/transcode?${q}`)
@@ -857,10 +860,11 @@ export async function waitLibraryTranscode(
   copy = false,
   repair = false,
   start = 0,
+  allowHevc = true,
 ): Promise<TranscodeResult> {
   return waitTranscodeCore(
     {
-      start: () => startLibraryTranscode(lib, path, copy, repair, start),
+      start: () => startLibraryTranscode(lib, path, copy, repair, start, allowHevc),
       poll: async () => {
         // 模式参与后端幂等键：轮询必须带同一个模式，否则查到的是别的任务
         const q = new URLSearchParams({ lib, path, mode: 'status' })
@@ -915,12 +919,14 @@ export async function startTranscode(
   copy = false,
   repair = false,
   start = 0,
+  allowHevc = true,
 ): Promise<TranscodeResult> {
   const q = new URLSearchParams({ src })
   // 源站要求的 UA/Referer：转码是后端自己拉流，不带就是 404（咕噜4K 实测）
   if (header) q.set('header', header)
   if (repair) {
     q.set('repair', '1')
+    q.set('hev', allowHevc ? '1' : '0')
     if (start > 1) q.set('start', String(Math.floor(start)))
   } else if (copy) q.set('copy', '1')
   const r = await fetch(`${apiBase()}/api/transcode?${q}`)
@@ -939,10 +945,11 @@ export async function waitTranscode(
   copy = false,
   repair = false,
   start = 0,
+  allowHevc = true,
 ): Promise<TranscodeResult> {
   return waitTranscodeCore(
     {
-      start: () => startTranscode(src, header, copy, repair, start),
+      start: () => startTranscode(src, header, copy, repair, start, allowHevc),
       poll: async () => {
         const q = new URLSearchParams({ src, mode: 'status' })
         if (repair) q.set('repair', '1')
