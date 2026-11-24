@@ -22,14 +22,27 @@ import { panelMediaLine, type MediaSourceInfo } from '@/utils/mediaInfo'
 import { reportPlayerEvent } from '@/api/playerEvents'
 import { assToVtt, srtToVtt, subtitleFormat, type MiddleSegment, type SubTrack } from '@/api/playExtras'
 import {
-  hasSystemSleep,
+  desktopQuit,
   hasSystemVolume,
   systemSleep,
   systemBrightness,
   systemVolume,
   setSystemBrightness,
   setSystemVolume,
+  tvCancelPowerTimer,
+  tvPowerTimerState,
+  tvProbeRoot,
+  tvStartPowerTimer,
 } from '@/api/nativeBridge'
+import {
+  POWER_ACTION_LABEL,
+  POWER_TIMER_MINUTES,
+  currentDefaultPowerAction,
+  powerActionsFor,
+  resolvePowerCaps,
+  type PowerAction,
+} from '@/utils/powerActions'
+import { installPowerBridge, uninstallPowerBridge } from '@/utils/powerBridge'
 import {
   proxyDanmakuByUrl,
   proxyStream,
@@ -303,15 +316,12 @@ const showMore = ref(false)
 /** 快捷键说明面板。一堆快捷键在界面上没有任何入口，等于只对开发者可见 */
 const showHelp = ref(false)
 /**
- * 睡眠定时。
+ * 倒计时电源动作（关机 / 休眠 / 退出应用 / 仅暂停）。
  *
- * <p><b>到点做什么</b>：所有端都先暂停；桌面端再请求系统睡眠。
- * PC 能通过 Tauri 命令调 Win32 的 SetSuspendState；TV 的 DEVICE_POWER
- * 要系统签名，普通应用拿不到，所以 TV / Web 只做暂停。
- *
- * 系统睡眠的可能失败是常态，不能影响已经完成的暂停：
- * 老安装包里没有该命令（invoke reject），Windows 开了休眠的机器会改成休眠
- * 而不是睡眠（powrprof 的固有行为，见 docs/38）。见 nativeBridge.systemSleep。
+ * 方案见 site/docs/dev/power-actions.md。三个要点：
+ *  - 能不能做走能力探测（resolvePowerCaps），默认项走身份 + 形态；
+ *  - TV 的计时放原生层（WebView 退后台 setInterval 会被节流），JS 只轮询显示；
+ *  - 关机失败（无 root）在选动作时当场降级为退出应用（到点没人点授权框）。
  */
 const sleepAt = ref(0)
 let sleepTimer: number | undefined
@@ -320,19 +330,92 @@ const sleepMenu = ref(false)
 /** 剩余分钟（用于菜单里显示"还剩 X 分钟"） */
 const sleepLeft = ref(0)
 
-/** 当前端能否让系统睡眠（只判环境，判不了命令是否真在） */
-const canSystemSleep = hasSystemSleep()
+/** 当前端能做到的动作与预选项 */
+const powerOptions = powerActionsFor(resolvePowerCaps())
+const powerAction = ref<PowerAction>(currentDefaultPowerAction())
 
-/** 设置睡眠定时（分钟后暂停）。0 = 关闭 */
-function setSleep(minutes: number) {
+/** 本端到点执行（PC / Web；TV 由原生层回调 onPowerFire） */
+function firePowerLocally(action: PowerAction) {
+  const v = video.value
+  if (v && !v.paused) v.pause()
+  if (action === 'sleep') {
+    systemSleep().then((ok) => {
+      if (!ok) flashMarks('已暂停播放（系统睡眠不可用）')
+    })
+  } else if (action === 'quit') {
+    void desktopQuit()
+  } else {
+    flashMarks('已暂停播放')
+  }
+}
+
+/** TV 原生定时器到点回推（Java 侧的 evalJs 调这两个全局函数） */
+function onPowerFire(action: string) {
+  const v = video.value
+  if (v && !v.paused) v.pause()
+  flashMarks(action === 'pause' ? '定时到，已暂停播放' : '定时到')
+}
+
+function onPowerResult(_action: string, result: { ok?: boolean; reason?: string } | null) {
+  if (result && result.ok === false) {
+    flashMarks(`关机失败：${result.reason || '未知原因'}`)
+  }
+}
+
+// 原生层定时器回推走模块级桥：全局函数只装一次、跨页面常驻。
+// 组件卸载只注销处理器，不删全局函数——否则到点 pause 回推没人接。
+installPowerBridge(onPowerFire, onPowerResult)
+
+/** 设置定时（分钟）。0 = 关闭；否则到点执行 action。 */
+function setPower(action: PowerAction, minutes: number) {
   clearInterval(sleepTimer)
   sleepTimer = undefined
+  // 重复设置时以新值为准：TV 的原生定时器也要清
+  if (isTvShell()) tvCancelPowerTimer()
   if (minutes <= 0) {
     sleepAt.value = 0
     sleepLeft.value = 0
-    flashMarks('已取消睡眠定时')
+    flashMarks('已取消定时')
     return
   }
+
+  let act = action
+
+  // TV：原生层计时。关机先探测 root，失败当场降级。
+  if (isTvShell()) {
+    if (act === 'shutdown') {
+      const probe = tvProbeRoot()
+      if (!probe.ok) {
+        const why = probe.reason === 'NO_ROOT' ? '未检测到 root' : '未获得 root 授权'
+        flashMarks(`${why}，本次改为退出应用`)
+        act = 'quit'
+      }
+    }
+    if (!tvStartPowerTimer(minutes * 60_000, act)) {
+      flashMarks('定时器启动失败')
+      return
+    }
+    powerAction.value = act
+    sleepAt.value = Date.now() + minutes * 60_000
+    sleepLeft.value = minutes
+    // 只用于显示剩余时间；到点由原生层执行，节流不影响结果
+    sleepTimer = window.setInterval(() => {
+      const st = tvPowerTimerState()
+      if (!st.active) {
+        clearInterval(sleepTimer)
+        sleepTimer = undefined
+        sleepAt.value = 0
+        sleepLeft.value = 0
+        return
+      }
+      sleepLeft.value = Math.max(0, Math.ceil(st.remainingMs / 60_000))
+    }, 5_000)
+    flashMarks(`将在 ${minutes} 分钟后${POWER_ACTION_LABEL[act]}`)
+    return
+  }
+
+  // PC / Web：前端计时
+  powerAction.value = act
   sleepAt.value = Date.now() + minutes * 60_000
   sleepLeft.value = minutes
   sleepTimer = window.setInterval(() => {
@@ -343,21 +426,41 @@ function setSleep(minutes: number) {
       sleepTimer = undefined
       sleepAt.value = 0
       sleepLeft.value = 0
-      const v = video.value
-      if (v && !v.paused) v.pause()
-      // 顺序不能反：命令一旦生效整机挂起，暂停必须已经落地；
-      // 如果系统睡眠不可用，用户也应看到"已暂停"而不是什么都没有。
-      if (canSystemSleep) {
-        flashMarks('睡眠定时到，已暂停并让电脑睡眠')
-        systemSleep().then((ok) => {
-          if (!ok) flashMarks('睡眠定时到，已暂停播放（系统睡眠不可用）')
-        })
-      } else {
-        flashMarks('睡眠定时到，已暂停播放')
-      }
+      firePowerLocally(act)
     }
   }, 10_000)
-  flashMarks(`将在 ${minutes} 分钟后${canSystemSleep ? '暂停并让电脑睡眠' : '暂停'}`)
+  flashMarks(`将在 ${minutes} 分钟后${POWER_ACTION_LABEL[act]}`)
+}
+
+/**
+ * TV：回播放页时从原生层恢复定时器显示（原生层是权威，跨页面仍在倒计时）。
+ * 恢复后重启一个只用于刷剩余分钟的轮询；到点由原生层执行，不靠它。
+ */
+function restorePowerTimerDisplay() {
+  const st = tvPowerTimerState()
+  if (!st.active) {
+    clearInterval(sleepTimer)
+    sleepTimer = undefined
+    sleepAt.value = 0
+    sleepLeft.value = 0
+    return
+  }
+  const a = (['shutdown', 'sleep', 'quit', 'pause'] as const).find((x) => x === st.action)
+  powerAction.value = a || 'pause'
+  sleepAt.value = Date.now() + st.remainingMs
+  sleepLeft.value = Math.max(0, Math.ceil(st.remainingMs / 60_000))
+  clearInterval(sleepTimer)
+  sleepTimer = window.setInterval(() => {
+    const cur = tvPowerTimerState()
+    if (!cur.active) {
+      clearInterval(sleepTimer)
+      sleepTimer = undefined
+      sleepAt.value = 0
+      sleepLeft.value = 0
+      return
+    }
+    sleepLeft.value = Math.max(0, Math.ceil(cur.remainingMs / 60_000))
+  }, 5_000)
 }
 
 /** 可用于切换的线路（至少两条才显示入口） */
@@ -5765,6 +5868,12 @@ onMounted(() => {
   void restoreFsIntent()
   // 3 秒一窗：15 秒后连续两窗命中 ≈ 18~21 秒触发，比 5 秒窗更早但不牺牲稳定性
   dropGuardTimer = window.setInterval(checkVideoDrops, 3000)
+  // TV：从原生层恢复定时器显示（定时器在原生层，跨页面仍在跑）。
+  // 关键：卸载时全局回推函数常驻，所以这里把处理器重新注册回来。
+  if (isTvShell()) {
+    installPowerBridge(onPowerFire, onPowerResult)
+    void restorePowerTimerDisplay()
+  }
   const v = video.value
   const s = stage.value
   if (s) {
@@ -6203,6 +6312,11 @@ onBeforeUnmount(() => {
   if (debugTimer) clearInterval(debugTimer)
   debugTimer = undefined
   ;(window as any).__playerDebug = null
+  // 电源定时器：PC/Web 的前端计时必须清；TV 的原生定时器**保留**（跨页面语义，
+  // 用户在播放页设的定时不该因为切页就消失）。全局回推函数也保留，只注销处理器。
+  if (sleepTimer) window.clearInterval(sleepTimer)
+  sleepTimer = undefined
+  uninstallPowerBridge()
   // 离开播放页必须交还方向键，否则详情/设置页上按左右会被派发成
   // 播放器的 seek 事件（页面已卸载，白按）
   ;(window as any).__meowTvKeyOwner = false
@@ -7652,22 +7766,33 @@ defineExpose({
         下载整季
       </button>
       <div class="my-1 h-px bg-white/10" />
-      <!-- 睡眠定时：睡前看片最常见的需求 -->
+      <!-- 定时电源动作：关机 / 休眠 / 退出应用 / 仅暂停 -->
       <button class="menu-item" @click.stop="sleepMenu = !sleepMenu">
         <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
         </svg>
-        {{ sleepAt ? `睡眠定时·剩 ${sleepLeft} 分` : '睡眠定时' }}
+        {{ sleepAt ? `定时${POWER_ACTION_LABEL[powerAction]}·剩 ${sleepLeft} 分` : '定时电源动作' }}
       </button>
       <div v-if="sleepMenu" class="mb-1 rounded-md bg-white/5 p-1" @click.stop>
+        <div class="px-2 py-1 text-[10px] text-ink-3">到点做什么</div>
         <button
-          v-for="m in [0, 15, 30, 60, 90]"
+          v-for="a in powerOptions"
+          :key="a"
+          class="block w-full rounded px-2 py-1 text-left text-[11px] transition hover:bg-white/10"
+          :class="a === powerAction ? 'text-accent' : 'text-ink-2'"
+          @click="powerAction = a"
+        >
+          {{ POWER_ACTION_LABEL[a] }}{{ a === 'shutdown' ? '（需要 root）' : '' }}
+        </button>
+        <div class="my-1 h-px bg-white/10" />
+        <button
+          v-for="m in POWER_TIMER_MINUTES"
           :key="m"
           class="block w-full rounded px-2 py-1 text-left text-[11px] transition hover:bg-white/10"
           :class="(m === 0 && !sleepAt) || (m > 0 && sleepLeft === m) ? 'text-accent' : 'text-ink-2'"
-          @click="setSleep(m); sleepMenu = false"
+          @click="setPower(powerAction, m); sleepMenu = false"
         >
-          {{ m === 0 ? '关闭定时' : `${m} 分钟后${canSystemSleep ? '睡眠' : '暂停'}` }}
+          {{ m === 0 ? '关闭定时' : `${m} 分钟后${POWER_ACTION_LABEL[powerAction]}` }}
         </button>
       </div>
 

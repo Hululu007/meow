@@ -4,6 +4,9 @@ import android.app.Activity;
 import android.os.Build;
 import android.webkit.JavascriptInterface;
 
+import java.io.File;
+import java.util.concurrent.TimeUnit;
+
 /**
  * 给 Web 页面用的原生能力桥。
  *
@@ -2483,5 +2486,210 @@ public class TvBridge {
         } catch (Throwable t) {
             return false;
         }
+    }
+
+    // ---------------------------------------------------------------- 电源动作
+    //
+    // 见 site/docs/dev/power-actions.md。安全约束：
+    //  - 所有方法过 trustedOrigin()；
+    //  - 关机只执行固定命令，**不接受任意 shell**（不暴露 execRoot）；
+    //  - su 调用带超时，避免卡死。
+
+    /** su 是否存在（只看文件，不执行，不弹授权框）。null = 没有。 */
+    private String suPath() {
+        String[] fixed = {"/system/bin/su", "/system/xbin/su", "/sbin/su", "/su/bin/su"};
+        for (String p : fixed) {
+            try {
+                if (new File(p).canExecute()) return p;
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            Process p = new ProcessBuilder("which", "su").redirectErrorStream(true).start();
+            if (p.waitFor(1, TimeUnit.SECONDS)) {
+                String out = readText(p.getInputStream()).trim();
+                if (!out.isEmpty() && new File(out).canExecute()) return out;
+            } else {
+                p.destroyForcibly();
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static String readText(java.io.InputStream in) {
+        try (java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream()) {
+            byte[] buf = new byte[512];
+            int n;
+            while ((n = in.read(buf)) != -1) bos.write(buf, 0, n);
+            return bos.toString("UTF-8");
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
+     * 电源能力。`shutdown` 恒报 `probe`：有 su 文件也要到执行时才知道授权，
+     * 没 su 时点关机也会得到明确的 NO_ROOT（比"菜单里没有这项"更可诊断）。
+     */
+    @JavascriptInterface
+    public String powerCaps() {
+        if (!trustedOrigin()) return "{\"shutdown\":\"no\",\"quit\":false}";
+        return "{\"shutdown\":\"probe\",\"quit\":true}";
+    }
+
+    /** 探测 root 授权（选「关机」动作时调用；首次会弹 Magisk 授权框）。 */
+    @JavascriptInterface
+    public String powerProbeRoot() {
+        if (!trustedOrigin()) return "{\"ok\":false,\"reason\":\"FORBIDDEN\"}";
+        String su = suPath();
+        if (su == null) return "{\"ok\":false,\"reason\":\"NO_ROOT\"}";
+        try {
+            Process p = new ProcessBuilder(su, "-c", "id").redirectErrorStream(true).start();
+            if (!p.waitFor(3, TimeUnit.SECONDS)) {
+                p.destroyForcibly();
+                return "{\"ok\":false,\"reason\":\"TIMEOUT\"}";
+            }
+            String out = readText(p.getInputStream());
+            if (p.exitValue() == 0 && out.contains("uid=0")) return "{\"ok\":true}";
+            return "{\"ok\":false,\"reason\":\"DENIED\"}";
+        } catch (Throwable t) {
+            return "{\"ok\":false,\"reason\":\"FAILED\"}";
+        }
+    }
+
+    /** 整机关机。固定命令白名单：setprop sys.powerctl shutdown → reboot -p。 */
+    @JavascriptInterface
+    public String shutdownSystem() {
+        if (!trustedOrigin()) return "{\"ok\":false,\"reason\":\"FORBIDDEN\"}";
+        String su = suPath();
+        if (su == null) return "{\"ok\":false,\"reason\":\"NO_ROOT\"}";
+        String[][] cmds = {
+                {su, "-c", "setprop sys.powerctl shutdown"},
+                {su, "-c", "reboot -p"},
+        };
+        for (String[] c : cmds) {
+            try {
+                Process p = new ProcessBuilder(c).redirectErrorStream(true).start();
+                if (!p.waitFor(3, TimeUnit.SECONDS)) {
+                    p.destroyForcibly();
+                    continue;
+                }
+                if (p.exitValue() == 0) return "{\"ok\":true}";
+            } catch (Throwable ignored) {
+            }
+        }
+        return "{\"ok\":false,\"reason\":\"FAILED\"}";
+    }
+
+    /**
+     * 退出应用：清整个 task；运行时模块在跑时一并停（NodeService.onDestroy
+     * 会连带杀掉 :node 进程）。
+     */
+    @JavascriptInterface
+    public boolean quitApp() {
+        if (!trustedOrigin()) return false;
+        activity.runOnUiThread(() -> {
+            try {
+                activity.stopService(new android.content.Intent(activity,
+                        com.meow.tv.runtime.NodeService.class));
+            } catch (Throwable ignored) {
+            }
+            try {
+                activity.finishAffinity();
+            } catch (Throwable ignored) {
+            }
+            // finishAffinity 不保证进程立刻退；800ms 后兜底（与 NodeService 同策略）
+            ui.postDelayed(() -> {
+                try {
+                    android.os.Process.killProcess(android.os.Process.myPid());
+                } catch (Throwable ignored) {
+                }
+            }, 800);
+        });
+        return true;
+    }
+
+    // 原生层定时器：WebView 退后台后 setInterval 会被节流，见方案文档 §6。
+    // ★ 字段 volatile：powerTimerState() 从 JavaBridge 线程读，主线程写；
+    //   2026-11-23 实测非 volatile 时状态一直读到 active:false。
+    private Runnable powerRunnable;
+    private volatile long powerFireAt;
+    private volatile String powerAction;
+
+    /** 到点执行动作。action = shutdown | quit | pause */
+    @JavascriptInterface
+    public boolean startPowerTimer(long delayMs, String action) {
+        if (!trustedOrigin()) return false;
+        if (delayMs <= 0) return false;
+        final String act = action == null || action.isEmpty() ? "pause" : action;
+        activity.runOnUiThread(() -> {
+            cancelPowerTimerInternal();
+            powerAction = act;
+            powerFireAt = android.os.SystemClock.elapsedRealtime() + delayMs;
+            powerRunnable = () -> {
+                String a = powerAction;
+                powerAction = null;
+                powerFireAt = 0;
+                if ("shutdown".equals(a)) {
+                    // 降级链：关机失败 → 退出应用（到点没人点授权框，必须自动）。
+                    String r = shutdownSystem();
+                    evalJs("window.__meowPowerResult&&window.__meowPowerResult('shutdown'," + r + ")");
+                    if (r == null || !r.contains("\"ok\":true")) {
+                        quitApp();
+                    }
+                } else if ("quit".equals(a)) {
+                    quitApp();
+                } else {
+                    // 先停原生播放器（它盖在 WebView 上，JS 回推打不到），
+                    // 再回推 Web 暂停自己的 <video>，两条路都走一遍互不冲突。
+                    boolean nativePaused = NativePlayerActivity.pauseForPowerTimer()
+                            || EmbedPlayerHost.pauseForPowerTimer();
+                    evalJs("window.__meowPowerFire&&window.__meowPowerFire('pause')");
+                    if (nativePaused) {
+                        android.util.Log.i("MeowTv", "powerTimer: paused native player");
+                    }
+                }
+            };
+            ui.postDelayed(powerRunnable, delayMs);
+        });
+        return true;
+    }
+
+    @JavascriptInterface
+    public void cancelPowerTimer() {
+        if (!trustedOrigin()) return;
+        activity.runOnUiThread(this::cancelPowerTimerInternal);
+    }
+
+    private void cancelPowerTimerInternal() {
+        if (powerRunnable != null) {
+            ui.removeCallbacks(powerRunnable);
+            powerRunnable = null;
+        }
+        powerAction = null;
+        powerFireAt = 0;
+    }
+
+    /** {"active":bool,"action":"shutdown","remainingMs":812345} */
+    @JavascriptInterface
+    public String powerTimerState() {
+        if (!trustedOrigin()) return "{\"active\":false}";
+        String a = powerAction;
+        long left = a == null ? 0 : Math.max(0,
+                powerFireAt - android.os.SystemClock.elapsedRealtime());
+        return "{\"active\":" + (a != null) + ",\"action\":\""
+                + (a == null ? "" : a) + "\",\"remainingMs\":" + left + "}";
+    }
+
+    private void evalJs(String js) {
+        activity.runOnUiThread(() -> {
+            try {
+                if (activity instanceof MainActivity) {
+                    ((MainActivity) activity).evalJsForPower(js);
+                }
+            } catch (Throwable ignored) {
+            }
+        });
     }
 }

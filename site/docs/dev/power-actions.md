@@ -1,8 +1,8 @@
 # 倒计时电源动作（关机 / 休眠 / 退出应用）
 
-> **状态：设计稿（2026-11-23）。**
-> 已落地：PC 的「倒计时 → 系统睡眠」（`system_sleep` + `VideoPlayer.vue` 的 `setSleep()`）。
-> 未实现：PC 关机、TV/投影仪关机、手机退出应用、原生层定时器、动作选择菜单。
+> **状态：P2 已实现并在 .78 MuMu 实测通过（2026-11-23）；P1（PC 关机）与 P3（真关机）未完成。**
+> 已落地：动作选择菜单、TV/手机退出应用、TV 原生层定时器、无 root 自动降级；PC 的休眠 / 退出应用 / 仅暂停。
+> 未实现：PC 关机（`system_shutdown`）、TV/投影仪**真关机**（需 root 设备验证）。
 >
 > 本文只给方案与落点，改代码前读 [端与尺寸适配](./device-adaptive.md) 的 §1 与 §5。
 
@@ -270,12 +270,12 @@ quit 失败
 
 ## 10. 分阶段落地
 
-| 阶段 | 内容 | 改动面 | 可独立验收 |
+| 阶段 | 内容 | 改动面 | 状态 |
 |---|---|---|---|
-| P1 | `utils/powerActions.ts` + PC 关机命令 + 菜单动作/时间两级改造 | Web + Tauri | ✅ 纯 PC 可验 |
-| P2 | Android `quitApp` + `powerCaps` + 原生定时器 | TV APK | ✅ 手机/TV 可验 |
-| P3 | Android `shutdownSystem`（root） | TV APK | ⚠️ 需真机 root |
-| P4 | 指南与能力卡同步 | `guide/playback.md`、`reference/compatibility.md` | ✅ 文档站构建 |
+| P1 | `utils/powerActions.ts` + PC 关机命令 + 菜单动作/时间两级改造 | Web + Tauri | 菜单与 `powerActions.ts` 已完成；PC 关机未做 |
+| P2 | Android `quitApp` + `powerCaps` + 原生定时器 | TV APK | ✅ 已完成，.78 实测 |
+| P3 | Android `shutdownSystem`（root） | TV APK | 代码已完成；**真关机待 root 设备验证** |
+| P4 | 指南与能力卡同步 | `guide/playback.md`、`reference/compatibility.md` | ✅ 文档已更新 |
 
 P1 不依赖 Android，先做；P3 在拿到 root 设备前不要动。
 
@@ -300,3 +300,38 @@ P1 不依赖 Android，先做；P3 在拿到 root 设备前不要动。
 - `dev/device-adaptive.md`：§1.4 的能力表补 `hasSystemShutdown()` / `powerCaps()` 两行（该表已有 `hasSystemSleep()`）。
 - `dev/tv-integration.md`：桥能力清单补 `powerCaps` / `quitApp` / `shutdownSystem` / `startPowerTimer` / `cancelPowerTimer` / `powerTimerState`。
 - `reference/compatibility.md` 的端支持：若关机仅在 root 设备可用，要写明前提。
+
+## 13. 实测记录（2026-11-23，MuMu .78）
+
+环境：MuMu 模拟器（SM-S9210 / Android 15 / SDK 35），`ro.debuggable=0`、**无 `su`**。
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| 桥方法齐全 | ✅ | `window.meowTv` 含 `powerCaps/powerProbeRoot/shutdownSystem/quitApp/startPowerTimer/cancelPowerTimer/powerTimerState` |
+| 能力探测 | ✅ | `powerCaps()` → `{"shutdown":"probe","quit":true}` |
+| root 探测 | ✅ | `powerProbeRoot()` → `{"ok":false,"reason":"NO_ROOT"}` |
+| 倒计时退出应用 | ✅ | `startPowerTimer(30000,'quit')` → 30s 后 `Process exited due to signal 9`，回桌面 |
+| 关机降级（无 root） | ✅ | UI 选「关机」→ 探测 NO_ROOT → 自动改 `quit`；`powerTimerState` 显示 `action:"quit"`；1 分钟后退出 |
+| 跨页恢复显示 | ✅ | 设 2/5 分钟定时 → 回首页 → 回播放页，菜单显示「定时退出应用·剩 1 分」 |
+| 跨页继续执行 | ✅ | 回首页后 `powerTimerState` 仍 `active:true` 且 remainingMs 递减，2 分钟后 signal 9 |
+| 跨页取消 | ✅ | 回播放页点「关闭定时」→ `powerTimerState` → `active:false`，屏幕显示「已取消定时」 |
+| 原生播放器 pause | ✅ | `openNative()` 进 NativePlayerActivity → 设 10s pause → 到点画面定格在 00:45、控制栏变播放三角（▶） |
+| 到点 shutdown 失败降级 | ⚠️ 逻辑已加未验 | 需 root 设备且授权过期才能触发，.78 无 root |
+| 真关机 | ⚠️ 未验证 | 设备无 root |
+
+### 13.2 第二轮补强（2026-11-24）
+
+评审发现并修掉的四个缺口（都在 worktree `feat/power-actions`）：
+
+1. **跨页面定时器**：`powerBridge.ts` 把全局回推函数做成模块级常驻，组件卸载只注销处理器；`onMounted` 用 `restorePowerTimerDisplay()` 从原生层恢复显示。原有实现卸载时 `delete __meowPowerFire` 会让到点 pause 静默失败。
+2. **到点 shutdown 失败降级**：`TvBridge.powerRunnable` 的 shutdown 分支失败后追加 `quitApp()`（原来只弹提示不降级）。
+3. **原生播放器 pause**：`NativePlayerActivity` / `EmbedPlayerHost` 各加静态弱引用 `pauseForPowerTimer()`（`setPlayWhenReady(false)`），到点先停原生播放器再回推 Web；两条路互不冲突。
+4. **删死代码**：`nativeBridge.ts` 的 `tvShutdown` / `tvQuit` 未被调用，已删（到点由原生层执行，多一条 JS 路径就多一个节流隐患）。
+
+### 13.1 实测踩到的坑
+
+1. **`powerTimerState()` 读不到状态**：`powerAction` / `powerFireAt` 未加 `volatile`，从 JavaBridge 线程读恒为 `active:false`。已修（两字段加 `volatile`）。
+2. **`input tap` 在 TV 横屏 WebView 上坐标落空**：遥控器是主输入；验 UI 点击用页面内 `element.click()`，不要用合成触摸。
+3. **python `http.server` 不支持 Range**：MP4 直链起播超时；测试视频用 Range 服务器（`tmp/2026-11-23-power-actions/range_server.py`）。
+4. **深链入口**：`am start -n com.meow.tv/.MainActivity -e url "http://meow.local/index.html#/play/library?direct=...&file=..."`；`K_URL` 只写不读，hash 必须走 intent 的 `url` extra。
+5. **测试用后端**：TV 连 OECT（`-e api http://192.168.1.20:30010`）只为页面不报错；直链播放不依赖后端站点。
