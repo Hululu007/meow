@@ -53,6 +53,14 @@ android {
 
     tasks.named('preBuild').configure { dependsOn 'syncWebAssets' }
 
+    /*
+     * 加密 Guard 壳（aiwex 系）需要在 APK 里放空壳 ARM .so：安装器才会把
+     * primaryCpuAbi 选成 arm64-v8a，壳的 .so 在 MuMu 的 houdini 下才加载得了。
+     * 默认关闭——正式 TV 包保持 targetSdk 34、无 native libs，避免整包变 ARM-only。
+     * 打 Guard 包：./gradlew assembleRelease -PmeowGuardAbi=true
+     */
+    def guardAbi = project.hasProperty('meowGuardAbi') && project.property('meowGuardAbi').toString() == 'true'
+
     defaultConfig {
         applicationId (project.findProperty("meowAppId") ?: "com.meow.tv")
         // 26 而不是 23：TV 网关复用 apiserver 源码后，core/DataPaths、core/VideoCache、
@@ -61,7 +69,9 @@ android {
         // 所以只能抬 minSdk，否则 API 23-25 的设备一进网关就 NoClassDefFoundError。
         // 实测目标设备：极米 Z6X Pro = Android 9 (API 28)，MuMu = API 30+，都够。
         minSdk 26
-        targetSdk 28
+        // Guard 包必须 28（Android 10+ 禁止 exec 应用目录里的 Go 代理）；
+        // 普通包保持 34。
+        targetSdk guardAbi ? 28 : 34
         // 与主版本对齐（AGENTS §4.1 的六处版本号之外，TV 是第七处）
         versionCode 1222
         versionName '1.2.22'
@@ -71,6 +81,11 @@ android {
     }
 
     buildFeatures { buildConfig true }
+
+    lint {
+        // targetSdk 28 是 Guard 包的硬需求；只在 Guard 包关掉这条过期检查。
+        if (guardAbi) disable 'ExpiredTargetSdkVersion'
+    }
 
     /**
      * 直接编译 apiserver 的源码，不再另写一份网关。
@@ -92,6 +107,9 @@ android {
     sourceSets {
         main {
             java.srcDirs += ["${file('../../../../')}/server/host/src/shared"]
+            if (guardAbi) {
+                jniLibs.srcDirs += ["${projectDir}/src/guardAbi/jniLibs"]
+            }
         }
     }
 
