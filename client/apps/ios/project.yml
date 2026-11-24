@@ -57,6 +57,8 @@ targets:
         # F: 静态链 + 固定基址（-no_pie）
         OTHER_LDFLAGS: "$(inherited) -Wl,-all_load $(SRCROOT)/build/libOpenJDK.a -Wl,-no_pie -lc++ -lz -liconv -framework Foundation -framework UIKit -framework WebKit -framework Network -framework Security"
         GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) MEOW_JVM_STATIC=1"
+        # Xcode 默认 ENABLE_PIE=YES 会加 -pie，覆盖 OTHER_LDFLAGS 里的 -no_pie
+        ENABLE_PIE: NO
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
 
