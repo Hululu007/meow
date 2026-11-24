@@ -121,6 +121,20 @@ const transcodeHint = ref('')
 
 /** 上一次进度回调的位置，用来算"播放器实际推进了多少秒" */
 let lastTickPos = 0
+/*
+ * 高丢帧自愈的重试预算（2026-11-24 实报「还在卡」）：
+ * 第一次 repair 可能因为上游探测超时/限流失败（code=probe_failed），
+ * 旧实现一次失败就永久放弃 → 用户整集都在卡。现在最多试 3 次、间隔 15 秒。
+ */
+let healAttempts = 0
+let healRetryAt = 0
+let healPayload: {
+  dropped: number
+  total: number
+  ratio: number
+  levelUrl?: string
+  height?: number
+} | null = null
 /** 播放器上报的累计观看秒数（每集从 0 重计），用于取增量 */
 let lastWatched = 0
 
@@ -880,6 +894,9 @@ const currentIndex = computed(() => {
 /** 切到指定集（上一集 / 下一集 / 选集面板共用） */
 function switchEpisode(i: number) {
   lastTickPos = 0
+  healAttempts = 0
+  healRetryAt = 0
+  healPayload = null
   lastWatched = 0
   const target = playlist.value[i]
   if (!target) return
@@ -1174,7 +1191,7 @@ function tryNative() {
  *
  * 已转好的分片是增量的：前几个分片就绪即可起播，不用等整片转完。
  */
-async function tryTranscode(src: string, copy = false, repair = false) {
+async function tryTranscode(src: string, copy = false, repair = false, startAt = 0) {
   const minH = healMinHeight
   healMinHeight = 0
   const myEpoch = playEpoch
@@ -1203,6 +1220,7 @@ async function tryTranscode(src: string, copy = false, repair = false) {
       headerStr,
       copy,
       repair,
+      startAt,
     )
     ;(window as unknown as { __meowLastTranscode?: unknown }).__meowLastTranscode = {
       ok: r.ok, state: r.state, code: r.code, error: r.error,
@@ -1244,10 +1262,12 @@ async function tryTranscode(src: string, copy = false, repair = false) {
         showSilentHint(
           repair && r.code === 'no_repair_encoder'
             ? '这个源的时间轴特殊，当前后端没有硬件编码器，无法在不降画质的前提下修复'
-            : '原画转封装不可用，继续原样播放',
+            : '原分辨率修复不可用，继续原样播放',
           false,
           false,
         )
+        // 探测超时/上游限流是暂时的：15 秒后自动再试（最多 3 次）
+        if (repair && canRetryRepair(r.code) && healAttempts < 3) scheduleHealRetry()
         return
       }
       if (r.code === 'hw_busy') {
@@ -1414,7 +1434,8 @@ function unsupportedContainer(url: string): boolean {
  * 实测 WebView 110 能播大多数 MKV/H265，先直连才是对的；
  * 只有真的报错了才需要转码。
  */
-async function tryLibraryTranscode(lib: string, file: string, copy = false, repair = false) {
+async function tryLibraryTranscode(lib: string, file: string, copy = false, repair = false,
+                                  startAt = 0) {
   dbg('startTranscode', file)
   // 转码一旦开始，之前那条错误页要收掉（否则错误页盖着、用户在等转码却看着报错）
   playError.value = ''
@@ -1435,7 +1456,7 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false, repa
     const r = await waitLibraryTranscode(lib, file, (sec, ph, stalled) => {
       if (myEpoch !== playEpoch) return
       loadingText.value = transcodePhaseText(sec, ph, stalled)
-    }, undefined, copy, repair)
+    }, undefined, copy, repair, startAt)
     if (myEpoch !== playEpoch) {
       if (r.state === 'running') void cancelTranscode({ lib, path: file, copy, repair })
       return
@@ -1461,6 +1482,7 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false, repa
           false,
           false,
         )
+        if (repair && canRetryRepair(r.code) && healAttempts < 3) scheduleHealRetry()
         return
       }
       if (r.code === 'hw_busy') {
@@ -1843,6 +1865,27 @@ function unwrapProxyUrl(u: string): string {
   return u
 }
 
+/**
+ * 这些失败是"暂时性"的（上游探测超时/限流/分片抖动），值得 15 秒后重试；
+ * no_repair_encoder 是硬条件，重试也没用。
+ */
+function canRetryRepair(code?: string): boolean {
+  return code === 'probe_failed' || code === 'source_timeout' || code === 'timeout'
+    || code === 'stalled' || code === 'short_output'
+}
+
+/** 安排一次自愈重试（最多 3 次，间隔 15 秒） */
+function scheduleHealRetry() {
+  const ep = playEpoch
+  healRetryAt = Date.now() + 15_000
+  transcodeTried = false
+  showSilentHint('修复暂时失败（片源探测超时/上游限流），15 秒后自动重试', false, false)
+  window.setTimeout(() => {
+    if (ep !== playEpoch) return
+    if (healPayload) void onHighDrop(healPayload)
+  }, 15_500)
+}
+
 async function onHighDrop(p: {
   dropped: number
   total: number
@@ -1851,6 +1894,7 @@ async function onHighDrop(p: {
   height?: number
 }) {
   if (transcodeTried) return
+  if (healAttempts >= 3 || Date.now() < healRetryAt) return
   const libMode = isLibraryPlay.value
   const u = typeof play.value?.url === 'string' ? play.value.url : ''
   if (libMode) {
@@ -1870,7 +1914,8 @@ async function onHighDrop(p: {
   if (!ok || transcodeTried) return
   dbg('highDrop', JSON.stringify(p))
   transcodeTried = true
-  refreshSeekAt.value = lastTickPos > 1 ? lastTickPos : 0
+  healAttempts++
+  healPayload = p
   healMinHeight = p.height && p.height > 0 ? p.height : 0
   healPrev = { url: u, header: typeof play.value?.header === 'string' ? play.value.header : undefined }
   /*
@@ -1879,9 +1924,26 @@ async function onHighDrop(p: {
    *   稳定丢 28% 帧；copy 保留码流结构，重封装后照样丢。只有**保持原分辨率
    *   用显卡重编**（NVENC，4K 仍是 4K）实测丢帧 0。所以自愈改走 repair。
    */
-  showSilentHint('检测到画面丢帧，正在用显卡按原分辨率重编码（分辨率不变）…', false, false)
+  /*
+   * 从当前位置起修（2026-11-24 实报「还在卡」）：用户往往看到第 10 分钟才丢帧，
+   * 从头转要等转码追上播放点。后端用 -ss 快进 + 黑场填充把时间轴垫到当前位置，
+   * 前端时间/进度/弹幕/字幕都还是绝对时间，不需要偏移换算。
+   */
+  /*
+   * 用播放器**实时**位置（getTime）而不是 lastTickPos：进度回调 5 秒一次，
+   * 用户刚拖动过时 lastTickPos 还停在旧位置（实测 seek 到 20s 后自愈仍从 0 起转）。
+   */
+  const nowPos = Math.max(lastTickPos || 0, Number(player.value?.getTime?.() || 0))
+  const startAt = Math.max(0, Math.floor(nowPos) - 8)
+  /*
+   * 修复流的可播范围是 [startAt, 已转出]：切换后不能直接 seek 回当前点
+   * （转码刚起步，那个位置还没转出来，会卡住）。从 startAt+2 起播，
+   * 只回退 6 秒左右，随后正常往前播。
+   */
+  refreshSeekAt.value = startAt + 2
+  showSilentHint('检测到画面丢帧，正在用显卡从当前位置按原分辨率修复（分辨率不变）…', false, false)
   if (libMode) {
-    void tryLibraryTranscode(libraryLib.value, libraryFile.value, false, true)
+    void tryLibraryTranscode(libraryLib.value, libraryFile.value, false, true, startAt)
     return
   }
   /*
@@ -1889,7 +1951,7 @@ async function onHighDrop(p: {
    * hls.js 的 level url 常被后端代理成 /api/proxy/stream?url=...，要还原成源站地址。
    */
   const level = p.levelUrl && /^https?:/i.test(p.levelUrl) ? unwrapProxyUrl(p.levelUrl) : ''
-  void tryTranscode(level || u, false, true)
+  void tryTranscode(level || u, false, true, startAt)
 }
 
 async function onPlayerError(payload: PlayErrorPayload | string) {

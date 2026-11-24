@@ -688,10 +688,14 @@ export async function startLibraryTranscode(
   copy = false,
   /** repair=1：保持原分辨率用显卡重编（治"能解但持续丢帧"的 4K 源） */
   repair = false,
+  /** 修复起点（秒）：已看到中途就从当前位置起转，前端补黑场保持时间轴绝对 */
+  start = 0,
 ): Promise<TranscodeResult> {
   const q = new URLSearchParams({ lib, path })
-  if (repair) q.set('repair', '1')
-  else if (copy) q.set('copy', '1')
+  if (repair) {
+    q.set('repair', '1')
+    if (start > 1) q.set('start', String(Math.floor(start)))
+  } else if (copy) q.set('copy', '1')
   const r = await fetch(`${apiBase()}/api/transcode?${q}`)
   if (!r.ok) {
     // 后端 stage 前的预检（ffmpeg 缺失等）返回 502 + 人话 msg——
@@ -852,10 +856,11 @@ export async function waitLibraryTranscode(
   timeoutMs = TRANSCODE_BASE_MS,
   copy = false,
   repair = false,
+  start = 0,
 ): Promise<TranscodeResult> {
   return waitTranscodeCore(
     {
-      start: () => startLibraryTranscode(lib, path, copy, repair),
+      start: () => startLibraryTranscode(lib, path, copy, repair, start),
       poll: async () => {
         // 模式参与后端幂等键：轮询必须带同一个模式，否则查到的是别的任务
         const q = new URLSearchParams({ lib, path, mode: 'status' })
@@ -909,12 +914,15 @@ export async function startTranscode(
   header = '',
   copy = false,
   repair = false,
+  start = 0,
 ): Promise<TranscodeResult> {
   const q = new URLSearchParams({ src })
   // 源站要求的 UA/Referer：转码是后端自己拉流，不带就是 404（咕噜4K 实测）
   if (header) q.set('header', header)
-  if (repair) q.set('repair', '1')
-  else if (copy) q.set('copy', '1')
+  if (repair) {
+    q.set('repair', '1')
+    if (start > 1) q.set('start', String(Math.floor(start)))
+  } else if (copy) q.set('copy', '1')
   const r = await fetch(`${apiBase()}/api/transcode?${q}`)
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   return (await r.json()) as TranscodeResult
@@ -930,10 +938,11 @@ export async function waitTranscode(
   header = '',
   copy = false,
   repair = false,
+  start = 0,
 ): Promise<TranscodeResult> {
   return waitTranscodeCore(
     {
-      start: () => startTranscode(src, header, copy, repair),
+      start: () => startTranscode(src, header, copy, repair, start),
       poll: async () => {
         const q = new URLSearchParams({ src, mode: 'status' })
         if (repair) q.set('repair', '1')

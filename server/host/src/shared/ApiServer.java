@@ -2448,6 +2448,8 @@ public class ApiServer {
      * 为 null 直接跳过（JVM 也加载不了 Android .so，见 issue #10）。
      */
     private static void seedJarInitBeforeInstance(Class<?> siteClass) {
+        // 加密 Guard 壳解出来的 payload 没有壳的 Init，走 InitOrigin.init + 远程配置。
+        if (core.Jars.initGuardPayload(siteClass)) return;
         try {
             Object ctx = platform.Bridge.context();
             if (ctx == null) return;
@@ -12321,7 +12323,15 @@ public class ApiServer {
             return;
         }
         // copy=1 remux（视频原样 copy）/ repair=1 原分辨率重编（修复丢帧）
-        core.Transcode.Job j = core.Transcode.ensure(src, false, srcHeader, preferCopy, repair);
+        // start=N：修复从源的第 N 秒开始（用户已看到中途，从头转要等几分钟才追上）
+        int startSec = 0;
+        try {
+            startSec = Integer.parseInt(trimToEmpty(q.get("start")));
+        } catch (Exception ignored) {
+            startSec = 0;
+        }
+        startSec = Math.max(0, Math.min(startSec, 24 * 3600));
+        core.Transcode.Job j = core.Transcode.ensure(src, false, srcHeader, preferCopy, repair, startSec);
         sendJson(ex, 200, core.Transcode.toJson(j).toString());
     }
 

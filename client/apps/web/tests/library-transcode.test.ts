@@ -204,7 +204,7 @@ describe('F5 容器预判（不能播的内核直接转码，不白等 watchdog�
   it('预判失败/异常能让错误页显示出来（loading 必须收尾）', () => {
     const i = src.indexOf('async function tryLibraryTranscode')
     // 2400：函数里还要算编码信息与提示文案（2026-11-23），窗口给足但仍只覆盖这一个函数
-    const body = src.slice(i, i + 4400)
+    const body = src.slice(i, i + 5600)
     expect((body.match(/loading\.value = false/g) || []).length).toBeGreaterThanOrEqual(2)
   })
 })
@@ -270,7 +270,8 @@ describe('可播判据与并发（2026-11-17 第二轮回修：播几秒就卡�
     expect(i).toBeGreaterThan(-1)
     const body = s.slice(i, s.indexOf('private static int countSegments', i))
     expect(body).not.toContain('j.state = "ready"')
-    expect(body).toContain('j.readySeconds = n * SEG_SECONDS')
+    // 中途修复会把 startOffset 加进已转出时长；只锁"由分片数推算"这个语义
+    expect(body).toContain('n * SEG_SECONDS')
   })
 
   it('复用 running 任务前要验进程还活着（否则任务永远停在 running）', () => {

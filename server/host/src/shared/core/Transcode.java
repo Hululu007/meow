@@ -76,6 +76,8 @@ public final class Transcode {
          * 只能按原分辨率用显卡重编一遍（4K 仍是 4K，不降画质）。
          */
         boolean repair = false;
+        /** repair 从源的第几秒开始（0 = 从头）。前端播放时间 = 修复流时间 + startOffset。 */
+        int startOffset = 0;
         /** 已回退过几次（只回退一次，避免来回折腾）。 */
         int hwRetry = 0;
         /** 短产出自动重试次数（回环流断开会让 ffmpeg 正常退出但只转出一段）。 */
@@ -626,6 +628,18 @@ public final class Transcode {
      */
     public static Job ensure(String sourceUrl, boolean forceVideo, String headerJson,
                              boolean preferCopy, boolean repair) {
+        return ensure(sourceUrl, forceVideo, headerJson, preferCopy, repair, 0);
+    }
+
+    /**
+     * startSec &gt; 0：repair 从源的第 startSec 秒开始转（`-ss` 输入快进）。
+     *
+     * <p>为什么必须支持：用户往往已经看到第 10 分钟才出现丢帧；从头转 4K 要等
+     * 转码追上播放点（几分钟）。从当前位置起转，2 秒分片几秒内就能续播。
+     * 修复流的清单时间轴从 0 开始，前端用 {@link Job#startOffset} 换算进度。
+     */
+    public static Job ensure(String sourceUrl, boolean forceVideo, String headerJson,
+                             boolean preferCopy, boolean repair, int startSec) {
         String id = idFor(sourceUrl, preferCopy, repair);
         /*
          * 单集锁（S1，2026-11-17）：前端 start 请求与 2 秒一次的轮询可能
@@ -633,12 +647,12 @@ public final class Transcode {
          */
         synchronized (lockFor(id)) {
             return ensure0(sourceUrl, forceVideo, id,
-                    headerJson == null ? "" : headerJson, preferCopy, repair);
+                    headerJson == null ? "" : headerJson, preferCopy, repair, startSec);
         }
     }
 
     private static Job ensure0(String sourceUrl, boolean forceVideo, String id, String headerJson,
-                               boolean preferCopy, boolean repair) {
+                               boolean preferCopy, boolean repair, int startSec) {
         Job found = JOBS.get(id);
         if (found != null) {
             if ("running".equals(found.state)) {
@@ -678,6 +692,20 @@ public final class Transcode {
         if (playable(id) && !forceVideo) {
             j.state = "ready";
             j.lastAccess = System.currentTimeMillis();
+            /*
+             * ★ 复用磁盘产物时也要补齐元数据（2026-11-24）：原来直接返回一个
+             * 空 Job，copy/repair 的前端门槛（copyVideo / outHeight / startOffset）
+             * 全拿不到 —— 重启应用后播放已转好的 remux 会被判成"无法原画转封装"。
+             */
+            j.repair = repair;
+            if (repair) j.startOffset = readStartOffset(id);
+            String ff0 = ffmpegPath();
+            if ((preferCopy || repair) && j.probeSnap == null && !ff0.isEmpty()) {
+                Probe p0 = probe(ff0, sourceUrl, headerJson);
+                if (preferCopy) applyCopyPreference(p0);
+                if (repair && p0 != null) p0.copyVideo = false;
+                j.probeSnap = p0;
+            }
             return j;
         }
         if ("running".equals(j.state)) return j;
@@ -726,7 +754,20 @@ public final class Transcode {
             // repair 必须重编码：不能被 probe 默认的"能 copy 就 copy"带走
             probe.copyVideo = false;
         }
-        if (repair && (probe == null || repairEncoder(ff) == null)) {
+        if (repair && probe == null) {
+            /*
+             * 探测失败 ≠ 没有编码器（2026-11-24 实报把两者混成一个 code，用户看到
+             * 「没有硬件编码器」但 caps 明明有 NVENC）。上游忙/限流/超时都会到这里，
+             * 前端看到 probe_failed 会在 15 秒后自动重试一次。
+             */
+            j.state = "failed";
+            j.phase = "failed";
+            j.code = "probe_failed";
+            j.error = "片源探测失败（上游超时或限流），稍后会自动重试修复。";
+            System.err.println("[transcode] job " + id + " repair probe failed");
+            return j;
+        }
+        if (repair && repairEncoder(ff) == null) {
             /*
              * 没有硬件编码器时**不做软件 4K 重编**（x86 上也许能跑，但 4K 软编
              * 追不上播放；ARM NAS 上必死）。直接失败，让前端恢复原样播放并提示，
@@ -763,6 +804,15 @@ public final class Transcode {
         }
         j.probeSnap = probe;
         j.repair = repair;
+        j.startOffset = repair ? Math.max(0, startSec) : 0;
+        /*
+         * 中途修复：先生成"0..startOffset"的黑场填充。失败就退回从头修
+         * （startOffset=0），行为与之前一致，不会因为填充失败而整单失败。
+         */
+        if (j.repair && j.startOffset > 1 && !ensureFiller(j, ff, j.startOffset)) {
+            j.startOffset = 0;
+        }
+        if (repair) saveStartOffset(id, j.startOffset);
         if (probe != null) saveDuration(id, probe.duration);
         j.ffPath = ff;
         try {
@@ -794,15 +844,21 @@ public final class Transcode {
 
     /** repair=true：原分辨率重编码修复（片库 4K 高丢帧自愈）。 */
     public static Job ensureLocal(String source, String key, boolean preferCopy, boolean repair) {
+        return ensureLocal(source, key, preferCopy, repair, 0);
+    }
+
+    /** startSec &gt; 0：修复从第 startSec 秒开始（片库同样支持中途续修）。 */
+    public static Job ensureLocal(String source, String key, boolean preferCopy, boolean repair,
+                                  int startSec) {
         String id = idFor(key, preferCopy, repair);
         // 单集锁：与 ensure 同理（幂等键是 lib|path，同一集并发点击只起一个任务）
         synchronized (lockFor(id)) {
-            return ensureLocal0(source, key, id, preferCopy, repair);
+            return ensureLocal0(source, key, id, preferCopy, repair, startSec);
         }
     }
 
     private static Job ensureLocal0(String source, String key, String id, boolean preferCopy,
-                                    boolean repair) {
+                                    boolean repair, int startSec) {
         Job found = JOBS.get(id);
         if (found != null) {
             if ("running".equals(found.state)) {
@@ -839,6 +895,16 @@ public final class Transcode {
         if (playable(id)) {
             j.state = "ready";
             j.lastAccess = System.currentTimeMillis();
+            // 同 ensure0：复用磁盘产物也要有 probe/模式元数据，否则 copy/repair 门槛失效
+            j.repair = repair;
+            if (repair) j.startOffset = readStartOffset(id);
+            String ff0 = ffmpegPath();
+            if ((preferCopy || repair) && j.probeSnap == null && !ff0.isEmpty()) {
+                Probe p0 = probe(ff0, source);
+                if (preferCopy) applyCopyPreference(p0);
+                if (repair && p0 != null) p0.copyVideo = false;
+                j.probeSnap = p0;
+            }
             return j;
         }
         if ("running".equals(j.state)) return j;
@@ -867,7 +933,15 @@ public final class Transcode {
         Probe probe = probe(ff, source);
         if (preferCopy) applyCopyPreference(probe);
         if (repair && probe != null) probe.copyVideo = false;
-        if (repair && (probe == null || repairEncoder(ff) == null)) {
+        if (repair && probe == null) {
+            j.state = "failed";
+            j.phase = "failed";
+            j.code = "probe_failed";
+            j.error = "片源探测失败（上游超时或限流），稍后会自动重试修复。";
+            System.err.println("[transcode] job " + id + " repair probe failed");
+            return j;
+        }
+        if (repair && repairEncoder(ff) == null) {
             j.state = "failed";
             j.phase = "failed";
             j.code = "no_repair_encoder";
@@ -898,6 +972,11 @@ public final class Transcode {
         stopOtherJobs(j.id, hwCapable);
         j.probeSnap = probe;
         j.repair = repair;
+        j.startOffset = repair ? Math.max(0, startSec) : 0;
+        if (j.repair && j.startOffset > 1 && !ensureFiller(j, ff, j.startOffset)) {
+            j.startOffset = 0;
+        }
+        if (repair) saveStartOffset(id, j.startOffset);
         if (probe != null) saveDuration(id, probe.duration);
         j.ffPath = ff;
         try {
@@ -1480,7 +1559,7 @@ public final class Transcode {
         cleanSegments(j.id);
         j.hw = hw;
         j.ffPath = ff;
-        List<String> cmd = hlsCommand(ff, j.id, source, p, hw, j.header, j.repair);
+        List<String> cmd = hlsCommand(ff, j.id, source, p, hw, j.header, j.repair, j.startOffset);
         java.nio.file.Files.createDirectories(dirOf(j.id));
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectErrorStream(true);
@@ -1526,12 +1605,163 @@ public final class Transcode {
         }
     }
 
+    /** 修复起点落盘（重启后复用产物时，页面上的"已转出 x 秒"和提示要靠它）。 */
+    private static Path startOffsetFile(String id) {
+        return dirOf(id).resolve(".start-offset");
+    }
+
+    private static int readStartOffset(String id) {
+        try {
+            Path p = startOffsetFile(id);
+            if (!java.nio.file.Files.isRegularFile(p)) return 0;
+            return Integer.parseInt(new String(java.nio.file.Files.readAllBytes(p),
+                    java.nio.charset.StandardCharsets.UTF_8).trim());
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private static void saveStartOffset(String id, int v) {
+        try {
+            java.nio.file.Files.write(startOffsetFile(id),
+                    String.valueOf(v).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** 修复用的原始清单（ffmpeg 写它；对外提供的 index.m3u8 是"黑场 + 原始"合并版）。 */
+    private static Path rawPlaylistOf(String id) {
+        return dirOf(id).resolve("raw.m3u8");
+    }
+
+    /** 黑场填充清单（与分片同目录，文件名 fill-*.ts —— 路由只允许单段文件名）。 */
+    private static Path fillPlaylistOf(String id) {
+        return dirOf(id).resolve("fill.m3u8");
+    }
+
+    /**
+     * 生成"从 0 到 startSec"的黑场填充（2026-11-24）。
+     *
+     * <p>要解决的是**中途修复**：用户看到第 10 分钟才丢帧，如果修复流从 0 开始、
+     * 清单也从 0 计时，播放器 seek 到第 10 分钟时后续分片还没转出来。做法是
+     * 用 2 秒生成 640x360 的黑场片段把时间轴垫到 startSec，再 #EXT-X-DISCONTINUITY
+     * 接真实内容 —— 清单总时长、进度条、弹幕、字幕的绝对时间全都对得上，
+     * 前端不需要任何时间偏移。代价：往回拖到修复点之前是黑屏（可接受）。
+     */
+    private static boolean ensureFiller(Job j, String ff, int startSec) {
+        if (startSec <= 1) return false;
+        Path fl = fillPlaylistOf(j.id);
+        Path off = dirOf(j.id).resolve(".fill-offset");
+        try {
+            java.nio.file.Files.createDirectories(dirOf(j.id));
+            if (java.nio.file.Files.isRegularFile(fl) && java.nio.file.Files.isRegularFile(off)) {
+                String prev = new String(java.nio.file.Files.readAllBytes(off),
+                        java.nio.charset.StandardCharsets.UTF_8).trim();
+                if (String.valueOf(startSec).equals(prev)) return true;
+            }
+            try (java.util.stream.Stream<Path> st = java.nio.file.Files.list(dirOf(j.id))) {
+                st.filter(p -> p.getFileName().toString().startsWith("fill-")).forEach(p -> {
+                    try {
+                        java.nio.file.Files.deleteIfExists(p);
+                    } catch (Exception ignored) {
+                    }
+                });
+            } catch (Exception ignored) {
+            }
+            List<String> cmd = new ArrayList<>();
+            cmd.add(ff); cmd.add("-hide_banner"); cmd.add("-loglevel"); cmd.add("error"); cmd.add("-y");
+            cmd.add("-f"); cmd.add("lavfi"); cmd.add("-i"); cmd.add("color=black:s=640x360:r=25");
+            cmd.add("-f"); cmd.add("lavfi"); cmd.add("-i"); cmd.add("anullsrc=r=48000:cl=stereo");
+            cmd.add("-t"); cmd.add(String.valueOf(startSec));
+            cmd.add("-c:v"); cmd.add("libx264"); cmd.add("-preset"); cmd.add("ultrafast");
+            cmd.add("-tune"); cmd.add("stillimage"); cmd.add("-g"); cmd.add("50");
+            cmd.add("-pix_fmt"); cmd.add("yuv420p");
+            cmd.add("-c:a"); cmd.add("aac"); cmd.add("-b:a"); cmd.add("64k");
+            cmd.add("-f"); cmd.add("hls"); cmd.add("-hls_time"); cmd.add("10");
+            cmd.add("-hls_list_size"); cmd.add("0");
+            cmd.add("-hls_segment_filename"); cmd.add(dirOf(j.id).resolve("fill-%04d.ts").toString());
+            cmd.add(fl.toString());
+            ProcessBuilder pb = new ProcessBuilder(cmd);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            Thread drain = new Thread(() -> {
+                try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                        p.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
+                    while (r.readLine() != null) { /* discard */ }
+                } catch (Exception ignored) {
+                }
+            }, "fill-" + j.id);
+            drain.setDaemon(true);
+            drain.start();
+            boolean ok = p.waitFor(90, TimeUnit.SECONDS) && p.exitValue() == 0;
+            if (!ok) {
+                System.err.println("[transcode] filler failed for " + j.id + " start=" + startSec);
+                return false;
+            }
+            java.nio.file.Files.write(off, String.valueOf(startSec).getBytes(
+                    java.nio.charset.StandardCharsets.UTF_8));
+            System.err.println("[transcode] filler ok " + j.id + " " + startSec + "s");
+            return true;
+        } catch (Exception e) {
+            System.err.println("[transcode] filler error " + j.id + ": " + e);
+            return false;
+        }
+    }
+
+    /**
+     * 合并清单：黑场填充 + #EXT-X-DISCONTINUITY + 真实分片。
+     * ffmpeg 只写 raw.m3u8；对外 index.m3u8 每次分片增长后重写。
+     */
+    private static void composeMerged(String id) {
+        Job j = JOBS.get(id);
+        int off = j == null ? 0 : j.startOffset;
+        if (off <= 1) return;
+        try {
+            Path raw = rawPlaylistOf(id);
+            Path fill = fillPlaylistOf(id);
+            if (!java.nio.file.Files.isRegularFile(raw) || !java.nio.file.Files.isRegularFile(fill)) return;
+            List<String> fl = java.nio.file.Files.readAllLines(fill,
+                    java.nio.charset.StandardCharsets.UTF_8);
+            List<String> rw = java.nio.file.Files.readAllLines(raw,
+                    java.nio.charset.StandardCharsets.UTF_8);
+            StringBuilder sb = new StringBuilder();
+            sb.append("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:10\n")
+              .append("#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-INDEPENDENT-SEGMENTS\n");
+            for (String l : fl) {
+                String t = l.trim();
+                if (t.startsWith("#EXTINF") || t.endsWith(".ts")) sb.append(t).append('\n');
+            }
+            sb.append("#EXT-X-DISCONTINUITY\n");
+            for (String l : rw) {
+                String t = l.trim();
+                if (t.isEmpty() || t.startsWith("#EXTM3U") || t.startsWith("#EXT-X-VERSION")
+                        || t.startsWith("#EXT-X-TARGETDURATION") || t.startsWith("#EXT-X-MEDIA-SEQUENCE")
+                        || t.startsWith("#EXT-X-INDEPENDENT-SEGMENTS")
+                        || t.startsWith("#EXT-X-PLAYLIST-TYPE")) continue;
+                sb.append(t).append('\n');
+            }
+            Path out = playlistOf(id);
+            Path tmp = dirOf(id).resolve("index.tmp.m3u8");
+            java.nio.file.Files.write(tmp, sb.toString().getBytes(
+                    java.nio.charset.StandardCharsets.UTF_8));
+            try {
+                java.nio.file.Files.move(tmp, out,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (Exception e) {
+                java.nio.file.Files.deleteIfExists(tmp);
+            }
+        } catch (Exception e) {
+            System.err.println("[transcode] compose failed " + id + ": " + e);
+        }
+    }
+
     /** 删掉半成品分片与清单（硬解失败重试前清干净）。 */
     private static void cleanSegments(String id) {
         try (java.util.stream.Stream<Path> st = Files.list(dirOf(id))) {
             st.filter(p -> {
                 String n = p.getFileName().toString();
-                return n.startsWith("seg-") || "index.m3u8".equals(n) || DONE_FILE.equals(n);
+                return n.startsWith("seg-") || n.startsWith("index.tmp")
+                        || "index.m3u8".equals(n) || "raw.m3u8".equals(n) || DONE_FILE.equals(n);
             }).forEach(p -> {
                 try {
                     Files.deleteIfExists(p);
@@ -1554,19 +1784,25 @@ public final class Transcode {
      */
     private static String repairEncoder(String ff) {
         if (REPAIR_ENC_PROBED) return REPAIR_ENC;
-        REPAIR_ENC_PROBED = true;
+        /*
+         * ★ 只有拿到 -encoders 输出才写缓存（2026-11-24 实测踩过）：
+         * 冷启动/杀软扫描 105MB 的 ffmpeg.exe 时 runCapture 可能超时返回 null，
+         * 若此时把"没编码器"缓存下来，这台机器到重启前都修不了 4K（用户实报
+         * 「还在卡」的根因之一）。超时留到下次重试。
+         */
         try {
-            String enc = runCapture(new ArrayList<>(List.of(ff, "-hide_banner", "-encoders")), 15);
-            if (enc != null) {
-                for (String cand : new String[]{
-                        "hevc_nvenc", "h264_nvenc", "hevc_qsv", "h264_qsv", "hevc_amf", "h264_amf"}) {
-                    if (enc.contains(cand)) {
-                        REPAIR_ENC = cand;
-                        break;
-                    }
+            String enc = runCapture(new ArrayList<>(List.of(ff, "-hide_banner", "-encoders")), 30);
+            if (enc == null) return REPAIR_ENC;
+            REPAIR_ENC_PROBED = true;
+            for (String cand : new String[]{
+                    "hevc_nvenc", "h264_nvenc", "hevc_qsv", "h264_qsv", "hevc_amf", "h264_amf"}) {
+                if (enc.contains(cand)) {
+                    REPAIR_ENC = cand;
+                    break;
                 }
             }
         } catch (Throwable ignored) {
+            return REPAIR_ENC;
         }
         if (REPAIR_ENC != null) System.err.println("[transcode] repair encoder = " + REPAIR_ENC);
         return REPAIR_ENC;
@@ -1717,7 +1953,7 @@ public final class Transcode {
             + "请改用「原生播放器」（投影仪可硬解 4K），或换 1080p / H.264 线路。";
 
     private static List<String> hlsCommand(String ff, String id, String source, Probe p, boolean hw,
-                                           String header, boolean repair) {
+                                           String header, boolean repair, int startSec) {
         List<String> cmd = new ArrayList<>();
         boolean http = source.startsWith("http://") || source.startsWith("https://");
         cmd.add(ff);
@@ -1749,6 +1985,15 @@ public final class Transcode {
         if (hw) {
             cmd.add("-hwaccel"); cmd.add("rkmpp");
             cmd.add("-hwaccel_output_format"); cmd.add("drm_prime");
+        }
+        /*
+         * 修复从当前位置起转（2026-11-24）：`-ss` 必须放在 -i **前面**（输入快进，
+         * 秒级完成；放后面是解码后丢弃，4K 要等整段解完）。实测远程 4K HLS
+         * `-ss 390` 再编 6 秒只要 5 秒。
+         * 输出时间轴从 0 开始，前端用 startOffset 换算显示的绝对进度。
+         */
+        if (repair && startSec > 1) {
+            cmd.add("-ss"); cmd.add(String.valueOf(startSec));
         }
         cmd.add("-i"); cmd.add(source);
         /*
@@ -1887,7 +2132,8 @@ public final class Transcode {
         cmd.add("-hls_flags"); cmd.add("independent_segments");
         cmd.add("-hls_segment_filename");
         cmd.add(dirOf(id).resolve("seg-%05d.ts").toString());
-        cmd.add(playlistOf(id).toString());
+        // 中途修复：ffmpeg 只写 raw.m3u8，对外 index.m3u8 由 composeMerged 合并
+        cmd.add(startSec > 1 ? rawPlaylistOf(id).toString() : playlistOf(id).toString());
         return cmd;
     }
 
@@ -1931,6 +2177,7 @@ public final class Transcode {
                 if (n > lastSeg) {
                     lastSeg = n;
                     lastProgress = System.currentTimeMillis();
+                    composeMerged(j.id);
                 } else if (System.currentTimeMillis() - lastProgress > HANG_NO_SEGMENT_MS) {
                     try {
                         proc.destroyForcibly();
@@ -1977,7 +2224,7 @@ public final class Transcode {
              */
             j.segments = countSegments(j.id);
             double srcDur = j.probeSnap != null ? j.probeSnap.duration : 0;
-            double gotDur = j.segments * (double) SEG_SECONDS;
+            double gotDur = j.startOffset + j.segments * (double) SEG_SECONDS;
             if (srcDur > 30 && gotDur < srcDur - 15) {
                 /*
                  * ★ 短产出自动重试（2026-11-21 OECT 实测）：SMB 回环流被对端
@@ -2011,6 +2258,7 @@ public final class Transcode {
                         + (int) gotDur + "s of " + (int) srcDur + "s -> failed");
                 return;
             }
+            composeMerged(j.id);
             markDone(j.id);
             j.state = "ready";
             j.phase = "ready";
@@ -2116,7 +2364,7 @@ public final class Transcode {
         int n = countSegments(id);
         if (n > j.segments) j.lastSegmentAt = System.currentTimeMillis();
         j.segments = n;
-        j.readySeconds = n * SEG_SECONDS;
+        j.readySeconds = (j.startOffset > 1 ? j.startOffset : 0) + n * SEG_SECONDS;
         return j;
     }
 
@@ -2198,6 +2446,8 @@ public final class Transcode {
                 o.put("outPixfmt", "yuv420p");
                 // 修复必须保持分辨率：前端拿它做"不许降画质"的硬门槛
                 o.put("outHeight", p.height);
+                // 修复流从源的 startOffset 秒开始：前端显示进度 = 流时间 + 它
+                o.put("startOffset", j.startOffset);
             } else {
                 o.put("outVcodec", "h264");
                 o.put("outPixfmt", "yuv420p");

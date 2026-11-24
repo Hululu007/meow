@@ -45,12 +45,32 @@ describe('4K 丢帧修复：原分辨率显卡重编', () => {
     expect(T).toContain('idFor(key, preferCopy, repair)')
   })
 
-  it('没有硬件编码器时明确失败，不偷偷缩到 1080p', () => {
+  it('探测失败与"没有硬件编码器"分开报，且不偷偷缩到 1080p', () => {
+    // 2026-11-24 实报：探测超时被报成"没有硬件编码器"，用户看到的提示完全错
+    expect(T).toContain('probe_failed')
     expect(T).toContain('no_repair_encoder')
-    const i = T.indexOf('if (repair && (probe == null || repairEncoder(ff) == null))')
+    const i = T.indexOf('if (repair && repairEncoder(ff) == null)')
     expect(i).toBeGreaterThan(-1)
     const body = T.slice(i, i + 700)
     expect(body).toContain('无法在不降分辨率的前提下修复')
+  })
+
+  it('中途修复：-ss 快进 + 黑场填充 + 合并清单（时间轴保持绝对）', () => {
+    // 用户看到第 10 分钟才丢帧：从头转要等几分钟才追上播放点
+    expect(T).toContain('ensureFiller')
+    expect(T).toContain('composeMerged')
+    expect(T).toContain('#EXT-X-DISCONTINUITY')
+    expect(T).toContain('raw.m3u8')
+    const i = T.indexOf('if (repair && startSec > 1)')
+    expect(i).toBeGreaterThan(-1)
+    expect(T.slice(i, i + 120)).toContain('"-ss"')
+  })
+
+  it('自愈失败可重试（probe_failed 最多 3 次、间隔 15 秒）', () => {
+    expect(PLAY).toContain('canRetryRepair')
+    expect(PLAY).toContain('scheduleHealRetry')
+    expect(PLAY).toContain("code === 'probe_failed'")
+    expect(PLAY).toContain('healAttempts < 3')
   })
 
   it('输出高度按源分辨率上报（前端拿它做"不许降画质"的硬门槛）', () => {
@@ -63,9 +83,9 @@ describe('4K 丢帧修复：原分辨率显卡重编', () => {
   it('高丢帧自愈走 repair，不再走 copy 转封装', () => {
     const i = PLAY.indexOf('async function onHighDrop')
     expect(i).toBeGreaterThan(-1)
-    const body = PLAY.slice(i, i + 3200)
-    expect(body).toContain('tryTranscode(level || u, false, true)')
-    expect(body).toContain('tryLibraryTranscode(libraryLib.value, libraryFile.value, false, true)')
+    const body = PLAY.slice(i, i + 4200)
+    expect(body).toMatch(/tryTranscode\(level \|\| u, false, true/)
+    expect(body).toMatch(/tryLibraryTranscode\(libraryLib\.value, libraryFile\.value, false, true/)
     expect(body).not.toContain('tryTranscode(level || u, true)')
   })
 

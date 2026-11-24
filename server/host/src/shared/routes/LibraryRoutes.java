@@ -866,7 +866,15 @@ public final class LibraryRoutes {
             return;
         }
         // copy=1 remux / repair=1 原分辨率重编（修复丢帧）
-        core.Transcode.Job j = core.Transcode.ensureLocal(source, key, preferCopy, repair);
+        // start=N：修复从第 N 秒开始（中途丢帧不用从头等到当前位置）
+        int startSec = 0;
+        try {
+            startSec = Integer.parseInt(Api.trimToEmpty(q.get("start")));
+        } catch (Exception ignored) {
+            startSec = 0;
+        }
+        startSec = Math.max(0, Math.min(startSec, 24 * 3600));
+        core.Transcode.Job j = core.Transcode.ensureLocal(source, key, preferCopy, repair, startSec);
         Api.sendJson(ex, 200, core.Transcode.toJson(j).toString());
     }
 

@@ -69,7 +69,7 @@ describe('片库转码兜底：必须用 lib+path', () => {
     const code = codeOnly(PLAY)
     expect(code).toContain('async function tryLibraryTranscode')
     const i = code.indexOf('async function tryLibraryTranscode')
-    const body = code.slice(i, i + 600)
+    const body = code.slice(i, i + 800)
     expect(body).toContain('waitLibraryTranscode(lib, file')
   })
 
