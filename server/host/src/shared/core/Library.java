@@ -268,10 +268,62 @@ public final class Library {
     public static JSONObject list(String libId, String rel) throws Exception {
         JSONObject lib = findLib(libId);
         if (lib == null) throw new IllegalArgumentException("未知片库：" + libId);
+        return browse(lib, rel);
+    }
+
+    /**
+     * 列目录（**未保存的候选片库**也能列）。#5：添加弹框要在保存前浏览
+     * SMB/WebDAV 的目录，不能先落盘再让用户改。
+     *
+     * <p>本地目录不走这里：它只允许在配置好的根内浏览（`LibraryRoots` 的
+     * 白名单），不能拿一个任意绝对路径当根。
+     */
+    public static JSONObject browse(JSONObject lib, String rel) throws Exception {
+        if (lib == null) throw new IllegalArgumentException("lib required");
         String type = lib.optString("type", "webdav");
         if ("local".equals(type)) return listLocal(lib, rel);
         if ("smb".equals(type)) return listSmb(lib, rel);
         return listWebdav(lib, rel);
+    }
+
+    /**
+     * 把底层异常翻译成用户能照着修的一句话（#5）。
+     *
+     * <p>jcifs / OkHttp / WebDAV 的原文是英文栈信息（`STATUS_LOGON_FAILURE`、
+     * `Connection refused`），直接甩给用户等于没说。这里只按最可能的成因分类，
+     * 认不出来才退回原文（截断到 120 字，不把整段栈塞进弹框）。
+     */
+    public static String explain(Throwable t) {
+        StringBuilder sb = new StringBuilder();
+        for (Throwable c = t; c != null && sb.length() < 600; c = c.getCause()) {
+            String m = c.getClass().getSimpleName() + ": " + c.getMessage() + " ";
+            sb.append(m);
+        }
+        String s = sb.toString();
+        String low = s.toLowerCase();
+        if (low.contains("unknownhost") || low.contains("name or service not known")
+                || low.contains("nodename nor servname") || low.contains("no such host")) {
+            return "找不到这台主机，检查 IP / 主机名";
+        }
+        if (low.contains("connection refused") || low.contains("connectexception")) {
+            return "端口不通：SMB 默认 445，WebDAV 看实际端口";
+        }
+        if (low.contains("timed out") || low.contains("timeout") || low.contains("sockettimeout")) {
+            return "连接超时：网络不通或被防火墙拦住";
+        }
+        if (low.contains("logon_failure") || low.contains("logon failure")
+                || low.contains("smbauth") || low.contains("401") || low.contains("unauthorized")) {
+            return "账号或密码不对（域账号要把域名填「域」）";
+        }
+        if (low.contains("access_denied") || low.contains("403") || low.contains("forbidden")) {
+            return "没有访问权限（共享权限 / 目录权限）";
+        }
+        if (low.contains("bad_network_name") || low.contains("object_name_not_found")
+                || low.contains("not_found") || low.contains("404")) {
+            return "共享名或目录不存在：SMB 要写到共享名（smb://主机/共享名）";
+        }
+        String one = String.valueOf(t.getMessage());
+        return one.length() > 120 ? one.substring(0, 120) + "…" : one;
     }
 
     private static JSONObject listWebdav(JSONObject lib, String rel) throws Exception {
@@ -412,6 +464,108 @@ public final class Library {
         return resolveLocal(localRoot(lib), rel);
     }
 
+    /**
+     * 读一个库内小文本文件（`.strm` 直链、`.m3u` 清单）。#6
+     *
+     * <p>只读前 {@code maxBytes}：`.strm` 规定一行一个地址，超过 64KB 的
+     * 要么不是配置文件，要么源站被换成了别的东西 —— 不把整部片读进内存。
+     */
+    public static String readText(JSONObject lib, String rel, int maxBytes) throws Exception {
+        String type = lib.optString("type", "webdav");
+        byte[] data;
+        if ("local".equals(type)) {
+            java.nio.file.Path p = resolveLocalForStream(lib, rel);
+            long size = java.nio.file.Files.size(p);
+            if (size > maxBytes) throw new IllegalArgumentException("文件过大（不是直链文件）");
+            data = java.nio.file.Files.readAllBytes(p);
+        } else if ("smb".equals(type)) {
+            com.hierynomus.smbj.SMBClient client = new com.hierynomus.smbj.SMBClient();
+            com.hierynomus.smbj.connection.Connection conn = null;
+            try {
+                conn = client.connect(smbHost(lib));
+                com.hierynomus.smbj.session.Session session = authenticate(conn, lib);
+                com.hierynomus.smbj.share.DiskShare disk = (com.hierynomus.smbj.share.DiskShare)
+                        session.connectShare(smbShare(lib));
+                com.hierynomus.smbj.share.File f = disk.openFile(smbSubPath(lib, rel),
+                        java.util.EnumSet.of(com.hierynomus.msdtyp.AccessMask.GENERIC_READ),
+                        null,
+                        java.util.EnumSet.of(com.hierynomus.mssmb2.SMB2ShareAccess.FILE_SHARE_READ),
+                        com.hierynomus.mssmb2.SMB2CreateDisposition.FILE_OPEN,
+                        null);
+                try {
+                    java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                    byte[] buf = new byte[4096];
+                    long pos = 0;
+                    int n;
+                    while ((n = f.read(buf, pos, 0, buf.length)) > 0) {
+                        bos.write(buf, 0, n);
+                        pos += n;
+                        if (bos.size() > maxBytes) throw new IllegalArgumentException("文件过大（不是直链文件）");
+                    }
+                    data = bos.toByteArray();
+                } finally {
+                    try {
+                        f.close();
+                    } catch (Exception ignored) {
+                    }
+                }
+            } finally {
+                if (conn != null) {
+                    try {
+                        conn.close();
+                    } catch (Exception ignored) {
+                    }
+                }
+                try {
+                    client.close();
+                } catch (Exception ignored) {
+                }
+            }
+        } else {
+            String url = joinUrl(lib.optString("base", ""),
+                    lib.optString("root", "") + "/" + rel);
+            okhttp3.Request.Builder rb = new okhttp3.Request.Builder().url(url).get();
+            String user = lib.optString("user", "");
+            String pass = lib.optString("pass", "");
+            if (!user.isEmpty() || !pass.isEmpty()) {
+                String token = Base64.getEncoder()
+                        .encodeToString((user + ":" + pass).getBytes(StandardCharsets.UTF_8));
+                rb.header("Authorization", "Basic " + token);
+            }
+            try (okhttp3.Response resp = CLIENT.newBuilder()
+                    .readTimeout(12, java.util.concurrent.TimeUnit.SECONDS).build()
+                    .newCall(rb.build()).execute()) {
+                if (!resp.isSuccessful()) throw new IOException("HTTP " + resp.code());
+                okhttp3.ResponseBody b = resp.body();
+                if (b != null && b.contentLength() > maxBytes) {
+                    throw new IllegalArgumentException("文件过大（不是直链文件）");
+                }
+                data = b == null ? new byte[0] : b.bytes();
+            }
+        }
+        if (data.length > maxBytes) throw new IllegalArgumentException("文件过大（不是直链文件）");
+        return new String(data, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 解析 `.strm`：一行一个直链，`#` 开头是注释。返回第一个 http(s) 地址。
+     *
+     * <p>生态约定（Emby / Jellyfin / Kodi 同款）：`.strm` 只存一个 URL；
+     * 302 短链也照收 —— 播放时由 `/api/proxy/stream` 跟跳转。
+     */
+    public static String resolveStrm(JSONObject lib, String rel) throws Exception {
+        String text = readText(lib, rel, 64 * 1024);
+        for (String line : text.split("\\r?\\n")) {
+            String t = line.trim();
+            if (t.isEmpty() || t.startsWith("#")) continue;
+            if (!t.startsWith("http://") && !t.startsWith("https://")) {
+                throw new IllegalArgumentException("直链文件里不是 http(s) 地址");
+            }
+            return t;
+        }
+        throw new IllegalArgumentException("直链文件是空的（.strm 需要一行 http(s) 地址）");
+    }
+
     /** 供 ApiServer 的流式端点复用。 */
     public static String contentTypeOf(String name) {
         return guessContentType(name);
@@ -538,8 +692,14 @@ public final class Library {
         String pass = lib.optString("pass", "");
         String domain = lib.optString("domain", "");
         if (user.isEmpty()) {
+            /*
+             * smbj 不接受 null 密码：匿名/来宾登录会直接 NPE
+             * （"Cannot read the array length because password is null"），
+             * 用户看到的就是一句莫名其妙的英文。给空字符数组，让服务器
+             * 按匿名/来宾流程走（失败会有正常的鉴权错误，explain 能翻译）。
+             */
             return conn.authenticate(new com.hierynomus.smbj.auth.AuthenticationContext(
-                    null, null, null));
+                    "", new char[0], ""));
         }
         return conn.authenticate(new com.hierynomus.smbj.auth.AuthenticationContext(
                 user, pass.toCharArray(), domain.isEmpty() ? null : domain));
@@ -794,32 +954,46 @@ public final class Library {
         return sb.toString();
     }
 
-    /** 供外部做「测试连接」：确认认证与地址都对，顺便报出条目数。 */
+    /**
+     * 供外部做「测试连接」：确认认证与地址都对，顺便报出条目数。
+     *
+     * <p>#5：SMB/本地成功时一并返回**顶层目录**（`dirs`），弹框可直接进入浏览。
+     *
+     * <p>WebDAV 仍用 Depth:0（只验证认证与地址）：Depth:1 在超大目录上会把
+     * 测试连接拖慢甚至超时，浏览目录由独立的 `action=browse` 负责。
+     */
     public static JSONObject test(JSONObject lib) throws Exception {
         String type = lib.optString("type", "webdav");
         JSONObject out = new JSONObject();
-        if ("local".equals(type)) {
-            java.nio.file.Path root = localRoot(lib);
-            int n = 0;
-            try (java.util.stream.Stream<java.nio.file.Path> st = java.nio.file.Files.list(root)) {
-                n = (int) st.count();
-            }
+        if ("webdav".equals(type) || "http".equals(type) || type.isEmpty()) {
+            String target = joinUrl(lib.optString("base", ""), lib.optString("root", "") + "/");
+            String xml = propfind(lib, target, "0");
+            List<Item> items = parseMultiStatus(xml);
             out.put("ok", true);
-            out.put("entries", n);
+            out.put("entries", items.size());
+            out.put("dirs", new JSONArray());
             return out;
         }
-        if ("smb".equals(type)) {
-            // 直接复用 list：连不上会抛异常，正好是"测试失败"的语义
-            JSONObject r = listSmb(lib, "");
-            out.put("ok", true);
-            out.put("entries", r.optJSONArray("dirs").length() + r.optJSONArray("files").length());
-            return out;
-        }
-        String target = joinUrl(lib.optString("base", ""), lib.optString("root", "") + "/");
-        String xml = propfind(lib, target, "0");
-        List<Item> items = parseMultiStatus(xml);
+        JSONObject listed = browse(lib, "");
+        JSONArray dirs = listed.optJSONArray("dirs");
+        JSONArray files = listed.optJSONArray("files");
         out.put("ok", true);
-        out.put("entries", items.size());
+        out.put("entries", (dirs == null ? 0 : dirs.length()) + (files == null ? 0 : files.length()));
+        out.put("dirs", dirBrief(dirs));
+        return out;
+    }
+
+    /** dirs → 弹框只需要 name/path（别的字段别带，省一次序列化）。 */
+    private static JSONArray dirBrief(JSONArray dirs) throws Exception {
+        JSONArray out = new JSONArray();
+        if (dirs == null) return out;
+        for (int i = 0; i < dirs.length(); i++) {
+            JSONObject d = dirs.optJSONObject(i);
+            if (d == null) continue;
+            out.put(new JSONObject()
+                    .put("name", d.optString("name", ""))
+                    .put("path", d.optString("path", "")));
+        }
         return out;
     }
 

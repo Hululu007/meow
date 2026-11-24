@@ -186,8 +186,32 @@ public final class LibraryRoutes {
                     JSONObject r = core.Library.test(cfg);
                     Api.sendJson(ex, 200, r.toString());
                 } catch (Exception e) {
+                    // #5：不把 jcifs/OkHttp 的英文栈甩给用户，按成因给一句话
                     Api.sendJson(ex, 200, new JSONObject().put("ok", false)
-                            .put("msg", String.valueOf(e.getMessage())).toString());
+                            .put("msg", core.Library.explain(e)).toString());
+                }
+                return;
+            }
+            /*
+             * 保存前浏览候选片库（#5）：SMB/WebDAV 填完地址先列目录，
+             * 用户点选子目录作为 root，而不是靠猜层级。
+             * 只读；不落盘。
+             */
+            if ("browse".equalsIgnoreCase(q.getOrDefault("action", ""))) {
+                JSONObject in = body == null || body.trim().isEmpty() ? new JSONObject() : new JSONObject(body);
+                JSONObject cfg = in.optJSONObject("lib");
+                String rel = Api.trimToEmpty(in.optString("path", ""));
+                if (cfg == null) {
+                    Api.sendJson(ex, 400, "{\"code\":-1,\"msg\":\"lib required\"}");
+                    return;
+                }
+                try {
+                    JSONObject r = core.Library.browse(cfg, rel);
+                    r.put("ok", true);
+                    Api.sendJson(ex, 200, r.toString());
+                } catch (Exception e) {
+                    Api.sendJson(ex, 200, new JSONObject().put("ok", false)
+                            .put("msg", core.Library.explain(e)).toString());
                 }
                 return;
             }
@@ -277,6 +301,38 @@ public final class LibraryRoutes {
             } catch (Exception e) {
                 Api.sendJson(ex, 500, new JSONObject().put("code", -1)
                         .put("msg", String.valueOf(e.getMessage())).toString());
+            }
+            return;
+        }
+
+        /*
+         * `.strm` 直链解析（#6）：返回文件里的 http(s) 地址，前端按在线播放
+         * 处理（走 /api/proxy/stream，302 与防盗链都由代理层负责）。
+         * 必须在 libId 判空之前：它本身就带 lib+path。
+         */
+        if ("strm".equals(action)) {
+            String sLib = Api.trimToEmpty(q.get("lib"));
+            String sPath = Api.trimToEmpty(q.get("path"));
+            if (sLib.isEmpty() || sPath.isEmpty()) {
+                Api.sendJson(ex, 400, "{\"code\":-1,\"msg\":\"lib and path required\"}");
+                return;
+            }
+            JSONObject slib;
+            try {
+                slib = core.Library.findLib(sLib);
+            } catch (Exception e) {
+                slib = null;
+            }
+            if (slib == null) {
+                Api.sendJson(ex, 404, "{\"code\":-1,\"msg\":\"unknown library\"}");
+                return;
+            }
+            try {
+                String target = core.Library.resolveStrm(slib, sPath);
+                Api.sendJson(ex, 200, new JSONObject().put("ok", true).put("url", target).toString());
+            } catch (Exception e) {
+                Api.sendJson(ex, 200, new JSONObject().put("ok", false)
+                        .put("msg", core.Library.explain(e)).toString());
             }
             return;
         }
@@ -390,6 +446,25 @@ public final class LibraryRoutes {
         }
         if (lib == null) {
             Api.sendJson(ex, 404, "{\"code\":-1,\"msg\":\"unknown library\"}");
+            return;
+        }
+        /*
+         * `.strm` 不读它自己的字节（那只是个文本地址）：302 到代理层，
+         * 由 /api/proxy/stream 负责 Range、UA/Referer 与 302 跟随（#6）。
+         * 这样老客户端/直接点开 stream 地址也能播，不只是新前端。
+         */
+        if (path.toLowerCase().endsWith(".strm")) {
+            try {
+                String target = core.Library.resolveStrm(lib, path);
+                String loc = "/api/proxy/stream?url=" + urlEnc(target);
+                ex.getResponseHeaders().set("Location", loc);
+                ex.sendResponseHeaders(302, -1);
+                ex.close();
+            } catch (Exception e) {
+                // 这个方法是 throws IOException 的，不能用会抛 checked 的 JSONObject.put
+                Api.sendJson(ex, 200, "{\"ok\":false,\"msg\":"
+                        + JSONObject.quote(core.Library.explain(e)) + "}");
+            }
             return;
         }
         // 本地目录与 SMB 不是 HTTP，走各自分支；WebDAV 继续走下面的 HttpClient

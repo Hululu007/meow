@@ -1742,6 +1742,16 @@ public class ApiServer {
                 handleCast(ex);
                 return;
             }
+            /*
+             * 线路预检（#16）：候选线路先 GET Range: bytes=0-1，2 秒内判死活。
+             * 死链不再让播放器白等 12–45 秒看门狗。
+             *
+             * 必须显式注册（/api/line/* 否则会被站点分派当成 site="line"）。
+             */
+            if ("/api/line/probe".equals(path)) {
+                handleLineProbe(ex);
+                return;
+            }
             // 按需转码：浏览器放不了的格式（MKV/HEVC）现转 HLS，不动源文件
             if ("/api/transcode".equals(path)) {
                 handleTranscode(ex);
@@ -2703,9 +2713,15 @@ public class ApiServer {
              * ★ 必须排在 isScriptApi 与 instance() 之前：这类站点以前能导入
              *   （导入报告还写着"苹果CMS直连"），但 call() 没有 http 分支 →
              *   落到 jar 分支撞 ClassNotFoundException，每个站烧满超时还污染健康分。
+             *
+             * ★ #13（2026-11-24）：**脚本地址也是 http 开头**，必须先排除。
+             *   drpy 站的标准形态是 `"api":"http://…/drpy2.min.js"`；原来只看
+             *   startsWith("http")，整类 drpy 源被当采集接口 GET，服务器返回
+             *   HTML → 记"非 JSON" → 该站永远空。判据与下面的 js 分支同源
+             *   （isScriptApi），不要各写一套。
              */
             String directApi = API.get(site);
-            if (directApi != null && directApi.startsWith("http")) {
+            if (directApi != null && directApi.startsWith("http") && !isScriptApi(directApi)) {
                 String out = sources.CmsSource.invoke(directApi, action, body);
                 if (out == null) out = emptyFallback(action, "");
                 long cost = System.currentTimeMillis() - t0;
@@ -3979,7 +3995,13 @@ public class ApiServer {
     private static boolean isScriptApi(String api) {
         if (api == null || api.isEmpty()) return false;
         String a = api.toLowerCase();
-        return a.endsWith(".js") || a.startsWith("js:") || a.startsWith("node:")
+        // 脚本地址常带版本参数（`drpy2.min.js?v=3`）：只看 endsWith 会漏。
+        int q = a.indexOf('?');
+        if (q > 0) a = a.substring(0, q);
+        int h = a.indexOf('#');
+        if (h > 0) a = a.substring(0, h);
+        return a.endsWith(".js") || a.endsWith(".mjs")
+                || a.startsWith("js:") || a.startsWith("node:")
                 || a.endsWith(".py") || a.startsWith("py:");
     }
 
@@ -12225,6 +12247,98 @@ public class ApiServer {
     // ---------------------------------------------------------------- transcode
 
     /**
+     * 起播前线路预检（#16）：GET {@code /api/line/probe?url=...&header=...}。
+     *
+     * <p>为什么不在浏览器里直接 fetch：源站基本都不给 CORS，跨域请求一律
+     * TypeError，分不出"死链"和"没带 CORS 的活链"。由后端探活才准。
+     *
+     * <p>只做一件事：GET + {@code Range: bytes=0-1}，2 秒超时。
+     *   · 2xx/3xx → ok（206 也正常，HLS 分片服务器常回 206）
+     *   · 4xx/5xx → dead（403/404 换个线路更快，别等播放器 20 秒）
+     *   · 连接失败/超时 → dead（2 秒都连不上，播放器也起不来）
+     *   · 私网/非法 URL → unknown（不放行 SSRF，也不判死）
+     *
+     * <p>不跟 302：预检只判断"这个地址活着"，跟随会白拉一次跳转目标；
+     * 播放器自己会跟。也不解析播放列表，只看状态码。
+     */
+    private static void handleLineProbe(HttpExchange ex) throws Exception {
+        if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
+            sendJson(ex, 405, "{\"code\":-1,\"msg\":\"method not allowed\"}");
+            return;
+        }
+        Map<String, String> q = query(ex);
+        String url = trimToEmpty(q.get("url"));
+        String header = trimToEmpty(q.get("header"));
+        JSONObject out = new JSONObject();
+        if (url.isEmpty()) {
+            sendJson(ex, 400, "{\"code\":-1,\"msg\":\"url required\"}");
+            return;
+        }
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            out.put("ok", false).put("state", "unknown").put("reason", "scheme");
+            sendJson(ex, 200, out.toString());
+            return;
+        }
+        // 与转码同一条 SSRF 防线：公网部署不允许借后端探内网。
+        if (!core.UrlSafety.isSafeMediaUrl(url)
+                && !Boolean.getBoolean("meow.test.allowLoopbackCache")) {
+            out.put("ok", true).put("state", "unknown").put("reason", "unsafe");
+            sendJson(ex, 200, out.toString());
+            return;
+        }
+        long t0 = System.currentTimeMillis();
+        java.net.HttpURLConnection c = null;
+        try {
+            c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            c.setInstanceFollowRedirects(false);
+            c.setConnectTimeout(2000);
+            c.setReadTimeout(2000);
+            c.setRequestMethod("GET");
+            c.setRequestProperty("Range", "bytes=0-1");
+            c.setRequestProperty("Accept", "*/*");
+            // 源站要的 UA/Referer（与转码同一份头；只取白名单键）
+            applyProbeHeaders(c, header);
+            int code = c.getResponseCode();
+            long ms = System.currentTimeMillis() - t0;
+            boolean ok = code >= 200 && code < 400;
+            out.put("ok", ok).put("state", ok ? "ok" : "dead")
+                    .put("status", code).put("ms", ms);
+            sendJson(ex, 200, out.toString());
+        } catch (Exception e) {
+            long ms = System.currentTimeMillis() - t0;
+            out.put("ok", false).put("state", "dead").put("ms", ms)
+                    .put("reason", e.getClass().getSimpleName());
+            sendJson(ex, 200, out.toString());
+        } finally {
+            if (c != null) {
+                try {
+                    c.disconnect();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    /** 预检请求头：只透传播放链路上常见的防盗链键（与代理/转码白名单同口径）。 */
+    private static void applyProbeHeaders(java.net.HttpURLConnection c, String headerJson) {
+        if (headerJson == null || headerJson.isEmpty()) return;
+        try {
+            JSONObject h = new JSONObject(headerJson);
+            java.util.Iterator<String> it = h.keys();
+            while (it.hasNext()) {
+                String k = it.next();
+                String lower = k.toLowerCase();
+                if (!(lower.equals("user-agent") || lower.equals("referer")
+                        || lower.equals("cookie") || lower.equals("origin")
+                        || lower.equals("authorization") || lower.equals("accept"))) continue;
+                String v = h.optString(k, "");
+                if (!v.isEmpty()) c.setRequestProperty(k, v);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    /**
      * 按需转码。浏览器放不了的格式（MKV 容器 / HEVC / DTS 音轨）由 ffmpeg 现转 HLS。
      *
      * <p>GET  {@code /api/transcode?src=...}        查询/启动（幂等）
@@ -13578,13 +13692,10 @@ public class ApiServer {
         java.util.List<String> names = new ArrayList<>();
         java.util.List<String> targets = new ArrayList<>();
         for (int i = 0; i < urls.length(); i++) {
-            JSONObject u = urls.optJSONObject(i);
-            if (u == null) continue;
-            String uu = u.optString("url", "").trim();
-            if (uu.isEmpty()) continue;
-            String nm = u.optString("name", "仓 " + (i + 1));
-            names.add(nm);
-            targets.add(uu);
+            String[] repo = repoOf(urls, i);
+            if (repo == null) continue;
+            names.add(repo[0]);
+            targets.add(repo[1]);
         }
         final JSONArray out = new JSONArray();
         // 用一个独立的小池子做限流并发，不用 FANOUT：探测是 IO 等待型，
@@ -13633,6 +13744,31 @@ public class ApiServer {
     }
 
     /**
+     * 多仓索引的一项 → {@code [name, url]}；不是可用项返回 null。
+     *
+     * <p>生态里有两种写法，都要认（#7）：
+     * <pre>
+     *   {"urls":[{"url":"http://a/tv","name":"仓A"}, "http://b/tv"]}
+     * </pre>
+     */
+    private static String[] repoOf(JSONArray urls, int i) {
+        if (urls == null || i < 0 || i >= urls.length()) return null;
+        Object v = urls.opt(i);
+        if (v instanceof JSONObject) {
+            JSONObject o = (JSONObject) v;
+            String u = o.optString("url", "").trim();
+            if (u.isEmpty()) return null;
+            return new String[]{o.optString("name", "仓 " + (i + 1)), u};
+        }
+        if (v instanceof String) {
+            String u = ((String) v).trim();
+            if (u.isEmpty()) return null;
+            return new String[]{"仓 " + (i + 1), u};
+        }
+        return null;
+    }
+
+    /**
      * 探一个仓。{@code preloaded} 非空时用它（省一次重复拉取）。
      *
      * <p>返回的 {@code inJar} 是"这个仓里有多少 csp_ 站点在我们的 jar 里有对应类"，
@@ -13659,8 +13795,8 @@ public class ApiServer {
              */
             JSONArray nested = doc.optJSONArray("urls");
             if (nested != null && nested.length() > 0) {
-                JSONObject u0 = nested.optJSONObject(0);
-                String uu = u0 == null ? "" : u0.optString("url", "");
+                String[] r0 = repoOf(nested, 0);
+                String uu = r0 == null ? "" : r0[1];
                 if (uu.isEmpty()) {
                     o.put("ok", false).put("error", "索引里没有可用地址");
                     return o;
@@ -13855,20 +13991,23 @@ public class ApiServer {
             return;
         }
 
-        // 多仓：只取第一个，其余只回给前端当可选列表
+        /*
+         * 多仓：只取第一个，其余只回给前端当可选列表。
+         *
+         * ★ #7（2026-11-24）：索引项既可能是 `{"url","name"}`，也可能是**裸字符串**
+         *   （饭太硬 / 影视仓生态两种写法都有）。原来只 optJSONObject，字符串项
+         *   全被跳过 → 报 "depot has no usable url"，用户看到的就是"多仓识别不了"。
+         */
         JSONArray depotOut = new JSONArray();
         JSONArray urls = doc.optJSONArray("urls");
         if (urls != null) {
             for (int i = 0; i < urls.length(); i++) {
-                JSONObject u = urls.optJSONObject(i);
-                if (u == null) continue;
-                depotOut.put(new JSONObject()
-                        .put("url", u.optString("url", ""))
-                        .put("name", u.optString("name", "")));
+                String[] repo = repoOf(urls, i);
+                if (repo == null) continue;
+                depotOut.put(new JSONObject().put("url", repo[1]).put("name", repo[0]));
             }
-            String first = urls.length() > 0
-                    ? (urls.optJSONObject(0) == null ? "" : urls.optJSONObject(0).optString("url", ""))
-                    : "";
+            String[] firstRepo = urls.length() > 0 ? repoOf(urls, 0) : null;
+            String first = firstRepo == null ? "" : firstRepo[1];
             if (!first.isEmpty()) configBase = first;
             if (first.isEmpty()) {
                 sendJson(ex, 400, "{\"code\":-1,\"msg\":\"depot has no usable url\"}");
@@ -13916,10 +14055,15 @@ public class ApiServer {
             String reason = null;
             if (api.isEmpty()) {
                 reason = "缺少 api 字段";
-            } else if (api.endsWith(".js") || api.startsWith("js:")) {
+            } else if (isScriptApi(api) && !api.startsWith("node:")
+                    && !api.startsWith("py:") && !api.endsWith(".py")) {
                 // drpy 脚本：相对路径必须按**配置文件的地址**补全。
                 // 不补全的话 `./api/drpy2.min.js` 在运行时那边无从解析，
                 // 到时候每个源都得靠猜。这里补成绝对地址落盘，一次算清。
+                //
+                // ★ #13：判据必须用 isScriptApi（会剥 ?v=3 这类查询串）。
+                //   原来 endsWith(".js") 对 `./api/drpy2.min.js?v=3` 不成立，
+                //   会被下面的 "无法识别的 api 形式" 直接丢掉。
                 if (!api.startsWith("http") && !api.startsWith("js:")) {
                     String rel = api.startsWith("./") ? api.substring(2) : api;
                     api = resolveUrl(configBase, rel);
@@ -13960,12 +14104,19 @@ public class ApiServer {
             out.put("type", type);
             out.put("api", api);
             Object ext = s.opt("ext");
-            // drpy 站点的 ext 通常是**规则文件路径**（`./js/xxx.js`）。它和 api
-            // 一样必须按配置地址补成绝对 URL，否则运行时无从解析——引擎自己
-            // 那条取规则的路子又会把结果吞成空串（见 server/drpy/host.js）。
+            /*
+             * drpy 站点的 ext 通常是**规则文件路径**。它和 api 一样必须按配置
+             * 地址补成绝对 URL，否则运行时无从解析——引擎自己那条取规则的路子
+             * 又会把结果吞成空串（见 server/drpy/host.js）。
+             *
+             * ★ #13：原来只在 `endsWith(".js")` 时补。drpy2 的 ext 大量是
+             *   `./json/xxx.json`（或 `./rules/xxx.txt`），条件不成立 → 相对路径
+             *   原样落盘 → 运行时解析不了 → 即使 api 分派修好，这类站仍恒空。
+             *   只判“相对路径”就够，不要绑扩展名。
+             */
             if (ext instanceof String) {
                 String e = ((String) ext).trim();
-                if ((e.startsWith("./") || e.startsWith("../")) && e.endsWith(".js")) {
+                if (e.startsWith("./") || e.startsWith("../")) {
                     ext = resolveUrl(configBase, e.substring(2));
                 }
             }
@@ -14187,26 +14338,58 @@ public class ApiServer {
      */
     private static JSONObject parseJsonLoose(String raw) throws Exception {
         String s = raw.replace("\uFEFF", "").trim();
+        /*
+         * 图片包（#7，饭太硬 /tv 实测）：响应是「JPEG 头 + `**` + base64 JSON」。
+         * 整段丢给 JSONObject 只会得到 "End of input"；base64 解码也会因为
+         * 前面那段二进制失败。生态里这种伪装很常见，先把 `**` 之后的尾巴
+         * 当候选体试一次。
+         */
+        int star = s.lastIndexOf("**");
+        if (star >= 0 && star + 2 < s.length()) {
+            String tail = s.substring(star + 2).trim();
+            JSONObject o = jsonOrBase64(tail);
+            if (o != null) return o;
+        }
+        JSONObject direct = jsonOrBase64(s);
+        if (direct != null) return direct;
+        // 保留原始 JSONException 的 message（调用方会翻译成可读原因）
+        return new JSONObject(s.replace("\uFEFF", "").trim());
+    }
+
+    /** 文本 → JSON：先按 JSON 试，失败再按 base64（MIME/URL 两种字母表）。 */
+    private static JSONObject jsonOrBase64(String text) {
+        String s = text.replace("\uFEFF", "").trim();
         int brace = s.indexOf('{');
-        if (brace > 0) s = s.substring(brace);
-        int last = s.lastIndexOf('}');
-        if (last >= 0 && last < s.length() - 1) s = s.substring(0, last + 1);
-        try {
-            return new JSONObject(s);
-        } catch (Exception first) {
-            // base64：解出来还是 JSON 才算，否则把原始错误抛回去更准确
+        if (brace >= 0) {
+            String j = s.substring(brace);
+            int last = j.lastIndexOf('}');
+            if (last >= 0) j = j.substring(0, last + 1);
             try {
-                String dec = new String(Base64.getMimeDecoder().decode(s.replaceAll("\\s", "")),
-                        StandardCharsets.UTF_8).trim();
-                int b2 = dec.indexOf('{');
-                if (b2 >= 0) dec = dec.substring(b2);
-                int l2 = dec.lastIndexOf('}');
-                if (l2 >= 0) dec = dec.substring(0, l2 + 1);
-                return new JSONObject(dec);
+                return new JSONObject(j);
             } catch (Exception ignored) {
-                throw first;
             }
         }
+        String b = s.replaceAll("\\s", "");
+        // 只留 base64 字母表（去掉 `**`、引号、尾随垃圾）
+        b = b.replaceAll("[^A-Za-z0-9+/=_-]", "");
+        if (b.length() < 8) return null;
+        while (b.length() % 4 != 0) b += "=";
+        for (int mode = 0; mode < 2; mode++) {
+            try {
+                byte[] raw = mode == 0
+                        ? Base64.getMimeDecoder().decode(b)
+                        : Base64.getUrlDecoder().decode(b);
+                String dec = new String(raw, StandardCharsets.UTF_8);
+                int brace2 = dec.indexOf('{');
+                if (brace2 < 0) continue;
+                String j2 = dec.substring(brace2);
+                int l2 = j2.lastIndexOf('}');
+                if (l2 >= 0) j2 = j2.substring(0, l2 + 1);
+                return new JSONObject(j2);
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
     }
 
     /**
