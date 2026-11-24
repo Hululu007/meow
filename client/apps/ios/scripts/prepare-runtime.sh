@@ -59,6 +59,27 @@ rm -f "$OUT/libOpenJDK.a"
 libtool -static -o "$OUT/libOpenJDK.a" "${LIBS[@]}"
 [ -s "$OUT/libOpenJDK.a" ] || { echo "[ios-runtime] libOpenJDK.a 生成失败" >&2; exit 2; }
 
+# ---- 动态库：把 JVM 从主程序里摘出来 ----
+#
+# ★ 为什么不是静态链进主程序：实测「静态 JVM + 侧载器（LiveContainer）」会在
+#   main 之前就死（LaunchLog 一行都没有），而同一个 App 不链 JVM 就能起。
+#   改成 dylib：主程序保持很小（和 C 包一样能起），JVM 在启动流程里 dlopen；
+#   加载失败也只影响「本地网关」，App 仍能进界面并给出原因。
+#
+# fdlibm 的 j* 符号必须在 dylib 内解析（原来由主程序的 fdlibm_shim.c 提供，
+# 那个文件已经不再编进 App target）。
+DYLIB_DIR="$OUT/openjdk-framework"
+rm -rf "$DYLIB_DIR"
+mkdir -p "$DYLIB_DIR"
+xcrun --sdk iphoneos clang -dynamiclib -arch arm64 -miphoneos-version-min=13.0 \
+  -Wl,-all_load "$OUT/libOpenJDK.a" \
+  "$ROOT/client/apps/ios/Meow/fdlibm_shim.c" \
+  -o "$DYLIB_DIR/libOpenJDK.dylib" \
+  -lc++ -lz -liconv \
+  -framework Foundation -framework Security -framework CoreFoundation
+[ -s "$DYLIB_DIR/libOpenJDK.dylib" ] || { echo "[ios-runtime] libOpenJDK.dylib 生成失败" >&2; exit 2; }
+echo "[ios-runtime] dylib: $(du -h "$DYLIB_DIR/libOpenJDK.dylib" | cut -f1)"
+
 JHOME="$OUT/openjdk"
 rm -rf "$JHOME"
 mkdir -p "$JHOME"

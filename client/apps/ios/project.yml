@@ -36,6 +36,15 @@ targets:
         buildPhase: resources
       - path: build/config.sites.example.json
         buildPhase: resources
+    # dylib 不参与链接（运行时 dlopen），只拷进 Frameworks/。
+    # 用 postBuildScripts 而不是 XcodeGen 的 framework 依赖：后者要求 .framework 结构。
+    postBuildScripts:
+      - name: Embed libOpenJDK.dylib
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          mkdir -p "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+          cp "${SRCROOT}/build/openjdk-framework/libOpenJDK.dylib"              "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/libOpenJDK.dylib"
     settings:
       base:
         PRODUCT_NAME: Meow
@@ -49,7 +58,9 @@ targets:
         HEADER_SEARCH_PATHS:
           - "$(SRCROOT)/build/jni/include"
           - "$(SRCROOT)/build/jni/include/ios"
-        OTHER_LDFLAGS: "$(inherited) -Wl,-all_load $(SRCROOT)/build/libOpenJDK.a -Wl,-export_dynamic -lc++ -lz -liconv -framework Foundation -framework UIKit -framework WebKit -framework Network -framework Security"
+        # JVM 不再静态链进主程序（LiveContainer 等侧载器会在 main 之前崩）；
+        # 改为运行期 dlopen build/openjdk-framework/libOpenJDK.dylib。
+        OTHER_LDFLAGS: "$(inherited) -framework Foundation -framework UIKit -framework WebKit -framework Network -framework Security"
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
 

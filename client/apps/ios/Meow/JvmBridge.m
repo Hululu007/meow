@@ -5,6 +5,7 @@
 #include <jni.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,12 +16,18 @@
 #endif
 
 /*
- * 静态构建的 libjvm 在找自己的 JNI 原生方法时会调用 dlopen(NULL, RTLD_FIRST)。
- * 在 dylib/主程序混编的 App 里，这个调用会去搜主程序镜像而不是 JVM 自身；
- * 把本编译单元对 dlopen 的引用绑到一个隐藏的同名包装上，返回 JNI_CreateJavaVM
- * 所在镜像的句柄。其它镜像仍然链接 libSystem 的 dlopen（隐藏可见性，不外溢）。
- * 这是 ReadyTalk/Avian 与 iphone-java-runtime-probe 都验证过的静态 JVM 接法。
+ * ★ JVM 现在是**动态库**（build/openjdk-framework/libOpenJDK.dylib），
+ * 不再静态链进主程序。原因：静态 JVM + 侧载器（LiveContainer）会在 main
+ * 之前就死（LaunchLog 一行都没有），而同一个 App 不链 JVM 就能起。
+ * 改成 dlopen 后，主程序与「无 JVM」包一样小，加载失败也只是本地网关不可用。
+ *
+ * 静态 JVM 在找自己的 JNI 原生方法时会调用 dlopen(NULL, RTLD_FIRST)，
+ * 该调用返回的是**主程序**句柄；JVM 在自己的 dylib 里，用主程序句柄找不到
+ * 它的符号。把本编译单元对 dlopen 的引用绑到一个隐藏的同名包装上，
+ * 把「NULL + RTLD_FIRST」换成 JVM dylib 自己的句柄。
  */
+static char gJvmImagePath[PATH_MAX];
+
 __attribute__((visibility("hidden")))
 void *MeowEmbeddedDlopen(const char *path, int mode) __asm__("_dlopen");
 void *MeowEmbeddedDlopen(const char *path, int mode) {
@@ -32,24 +39,23 @@ void *MeowEmbeddedDlopen(const char *path, int mode) {
     });
     if (!systemLoader) return NULL;
     if (path == NULL && (mode & RTLD_FIRST)) {
-        Dl_info image = {0};
-        if (!dladdr((const void *)&JNI_CreateJavaVM, &image) || !image.dli_fname) {
-            return NULL;
-        }
-        return systemLoader(image.dli_fname, mode | RTLD_NOLOAD);
+        if (gJvmImagePath[0] == '\0') return NULL;
+        return systemLoader(gJvmImagePath, mode | RTLD_NOLOAD);
     }
     return systemLoader(path, mode);
 }
 
+typedef jint (*MeowCreateJavaVMFn)(JavaVM **pvm, void **penv, void *args);
+
 #pragma mark - 崩溃现场取证
 
 /*
- * ★ 为什么要有这层：iOS 上 JVM 起不来时，进程会**直接死掉**（SIGABRT/SIGSEGV），
+ * ★ 为什么要有这层：iOS 上 JVM 起不来时，进程可能**直接死掉**（SIGABRT/SIGSEGV），
  * 屏幕上什么都看不到，就是「闪退」。没有日志就无从判断是「VM 选项不被接受」
  * 还是「内存不够被 jetsam 杀」还是「jar 里的类崩了」。
  * 这里做两件事：
  *   1) 启动前把进程的 stdout/stderr 重定向到 Documents/jvm.log（JVM 的致命错误
- *      也走这两个 fd），并在 App 启动时额外写一行标记；
+ *      也走这两个 fd）；
  *   2) 装 SIGABRT/SIGSEGV/SIGILL/SIGFPE/SIGBUS 处理器：先把「崩在哪个信号」
  *      写进同一个文件，再恢复默认动作（重新抛出），进程照旧死，但现场留下来了。
  * 日志目录开了 UIFileSharingEnabled，用户可以从「文件」App 里直接取走。
@@ -92,7 +98,7 @@ static NSString *jvmLogPath(NSString *dataDir) {
     return NO;
 #elif defined(MEOW_NO_JVM)
     /*
-     * 排障变体（CI dispatch nojvm=true）：静态库照常链接，但永不启动 JVM。
+     * 排障变体（CI dispatch nojvm=true）：不加载 JVM。
      * 用来区分「闪退发生在 dyld/静态初始化」还是「启动 JVM 的那一刻」。
      */
     return NO;
@@ -101,8 +107,11 @@ static NSString *jvmLogPath(NSString *dataDir) {
     if (!resources) return NO;
     NSString *modules = [resources.path stringByAppendingPathComponent:@"openjdk/lib/modules"];
     NSString *hostJar = [resources.path stringByAppendingPathComponent:@"jvm/host.jar"];
+    NSString *dylib = [NSBundle.mainBundle.privateFrameworksPath
+                       stringByAppendingPathComponent:@"libOpenJDK.dylib"];
     NSFileManager *fm = NSFileManager.defaultManager;
-    return [fm fileExistsAtPath:modules] && [fm fileExistsAtPath:hostJar];
+    return [fm fileExistsAtPath:modules] && [fm fileExistsAtPath:hostJar]
+        && [fm fileExistsAtPath:dylib];
 #endif
 }
 
@@ -128,8 +137,10 @@ static NSString *jvmLogPath(NSString *dataDir) {
                   dataDir:(NSString *)dataDir
                      port:(int)port
                completion:(void (^)(BOOL, NSString *_Nullable))completion {
-#if TARGET_OS_SIMULATOR || defined(MEOW_NO_JVM)
-    completion(NO, @"simulator / no-jvm build has no embedded JVM");
+#if TARGET_OS_SIMULATOR
+    completion(NO, @"simulator has no embedded JVM");
+#elif defined(MEOW_NO_JVM)
+    completion(NO, @"no-jvm build");
 #else
     static BOOL started = NO;
     @synchronized (self) {
@@ -159,6 +170,31 @@ static NSString *jvmLogPath(NSString *dataDir) {
             }
             jvmInstallSignalHandlers();
 
+            /* 1) 先加载 JVM 动态库（失败也只是「本地网关不可用」，App 照常进界面）。 */
+            NSString *dylibPath = [NSBundle.mainBundle.privateFrameworksPath
+                stringByAppendingPathComponent:@"libOpenJDK.dylib"];
+            strncpy(gJvmImagePath, dylibPath.fileSystemRepresentation, sizeof(gJvmImagePath) - 1);
+            jvmLogWrite([NSString stringWithFormat:@"[meow-jvm] dlopen %@\n", dylibPath].UTF8String);
+            void *jvmHandle = dlopen(dylibPath.fileSystemRepresentation, RTLD_NOW | RTLD_LOCAL);
+            if (jvmHandle == NULL) {
+                const char *err = dlerror();
+                NSString *why = [NSString stringWithFormat:@"dlopen libOpenJDK.dylib: %s",
+                                 err ? err : "unknown"];
+                jvmLogWrite(why.UTF8String);
+                completion(NO, why);
+                return;
+            }
+            MeowCreateJavaVMFn createVM =
+                (MeowCreateJavaVMFn)dlsym(jvmHandle, "JNI_CreateJavaVM");
+            if (createVM == NULL) {
+                const char *err = dlerror();
+                NSString *why = [NSString stringWithFormat:@"JNI_CreateJavaVM missing: %s",
+                                 err ? err : "unknown"];
+                jvmLogWrite(why.UTF8String);
+                completion(NO, why);
+                return;
+            }
+
             NSString *tmp = NSTemporaryDirectory();
             NSString *trustStore = [javaHome stringByAppendingPathComponent:@"lib/security/cacerts"];
             /*
@@ -171,8 +207,8 @@ static NSString *jvmLogPath(NSString *dataDir) {
              * （OECT 源服务的 spider.jar 就是这种）。但静态链接的 Zero VM 与
              * HotSpot 不同：诊断类选项在某些构建里会走 fatal 路径，进程当场死，
              * 表现就是「装完就闪退、看不到任何提示」。
-             * 代价（OECT spiderJvm 的 AppRJ 报 VerifyError）先记着，等拿到
-             * 崩溃日志再决定用「ASM 重算 stackmap」还是别的路子。
+             * 代价（OECT spiderJvm 的 AppRJ 报 VerifyError）先记着，等真机
+             * 跑通后再决定用「ASM 重算 stackmap」还是别的路子。
              */
             NSArray<NSString *> *options = @[
                 [@"-Djava.home=" stringByAppendingString:javaHome],
@@ -215,12 +251,13 @@ static NSString *jvmLogPath(NSString *dataDir) {
 
             JavaVM *vm = NULL;
             JNIEnv *env = NULL;
-            jint created = JNI_CreateJavaVM(&vm, (void **)&env, &args);
+            jint created = createVM(&vm, (void **)&env, &args);
             for (NSUInteger i = 0; i < options.count; i++) free(rawOptions[i].optionString);
 
             if (created != JNI_OK || vm == NULL || env == NULL) {
-                NSLog(@"[meow-jvm] JNI_CreateJavaVM failed: %d", (int)created);
-                completion(NO, [NSString stringWithFormat:@"JNI_CreateJavaVM=%d", (int)created]);
+                NSString *why = [NSString stringWithFormat:@"JNI_CreateJavaVM=%d", (int)created];
+                jvmLogWrite(why.UTF8String);
+                completion(NO, why);
                 return;
             }
 
@@ -256,7 +293,7 @@ static NSString *jvmLogPath(NSString *dataDir) {
             if (serverClass == NULL) {
                 (*env)->ExceptionDescribe(env);
                 (*env)->ExceptionClear(env);
-                NSLog(@"[meow-jvm] ApiServer class not found");
+                jvmLogWrite("[meow-jvm] ApiServer class not found\n");
                 completion(NO, @"ApiServer class not found");
                 return;
             }
@@ -271,11 +308,12 @@ static NSString *jvmLogPath(NSString *dataDir) {
             jclass stringClass = (*env)->FindClass(env, "java/lang/String");
             jobjectArray arguments = (*env)->NewObjectArray(env, 2, stringClass, NULL);
             jstring portArg = (*env)->NewStringUTF(env, [[NSString stringWithFormat:@"--port=%d", port] UTF8String]);
-            jstring dataArg = (*env)->NewStringUTF(env,[[@"--data-dir=" stringByAppendingString:dataDir] UTF8String]);
+            jstring dataArg = (*env)->NewStringUTF(env, [[@"--data-dir=" stringByAppendingString:dataDir] UTF8String]);
             (*env)->SetObjectArrayElement(env, arguments, 0, portArg);
             (*env)->SetObjectArrayElement(env, arguments, 1, dataArg);
 
-            NSLog(@"[meow-jvm] starting ApiServer (data=%s)", dataDir.UTF8String);
+            jvmLogWrite([NSString stringWithFormat:@"[meow-jvm] starting ApiServer (data=%@)\n",
+                         dataDir].UTF8String);
             (*env)->CallStaticVoidMethod(env, serverClass, mainMethod, arguments);
 
             if ((*env)->ExceptionCheck(env)) {

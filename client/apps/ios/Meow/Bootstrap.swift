@@ -61,36 +61,39 @@ final class Bootstrap: ObservableObject {
         #if targetEnvironment(simulator)
         base = Self.argValue("--api-base") ?? ""
         #else
-        guard JvmBridge.isAvailable() else {
-            message = "未内置 Java 运行时（检查 build/openjdk 与 build/jvm）"
-            LaunchLog.write("jvm resources missing")
-            return
-        }
-        message = "正在启动 Java 宿主…"
-        let javaHome = Bundle.main.resourceURL!.appendingPathComponent("openjdk").path
-        let classPath = Self.hostClassPath()
-        LaunchLog.write("jvm start (classpath \(classPath.count) chars)")
-        let ok: Bool = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            JvmBridge.start(withJavaHome: javaHome,
-                            classPath: classPath,
-                            dataDir: dataDir.path,
-                            port: 9978) { started, why in
-                LaunchLog.write("jvm start returned ok=\(started) why=\(why ?? "-")")
-                continuation.resume(returning: started)
+        // ★ JVM 不可用时**不要 return**：界面（网页）照常加载，只是本地网关不可用。
+        //   之前这里 return 会让 webURL 永远是 nil → 用户只看到转圈 + 一句提示，
+        //   连首页/设置页都进不去（C 包实测）。
+        if JvmBridge.isAvailable() {
+            message = "正在启动 Java 宿主…"
+            let javaHome = Bundle.main.resourceURL!.appendingPathComponent("openjdk").path
+            let classPath = Self.hostClassPath()
+            LaunchLog.write("jvm start (classpath \(classPath.count) chars)")
+            let ok: Bool = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                JvmBridge.start(withJavaHome: javaHome,
+                                classPath: classPath,
+                                dataDir: dataDir.path,
+                                port: 9978) { started, why in
+                    LaunchLog.write("jvm start returned ok=\(started) why=\(why ?? "-")")
+                    continuation.resume(returning: started)
+                }
             }
-        }
-        if ok {
-            base = "http://127.0.0.1:9978"
-            message = "等待 API 就绪…"
-            if !(await Self.waitHealth(base: base, attempts: 120)) {
-                message = "Java 宿主已启动但 /api/health 未就绪" + Self.logTailHint()
-                LaunchLog.write("health wait failed")
+            if ok {
+                base = "http://127.0.0.1:9978"
+                message = "等待 API 就绪…"
+                if !(await Self.waitHealth(base: base, attempts: 120)) {
+                    message = "Java 宿主已启动但 /api/health 未就绪" + Self.logTailHint()
+                    LaunchLog.write("health wait failed")
+                } else {
+                    LaunchLog.write("health ok")
+                }
             } else {
-                LaunchLog.write("health ok")
+                message = "Java 宿主启动失败" + Self.logTailHint()
+                LaunchLog.write("jvm start failed")
             }
         } else {
-            message = "Java 宿主启动失败" + Self.logTailHint()
-            LaunchLog.write("jvm start failed")
+            message = "未内置 Java 运行时（本地网关不可用，界面仍可浏览）"
+            LaunchLog.write("jvm resources missing; loading web without backend")
         }
         #endif
 
