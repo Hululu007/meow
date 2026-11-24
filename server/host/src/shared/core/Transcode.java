@@ -1485,7 +1485,7 @@ public final class Transcode {
                  * ffprobe 的 format 字段按结构体顺序输出（bit_rate 在 duration 前），
                  * 但不同版本可能不同；用数值大小区分（码率 ≥ 100kbps，时长远小于它）。
                  */
-                for (String tok : dOut.trim().split("[,\s]+")) {
+                for (String tok : dOut.trim().split("[,\\s]+")) {
                     try {
                         double val = Double.parseDouble(tok);
                         if (val >= 100_000) srcBitRate = (long) val;

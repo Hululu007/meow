@@ -250,7 +250,9 @@ public final class GuardShell {
                 final BufferedReader tail = reader;
                 final File logFile = log;
                 Thread drain = new Thread(() -> {
-                    try (Writer w = logFile == null ? new OutputStreamWriter(OutputStream.nullOutputStream(), StandardCharsets.UTF_8)
+                    try (Writer w = logFile == null ? new OutputStreamWriter(new OutputStream() {   // iOS 端 --release 9：没有 nullOutputStream（Java 11）
+                                @Override public void write(int b) { }
+                            }, StandardCharsets.UTF_8)
                             : new OutputStreamWriter(new FileOutputStream(logFile, true), StandardCharsets.UTF_8)) {
                         String line;
                         while ((line = tail.readLine()) != null) {
