@@ -68,6 +68,17 @@ jobs:
         if: steps.hostjar.outputs.cache-hit != 'true'
         run: bash client/apps/ios/scripts/build-host.sh
 
+      - name: Stamp build id into Info.plist
+        run: |
+          set -euo pipefail
+          BUILD_ID="$(git rev-parse --short HEAD)-$(date -u +%Y%m%d%H%M)"
+          echo "build_id=$BUILD_ID"
+          PLIST=client/apps/ios/Meow/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :MeowBuild string $BUILD_ID" "$PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Set :MeowBuild $BUILD_ID" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Print :MeowBuild" "$PLIST"
+          echo "$BUILD_ID" > client/apps/ios/build/build-id.txt
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -102,6 +113,12 @@ jobs:
           (cd build/ipa && zip -qry "$GITHUB_WORKSPACE/artifacts/Meow-unsigned.ipa" Payload)
           ls -lh "$GITHUB_WORKSPACE/artifacts/Meow-unsigned.ipa"
           du -sh "$APP" || true
+          # 包里到底装了什么：条目数 / 体积 / 构建标识，闪退排查时先对这三个数
+          echo "== bundle inventory =="
+          find "$APP" -type f | wc -l
+          du -sh "$APP"
+          /usr/libexec/PlistBuddy -c "Print :MeowBuild" "$APP/Info.plist" || true
+          ls "$APP/jvm" "$APP/jvm/libs" | head -40
 
       - name: Build simulator app
         if: ${{ inputs.sim }}

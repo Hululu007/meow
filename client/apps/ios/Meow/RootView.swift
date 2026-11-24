@@ -24,6 +24,7 @@ struct RootView: View {
                         .font(.footnote)
                         .foregroundColor(.white.opacity(0.78))
                         .multilineTextAlignment(.center)
+                        .textSelection(.enabled)
                         .padding(.horizontal, 10)
                 }
                 .padding(.horizontal, 26)

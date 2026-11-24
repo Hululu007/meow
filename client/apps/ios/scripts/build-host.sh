@@ -8,11 +8,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
+# 进包的只有 host.jar + libs/；中间产物（class 文件、源码清单）放 jvm-build/，
+# 不进 App 包 —— 少几百个文件，签名/安装环节少一份不确定性。
 OUT="$ROOT/client/apps/ios/build/jvm"
-SRC_LIST="$OUT/sources.txt"
+WORK="$ROOT/client/apps/ios/build/jvm-build"
+SRC_LIST="$WORK/sources.txt"
 
-rm -rf "$OUT"
-mkdir -p "$OUT/classes" "$OUT/libs"
+rm -rf "$OUT" "$WORK"
+mkdir -p "$OUT/libs" "$WORK/classes"
 
 find "$ROOT/server/host/src" -name '*.java' > "$SRC_LIST"
 echo "$ROOT/client/apps/ios/host-stub/shared/core/Dex2JvmInProcess.java" >> "$SRC_LIST"
@@ -33,9 +36,9 @@ fi
 # JDK 9 的 javac 在旧 macOS 上也能跑；CI 用 Temurin 17/21 的 --release 9。
 javac --release 9 -encoding UTF-8 \
   -cp "$(native "$ROOT/server/host/libs")/*${CP_SEP}$(native "$ROOT/client/apps/ios/vendor/dex2jar")/*" \
-  -d "$(native "$OUT/classes")" @"$(native "$SRC_LIST")"
+  -d "$(native "$WORK/classes")" @"$(native "$SRC_LIST")"
 
-jar --create --file "$(native "$OUT/host.jar")" -C "$(native "$OUT/classes")" .
+jar --create --file "$(native "$OUT/host.jar")" -C "$(native "$WORK/classes")" .
 
 # 宿主依赖的公开 jar 一起进包：okhttp/okio/gson/android-json/bcprov/smbj...
 cp "$ROOT"/server/host/libs/*.jar "$OUT/libs/"

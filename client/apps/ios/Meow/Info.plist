@@ -45,6 +45,12 @@
     <array>
         <string>audio</string>
     </array>
+    <!-- 崩溃取证：把 Documents 暴露给「文件」App，jvm.log（JVM 的 stdout/stderr
+         与信号记录）可以直接取走，不用装 Xcode。 -->
+    <key>UIFileSharingEnabled</key>
+    <true/>
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <true/>
     <key>NSLocalNetworkUsageDescription</key>
     <string>猫窝需要访问局域网内的媒体服务器与源站。</string>
     <key>NSAppTransportSecurity</key>

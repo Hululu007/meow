@@ -12,6 +12,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (BOOL)isAvailable;
 
+/// 崩溃取证：JVM 的 stdout/stderr 与信号记录都落在 Documents/jvm.log，
+/// 这里取最后几行给界面显示（闪退时至少能看到一句原因，而不是白屏）。
++ (nullable NSString *)logTail;
+
 + (void)startWithJavaHome:(NSString *)javaHome
                 classPath:(NSString *)classPath
                   dataDir:(NSString *)dataDir

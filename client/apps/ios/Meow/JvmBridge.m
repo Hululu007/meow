@@ -4,8 +4,11 @@
 
 #include <jni.h>
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #ifndef RTLD_FIRST
 #define RTLD_FIRST 0x100
@@ -38,6 +41,48 @@ void *MeowEmbeddedDlopen(const char *path, int mode) {
     return systemLoader(path, mode);
 }
 
+#pragma mark - 崩溃现场取证
+
+/*
+ * ★ 为什么要有这层：iOS 上 JVM 起不来时，进程会**直接死掉**（SIGABRT/SIGSEGV），
+ * 屏幕上什么都看不到，就是「闪退」。没有日志就无从判断是「VM 选项不被接受」
+ * 还是「内存不够被 jetsam 杀」还是「jar 里的类崩了」。
+ * 这里做两件事：
+ *   1) 启动前把进程的 stdout/stderr 重定向到 Documents/jvm.log（JVM 的致命错误
+ *      也走这两个 fd），并在 App 启动时额外写一行标记；
+ *   2) 装 SIGABRT/SIGSEGV/SIGILL/SIGFPE/SIGBUS 处理器：先把「崩在哪个信号」
+ *      写进同一个文件，再恢复默认动作（重新抛出），进程照旧死，但现场留下来了。
+ * 日志目录开了 UIFileSharingEnabled，用户可以从「文件」App 里直接取走。
+ */
+static int gJvmLogFd = -1;
+
+static void jvmLogWrite(const char *text) {
+    if (gJvmLogFd < 0) return;
+    size_t len = strlen(text);
+    ssize_t ignored = write(gJvmLogFd, text, len);
+    (void)ignored;
+}
+
+static void jvmSignalHandler(int sig) {
+    char buf[128];
+    int n = snprintf(buf, sizeof(buf), "\n[meow-jvm] FATAL signal %d at %s\n",
+                      sig, __DATE__ " " __TIME__);
+    if (n > 0) jvmLogWrite(buf);
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void jvmInstallSignalHandlers(void) {
+    int sigs[] = {SIGABRT, SIGSEGV, SIGILL, SIGFPE, SIGBUS};
+    for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
+        signal(sigs[i], jvmSignalHandler);
+    }
+}
+
+static NSString *jvmLogPath(NSString *dataDir) {
+    return [dataDir stringByAppendingPathComponent:@"jvm.log"];
+}
+
 #endif
 
 @implementation JvmBridge
@@ -52,6 +97,23 @@ void *MeowEmbeddedDlopen(const char *path, int mode) {
     NSString *hostJar = [resources.path stringByAppendingPathComponent:@"jvm/host.jar"];
     NSFileManager *fm = NSFileManager.defaultManager;
     return [fm fileExistsAtPath:modules] && [fm fileExistsAtPath:hostJar];
+#endif
+}
+
++ (nullable NSString *)logTail {
+#if TARGET_OS_SIMULATOR
+    return nil;
+#else
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    if (!docs) return nil;
+    NSString *path = [docs stringByAppendingPathComponent:@"jvm.log"];
+    NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
+    if (!text) return nil;
+    NSArray<NSString *> *lines = [text componentsSeparatedByString:@"\n"];
+    NSUInteger keep = 25;
+    NSUInteger start = lines.count > keep ? lines.count - keep : 0;
+    NSArray<NSString *> *tail = [lines subarrayWithRange:NSMakeRange(start, lines.count - start)];
+    return [tail componentsJoinedByString:@"\n"];
 #endif
 }
 
@@ -80,16 +142,33 @@ void *MeowEmbeddedDlopen(const char *path, int mode) {
              */
             setenv("MEOW_BIND", "127.0.0.1", 1);
 
+            /* 取证：stdout/stderr → Documents/jvm.log（append），再装信号处理器。 */
+            NSString *logPath = jvmLogPath(dataDir);
+            int fd = open(logPath.fileSystemRepresentation, O_CREAT | O_WRONLY | O_APPEND, 0644);
+            if (fd >= 0) {
+                gJvmLogFd = fd;
+                dup2(fd, STDOUT_FILENO);
+                dup2(fd, STDERR_FILENO);
+                jvmLogWrite("\n[meow-jvm] app start\n");
+            }
+            jvmInstallSignalHandlers();
+
             NSString *tmp = NSTemporaryDirectory();
             NSString *trustStore = [javaHome stringByAppendingPathComponent:@"lib/security/cacerts"];
+            /*
+             * ★ 选项集**刻意与第一版（能正常启动的那版）保持一致**。
+             *
+             * 曾经加过两条：
+             *   -XX:+UnlockDiagnosticVMOptions
+             *   -XX:-BytecodeVerificationRemote
+             * 目的是让外部 class jar（stackmap 不完整）不报 VerifyError
+             * （OECT 源服务的 spider.jar 就是这种）。但静态链接的 Zero VM 与
+             * HotSpot 不同：诊断类选项在某些构建里会走 fatal 路径，进程当场死，
+             * 表现就是「装完就闪退、看不到任何提示」。
+             * 代价（OECT spiderJvm 的 AppRJ 报 VerifyError）先记着，等拿到
+             * 崩溃日志再决定用「ASM 重算 stackmap」还是别的路子。
+             */
             NSArray<NSString *> *options = @[
-                // 外部源包（dex2jar / 其他工具转出的 class）stackmap 常不完整，
-                // 默认校验会 VerifyError: Expecting a stackmap frame at branch target。
-                // 只关非 boot 类的校验，JDK 自带类照校验；与 PC 插件 / Docker / fpk 一致。
-                // 实测：OECT 源服务的 spiderJvm 里 AppDrama/Bili 不关就整类加载失败，
-                // AppRJ 搜索报 VerifyError — 关了全部正常。
-                @"-XX:+UnlockDiagnosticVMOptions",
-                @"-XX:-BytecodeVerificationRemote",
                 [@"-Djava.home=" stringByAppendingString:javaHome],
                 [@"-Djava.class.path=" stringByAppendingString:classPath],
                 [@"-Duser.dir=" stringByAppendingString:dataDir],
@@ -103,8 +182,6 @@ void *MeowEmbeddedDlopen(const char *path, int mode) {
                 @"-Duser.language=zh",
                 @"-Duser.country=CN",
                 @"-Djava.security.egd=file:/dev/urandom",
-                // iOS 无 fork/exec：dex→class 走端内 dex2jar 库（vendor/dex2jar）。
-                @"-Dmeow.dex2jar.inprocess=true",
                 @"--add-modules=ALL-SYSTEM",
                 @"-Xint",
                 @"-Xms64m",
@@ -141,6 +218,34 @@ void *MeowEmbeddedDlopen(const char *path, int mode) {
                 return;
             }
 
+            /*
+             * iOS 无 fork/exec：dex→class 走端内 dex2jar 库（vendor/dex2jar）。
+             * 用系统属性而不是 -D 启动参数：属性在 JVM 起来之后再设，
+             * 不给「启动参数不被接受」留任何可乘之机。
+             */
+            {
+                jclass systemClass = (*env)->FindClass(env, "java/lang/System");
+                if (systemClass != NULL) {
+                    jmethodID setProperty = (*env)->GetStaticMethodID(
+                        env, systemClass, "setProperty",
+                        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+                    if (setProperty != NULL) {
+                        jstring key = (*env)->NewStringUTF(env, "meow.dex2jar.inprocess");
+                        jstring value = (*env)->NewStringUTF(env, "true");
+                        jobject ignored = (*env)->CallStaticObjectMethod(
+                            env, systemClass, setProperty, key, value);
+                        if (ignored) (*env)->DeleteLocalRef(env, ignored);
+                        (*env)->DeleteLocalRef(env, key);
+                        (*env)->DeleteLocalRef(env, value);
+                    }
+                    (*env)->DeleteLocalRef(env, systemClass);
+                }
+                if ((*env)->ExceptionCheck(env)) {
+                    (*env)->ExceptionDescribe(env);
+                    (*env)->ExceptionClear(env);
+                }
+            }
+
             jclass serverClass = (*env)->FindClass(env, "ApiServer");
             if (serverClass == NULL) {
                 (*env)->ExceptionDescribe(env);
@@ -160,7 +265,7 @@ void *MeowEmbeddedDlopen(const char *path, int mode) {
             jclass stringClass = (*env)->FindClass(env, "java/lang/String");
             jobjectArray arguments = (*env)->NewObjectArray(env, 2, stringClass, NULL);
             jstring portArg = (*env)->NewStringUTF(env, [[NSString stringWithFormat:@"--port=%d", port] UTF8String]);
-            jstring dataArg = (*env)->NewStringUTF(env, [[@"--data-dir=" stringByAppendingString:dataDir] UTF8String]);
+            jstring dataArg = (*env)->NewStringUTF(env,[[@"--data-dir=" stringByAppendingString:dataDir] UTF8String]);
             (*env)->SetObjectArrayElement(env, arguments, 0, portArg);
             (*env)->SetObjectArrayElement(env, arguments, 1, dataArg);
 
