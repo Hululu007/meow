@@ -70,6 +70,14 @@ struct WebView: UIViewRepresentable {
                     case "volume":
                         // 网页改不了 iOS 系统音量，交给 MPVolumeView（SystemVolume）
                         SystemVolume.set((dict["value"] as? NSNumber)?.intValue ?? 0)
+                    case "audioSession":
+                        // 开播时激活 playback session，后台才允许继续出声；
+                        // 离开播放页时还回去，别的 App 音乐可恢复。
+                        if dict["value"] as? Bool ?? false {
+                            AudioSession.activate()
+                        } else {
+                            AudioSession.deactivate()
+                        }
                     default:
                         break
                     }

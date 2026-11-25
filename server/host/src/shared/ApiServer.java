@@ -1750,6 +1750,22 @@ public class ApiServer {
                 sendJson(ex, 200, searchAll(body));
                 return;
             }
+            // 停止搜索（用户点「停止搜索」）。
+            // 只置任务上的取消标志，聚合循环在站点间隙看到就收尾；
+            // 已产出的结果保留在快照里，前端停止轮询后还能看到。
+            if ("/api/search/cancel".equals(path)) {
+                String body = read(ex.getRequestBody());
+                String id = "";
+                try {
+                    id = new JSONObject(body == null || body.trim().isEmpty() ? "{}" : body)
+                            .optString("taskId", "");
+                } catch (Throwable ignored) {
+                }
+                SearchTask t = id.isEmpty() ? null : SEARCH_TASKS.get(id);
+                if (t != null) t.cancelled = true;
+                sendJson(ex, 200, "{\"ok\":" + (t != null) + "}");
+                return;
+            }
             // 轮询搜索进度 / 取部分结果。路径必须在 /api/{site}/{action} 兜底之前，
             // 否则会被当成 site="search"、action="<taskId>" 去调站点类。
             if (path.startsWith("/api/search/task/")) {
@@ -5860,6 +5876,13 @@ public class ApiServer {
         /** rank 模式下被标记降级的条数（filter 模式恒为 0）。 */
         volatile int noiseDowngraded;
         volatile String error;
+        /**
+         * 用户点了「停止搜索」。
+         *
+         * <p>聚合循环在每个站点间隙检查它并提前收尾；已经在跑的源不再等，
+         * 已产出的结果留在快照里（前端停止轮询后仍可见）。
+         */
+        volatile boolean cancelled;
 
         SearchTask(String id, String wd) {
             this.id = id;
@@ -6744,6 +6767,11 @@ public class ApiServer {
              */
             if (SEARCH_EPOCH.get() != myEpoch) {
                 core.LogBuffer.info("search", "第 " + myEpoch + " 轮被新一轮取代，提前退出");
+                break;
+            }
+            // 用户点了「停止搜索」：在站点间隙收尾，不再等剩余慢源
+            if (task != null && task.cancelled) {
+                core.LogBuffer.info("search", "用户停止搜索，提前收尾（已返回 " + returned + " 条）");
                 break;
             }
             /*

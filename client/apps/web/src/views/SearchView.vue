@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
+  cancelSearch,
   fetchCategory,
   fetchSearch,
   fetchSearchAll,
@@ -99,6 +100,10 @@ const noiseDowngraded = ref(0)
  * 收尾后直接不显示进度。
  */
 const searchFinal = ref(false)
+/** 当前聚合搜索的任务 id（「停止搜索」要发给后端）；'' = 没有在跑的任务 */
+const searchTaskId = ref('')
+/** 用户手动停止了本轮搜索（结果保留，计数行给个说明） */
+const searchStopped = ref(false)
 const error = ref('')
 const list = ref<VodItem[]>([])
 /*
@@ -276,6 +281,8 @@ async function run(force = false, retry = 0) {
   refreshHistory()
   loading.value = true
   searchFinal.value = false
+  searchStopped.value = false
+  searchTaskId.value = ''
   error.value = ''
   list.value = []
   groups.value = []
@@ -313,6 +320,7 @@ async function run(force = false, retry = 0) {
        */
       const task = await startSearch(k, getPrefs().searchThreads, force)
       if (runId !== runSeq) return
+      searchTaskId.value = task.taskId
       let snapshot = await fetchSearchSnapshot(task.taskId)
       // 首屏：先把手上的结果渲染出来，加载态保持到第一次拿到内容或任务结束
       let lastError = ''
@@ -339,6 +347,7 @@ async function run(force = false, retry = 0) {
            */
           groups.value = rankGroups(groupsNow, k, await siteAffinity())
           lastError = snapshot.error || ''
+          searchTaskId.value = ''
           break
         }
         await new Promise((r) => setTimeout(r, SEARCH_POLL_MS))
@@ -398,9 +407,35 @@ async function run(force = false, retry = 0) {
     if (runId === runSeq) {
       loading.value = false
       searchFinal.value = true
+      searchTaskId.value = ''
       // 重试时外层这一次的 finally 会因 runId 变化被跳过，由最后一次收尾
       firstRun = false
     }
+  }
+}
+
+/**
+ * 停止本轮聚合搜索（「停止搜索」按钮）。
+ *
+ * <p>三步：
+ *  1. `runSeq++` 让正在跑的轮询循环在下一拍立刻退出（不再覆盖结果）；
+ *  2. 前端立刻把 loading 收掉、保留已返回的结果；
+ *  3. 尽力通知后端取消任务（它会在站点间隙收尾，不再等剩余慢源）。
+ *
+ * <p>为什么不只是前端停：后端还会继续打源站/占并发槽，用户下次搜索会变慢。
+ */
+function stopSearch() {
+  const id = searchTaskId.value
+  searchTaskId.value = ''
+  searchStopped.value = true
+  runSeq++
+  loading.value = false
+  searchFinal.value = true
+  if (id) void cancelSearch(id)
+  try {
+    reportClientLog('info', `search stop task=${id} hits=${hits.value.length}`)
+  } catch {
+    /* 日志失败不影响停止 */
   }
 }
 
@@ -977,15 +1012,32 @@ onBeforeUnmount(() => {
               >
                 · {{ noiseDowngraded }} 条噪音已沉底
               </span></template
+            ><template v-if="searchStopped">
+              <span class="ml-1.5 text-ink-3" title="已保留停止前返回的结果">· 已停止搜索</span></template
             >
           </p>
+          <!--
+            停止搜索（聚合任务进行中显示，全端一致）：
+            只保留已返回的结果并让后端在站点间隙收尾，不再等剩余慢源。
+          -->
+          <button
+            v-if="!searchFinal && searchTaskId"
+            class="ml-auto inline-flex items-center gap-1 rounded-md bg-elevated/70 px-2 py-1 text-[11px] text-ink-2 transition hover:bg-elevated hover:text-ink-1"
+            title="停止本轮搜索（已返回的结果保留）"
+            @click="stopSearch"
+          >
+            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="2" />
+            </svg>
+            停止搜索
+          </button>
           <!--
             重新搜索（强刷）：绕过后端结果缓存。
             没有它的话同词再搜是毫秒级返回同一份缓存，用户点多少次都看不到新东西。
             disabled 时不给点：搜索进行中再点只会让后端 epoch 作废上一轮，白等一次。
           -->
           <button
-            v-if="!loading"
+            v-if="!loading && searchFinal"
             class="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-elevated hover:text-ink-1"
             :title="'绕过缓存，重新搜索全部源（约 10~30 秒）'"
             @click="run(true)"

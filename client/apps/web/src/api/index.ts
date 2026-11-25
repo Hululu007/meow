@@ -679,6 +679,21 @@ export async function fetchSearchSnapshot(taskId: string): Promise<SearchSnapsho
 }
 
 /**
+ * 停止一次聚合搜索（搜索页「停止搜索」）。
+ *
+ * <p>后端只在站点间隙收尾；已返回的结果留在快照里，前端停止轮询后仍可见。
+ * 失败不重试 —— 停止是尽力而为，前端本地状态已经先停了。
+ */
+export async function cancelSearch(taskId: string): Promise<void> {
+  if (!taskId) return
+  try {
+    await request('/api/search/cancel', { method: 'POST', body: { taskId } })
+  } catch {
+    /* 旧后端没有这个端点：忽略 */
+  }
+}
+
+/**
  * 等一次聚合搜索跑完，返回完整结果。
  *
  * <p>给 AI 工具层用：它需要**完整**结果才能判断"哪部片是用户要的"，

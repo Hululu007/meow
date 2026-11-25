@@ -3263,6 +3263,24 @@ function shellSetOrientation(mode: 'landscape' | 'portrait') {
   if (ios && typeof ios.setOrientation === 'function') ios.setOrientation(mode)
 }
 
+/**
+ * iOS 壳：开播时激活 playback audio session，离开播放页再还回去。
+ *
+ * <p>Info.plist 的 UIBackgroundModes=audio 只是声明；session 不 active 时
+ * 切后台/锁屏照样停音。放在**开播**而不是启动：启动就激活会抢焦点，
+ * 打断用户正在听的音乐（见 AudioSession.swift）。
+ */
+function setIosAudioSession(on: boolean) {
+  const b = (window as unknown as { meowIos?: { setAudioSession?: (on: boolean) => void } }).meowIos
+  if (b && typeof b.setAudioSession === 'function') {
+    try {
+      b.setAudioSession(on)
+    } catch {
+      /* 旧包没有这个桥 */
+    }
+  }
+}
+
 function syncShellOrientation(full: boolean) {
   if (full) {
     if (window.innerHeight > window.innerWidth) {
@@ -6227,6 +6245,8 @@ onMounted(() => {
   }
   v?.addEventListener('play', () => {
     playing.value = true
+    // iOS 壳：开播即激活 playback audio session（后台出声的前提）
+    setIosAudioSession(true)
     dm.value?.start()
     dm.value?.sync(v.currentTime)
     wake()
@@ -6603,6 +6623,8 @@ onBeforeUnmount(() => {
   clearNoAudioWatch()
   // 锁定提示的 1.6s 定时器跟着组件走，别在卸载后再写 ref
   clearTimeout(lockHintTimer)
+  // 离开播放页：把 iOS audio session 还回去（别让别的 App 一直等着）
+  setIosAudioSession(false)
   // WebAudio 探测通道随组件销毁（不关的话每进一次播放页泄漏一个 AudioContext）
   void noAudioCtx?.close()
   noAudioCtx = undefined
@@ -6707,10 +6729,19 @@ function onPageHide() {
 let playingBeforeHide = false
 /** 最后一次"确实在播"的时间戳（timeupdate 刷新，约 4Hz） */
 let lastPlayedAt = 0
+/**
+ * 切后台那一刻的播放位置。
+ *
+ * <p>回前台如果发现 video 被重建/流被重置（currentTime 明显小于它），
+ * 就 seek 回这里 —— 用户报「切回前台进度带入不了」的兜底。
+ * 若后台一直在播（currentTime 已经更大），这里不会倒退。
+ */
+let posBeforeHide = 0
 
 function pauseMediaOnHide() {
   const v = video.value
   playingBeforeHide = !!(v && !v.paused && !v.ended)
+  posBeforeHide = v?.currentTime || 0
   flushProgress(true)
   pause()
 }
@@ -6749,6 +6780,7 @@ function onVisibilityChange() {
       !v.ended &&
       (!v.paused || Date.now() - lastPlayedAt < 3000)
     )
+    posBeforeHide = v?.currentTime || 0
     flushProgress(true)
     return
   }
@@ -6790,6 +6822,17 @@ function resumeAfterVisibility() {
     window.setTimeout(() => {
       const el = video.value
       if (!el || el.ended) return
+      /*
+       * 进度兜底（移动端）：WebView 被回收/流被重置后 currentTime 会从 0 开始，
+       * 这时拉回切后台时的位置；后台一直播的话 currentTime 已经更大，不会倒退。
+       */
+      if (isMobileForm() && !isTvShell() && posBeforeHide > 5 && el.currentTime < posBeforeHide - 5) {
+        try {
+          el.currentTime = posBeforeHide
+        } catch {
+          /* 流不允许 seek 就算了，至少把播放接上 */
+        }
+      }
       if (el.paused) safePlay(el)
     }, delay)
   }

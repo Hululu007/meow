@@ -197,6 +197,12 @@ const isTouch = ref(
 function shellSetOrientation(mode: 'landscape' | 'portrait') {
   const b = (window as unknown as { meowTv?: { setOrientation?: (m: string) => void } }).meowTv
   if (b && typeof b.setOrientation === 'function') b.setOrientation(mode)
+  /*
+   * iOS 壳（2026-11-25 补）：原来只认 meowTv，iOS 上直播进页面/点全屏都转不了
+   * 横屏（WKWebView 没有 orientation lock）。点播一直有这条桥，直播漏了。
+   */
+  const ios = (window as unknown as { meowIos?: { setOrientation?: (m: string) => void } }).meowIos
+  if (ios && typeof ios.setOrientation === 'function') ios.setOrientation(mode)
 }
 
 /** 全屏自己转的横屏（退出全屏要还原） */
@@ -1732,6 +1738,8 @@ async function toggleFullscreen() {
 
 /** 双击画面切全屏（与点播播放器一致） */
 function onStageDblClick() {
+  // 双击时撤掉单击的 220ms 定时器：否则"进全屏"会被紧接着的单击再 toggle 一次
+  clearTimeout(clickTimer)
   void toggleFullscreen()
 }
 
@@ -1749,12 +1757,21 @@ function onStageClick() {
   if (Date.now() < suppressClickUntil) return
   clearTimeout(clickTimer)
   /*
+   * 移动端还没全屏：单击画面 = 直接进全屏横屏（2026-11-25 用户要求）。
+   * 直播暂停本来意义就有限（暂停就追不上了），主流直播 App 也是点画面进全屏；
+   * TV 壳保持原语义（横屏单击呼出「分类-台」面板，那是遥控器唯一的 UI 入口）。
+   */
+  if (isTouch.value && !isTvEnv() && !fullscreen.value && !pseudoFs.value) {
+    clickTimer = window.setTimeout(() => void toggleFullscreen(), 220)
+    return
+  }
+  /*
    * 单击语义按形态分（用户口径 2026-11-06：横屏点击应该是呼出导航栏）：
    *   横屏 TV → 单击 = 呼出「分类-台」面板（底栏不存在，这是画面上唯一的
    *             UI 入口，与 OK 键同语义；暂停在直播里本就意义有限——
    *             直播流暂停后追不上）。
-   *   竖屏手机 → 单击 = 播放/暂停（触屏习惯，与点播一致）。
-   * 双击在两种形态下都是切真全屏（220ms 判定窗共用）。
+   *   竖屏手机（已全屏） → 单击 = 播放/暂停（触屏习惯，与点播一致）。
+   * 双击在两种形态下都是切全屏（220ms 判定窗共用）。
    */
   clickTimer = window.setTimeout(() => {
     if (landscape.value) openGuide()
