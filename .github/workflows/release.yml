@@ -221,7 +221,11 @@ jobs:
     #   plugins 被跳过时（docker-v* 只重发镜像）用 result != 'failure' 放行，
     #   此时退回镜像内 javac，行为与以前一致。
     needs: [plan, web, plugins]
-    if: ${{ !cancelled() && needs.plan.outputs.docker == 'true' && needs.plugins.result != 'failure' }}
+    # ★ web 必须成功（2026-11-25 补）：本 job 用 !cancelled()（为了 plugins 失败也能跑），
+    #   而手动 dispatch 时 _docker 允许"没有 web-dist 就本地构建前端"的兜底。
+    #   两个条件叠加会让「web 失败」被本地构建掩盖、还照样推镜像。
+    #   tag 发版没有兜底（event≠dispatch）本来就会失败，这里把两条路统一成硬失败。
+    if: ${{ !cancelled() && needs.plan.outputs.docker == 'true' && needs.web.result == 'success' && needs.plugins.result != 'failure' }}
     uses: ./.github/workflows/_docker.yml
     with:
       version: ${{ needs.plan.outputs.version }}
