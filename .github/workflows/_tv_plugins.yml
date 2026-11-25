@@ -20,6 +20,12 @@
 name: _tv_plugins
 
 on:
+  # ★ 临时：验证分支用。push 事件的 workflow 取自被推送的 ref，所以只有这样
+  #   才能在未进 main 的提交上跑这条链（workflow_dispatch 要求定义已在默认分支，
+  #   而默认可用的 workflow 文件里没有这个 trigger）。只匹配 tmp/ 前缀，
+  #   正常分支不受影响；验完删掉这一段。
+  push:
+    branches: ['tmp/ci-verify-*']
   # 手动触发单跑这条链（验 CI 用，不产生 Release）
   #
   # ★ workflow_dispatch 必须**单独声明 inputs**：只写在 workflow_call 下的话，
