@@ -119,6 +119,7 @@ Check '全库脚本已被清单覆盖' {
         'deploy\scripts\sync-packages.ps1'  # CI 专用：把各插件 fnpack.json 汇总成 packages.json
         'deploy\scripts\check-plugin-versions.ps1',  # CI 专用：插件改了源码但没升版本的守卫
         'deploy\scripts\gen-history.ps1'             # CI 专用：生成 updates/history.json
+        'deploy\scripts\gen-altstore-source.ps1'     # CI 专用：生成侧载商店源清单 altstore-source.json
 
     )
 

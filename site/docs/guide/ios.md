@@ -18,6 +18,23 @@ https://github.com/upchr/meow/releases/latest/download/Meow-unsigned.ipa
 固定名始终指向最新版，不用换版本号。Releases 里同时有版本化的 `Meow-unsigned-*.ipa`；
 固定名暂时取不到时，复制版本化那条的下载地址。想先下载再导入也行，文件在同一页。
 
+**从源安装（SideStore / LiveContainer 推荐）**：不想每次手填 URL，就把下面这条源加到
+SideStore 或 LiveContainer，之后在应用的「Browse / 源」里直接装、也能收到更新提示：
+
+```text
+https://github.com/upchr/meow/releases/latest/download/altstore-source.json
+```
+
+- 源里是**每个版本一条**记录：各带该版本自己的 IPA、版本号、更新说明（来自 CHANGELOG）。
+  装新版本、回退旧版本都从同一条源里选，不用换地址。
+- SideStore：设置 → Sources → 加号 → 粘贴上面的源地址。
+- LiveContainer：用带 SideStore 的版本（`LiveContainer+SideStore.ipa`），
+  在 SideStore 里加同一个源，装好后从 LiveContainer 里启动。
+- 上面那条取不到时（最新 Release 里暂时没有该资产），用镜像地址：
+  `https://raw.githubusercontent.com/upchr/meow/updates/altstore-source.json`
+
+源不可用时退回上面的 IPA 直链，两种方式装的是同一个包。
+
 1. 按 [LiveContainer / SideStore 侧载教程](https://livecontainer.github.io/zh-CN/docs/installation/lc_sidestore)
    装：一个免费 Apple ID 就够，签名 **7 天有效**，过期重签；付费开发者账号可到 1 年。
 2. 首次打开若提示「未受信任的开发者」：设置 → 通用 → VPN 与设备管理 → 信任对应描述文件。

@@ -472,6 +472,7 @@ jobs:
             | `meow_*.fpk` | fnOS 套件（x86 / arm） |
             | `Meow-unsigned-*.ipa`（版本化）/ `Meow-unsigned.ipa`（固定名，始终指向最新） | iOS 空壳（未签名，需自签侧载 / LiveContainer） |
             | `packages.json` | 客户端更新清单 |
+            | `altstore-source.json` | 侧载商店源（SideStore / LiveContainer / AltStore），每版一条 |
             | `SHA256SUMS.txt` | 校验 |
 
   sync-packages:
