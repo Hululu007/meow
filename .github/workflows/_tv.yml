@@ -87,6 +87,14 @@ jobs:
           gradle-version: '8.9'
           cache-read-only: false
 
+      # Chaquopy 的 buildPython 要求与 target 同为 3.10；ubuntu-latest 自带的
+      # python3 是 3.14（实测：`[python3] is not a valid Python 3.10 command`）。
+      # setup-python 把 3.10 放到 PATH 首位，build.gradle 的默认 "python3" 即命中。
+      - name: 准备 Python 3.10（Chaquopy buildPython）
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
       # 前端 dist 由 release.yml 的 web job 统一构建（同一次 run 的 artifact）。
       # 以前这里自己构建一份，三处重复且会漂移。
       # 手动 dispatch 没有 artifact → 本地兜底构建。
