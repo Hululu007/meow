@@ -168,6 +168,18 @@ iOS 要对齐这条，拆成两问：
   回环请求的 `GET /api/_debug/lan` 里下发，OPTIONS 放行给浏览器预检；
 - 状态跨重启保留（`policy.json`）。接口：`GET/POST /api/_debug/lan`。
 
+**测试 IPA 要给侧载商店的链接**：Actions artifact 需要登录、且下载下来是 zip，
+侧载商店用不了；必须有**免登录直链**。做法是把 IPA 挂成 Release 的额外资产：
+
+```bash
+gh release upload release-v<版本> <file> --clobber
+# https://github.com/upchr/meow/releases/download/release-v<版本>/<file>
+```
+
+上传/删除资产**不会**触发 `release published`，所以不会跑 sync-packages、
+不会改 `packages.json`；不要为此新建 tag 或发布新 Release。文件名带
+`test<短sha>` 区分，验完 `gh release delete-asset` 删掉即可。
+
 ---
 
 ::: warning 以下为「落地契约」原文（2026-11-17 口径）
