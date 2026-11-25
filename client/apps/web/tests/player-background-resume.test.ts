@@ -24,6 +24,7 @@ const audio = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'AudioSession.swi
 const app = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'MeowApp.swift'))
 const webview = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'WebView.swift'))
 const bootstrap = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'Bootstrap.swift'))
+const bridgeTs = read(join(WEB, 'src', 'api', 'nativeBridge.ts'))
 
 describe('iOS 后台保播', () => {
   it('切后台只记意图、不暂停，且系统先暂停时补一次 play', () => {
@@ -118,7 +119,7 @@ describe('回前台续播 / 双击暂停', () => {
 
   it('恢复窗口不因"当前位置看起来正常"提前关闭（内核会稍后才重置）', () => {
     const fn = player.slice(player.indexOf('function applyRestoreSeek('), player.indexOf('function onRestoreTick()'))
-    const at = fn.indexOf('if (el.currentTime >= restorePos - 5)')
+    const at = fn.indexOf('if (el.currentTime >= restorePos - 2)')
     expect(at).toBeGreaterThan(-1)
     // 这一支必须只 return，不能顺手关窗（否则内核稍后重置就没人管了）
     const branch = fn.slice(at, at + 90)
@@ -154,6 +155,24 @@ describe('原生音频会话时机', () => {
     const active = app.slice(app.indexOf('if phase == .active {'), app.indexOf('} else if phase == .background {'))
     expect(active).not.toContain('AudioSession.configure()')
     expect(active).not.toContain('setActive')
+  })
+
+  it('iOS 系统音量/亮度桥存在，且亮度离开播放页会还原', () => {
+    // 音量：MPVolumeView 写入 + 挂不上窗口要重试
+    expect(read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'SystemVolume.swift'))).toContain('DispatchQueue.main.asyncAfter')
+    expect(bootstrap).toContain('window.meowIos.setVolume=function')
+    // 亮度：真实屏幕亮度（UIScreen），传 -1 还原
+    expect(read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'SystemBrightness.swift'))).toContain('UIScreen.main.brightness')
+    expect(bootstrap).toContain('window.meowIos.setBrightness=function')
+    expect(webview).toContain('case "brightness":')
+    expect(bridgeTs).toContain('export function restoreSystemBrightness()')
+    expect(player).toContain('restoreSystemBrightness()')
+  })
+
+  it('暂停浮层中央播放按钮在双击暂停后有静默期', () => {
+    expect(player).toContain('function onPauseOverlayClick()')
+    expect(player).toContain('overlayGuardUntil = Date.now() + 2500')
+    expect(player).toContain('@click.stop="onPauseOverlayClick"')
   })
 
   it('页面→原生的播放状态桥存在', () => {

@@ -29,6 +29,7 @@ import {
   systemVolume,
   setSystemBrightness,
   setSystemVolume,
+  restoreSystemBrightness,
   tvCancelPowerTimer,
   tvPowerTimerState,
   tvProbeRoot,
@@ -2425,6 +2426,12 @@ function toggle() {
     cancelResumeTimers()
     // 用户自己动了进度/播放状态：回前台恢复窗口立刻失效，别跟他抢
     clearRestoreWindow()
+    /*
+     * ★ 暂停浮层中央的播放按钮在屏幕正中间，和双击落点重叠。
+     * WKWebView 会把双击的 click 迟到 2s 以上再补发，正好砸在这个按钮上
+     * 直接 toggle 回来（真机：双击暂停后 2s 自动又播）。给它一个静默期。
+     */
+    overlayGuardUntil = Date.now() + 2500
     bgLog(`toggle→pause paused=${v.paused} ct=${v.currentTime.toFixed(1)} vis=${document.visibilityState}`)
     v.pause()
   } else {
@@ -2535,6 +2542,22 @@ let pointerDblAt = 0
  * 第三次没有迟到 click 就正常）。这里给一个更宽的静默期。
  */
 let ignoreClicksUntil = 0
+/**
+ * 暂停浮层中央播放按钮的静默期。
+ *
+ * <p>真机日志：pointer 双击暂停后约 2s，WKWebView 才补发上一次点击的 click；
+ * 它落在屏幕正中的播放按钮上（`@click.stop="toggle"`），绕过 stage 的点击
+ * 守卫直接把视频播回去。双击暂停后 2.5s 内这个按钮不响应。
+ */
+let overlayGuardUntil = 0
+
+function onPauseOverlayClick() {
+  if (Date.now() < overlayGuardUntil) {
+    bgLog(`overlay play click ignored left=${overlayGuardUntil - Date.now()}ms`)
+    return
+  }
+  toggle()
+}
 /** 从后台回到前台的时刻：用于确认"首击是否被系统吞掉"的诊断日志 */
 let resumedAt = 0
 
@@ -6855,6 +6878,8 @@ onBeforeUnmount(() => {
   // 组件销毁后补播定时器仍会触发 → 用户已经离开播放页还被拉起来
   cancelResumeTimers()
   notifyIosPlaying(false)
+  // iOS 竖滑改的是真实屏幕亮度：离开播放页还原，别把用户手机亮度留在那
+  restoreSystemBrightness()
   {
     const w = window as unknown as { __meowIosActive?: () => void }
     if (w.__meowIosActive === iosActiveBridge) w.__meowIosActive = undefined
@@ -7101,7 +7126,11 @@ function applyRestoreSeek(el: HTMLVideoElement) {
     clearRestoreWindow()
     return
   }
-  if (el.currentTime >= restorePos - 5) return
+  /*
+   * 容差从 5s 收到 2s（2026-11-25 真机「偶发进度没带回」）：
+   * 内核回退量可能只有 3～4 秒，5s 容差会把它当成"正常"放过。
+   */
+  if (el.currentTime >= restorePos - 2) return
   /*
    * 元数据还没到（切回前台瞬间 WebView 可能正在重建 source）：
    * 此时写 currentTime 会被内核直接丢掉，等 loadedmetadata/canplay 再来。
@@ -7653,7 +7682,7 @@ defineExpose({
         <button
           class="pointer-events-auto grid h-16 w-16 place-items-center rounded-full bg-accent text-on-accent shadow-2xl transition hover:scale-105 hover:bg-accent-dim sm:h-20 sm:w-20"
           :aria-label="playing ? '暂停' : '播放'"
-          @click.stop="toggle"
+          @click.stop="onPauseOverlayClick"
           @dblclick.stop="onStageDblClick"
         >
           <svg class="ml-1 h-7 w-7 sm:h-8 sm:w-8" viewBox="0 0 24 24" fill="currentColor">

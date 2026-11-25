@@ -20,6 +20,8 @@ struct MeowApp: App {
             RootView(boot: boot)
                 .onAppear {
                     LaunchLog.write("ui appear")
+                    // 窗口此时一定存在：再挂一次 MPVolumeView（启动早期那次可能没窗口）
+                    SystemVolume.attach()
                     boot.start()
                 }
                 /*

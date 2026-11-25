@@ -638,6 +638,11 @@ function systemCtl(): MeowTvSystemCtl | null {
 interface MeowIosSysCtl {
   volume?: number
   setVolume?(v: number): void
+  /** 启动快照（0–100）；-1 = 读不到 */
+  brightness?: number
+  getBrightness?(): number
+  /** 传 -1 还原进入播放页前的亮度 */
+  setBrightness?(v: number): void
 }
 
 function iosCtl(): MeowIosSysCtl | null {
@@ -645,6 +650,16 @@ function iosCtl(): MeowIosSysCtl | null {
     const b = (window as unknown as { meowIos?: MeowIosSysCtl }).meowIos
     if (!b || typeof b.setVolume !== 'function') return null
     return b
+  } catch {
+    return null
+  }
+}
+
+/** 只要 setBrightness 存在就算有亮度桥（iOS 壳） */
+function iosBrightnessCtl(): MeowIosSysCtl | null {
+  try {
+    const b = (window as unknown as { meowIos?: MeowIosSysCtl }).meowIos
+    return b && typeof b.setBrightness === 'function' ? b : null
   } catch {
     return null
   }
@@ -660,7 +675,8 @@ export function hasSystemVolume(): boolean {
 
 export function hasSystemBrightness(): boolean {
   const b = systemCtl()
-  return !!b && typeof b.getBrightness === 'function' && typeof b.setBrightness === 'function'
+  if (b && typeof b.getBrightness === 'function' && typeof b.setBrightness === 'function') return true
+  return !!iosBrightnessCtl()
 }
 
 /** 读系统音量（0–100）；不可用返回 null */
@@ -707,23 +723,58 @@ export function setSystemVolume(v: number): boolean {
 /** 读屏幕亮度（0–100）；-1（自动）或不可用都返回 null */
 export function systemBrightness(): number | null {
   const b = systemCtl()
-  if (!b?.getBrightness) return null
-  try {
-    const v = Number(b.getBrightness())
-    return Number.isFinite(v) && v >= 0 ? Math.min(100, Math.round(v)) : null
-  } catch {
-    return null
+  if (b?.getBrightness) {
+    try {
+      const v = Number(b.getBrightness())
+      if (Number.isFinite(v) && v >= 0) return Math.min(100, Math.round(v))
+    } catch {
+      /* 落 iOS / 兜底 */
+    }
   }
+  const ios = iosBrightnessCtl()
+  if (ios) {
+    try {
+      const v = Number(ios.getBrightness ? ios.getBrightness() : ios.brightness)
+      if (Number.isFinite(v) && v >= 0) return Math.min(100, Math.round(v))
+    } catch {
+      /* 读不到就当没有 */
+    }
+  }
+  return null
 }
 
-/** 设屏幕亮度（0–100）；不可用或失败返回 false */
+/** 设屏幕亮度（0–100）；不可用或失败返回 false。iOS 传 -1 表示还原 */
 export function setSystemBrightness(v: number): boolean {
+  const pct = Math.round(v)
   const b = systemCtl()
-  if (!b?.setBrightness) return false
+  if (b?.setBrightness) {
+    try {
+      return !!b.setBrightness(Math.max(0, Math.min(100, pct)))
+    } catch {
+      /* 落 iOS / 兜底 */
+    }
+  }
+  const ios = iosBrightnessCtl()
+  if (ios?.setBrightness) {
+    try {
+      ios.setBrightness(pct < 0 ? -1 : Math.max(0, Math.min(100, pct)))
+      if (pct >= 0 && Number.isFinite(Number(ios.brightness))) ios.brightness = pct
+      return true
+    } catch {
+      return false
+    }
+  }
+  return false
+}
+
+/** 还原进入播放页前的亮度（iOS 壳；其它端 no-op） */
+export function restoreSystemBrightness(): void {
+  const ios = iosBrightnessCtl()
+  if (!ios?.setBrightness) return
   try {
-    return !!b.setBrightness(Math.max(0, Math.min(100, Math.round(v))))
+    ios.setBrightness(-1)
   } catch {
-    return false
+    /* 忽略 */
   }
 }
 

@@ -221,6 +221,15 @@ final class Bootstrap: ObservableObject {
                   + "window.webkit.messageHandlers.meowIos.postMessage({op:'volume',value:Number(v)||0})"
                   + "}catch(e){}}")
         /*
+         * 系统亮度桥：竖滑右区（iOS 是左区亮度）调真实屏幕亮度。
+         * 传 -1 表示还原进入播放页前的亮度（页面销毁时调）。
+         */
+        js.append("window.meowIos.brightness=\(SystemBrightness.current())")
+        js.append("window.meowIos.getBrightness=function(){return window.meowIos.brightness||0}")
+        js.append("window.meowIos.setBrightness=function(v){try{"
+                  + "window.webkit.messageHandlers.meowIos.postMessage({op:'brightness',value:Number(v)})"
+                  + "}catch(e){}}")
+        /*
          * 播放状态桥：进后台时原生据此决定是否激活 AVAudioSession。
          * 只报状态，不要求在 play 里 setActive —— 那会打断 WebKit（实测 1s 自停）。
          */

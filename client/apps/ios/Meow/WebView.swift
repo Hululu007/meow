@@ -83,6 +83,9 @@ struct WebView: UIViewRepresentable {
                     case "playing":
                         // 播放状态上报：进后台时只有"在播"才激活音频会话
                         AudioSession.setPlaying(dict["value"] as? Bool ?? false)
+                    case "brightness":
+                        // 负数 = 还原进入播放页前的亮度
+                        SystemBrightness.set((dict["value"] as? NSNumber)?.intValue ?? -1)
                     default:
                         break
                     }
