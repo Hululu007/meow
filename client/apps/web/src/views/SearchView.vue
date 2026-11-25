@@ -6,6 +6,7 @@ import {
   fetchSearch,
   fetchSearchAll,
   fetchSearchSnapshot,
+  reportClientLog,
   startSearch,
 } from '@/api'
 import type { VodItem } from '@/api/types'
@@ -201,6 +202,28 @@ const renderTail = ref<HTMLElement | null>(null)
 let renderObserver: IntersectionObserver | null = null
 const shownHits = computed(() => visibleHits.value.slice(0, renderLimit.value))
 const hasMoreDom = computed(() => visibleHits.value.length > renderLimit.value)
+
+/**
+ * 切换源筛选。
+ *
+ * <p>2026-11-25 用户截图：点「干饭」后计数显示「找到 1 条（仅 干饭）」，
+ * 网格里却还是 3 张卡（前两张蔬菜）。本地按同样的 groups 结构（单源/多源都试过）
+ * 复现不出来，先做两件事：
+ * ① 把 hits/visible 的真实数量写进日志 —— 下次复现能直接分清是数据侧还是渲染侧；
+ * ② 网格容器按筛选值换 key，强制重建 DOM（排除 WebView 里 v-for 复用残留）。
+ */
+function pickSite(key: string | null) {
+  siteFilter.value = key
+  renderLimit.value = RENDER_STEP
+  try {
+    reportClientLog(
+      'info',
+      `search filter site=${key || 'all'} hits=${hits.value.length} visible=${visibleHits.value.length}`,
+    )
+  } catch {
+    /* 日志失败不影响筛选 */
+  }
+}
 
 watch([() => wd.value, siteFilter], () => {
   renderLimit.value = RENDER_STEP
@@ -903,7 +926,7 @@ onBeforeUnmount(() => {
                 ? 'bg-accent font-medium text-on-accent'
                 : 'bg-card text-ink-2 hover:bg-card-hover hover:text-ink'
             "
-            @click="siteFilter = null"
+            @click="pickSite(null)"
           >
             <span class="truncate">全部</span>
             <span class="shrink-0 text-[11px] opacity-70 md:ml-auto">{{ hits.length }}</span>
@@ -918,7 +941,7 @@ onBeforeUnmount(() => {
                 : 'bg-card text-ink-2 hover:bg-card-hover hover:text-ink'
             "
             :title="t.name"
-            @click="siteFilter = t.key"
+            @click="pickSite(t.key)"
           >
             <span class="truncate">{{ t.name }}</span>
             <span class="shrink-0 text-[11px] opacity-70 md:ml-auto">{{ t.count }}</span>
@@ -975,7 +998,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- 缩略图视图 -->
-        <div v-if="layout === 'grid'" class="poster-grid" :style="colsStyle(groupCols)">
+        <div v-if="layout === 'grid'" :key="`grid-${siteFilter || 'all'}`" class="poster-grid" :style="colsStyle(groupCols)">
           <button
             v-for="h in shownHits"
             :key="h.key"
@@ -1009,7 +1032,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- 列表视图 -->
-        <div v-else class="space-y-2">
+        <div v-else :key="`list-${siteFilter || 'all'}`" class="space-y-2">
           <button
             v-for="h in shownHits"
             :key="h.key"
