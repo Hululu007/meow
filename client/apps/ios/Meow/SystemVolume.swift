@@ -25,10 +25,13 @@ enum SystemVolume {
         let window = scenes.flatMap { $0.windows }.first(where: { $0.isKeyWindow })
             ?? scenes.first?.windows.first
         window?.addSubview(volumeView)
+        // 让 MPVolumeView 立刻建出内部 slider（不等下一帧，启动时就要能读音量）
+        volumeView.layoutIfNeeded()
     }
 
     private static var slider: UISlider? {
         attach()
+        volumeView.layoutIfNeeded()
         return volumeView.subviews.compactMap { $0 as? UISlider }.first
     }
 
