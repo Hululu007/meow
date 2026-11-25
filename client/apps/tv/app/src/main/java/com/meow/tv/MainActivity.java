@@ -697,12 +697,11 @@ public class MainActivity extends Activity {
          * 模块没装时这里直接跳过，行为与之前完全一致。
          */
         if (com.meow.tv.runtime.RuntimeModuleHost.nodeInstalled(this)) {
-            try {
-                startService(new Intent(this, com.meow.tv.runtime.NodeService.class));
-                android.util.Log.i("MeowNode", "NodeService start requested");
-            } catch (Throwable t) {
-                android.util.Log.w("MeowNode", "start NodeService failed: " + t);
-            }
+            // bindService 而不是 startService：:node 是独立进程，没有活跃 binder
+            // 连接会被 Android 12+ 冻结（实测 do_freezer_trap —— 端口还在 LISTEN
+            // 但请求一律不处理）。绑定一次让该进程 importance 提升。
+            GatewayServer.bindNodeRuntime(this);
+            android.util.Log.i("MeowNode", "NodeService bind requested");
         }
 
         String fromIntent = getIntent() == null ? null : getIntent().getStringExtra("url");

@@ -30,12 +30,18 @@ public class ModuleInstallReceiver extends BroadcastReceiver {
             android.util.Log.i("MeowNode", "module " + intent.getAction() + ", restarting :node");
 
             final Context app = ctx.getApplicationContext();
+            /*
+             * 必须先解绑：主进程持有 :node 的绑定（保活用），而「有客户端绑定」的
+             * Service 对 stopService 免疫 —— 不解绑就停不掉，下面的 startService
+             * 只会打到那个还在跑的旧实例上，模块更新等于没生效。
+             */
+            com.meow.tv.GatewayServer.unbindNodeRuntime(app);
             app.stopService(new Intent(app, NodeService.class));
             // onDestroy 里 killProcess 是异步的，等一拍再起
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
                 try {
                     if (!RuntimeModuleState.enabled(app)) return;
-                    app.startService(new Intent(app, NodeService.class));
+                    com.meow.tv.GatewayServer.bindNodeRuntime(app);
                 } catch (Throwable t) {
                     android.util.Log.w("MeowNode", "restart after install failed: " + t);
                 }

@@ -185,6 +185,20 @@ Add-Plugin -Id 'drpy' `
     -Desc '执行 .js（drpy）源，需要 node 运行时' `
     -Requires @('node')
 
+# pyrt：把 .py 源接到 Python 里跑。协议与 drpy 同形（POST /{site}/{action} +
+# X-DRPY-Api），宿主 callScriptRuntime 一行都不用改。
+#
+# 为什么写 -Requires @('python') 之外还要提：它不依赖插件体系里的 python 包，
+# 用系统 Python 3（manifest 的 execFallback 依次试 python3 / python.exe），
+# 所以**不能**写 Requires —— 清单里没有 id 为 python 的插件，写了装不上。
+# Python 依赖（requests/lxml/pyquery/pycryptodome）已在打包时进 vendor/，
+# 用户不需要 pip install。
+Add-Plugin -Id 'pyrt' `
+    -Dir (Join-Path $pluginsRoot 'pyrt') `
+    -Version (Get-ManifestVersion 'pyrt') `
+    -DisplayName 'Python 脚本运行时' `
+    -Desc '执行 .py 源（已内置 requests/lxml/pyquery/pycryptodome），需要系统 Python 3'
+
 # ffmpeg：浏览器内核没有 HEVC 解码器，用户的 MKV（H.265）在 PC/Web 端要靠它转码。
 # tool 型插件，装好后应用会把 {pluginDir}/ffmpeg.exe 写进 policy.json 的
 # ffmpegPath，后端 core/Transcode 从这里取路径，用户零配置。

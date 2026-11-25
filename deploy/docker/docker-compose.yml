@@ -126,7 +126,11 @@ services:
     volumes:
       # 源脚本是私有内容，不进镜像。没挂这个卷时启动不报错，
       # 但 .py 源会在调用时报 "py script not found"。
-      - ../../data/py-scripts:/data/py-scripts:ro
+      #
+      # ★ 不能加 :ro —— 源包规范里的 api 是源服务上的绝对 URL，pyrt 要把
+      #   远程脚本落一份副本到 py/ 下（复用一天）。只读时写失败，会退到容器
+      #   临时目录：能跑但不跨重启缓存。要缓存就保持可写。
+      - ../../data/py-scripts:/data/py-scripts
     environment:
       PYRT_PORT: "19331"
       PYRT_BIND: "0.0.0.0"

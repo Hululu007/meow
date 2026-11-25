@@ -13,8 +13,11 @@
 import importlib.util
 import json
 import os
+import shutil
 import sys
+import tempfile
 import threading
+import time
 import traceback
 import urllib.parse
 import urllib.request
@@ -60,6 +63,17 @@ SCRIPTS_DIR = os.environ.get("PYRT_SCRIPTS") or os.path.join(HERE, "scripts")
 PY_DIR = os.path.join(SCRIPTS_DIR, "py")
 BASE_DIR = SCRIPTS_DIR
 
+"""远程脚本落盘后的复用时长（秒）。
+
+源包规范要求站点 api 是**绝对 URL**（脚本由源服务托管，壳子只管加载），
+所以 pyrt 必须能自己把脚本取下来。取下来的副本复用一天：源站换了实现
+隔天能跟上，又不至于每次搜索都拉一遍。
+"""
+_REMOTE_TTL = 86400
+
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
 sys.path.insert(0, BASE_DIR)
 sys.path.insert(0, PY_DIR)
 """
@@ -91,6 +105,62 @@ def log(*a):
     print("[pyrt]", *a, flush=True)
 
 
+def _fetch_remote(api):
+    """把 http(s) 上的源脚本按需落盘到 PY_DIR，返回本地路径。
+
+    为什么要有这个：源包规范写死了"站点 api 必须是绝对 http(s) URL"
+    （脚本由源服务托管，不归壳子维护），而 pyrt 只能 import 本地文件。
+    没有这一步，PC / fpk / TV 上的 .py 源一律 `FileNotFoundError`。
+
+    落在 PY_DIR 而不是独立缓存目录：这样三端的脚本目录天然一致，都由
+    PYRT_SCRIPTS 决定，不需要各端导入流程各写一份"把 py 落盘"的逻辑。
+
+    只读挂载（Docker 常见：`py-scripts:/data/py-scripts:ro`）写不进去时
+    退到临时目录 —— 本次进程内照样能跑，只是不跨重启缓存。
+    """
+    name = os.path.basename(urllib.parse.urlparse(api).path) or "spider.py"
+    if not name.endswith(".py"):
+        name += ".py"
+
+    def download(dst_dir, tag):
+        os.makedirs(dst_dir, exist_ok=True)
+        dst = os.path.join(dst_dir, name)
+        tmp = dst + ".part"
+        req = urllib.request.Request(api, headers={"User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=45) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
+        os.replace(tmp, dst)
+        log("fetched" + tag, name, "<-", api[:90])
+        return dst
+
+    local = os.path.join(PY_DIR, name)
+    try:
+        if os.path.exists(local) and (time.time() - os.path.getmtime(local)) < _REMOTE_TTL:
+            return local
+    except OSError:
+        pass
+    # 先探可写性再下载，不能靠 `except OSError` 兜底判断只读：
+    # urllib.error.URLError 是 OSError 的子类，网络不通会被误判成"目录只读"，
+    # 日志把排查方向指错（实测 Docker 里踩到：明明只是容器连不上宿主）。
+    if _can_write(PY_DIR):
+        return download(PY_DIR, "")
+    log("cache dir not writable, falling back to temp:", PY_DIR)
+    return download(tempfile.mkdtemp(prefix="pyrt-remote-"), "(temp)")
+
+
+def _can_write(d):
+    """目录能不能写（真正建个文件试，别靠 stat 猜）。"""
+    try:
+        os.makedirs(d, exist_ok=True)
+        probe = os.path.join(d, ".write-probe")
+        with open(probe, "wb"):
+            pass
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
 def load_spider(api, ext):
     """按 (脚本路径, ext) 缓存实例；ext 变了要重新 init。
 
@@ -101,7 +171,10 @@ def load_spider(api, ext):
     """
     if not api:
         raise ValueError("missing X-DRPY-Api header（只有路径段不够，pyrt 靠这个头找脚本）")
-    if not os.path.isabs(api):
+    if api.startswith(("http://", "https://")):
+        # 源包规范下的正常形态：脚本由源服务托管，本地只留副本
+        api = _fetch_remote(api)
+    elif not os.path.isabs(api):
         api = os.path.join(PY_DIR, api)
     if os.path.isdir(api):
         raise IsADirectoryError("api 是目录而不是脚本: " + api)

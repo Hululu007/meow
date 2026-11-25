@@ -39,11 +39,29 @@ public class NodeService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        ensureWorker();
+        return START_NOT_STICKY;
+    }
+
+    /**
+     * 必须返回真 Binder：返回 null 的 Service 绑定会被系统立即取消并 stop。
+     *
+     * <p>同 PythonService：Android 12+ 的 cached-app freezer 会冻住没有活跃
+     * binder 连接的进程。实测 `.77` 上 `com.meow.tv:node` 长期
+     * `do_freezer_trap` —— 端口还在 LISTEN 但请求不处理。主进程持有绑定后
+     * 该进程 importance 提升，前台使用期不会被冻结。
+     */
+    @Override
+    public IBinder onBind(Intent intent) {
+        ensureWorker();
+        return new android.os.Binder();
+    }
+
+    private void ensureWorker() {
         if (worker == null || !worker.isAlive()) {
             worker = new Thread(this::boot, "meow-node");
             worker.start();
         }
-        return START_NOT_STICKY;
     }
 
     private void boot() {
@@ -306,11 +324,6 @@ public class NodeService extends Service {
             android.util.Log.w("MeowNode", "unpack failed", t);
             return null;
         }
-    }
-
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null;
     }
 
     /**
