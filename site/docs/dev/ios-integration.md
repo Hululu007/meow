@@ -169,16 +169,20 @@ iOS 要对齐这条，拆成两问：
 - 状态跨重启保留（`policy.json`）。接口：`GET/POST /api/_debug/lan`。
 
 **测试 IPA 要给侧载商店的链接**：Actions artifact 需要登录、且下载下来是 zip，
-侧载商店用不了；必须有**免登录直链**。做法是把 IPA 挂成 Release 的额外资产：
+侧载商店用不了。`_ios.yml` 手动 dispatch 会把 IPA **直接上传**到独立的测试
+Release `ipa-test`（固定文件名，每次覆盖），链接永远不变：
 
-```bash
-gh release upload release-v<版本> <file> --clobber
-# https://github.com/upchr/meow/releases/download/release-v<版本>/<file>
+```
+https://github.com/upchr/meow/releases/download/ipa-test/Meow-unsigned-test.ipa
 ```
 
-上传/删除资产**不会**触发 `release published`，所以不会跑 sync-packages、
-不会改 `packages.json`；不要为此新建 tag 或发布新 Release。文件名带
-`test<短sha>` 区分，验完 `gh release delete-asset` 删掉即可。
+- 上传用 workflow 的 `GITHUB_TOKEN`：它触发的事件不会再生成工作流（GitHub 防递归），
+  所以**不会**误跑 sync-packages、不动 `packages.json`；
+- 只在 `workflow_dispatch` 且 `nojvm=false` 时上传；`release-v*` 全量发版不碰这个通道，
+  正式 Release 页也不会多出测试包；
+- 本地**不需要**下载再上传（省 144MB 往返）：CI 的 bundle inventory 已核对
+  条目数/体积/MeowBuild/关键库；需要深查再用 `gh run download`。
+- 不要挂到 `release-v*` 正式 Release 的资产里。
 
 ---
 

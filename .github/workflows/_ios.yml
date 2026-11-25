@@ -51,6 +51,10 @@ permissions:
 jobs:
   ipa:
     runs-on: macos-15
+    # 手动 dispatch 会把 IPA 覆盖上传到测试 Release（ipa-test），需要写权限。
+    # release.yml 以 workflow_call 调本文件时不会走那一步（见步骤里的 event_name 判断）。
+    permissions:
+      contents: write
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -300,3 +304,27 @@ jobs:
           path: artifacts/**
           retention-days: 14
           if-no-files-found: warn
+
+      # 手动 dispatch：把 IPA 覆盖上传到独立测试 Release（ipa-test）。
+      #
+      # ★ 不要挂到正式 Release：正式页只放发版产物。
+      # ★ 用 GITHUB_TOKEN 创建/更新 Release：该 token 触发的事件不会再生成
+      #   工作流（GitHub 防递归规则），所以不会误跑 sync-packages、不动 packages.json。
+      # ★ 固定文件名 + --clobber：链接永远不变，侧载商店可以长期填同一个地址。
+      - name: Publish to ipa-test channel
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.nojvm }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          IPA=$(ls artifacts/Meow-unsigned-*.ipa | grep -v nojvm | head -1)
+          test -n "$IPA"
+          cp "$IPA" artifacts/Meow-unsigned-test.ipa
+          if ! gh release view ipa-test --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create ipa-test --repo "$GITHUB_REPOSITORY" --prerelease \
+              --target "$GITHUB_SHA" \
+              --title "iOS 测试包（临时）" \
+              --notes "手动 dispatch 的未签名测试 IPA。固定文件名 Meow-unsigned-test.ipa，每次覆盖；正式版见 release-v*。"
+          fi
+          gh release upload ipa-test artifacts/Meow-unsigned-test.ipa \
+            --repo "$GITHUB_REPOSITORY" --clobber
