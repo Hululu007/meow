@@ -366,6 +366,16 @@ async function loadHome(retry = 0) {
       activeTid.value = classes.value[0].type_id
       await fillFirstScreen()
     } else if (h.list?.length) {
+      /*
+       * ★ 分类为空但列表有数据（2026-11-25 用户报「首页分类胶囊偶现不显示，
+       *   切页面再回来又有」）：源站偶发返回 home 不带 class。直接渲染列表
+       *   会让整条分类胶囊消失；重拉一次通常就有，拿不到才退回旧行为。
+       */
+      if (retry < 1) {
+        await sleep(600)
+        if (seq !== homeSeq || site.value !== siteAtStart) return
+        return loadHome(retry + 1)
+      }
       list.value = h.list
     } else {
       error.value = '该站点返回空数据（源可能已失效）'

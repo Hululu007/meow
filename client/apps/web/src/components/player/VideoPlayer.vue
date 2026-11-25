@@ -31,6 +31,7 @@ import {
   setSystemVolume,
   restoreSystemBrightness,
   setIosNavGesture,
+  iosPowerTimer,
   tvCancelPowerTimer,
   tvPowerTimerState,
   tvProbeRoot,
@@ -377,6 +378,8 @@ function setPower(action: PowerAction, minutes: number) {
   if (minutes <= 0) {
     sleepAt.value = 0
     sleepLeft.value = 0
+    // iOS：原生定时器也要撤
+    if (isIosShell()) iosPowerTimer(0)
     flashMarks('已取消定时')
     return
   }
@@ -412,6 +415,27 @@ function setPower(action: PowerAction, minutes: number) {
       }
       sleepLeft.value = Math.max(0, Math.ceil(st.remainingMs / 60_000))
     }, 5_000)
+    flashMarks(`将在 ${minutes} 分钟后${POWER_ACTION_LABEL[act]}`)
+    return
+  }
+
+  // iOS：原生计时（JS setInterval 切后台会被挂起，到点不会响）
+  if (isIosShell()) {
+    powerAction.value = act
+    sleepAt.value = Date.now() + minutes * 60_000
+    sleepLeft.value = minutes
+    iosPowerTimer(minutes * 60)
+    // 只用于刷新"还剩 X 分钟"；到点由原生 eval __meowPowerFire（暂停 + 释放音频）
+    sleepTimer = window.setInterval(() => {
+      const left = Math.round((sleepAt.value - Date.now()) / 60_000)
+      sleepLeft.value = Math.max(0, left)
+      if (Date.now() >= sleepAt.value) {
+        clearInterval(sleepTimer)
+        sleepTimer = undefined
+        sleepAt.value = 0
+        sleepLeft.value = 0
+      }
+    }, 10_000)
     flashMarks(`将在 ${minutes} 分钟后${POWER_ACTION_LABEL[act]}`)
     return
   }
@@ -2848,18 +2872,10 @@ function zoneOf(e: MouseEvent): Zone {
 function touchDoubleTapAction(e: MouseEvent) {
   // 横滑 seek 刚结束：浏览器可能把"松手 + 再点一下"判成双击，不响应
   if (Date.now() - hseekEndedAt < 350) return
-  const zone = zoneOf(e)
-  if (zone === 'left') {
-    seekBy(-10)
-    flashSeekHint(-10)
-    return
-  }
-  if (zone === 'right') {
-    seekBy(10)
-    flashSeekHint(10)
-    return
-  }
-  // 中区双击：立即暂停/播放（单击只切控制栏，在 click 定时器里被这里清掉）
+  /*
+   * 2026-11-25 用户口径：双击**不再**按左右分区快退/快进，只保留"暂停/继续"。
+   * 快进/快退交给长按（长按左右区 2× 扫描），避免"想暂停结果跳了 10 秒"。
+   */
   toggle()
 }
 

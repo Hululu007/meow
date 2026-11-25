@@ -13,6 +13,8 @@ struct MeowApp: App {
         // 会话激活交给 scenePhase == .background 且页面报告在播时才做
         //（见 AudioSession：在 play 路径上 setActive 会造成「播放 1s 自动暂停」）。
         AudioSession.configure()
+        // 通知代理：前台也要显示横幅（导入完成提示）
+        Notifier.shared.setup()
     }
 
     var body: some Scene {

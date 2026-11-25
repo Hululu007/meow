@@ -237,6 +237,21 @@ final class Bootstrap: ObservableObject {
                   + "window.webkit.messageHandlers.meowIos.postMessage({op:'navGesture',value:!!on})"
                   + "}catch(e){}}")
         /*
+         * 播放倒计时：原生层计时（JS setInterval 切后台会被挂起）。
+         * 秒数传 0 = 取消；到点原生 eval `window.__meowPowerFire`。
+         */
+        js.append("window.meowIos.powerTimer=function(sec){try{"
+                  + "window.webkit.messageHandlers.meowIos.postMessage({op:'powerTimer',value:Number(sec)||0})"
+                  + "}catch(e){}}")
+        /*
+         * 系统通知：导入源包/配置这种后台长任务完成时提醒（用户切走了也能看到）。
+         * 首次调用时原生会弹权限框；拒绝后静默失败。
+         */
+        js.append("window.meowIos.notify=function(t,b){try{"
+                  + "window.webkit.messageHandlers.meowIos.postMessage({op:'notify',"
+                  + "title:String(t||''),body:String(b||'')})"
+                  + "}catch(e){}}")
+        /*
          * 播放状态桥：进后台时原生据此决定是否激活 AVAudioSession。
          * 只报状态，不要求在 play 里 setActive —— 那会打断 WebKit（实测 1s 自停）。
          */

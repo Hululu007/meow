@@ -466,9 +466,10 @@ describe('⑦ 直播页：返回键跟面板同显隐 + 信号源可导航 + 面
     expect(live).toContain('absolute right-3 flex w-1/3')
     expect(live).not.toContain('absolute left-3 flex w-1/3')
     // 横屏上下对称 12px（返回键已在左侧）；竖屏才留 top-14 给返回键，
-    // 底部还要让开手机底部标签栏（--tabbar-clear，2026-11-12 直播成为一级入口）
+    // 底部只让安全区：直播页是沉浸态，tabbar 不显示；
+    // 预留 --tabbar-clear 会让面板凭空矮一截（2026-11-25 用户截图）
     expect(live).toMatch(/landscape\s*\?\s*'top-3 bottom-3'/)
-    expect(live).toContain("'top-14 bottom-[calc(0.75rem+var(--tabbar-clear))]'")
+    expect(live).toContain("'top-14 bottom-[calc(0.75rem+env(safe-area-inset-bottom))]'")
     // 冷启动时 showCtrl 初始 true，必须靠挂载时的 wake() 排上收起计时
     const m = live.indexOf('onMounted(() => {')
     const mount = live.slice(m, m + 300)
@@ -491,7 +492,7 @@ describe('⑦ 直播页：返回键跟面板同显隐 + 信号源可导航 + 面
     expect(live).toContain('overflow-hidden rounded-xl border border-white/10 bg-black/75')
     // 宽屏贴右/上/下边；窄屏顶部留 3.5rem（返回键 48px 高 + 8px 间隙），
     // 底部让开标签栏
-    expect(live).toContain("top-14 bottom-[calc(0.75rem+var(--tabbar-clear))]")
+    expect(live).toContain("top-14 bottom-[calc(0.75rem+env(safe-area-inset-bottom))]")
     expect(live).toContain('top-3 bottom-3')
     expect(live).toContain('absolute right-3')
     // 不再贴着左/上边缘（原来 inset-y-0 left-0 把返回键压在下面）

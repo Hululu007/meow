@@ -95,6 +95,13 @@ struct WebView: UIViewRepresentable {
                         // 播放/直播页关掉边缘返回手势，避免和横滑 seek 冲突
                         message.webView?.allowsBackForwardNavigationGestures =
                             dict["value"] as? Bool ?? true
+                    case "powerTimer":
+                        // 倒计时（原生计时：JS 切后台会被挂起）
+                        PowerTimer.start(seconds: (dict["value"] as? NSNumber)?.intValue ?? 0)
+                    case "notify":
+                        Notifier.shared.notify(
+                            title: dict["title"] as? String ?? "喵播放器",
+                            body: dict["body"] as? String ?? "")
                     default:
                         break
                     }

@@ -956,6 +956,8 @@ async function openPlaylist(p: { name: string; url: string }, force = false) {
       if (!firstKey) firstKey = keyOf(next)
     }
     activeKey.value = firstKey
+    // 换源成功才关面板：失败时留在面板里，错误就显示在信号源列表下方
+    showGuide.value = false
   } finally {
     playlistBusy.value = ''
   }
@@ -3071,7 +3073,7 @@ onBeforeUnmount(() => {
           :class="
             landscape
               ? 'top-3 bottom-3'
-              : 'top-14 bottom-[calc(0.75rem+var(--tabbar-clear))]'
+              : 'top-14 bottom-[calc(0.75rem+env(safe-area-inset-bottom))]'
           "
           data-guide-panel
           :style="guidePanelStyle"
@@ -3121,11 +3123,15 @@ onBeforeUnmount(() => {
                   playlistBusy === p.url ? 'text-white/40' : 'text-white/70 hover:bg-white/10',
                   guideColumn === 'source' && guideSource === pi ? 'guide-cursor' : '',
                 ]"
-                @click="showGuide = false; openPlaylist(p)"
+                @click="openPlaylist(p)"
               >
                 <span class="truncate">{{ p.name }}</span>
                 <span class="shrink-0 opacity-60">{{ playlistBusy === p.url ? '…' : '换源' }}</span>
               </div>
+              <!-- 换源失败要在面板里看得到：面板一关，页面级错误只会在没台可播时才显示 -->
+              <p v-if="error" class="mx-2 mt-1 rounded bg-warn/15 px-2 py-1 text-[10px] leading-snug text-warn">
+                {{ error }}
+              </p>
             </div>
             <div class="guide-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4">
               <div
@@ -3157,7 +3163,7 @@ onBeforeUnmount(() => {
           </div>
 
           <!-- 右块：台列表 -->
-          <div class="flex min-w-0 flex-1 flex-col">
+          <div class="flex min-h-0 min-w-0 flex-1 flex-col">
             <div class="flex shrink-0 items-baseline gap-2 px-2.5 pb-1 pt-2">
               <span class="truncate text-xs text-white/85">{{ groups[guideGroup]?.group }}</span>
               <span class="shrink-0 text-[11px] text-white/45">{{ guideChannels.length }} 台</span>

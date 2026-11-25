@@ -53,4 +53,17 @@ enum AudioSession {
             LaunchLog.write("audio session background activate failed: \(error.localizedDescription)")
         }
     }
+
+    /// 倒计时到点：页面已经暂停，这里把会话放掉。
+    /// 不放的话锁屏/控制中心还显示"正在播放"，后台也一直占着音频路由。
+    static func stopForSleep() {
+        wantPlayback = false
+        do {
+            try AVAudioSession.sharedInstance().setActive(
+                false, options: [.notifyOthersOnDeactivation])
+            LaunchLog.write("audio session: released (sleep timer)")
+        } catch {
+            LaunchLog.write("audio session release failed: \(error.localizedDescription)")
+        }
+    }
 }

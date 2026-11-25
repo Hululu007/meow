@@ -182,7 +182,7 @@ import {
   type SyncStatus,
 } from '@/stores/sync'
 import { clearSearchHistory, listSearchHistory } from '@/stores/searchHistory'
-import { tvInlineInput } from '@/api/nativeBridge'
+import { iosNotify, tvInlineInput } from '@/api/nativeBridge'
 import { qrSvg } from '@/utils/qr'
 import FpkUpgradePanel from '@/components/common/FpkUpgradePanel.vue'
 import UpdateCenter from '@/components/common/UpdateCenter.vue'
@@ -2787,6 +2787,7 @@ async function doImportConfig() {
     if (!started.ok) {
       cfgMsgOk.value = false
       cfgMsg.value = started.msg || '导入失败'
+      iosNotify('导入失败', cfgMsg.value)
       return
     }
     // 新后端回 pending:true（后台线程在跑）；老后端直接给最终结果
@@ -2794,11 +2795,13 @@ async function doImportConfig() {
     if (!r.ok) {
       cfgMsgOk.value = false
       cfgMsg.value = r.msg || '导入失败'
+      iosNotify('导入失败', cfgMsg.value)
       return
     }
     if (!r.imported) {
       cfgMsgOk.value = false
       cfgMsg.value = r.msg || '导入没有生效，请重试'
+      iosNotify('导入失败', cfgMsg.value)
       return
     }
     cfgMsgOk.value = true
@@ -2808,6 +2811,8 @@ async function doImportConfig() {
     // 多仓：后端已把"当前仓/索引/仓列表"落盘，这里同步本地状态（「当前」标记）
     if (r.active) depotActive.value = r.active
     void loadDepotCache()
+    // 系统通知：导入几十秒，用户可能已经切走（2026-11-25 用户要求）
+    iosNotify('导入完成', `已按「${cfgApplyLabel.value}」导入 ${r.sites}/${r.totalSites} 站`)
     cfgMsg.value = `已按「${cfgApplyLabel.value}」导入 ${r.sites}/${r.totalSites} 站${
       r.depot?.length ? `，另有 ${r.depot.length} 个多仓地址` : ''
     }`
@@ -2819,6 +2824,7 @@ async function doImportConfig() {
   } catch (e: any) {
     cfgMsgOk.value = false
     cfgMsg.value = e?.message || String(e)
+    iosNotify('导入失败', cfgMsg.value)
   } finally {
     cfgBusy.value = false
   }
@@ -4479,6 +4485,7 @@ async function importManifest() {
     sources.value = await importPluginManifest(text, manifestName.value)
     manifestOk.value = true
     manifestMsg.value = '导入成功，已设为当前源'
+    iosNotify('导入完成', '源清单已导入并设为当前源')
     manifestPaste.value = ''
     showManifestPaste.value = false
     await loadIndex(true)
@@ -5093,13 +5100,49 @@ async function scrollToSec(id: string) {
 function jumpToEl(el: HTMLElement) {
   const c = contentRef.value
   const useContainer = !!c && c.scrollHeight > c.clientHeight + 1
+  const offset = stickyTopOffset()
   if (useContainer) {
     const target =
       c!.scrollTop + (el.getBoundingClientRect().top - c!.getBoundingClientRect().top) - 8
     scrollContainerTo(c!, target)
+    // 平滑滚动期间布局可能变（图片/异步列表）：落地后再校正一次
+    window.setTimeout(() => {
+      const cc = contentRef.value
+      if (!cc) return
+      const want =
+        cc.scrollTop + (el.getBoundingClientRect().top - cc.getBoundingClientRect().top) - 8
+      if (Math.abs(cc.scrollTop - want) > 6) scrollContainerTo(cc, want)
+    }, 480)
   } else {
-    scrollWindowTo(el.getBoundingClientRect().top + window.scrollY - 72)
+    const want = el.getBoundingClientRect().top + window.scrollY - offset
+    scrollWindowTo(want)
+    window.setTimeout(() => {
+      const w = el.getBoundingClientRect().top + window.scrollY - stickyTopOffset()
+      /*
+       * ★ 竖屏跳动不准的第二刀（2026-11-25 用户报「点两次落点不一样」）：
+       *   平滑滚动 + 吸顶胶囊 + 异步内容加载会让"第一帧算出来的目标"偏移。
+       *   落地后按真实位置再校一次，只在实际偏差 > 6px 时补，不会来回抖。
+       */
+      if (Math.abs(window.scrollY - w) > 6) scrollWindowTo(w)
+    }, 480)
   }
+}
+
+/**
+ * 竖屏/窄屏跳转要让出的高度 = 顶栏 + 吸顶分区胶囊。
+ *
+ * <p>原来写死 72（只算了顶栏），竖屏下胶囊条吸在顶栏下沿还有 ~44px，
+ * 目标分区标题就被压在胶囊下面，看起来"跳不准"；iPad 横屏走容器分支
+ * 不受影响（用户实测横屏正确）。
+ */
+function stickyTopOffset(): number {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue('--header-h')
+  const header = parseFloat(raw) || 56
+  const nav = chipsEl.value
+  const navH = nav && nav.getBoundingClientRect().height > 0 && nav.offsetParent !== null
+    ? nav.getBoundingClientRect().height
+    : 0
+  return header + navH + 8
 }
 
 /**

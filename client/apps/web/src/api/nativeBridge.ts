@@ -793,6 +793,32 @@ export function setIosNavGesture(on: boolean): void {
   }
 }
 
+/** iOS 原生倒计时（秒；0 = 取消）。返回是否交给了原生层。 */
+export function iosPowerTimer(seconds: number): boolean {
+  try {
+    const b = (window as unknown as { meowIos?: { powerTimer?: (s: number) => void } }).meowIos
+    if (b && typeof b.powerTimer === 'function') {
+      b.powerTimer(Math.max(0, Math.round(seconds)))
+      return true
+    }
+  } catch {
+    /* 忽略 */
+  }
+  return false
+}
+
+/** iOS 系统通知（导入完成等）。其它端 no-op。 */
+export function iosNotify(title: string, body: string): void {
+  try {
+    const b = (window as unknown as {
+      meowIos?: { notify?: (t: string, b: string) => void }
+    }).meowIos
+    if (b && typeof b.notify === 'function') b.notify(title, body)
+  } catch {
+    /* 忽略 */
+  }
+}
+
 /* ------------------------------------------------------------------ 输入状态同步 */
 
 /**
