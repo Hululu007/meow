@@ -10,9 +10,13 @@ final class StaticServer {
     private let queue = DispatchQueue(label: "com.meow.ios.static", qos: .userInitiated)
     private var listener: NWListener?
     private var root: URL?
+    /** 记住端口：监听失效后要在同一端口重建（页面里的相对地址不会变）。 */
+    private var port: UInt16 = 9979
+    private var restarting = false
 
     func start(root: URL, port: UInt16) async throws {
         self.root = root.standardizedFileURL
+        self.port = port
 
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
@@ -50,6 +54,43 @@ final class StaticServer {
     func stop() {
         listener?.cancel()
         listener = nil
+    }
+
+    /// 探一次入口页；不通就在原端口重建监听。
+    ///
+    /// <p>为什么必须有（2026-11-25 真机）：iOS 切后台/内存压力下 NWListener 可能
+    /// 悄悄失效（不再 accept），而 Java 网关还活着 —— 于是 API 正常、懒加载路由的
+    /// chunk 全部拉不到。用户看到的正是「顶栏搜索 / 详情剧集点了没反应」，
+    /// 而当前页里的纯前端按钮（切播放源胶囊）照常工作。
+    /// <p>路由 chunk 已经预热过的（见 main.ts warmLazyRoutes）不受影响；这里负责
+    /// 把「下一次启动/还没加载的页面」救回来。
+    func ensureServing() async {
+        guard let root else { return }
+        if await probe() { return }
+        if restarting { return }
+        restarting = true
+        defer { restarting = false }
+        LaunchLog.write("static server unhealthy; restarting on \(port)")
+        stop()
+        do {
+            try await start(root: root, port: port)
+            LaunchLog.write("static server restarted")
+        } catch {
+            LaunchLog.write("static server restart failed: \(error)")
+        }
+    }
+
+    private func probe() async -> Bool {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/index.html") else { return false }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 2
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        do {
+            let (_, resp) = try await URLSession.shared.data(for: req)
+            return (resp as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            return false
+        }
     }
 
     // MARK: - connection

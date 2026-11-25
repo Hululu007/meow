@@ -12,6 +12,7 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
+import { isIosShell } from './compat/shell'
 import './styles/tokens.css'
 // 老内核（Chrome < 88）的降级规则。必须排在 tokens.css 之后：
 // 它靠"写在 @layer 之外"压过 Tailwind 的 utilities 层，顺序反了会失效。
@@ -424,7 +425,44 @@ async function bootstrap() {
   }
   installDesktopPrefsBridge()
   createApp(App).use(createPinia()).use(router).mount('#app')
+  warmLazyRoutes()
   startBackgroundJobs()
+}
+
+/**
+ * iOS：首屏后把懒加载路由的 chunk 全部预热到内存。
+ *
+ * <p>2026-11-25 真机：顶栏搜索 / AI / 直播、详情页「去搜索」与剧集点击全部没反应，
+ * 而同一页里的纯前端按钮（切播放源胶囊）正常 —— 这是「导航要拉新 chunk、静态按钮不用」
+ * 的典型分界。iOS 的静态服务（9979）在切后台后可能被系统收走，此时所有懒加载
+ * chunk 都拉不到，vue-router 会静默中止导航（见 main.ts 的 router.onError）。
+ *
+ * <p>预热后路由模块常驻 JS 内存，导航不再依赖 9979；StaticServer 的定时探活
+ * 负责把静态服务本身救回来（下次启动/没预热到的资源）。
+ * 只在 iOS 壳跑：TV/PC 的包是本地文件/自带服务器，不需要多占这份内存。
+ */
+function warmLazyRoutes() {
+  if (!isIosShell()) return
+  const run = () => {
+    for (const r of router.getRoutes()) {
+      const c = r.components?.default as unknown
+      if (typeof c !== 'function') continue
+      try {
+        void (c as () => Promise<unknown>)().catch(() => {
+          /* 单个 chunk 失败不影响其他页面；StaticServer 探活会兜底 */
+        })
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  const ric = (
+    window as unknown as {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void
+    }
+  ).requestIdleCallback
+  if (typeof ric === 'function') ric(run, { timeout: 8000 })
+  else window.setTimeout(run, 3000)
 }
 
 // ---------------------------------------------------------------- 桌面端偏好桥

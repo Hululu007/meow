@@ -20,6 +20,7 @@ final class Bootstrap: ObservableObject {
 
     private let staticServer = StaticServer()
     private var started = false
+    private var staticWatchdog: Timer?
 
     nonisolated init() {}
 
@@ -119,6 +120,7 @@ final class Bootstrap: ObservableObject {
         bootScript = Self.makeBootScript(base: base, site: site)
         webURL = URL(string: "http://127.0.0.1:9979/")
         LaunchLog.write("web url set (base=\(base.isEmpty ? "none" : base))")
+        startStaticWatchdog()
 
         #if !targetEnvironment(simulator)
         /*
@@ -127,6 +129,26 @@ final class Bootstrap: ObservableObject {
          */
         NodeBridge.startIfPossible()
         #endif
+    }
+
+    /// 静态服务 15s 探活：失效就在原端口重建（见 StaticServer.ensureServing）。
+    ///
+    /// <p>2026-11-25 真机：切后台回来后 Java 网关被看门狗救活了，但 9979 的
+    /// NWListener 没人管 —— 表现是「API 正常，点搜索/剧集没反应」（懒加载 chunk
+    /// 全拉不到）。这个定时器把静态服务也纳入保活。
+    private func startStaticWatchdog() {
+        staticWatchdog?.invalidate()
+        staticWatchdog = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { await self.staticServer.ensureServing() }
+        }
+    }
+
+    /// 回前台：立刻补一次静态服务探活 + 唤醒 Java 看门狗。
+    func appBecameActive() {
+        LaunchLog.write("scene active; ensure static server + kick watchdog")
+        JvmBridge.kickWatchdog()
+        Task { await staticServer.ensureServing() }
     }
 
     // MARK: - helpers

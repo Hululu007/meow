@@ -17,12 +17,11 @@ struct MeowApp: App {
                     LaunchLog.write("ui appear")
                     boot.start()
                 }
-                // 回前台：iOS 挂起期间看门狗线程也冻结，系统可能已把监听 socket
-                // 收走。立刻踢一次，别让用户先看到「后端连接中断」再等 5 秒。
+                // 回前台：iOS 挂起期间看门狗线程与静态服务都可能失效。
+                // 立刻踢一次：唤醒 Java 看门狗 + 探活/重建 9979 静态服务。
                 .onChange(of: scenePhase) { phase in
                     if phase == .active {
-                        LaunchLog.write("scene active; kick gateway watchdog")
-                        JvmBridge.kickWatchdog()
+                        boot.appBecameActive()
                     }
                 }
                 .preferredColorScheme(.dark)
