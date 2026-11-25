@@ -32,7 +32,6 @@ struct MeowApp: App {
                  */
                 .onChange(of: scenePhase) { phase in
                     if phase == .active {
-                        AudioSession.configure()
                         boot.appBecameActive()
                         ShellOrientation.reapplyOnActivate()
                         // 给页面补一个"真正回到前台"的信号：播放器用它续播/恢复横屏，

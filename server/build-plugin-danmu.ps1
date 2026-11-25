@@ -89,6 +89,21 @@ foreach ($d in $drop) {
     }
 }
 
+# 加固：listenOnAllInterfaces 的 host 写死 '::' / '0.0.0.0'，会忽略 DANMU_API_BIND，
+# 把 19321/5321 暴露到局域网。插件 manifest 与 TV NodeService 都设了 127.0.0.1，
+# 这里让变量真正生效（未设置时行为不变，仍绑全接口）。
+$listenUtil = Join-Path $out 'danmu_api\utils\server-listen-util.js'
+if (Test-Path $listenUtil) {
+    $t = [System.IO.File]::ReadAllText($listenUtil)
+    $t = $t.Replace("host: '::'", "host: (process.env.DANMU_API_BIND || '::')")
+    $t = $t.Replace("host: '0.0.0.0'", "host: (process.env.DANMU_API_BIND || '0.0.0.0')")
+    if ($t.IndexOf('DANMU_API_BIND') -lt 0) { throw "DANMU_API_BIND 补丁未命中：$listenUtil" }
+    [System.IO.File]::WriteAllText($listenUtil, $t, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host "  listen util patched for DANMU_API_BIND" -ForegroundColor Green
+} else {
+    Write-Host "  警告：未找到 server-listen-util.js，跳过绑定地址补丁" -ForegroundColor DarkYellow
+}
+
 $files = (Get-ChildItem $out -Recurse -File | Measure-Object).Count
 $sizeMb = [math]::Round(((Get-ChildItem $out -Recurse -File | Measure-Object -Property Length -Sum).Sum) / 1MB, 1)
 Write-Host "  danmu-api: ${sizeMb}MB / $files 个文件（裁剪后）" -ForegroundColor Green

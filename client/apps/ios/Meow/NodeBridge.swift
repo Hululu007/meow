@@ -52,6 +52,9 @@ enum NodeBridge {
 
     private static let bootAtKey = "meow.node.bootAt"
     private static let bootCountKey = "meow.node.bootCount"
+    /// 上一次启动是否成功跑出过健康服务（写 host 文件即算）。
+    /// 只有「上次没健康又很快重启」才可能是崩溃环 —— 手动重启不该被误判。
+    private static let wasHealthyKey = "meow.node.wasHealthy"
     /// 两次启动间隔小于这个值才算「快速重启」
     private static let crashWindow: TimeInterval = 30
 
@@ -59,16 +62,25 @@ enum NodeBridge {
         let d = UserDefaults.standard
         let now = Date().timeIntervalSince1970
         let last = d.double(forKey: bootAtKey)
+        let lastHealthy = d.bool(forKey: wasHealthyKey)
         var count = d.integer(forKey: bootCountKey)
-        if last > 0, now - last < crashWindow {
+        /*
+         * ★ 只在「上一次启动没健康、且 30 秒内又启动」时计数（2026-11-25 用户实测）：
+         * 旧逻辑任何 30 秒内的第二次启动都跳过 node —— 用户手动重启 App 一次，
+         * 本次弹幕聚合就整个不可用了，而且只留一行 launch.log。
+         * 健康过再重启说明 node 本身没问题，不该跳。
+         */
+        if last > 0, now - last < crashWindow, !lastHealthy {
             count += 1
         } else {
             count = 1
         }
         d.set(now, forKey: bootAtKey)
         d.set(count, forKey: bootCountKey)
+        // 本次还没证明健康：真崩了下次启动才不会漏计
+        d.set(false, forKey: wasHealthyKey)
         if count >= 2 {
-            LaunchLog.write("[node] rapid restart detected (count=\(count)); skip node this launch")
+            LaunchLog.write("[node] rapid restart without healthy; skip node this launch")
             return true
         }
         return false
@@ -260,6 +272,8 @@ enum NodeBridge {
         do {
             try tpl.write(to: f, atomically: true, encoding: .utf8)
             LaunchLog.write("[node] healthy; danmaku host injected")
+            // 证明本次启动是健康的：下次手动重启不会被 crashLooping 误判
+            UserDefaults.standard.set(true, forKey: wasHealthyKey)
             lock.lock()
             let first = !stableTimerScheduled
             if first { stableTimerScheduled = true }

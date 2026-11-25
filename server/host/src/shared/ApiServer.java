@@ -11732,14 +11732,32 @@ public class ApiServer {
     }
 
     private static boolean lanTokenMatches(HttpExchange ex) throws IOException {
-        String want = LAN_DEBUG_TOKEN;
-        if (want == null || want.isEmpty()) return false;
+        String want = normalizeLanToken(LAN_DEBUG_TOKEN);
+        if (want.isEmpty()) return false;
         String got = ex.getRequestHeaders().getFirst("X-Meow-Token");
         if (got == null || got.trim().isEmpty()) got = query(ex).get("token");
         if (got == null) return false;
         return java.security.MessageDigest.isEqual(
                 want.getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                got.trim().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                normalizeLanToken(got).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /**
+     * 令牌归一化：去掉分隔符（`-`/空格）、统一小写。
+     *
+     * <p>界面上按 `ddf9-d08b-1396-b687` 分组显示（{@code groupToken()} 只是排版），
+     * UI 文案也写了「分隔符可省略」—— 但服务端一直逐字节比较，带 `-` 直接 401
+     * （2026-11-25 现场实测）。两边都归一化后，抄写/解码两种格式都认。
+     */
+    private static String normalizeLanToken(String s) {
+        if (s == null) return "";
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '-' || c == ' ' || c == '\t' || c == '\n' || c == '\r') continue;
+            sb.append(Character.toLowerCase(c));
+        }
+        return sb.toString();
     }
 
     private static String newLanToken() {

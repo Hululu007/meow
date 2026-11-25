@@ -3263,24 +3263,6 @@ function shellSetOrientation(mode: 'landscape' | 'portrait') {
   if (ios && typeof ios.setOrientation === 'function') ios.setOrientation(mode)
 }
 
-/**
- * iOS 壳：开播时激活 playback audio session，离开播放页再还回去。
- *
- * <p>Info.plist 的 UIBackgroundModes=audio 只是声明；session 不 active 时
- * 切后台/锁屏照样停音。放在**开播**而不是启动：启动就激活会抢焦点，
- * 打断用户正在听的音乐（见 AudioSession.swift）。
- */
-function setIosAudioSession(on: boolean) {
-  const b = (window as unknown as { meowIos?: { setAudioSession?: (on: boolean) => void } }).meowIos
-  if (b && typeof b.setAudioSession === 'function') {
-    try {
-      b.setAudioSession(on)
-    } catch {
-      /* 旧包没有这个桥 */
-    }
-  }
-}
-
 function syncShellOrientation(full: boolean) {
   if (full) {
     if (window.innerHeight > window.innerWidth) {
@@ -6245,8 +6227,6 @@ onMounted(() => {
   }
   v?.addEventListener('play', () => {
     playing.value = true
-    // iOS 壳：开播即激活 playback audio session（后台出声的前提）
-    setIosAudioSession(true)
     dm.value?.start()
     dm.value?.sync(v.currentTime)
     wake()
@@ -6626,8 +6606,6 @@ onBeforeUnmount(() => {
   clearNoAudioWatch()
   // 锁定提示的 1.6s 定时器跟着组件走，别在卸载后再写 ref
   clearTimeout(lockHintTimer)
-  // 离开播放页：把 iOS audio session 还回去（别让别的 App 一直等着）
-  setIosAudioSession(false)
   // WebAudio 探测通道随组件销毁（不关的话每进一次播放页泄漏一个 AudioContext）
   void noAudioCtx?.close()
   noAudioCtx = undefined

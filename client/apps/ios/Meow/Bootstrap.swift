@@ -220,13 +220,6 @@ final class Bootstrap: ObservableObject {
         js.append("window.meowIos.setVolume=function(v){try{"
                   + "window.webkit.messageHandlers.meowIos.postMessage({op:'volume',value:Number(v)||0})"
                   + "}catch(e){}}")
-        /*
-         * 后台播放桥：开播时激活 playback audio session（切后台/锁屏继续出声），
-         * 离开播放页时还回去。启动时不激活，避免抢走用户正在听的音乐焦点。
-         */
-        js.append("window.meowIos.setAudioSession=function(on){try{"
-                  + "window.webkit.messageHandlers.meowIos.postMessage({op:'audioSession',value:!!on})"
-                  + "}catch(e){}}")
         if base.isEmpty {
             js.append("localStorage.removeItem('meow.api');localStorage.removeItem('meow.api.scope')")
         } else {
