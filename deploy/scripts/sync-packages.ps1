@@ -1049,6 +1049,7 @@ try {
                 draft        = [bool]$r.draft
                 prerelease   = [bool]$r.prerelease
                 published_at = $r.published_at
+                updated_at   = $r.updated_at
                 assets       = @($r.assets | ForEach-Object {
                     [pscustomobject]@{ name = $_.name; size = $_.size; digest = $_.digest }
                 })

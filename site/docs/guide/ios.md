@@ -27,6 +27,8 @@ https://github.com/upchr/meow/releases/latest/download/altstore-source.json
 
 - 源里是**每个版本一条**记录：各带该版本自己的 IPA、版本号、更新说明（来自 CHANGELOG）。
   装新版本、回退旧版本都从同一条源里选，不用换地址。
+- 测试包走独立通道：SideStore 设置 → **Beta Updates** 打开、轨道选 `nightly`，
+  源里会多出 `x.y.z-nightly` 那条（固定链接，每次 CI 覆盖；不开 Beta 看不到）。
 - SideStore：设置 → Sources → 加号 → 粘贴上面的源地址。
 - LiveContainer：用带 SideStore 的版本（`LiveContainer+SideStore.ipa`），
   在 SideStore 里加同一个源，装好后从 LiveContainer 里启动。

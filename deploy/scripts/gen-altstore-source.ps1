@@ -80,6 +80,45 @@ if ($byVer.Count -eq 0) { throw 'Releases 里没有任何 Meow-unsigned-<版本>
 
 $entries = @($byVer.Values | Sort-Object -Property { [version]$_.version } -Descending)
 
+# ---------------------------------------------------------------- 测试包（nightly 轨道）
+#
+# 测试包来自独立的 pre-release（tag ipa-test，固定文件名，每次覆盖）。
+# 它不能进 stable 轨道（会把测试包推给所有正式用户），SideStore 的机制是
+# v2 源的 releaseChannels：设置里开「Beta Updates」并选 nightly 才可见。
+#
+# ★ 版本号必须 >= stable 的最新版，否则 SideStore 的 betaReleases 会整体丢弃
+#   （StoreApp.swift: betaSemVer >= stableSemVer 才用 beta 轨道）。
+#   测试包的 Info.plist 版本通常等于仓库当前版本（如 1.2.22），与 stable 相等时
+#   beta 轨道可用；但它每次覆盖同一链接、版本号不变，装完不会提示"更新"。
+#   所以这里用「下一补丁版 + -nightly」：既 >= stable，又能让每次覆盖后的
+#   测试包在已安装 nightly 的设备上显示为一次更新。
+$testEntry = $null
+foreach ($r in $rels) {
+    foreach ($a in @($r.assets)) {
+        if ($a.name -eq 'Meow-unsigned-test.ipa') {
+            $when = if ($r.updated_at) { [string]$r.updated_at } elseif ($r.published_at) { [string]$r.published_at } else { '' }
+            if (-not $when) { continue }
+            $pub = [datetimeoffset]::Parse($when)
+            $sha = ''
+            if ($a.digest -and ([string]$a.digest) -match '^sha256:([0-9a-fA-F]{64})$') { $sha = $Matches[1] }
+            $next = [version]$entries[0].version
+            $nextVer = "{0}.{1}.{2}-nightly" -f $next.Major, $next.Minor, ($next.Build + 1)
+            $cand = [pscustomobject]@{
+                version   = $nextVer
+                published = $pub
+                date      = $pub.ToString('yyyy-MM-dd')
+                url       = "https://github.com/$Repo/releases/download/$($r.tag_name)/$($a.name)"
+                size      = [int64]$a.size
+                sha256    = $sha
+            }
+            if (-not $testEntry -or $testEntry.published -lt $cand.published) { $testEntry = $cand }
+        }
+    }
+}
+if ($testEntry) {
+    Write-Host ("  · 测试包：{0}（{1}，{2} 字节）" -f $testEntry.version, $testEntry.date, $testEntry.size) -ForegroundColor DarkGray
+}
+
 # ---------------------------------------------------------------- 组装 JSON
 $versions = @()
 foreach ($e in $entries) {
@@ -101,8 +140,9 @@ $latest = $entries[0]
 $latestDesc = $desc[$latest.version]
 if (-not $latestDesc) { $latestDesc = "猫窝 $($latest.version)" }
 
-# 顶层 app 同时写 versions[] 与旧式扁平字段：新版商店读 versions，
-# 老客户端/解析器读扁平字段，两套都指向同一个最新版。
+# releaseChannels（SideStore v2）：stable = 正式版本数组；nightly = 测试包。
+# decodeVersions 只在 releaseChannels 存在时读它，否则回退到 versions[]，
+# 所以 versions 两个都写，老客户端/解析器仍能工作。
 $app = [ordered]@{
     name                 = '猫窝'
     bundleIdentifier     = 'com.meow.player.ios'
@@ -120,8 +160,24 @@ $app = [ordered]@{
     downloadURL          = $latest.url
     size                 = $latest.size
 }
+if ($testEntry) {
+    $testRelease = [ordered]@{
+        version              = $testEntry.version
+        date                 = $testEntry.date
+        localizedDescription = '测试版：手动 dispatch 构建，固定链接每次覆盖。开启 Beta Updates 并选择 nightly 轨道可见。'
+        downloadURL          = $testEntry.url
+        size                 = $testEntry.size
+        minOSVersion         = $MinOSVersion
+    }
+    if ($testEntry.sha256) { $testRelease.sha256 = $testEntry.sha256 }
+    $app.releaseChannels = @(
+        [pscustomobject][ordered]@{ track = 'stable'; releases = $versions },
+        [pscustomobject][ordered]@{ track = 'nightly'; releases = @([pscustomobject]$testRelease) }
+    )
+}
 
 $src = [ordered]@{
+    version     = 2
     name        = '猫窝 Meow'
     identifier  = 'com.meow.player.source'
     sourceURL   = $SourceURL
