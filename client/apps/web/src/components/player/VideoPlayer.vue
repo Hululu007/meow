@@ -646,7 +646,10 @@ function restart() {
 /** 从"投屏回到本机"等处恢复播放（不重置进度）。 */
 function play() {
   const v = video.value
-  if (v) safePlay(v)
+  if (v) {
+    userPausedAt = 0
+    safePlay(v)
+  }
 }
 
 /** 接收页「开启声音」：解除静音并记住偏好。 */
@@ -2412,6 +2415,8 @@ function toggle() {
     userPausedAt = Date.now()
     bgKeepPlaying = false
     cancelResumeTimers()
+    // 用户自己动了进度/播放状态：回前台恢复窗口立刻失效，别跟他抢
+    clearRestoreWindow()
     v.pause()
   }
 }
@@ -2786,6 +2791,8 @@ let longPressTimer: number | undefined
 let pressStart = { x: 0, y: 0 }
 
 function onStagePointerDown(e: PointerEvent) {
+  // 用户开始操作：回前台的进度恢复窗口失效（他可能就是要往回拖）
+  clearRestoreWindow()
   // 锁定状态：不记快照、不起长按/手势，点屏只闪解锁按钮
   if (locked.value) {
     flashLockHint()
@@ -3529,6 +3536,8 @@ function onTimeUpdate() {
   const v = video.value
   if (!v) return
   currentTime.value = v.currentTime
+  // 回前台恢复窗口内持续校正进度（内核可能在我们判定"已到位"之后才把流重置）
+  onRestoreTick()
   // 最后一次"确实在播"的时刻：切后台时 iOS 可能先暂停再发 visibilitychange，
   // 光看 v.paused 会把这种情况判成"用户自己暂停"，回来就不续播（2026-11-25）。
   if (!v.paused) lastPlayedAt = Date.now()
@@ -6233,6 +6242,20 @@ onMounted(() => {
     if (Math.abs(v.playbackRate - rate.value) > 0.01) v.playbackRate = rate.value
   }
   v?.addEventListener('play', () => {
+    /*
+     * 用户刚按下暂停的 1.2s 内，任何来源的"又播起来"都立刻压回去：
+     * 系统后台恢复、续播重试、内核异步回放都会派 play。首次切回后台的媒体
+     * 状态最乱（2026-11-25 真机：首次切回双击暂停无效，后续正常），
+     * 这一道兜在事件层，不依赖具体是哪条路径拉起的。
+     */
+    if (userPausedAt && Date.now() - userPausedAt < 1200) {
+      try {
+        v.pause()
+      } catch {
+        /* 元素已销毁就算了 */
+      }
+      return
+    }
     playing.value = true
     userPausedAt = 0
     // 原生侧记"现在在播"：切后台时只有这个状态为真才激活 AVAudioSession
@@ -6365,6 +6388,13 @@ onMounted(() => {
     clearStartupWatchdog()
   })
   v?.addEventListener('canplay', onBufferEnd)
+  /*
+   * 回前台恢复窗口的触发点：timeupdate 在 onTimeUpdate 里调；这里补两个
+   * "元数据刚回来"的时机 —— 切回前台时 WebView 可能正在重建 source，
+   * 此时写 currentTime 会被丢掉，等这两个事件才是可靠的 seek 点。
+   */
+  v?.addEventListener('loadedmetadata', onRestoreTick)
+  v?.addEventListener('canplay', onRestoreTick)
   // 原生错误（非 hls 路径）：直链 404 / 编码不支持 / CORS 被拦
   v?.addEventListener('error', () => {
     // 换源瞬间 src 清空也会触发，忽略没有 src 的情况
@@ -6814,6 +6844,17 @@ function maybeKeepPlayingInBackground() {
       if (!el || el.ended || !bgKeepPlaying) return
       if (document.visibilityState !== 'hidden') return
       if (!el.paused) return
+      /*
+       * 后台被系统重启流时 currentTime 会回到 0：先把位置补回去再播，
+       * 否则会在后台从头播放（用户回来发现进度丢了）。
+       */
+      if (posBeforeHide > 5 && el.currentTime < posBeforeHide - 5 && el.readyState >= 1) {
+        try {
+          el.currentTime = posBeforeHide
+        } catch {
+          /* seek 不了就照常播 */
+        }
+      }
       safePlay(el)
     }, delay)
     resumeTimers.push(id)
@@ -6825,19 +6866,59 @@ function maybeKeepPlayingInBackground() {
 /**
  * 回前台把进度拉回切后台时的位置。
  *
+ * <p>★ 为什么不是"检查一次就完事"（2026-11-25 真机第三轮：进度确实没带回来）：
+ * iOS 回前台时媒体内核是**异步恢复**的，currentTime 可能先保持旧值、过一两秒
+ * 才被重置成 0/片段起点。只检查一次会正好落在"还没重置"的时刻，判定通过就
+ * 再也不管了。这里开一个 15s 的恢复窗口，由 timeupdate / canplay 持续校正。
+ *
  * <p>判据只用"明显更小"（>5s）：后台一直在播时 currentTime 只会更大，不会倒退。
- * 不再要求 playingBeforeHide —— 用户可能在后台用系统播放条暂停过，
- * 进度同样不该丢（2026-11-25 真机反馈"进度无法带回"）。
+ * 不要求 playingBeforeHide —— 用户在后台用系统播放条暂停过，进度同样不该丢。
  */
-function restorePositionFromHide(el: HTMLVideoElement) {
+let restorePos = 0
+let restoreUntil = 0
+
+function clearRestoreWindow() {
+  restorePos = 0
+  restoreUntil = 0
+}
+
+/** 回前台（或原生 active 信号）时开恢复窗口 */
+function beginRestoreWindow() {
   if (!isMobileForm() || isTvShell()) return
   if (posBeforeHide <= 5) return
-  if (el.currentTime >= posBeforeHide - 5) return
+  restorePos = posBeforeHide
+  restoreUntil = Date.now() + 15_000
+  const el = video.value
+  if (el) applyRestoreSeek(el)
+}
+
+/** 窗口内每次触发都很便宜：位置已经正常就直接收窗 */
+function applyRestoreSeek(el: HTMLVideoElement) {
+  if (!restorePos) return
+  if (Date.now() > restoreUntil || el.ended) {
+    clearRestoreWindow()
+    return
+  }
+  if (el.currentTime >= restorePos - 5) {
+    clearRestoreWindow()
+    return
+  }
+  /*
+   * 元数据还没到（切回前台瞬间 WebView 可能正在重建 source）：
+   * 此时写 currentTime 会被内核直接丢掉，等 loadedmetadata/canplay 再来。
+   */
+  if (el.readyState < 1) return
   try {
-    el.currentTime = posBeforeHide
+    el.currentTime = restorePos
   } catch {
     /* 流不允许 seek 就算了，至少别停在 0 */
   }
+}
+
+/** timeupdate / loadedmetadata / canplay 的统一入口 */
+function onRestoreTick() {
+  const el = video.value
+  if (el) applyRestoreSeek(el)
 }
 
 function pauseMediaOnHide() {
@@ -6946,9 +7027,9 @@ function resumeAfterVisibility() {
   /*
    * 位置兜底先做，且不依赖 playingBeforeHide：
    * 用户可能在后台用系统播放条暂停/恢复过，回前台进度同样不能丢
-   *（2026-11-25 真机「进度无法带回」）。
+   *（2026-11-25 真机「进度无法带回」）。恢复窗口由 timeupdate 持续校正。
    */
-  if (v0 && !v0.ended) restorePositionFromHide(v0)
+  if (v0 && !v0.ended) beginRestoreWindow()
   if (!playingBeforeHide) return
   playingBeforeHide = false
   // 用户刚点过暂停：不要再替他播
@@ -6972,7 +7053,7 @@ function resumeAfterVisibility() {
        * 进度兜底（移动端）：WebView 被回收/流被重置后 currentTime 会从 0 开始，
        * 这时拉回切后台时的位置；后台一直播的话 currentTime 已经更大，不会倒退。
        */
-      if (isMobileForm() && !isTvShell()) restorePositionFromHide(el)
+      if (isMobileForm() && !isTvShell()) applyRestoreSeek(el)
       if (el.paused) safePlay(el)
     }, delay)
     resumeTimers.push(id)
@@ -7144,6 +7225,7 @@ function pause() {
   userPausedAt = Date.now()
   bgKeepPlaying = false
   cancelResumeTimers()
+  clearRestoreWindow()
   if (v && !v.paused) v.pause()
 }
 
