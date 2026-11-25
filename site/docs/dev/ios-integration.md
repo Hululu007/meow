@@ -178,8 +178,8 @@ https://github.com/upchr/meow/releases/download/ipa-test/Meow-unsigned-test.ipa
 
 - 上传用 workflow 的 `GITHUB_TOKEN`：它触发的事件不会再生成工作流（GitHub 防递归），
   所以**不会**误跑 sync-packages、不动 `packages.json`；
-- 只在 `workflow_dispatch` 且 `nojvm=false` 时上传；`release-v*` 全量发版不碰这个通道，
-  正式 Release 页也不会多出测试包；
+- 手动 dispatch 需显式勾选 **`publish_test`**（默认 false）；`nojvm` 变体不上传；
+  `release-v*` 全量发版不碰这个通道，正式 Release 页也不会多出测试包；
 - 本地**不需要**下载再上传（省 144MB 往返）：CI 的 bundle inventory 已核对
   条目数/体积/MeowBuild/关键库；需要深查再用 `gh run download`。
 - 不要挂到 `release-v*` 正式 Release 的资产里。

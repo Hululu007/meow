@@ -40,6 +40,10 @@ on:
         description: 排障变体：不链接静态 JVM（用来二分「闪退是否来自 JVM」）
         type: boolean
         default: false
+      publish_test:
+        description: '把 IPA 覆盖上传到测试 Release（ipa-test，固定直链）'
+        type: boolean
+        default: false
 
 concurrency:
   group: ios-ipa-${{ github.ref }}
@@ -312,7 +316,7 @@ jobs:
       #   工作流（GitHub 防递归规则），所以不会误跑 sync-packages、不动 packages.json。
       # ★ 固定文件名 + --clobber：链接永远不变，侧载商店可以长期填同一个地址。
       - name: Publish to ipa-test channel
-        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.nojvm }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_test && !inputs.nojvm }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
