@@ -113,6 +113,20 @@ public final class Transcode {
         return m.isEmpty() ? idFor(source) : idFor(source + "\u0001" + m);
     }
 
+    /**
+     * 带起点的幂等键（issue #17 拖动 seek 超界 → 从目标点重转）。
+     *
+     * <p>起点必须参与 id：同一集的「从 0 转」与「从 20:00 转」是两份独立产物，
+     * 共用目录会让清单的分片编号互相覆盖。repair 例外 —— 它一直用
+     * {@code .start-offset} 在同一个目录里表达起点（中途修复的既有语义）。
+     */
+    public static String idFor(String source, boolean copy, boolean repair, int startSec) {
+        if (!repair && startSec > 1) {
+            return idFor(source + "\u0001s" + startSec);
+        }
+        return idFor(source, copy, repair);
+    }
+
     /** 转码 id：源地址的哈希。同一集重复点播复用同一份产物。 */
     public static String idFor(String source) {
         try {
@@ -663,7 +677,7 @@ public final class Transcode {
     /** allowHevc=false：repair 只出 H.264（客户端解不了 HEVC 时用）。 */
     public static Job ensure(String sourceUrl, boolean forceVideo, String headerJson,
                              boolean preferCopy, boolean repair, int startSec, boolean allowHevc) {
-        String id = idFor(sourceUrl, preferCopy, repair);
+        String id = idFor(sourceUrl, preferCopy, repair, startSec);
         /*
          * 单集锁（S1，2026-11-17）：前端 start 请求与 2 秒一次的轮询可能
          * 同时进来，"检查状态 → 起 ffmpeg"必须串行，否则会起两个进程写同一目录。
@@ -722,7 +736,7 @@ public final class Transcode {
              */
             j.repair = repair;
             j.allowHevc = allowHevc;
-            if (repair) j.startOffset = readStartOffset(id);
+            j.startOffset = readStartOffset(id);
             String ff0 = ffmpegPath();
             if ((preferCopy || repair) && j.probeSnap == null && !ff0.isEmpty()) {
                 Probe p0 = probe(ff0, sourceUrl, headerJson);
@@ -826,18 +840,27 @@ public final class Transcode {
         } else {
             System.err.println("[transcode] probe " + id + " failed (ffprobe timeout?) -> software path");
         }
+        /*
+         * ★ 起点重转必须重编码，不能走 copy（2026-11-24 实测）。
+         *
+         * `-ss N -i … -c:v copy` 在 ffmpeg 9 的 HLS/MP4 输入上**不裁切**：
+         * 产物仍是整段（实测 30s 源 seek 6s 出 30s），清单时间轴与播放进度全错。
+         * 重编码时 `-ss` 才是输入快进（测试 30s→24s、分片回到 2s）。
+         * 代价是这一次跳转不保留原画码流，由前端在提示里说明。
+         */
+        if (probe != null && startSec > 1) probe.copyVideo = false;
         j.probeSnap = probe;
         j.repair = repair;
         j.allowHevc = allowHevc;
-        j.startOffset = repair ? Math.max(0, startSec) : 0;
+        j.startOffset = startSec > 1 ? Math.max(0, startSec) : 0;
         /*
          * 中途修复：先生成"0..startOffset"的黑场填充。失败就退回从头修
          * （startOffset=0），行为与之前一致，不会因为填充失败而整单失败。
          */
-        if (j.repair && j.startOffset > 1 && !ensureFiller(j, ff, j.startOffset)) {
+        if (j.startOffset > 1 && !ensureFiller(j, ff, j.startOffset)) {
             j.startOffset = 0;
         }
-        if (repair) saveStartOffset(id, j.startOffset);
+        saveStartOffset(id, j.startOffset);
         if (probe != null) saveDuration(id, probe.duration);
         j.ffPath = ff;
         try {
@@ -881,7 +904,7 @@ public final class Transcode {
     /** allowHevc=false：repair 只出 H.264（客户端解不了 HEVC 时用）。 */
     public static Job ensureLocal(String source, String key, boolean preferCopy, boolean repair,
                                   int startSec, boolean allowHevc) {
-        String id = idFor(key, preferCopy, repair);
+        String id = idFor(key, preferCopy, repair, startSec);
         // 单集锁：与 ensure 同理（幂等键是 lib|path，同一集并发点击只起一个任务）
         synchronized (lockFor(id)) {
             return ensureLocal0(source, key, id, preferCopy, repair, startSec, allowHevc);
@@ -929,7 +952,7 @@ public final class Transcode {
             // 同 ensure0：复用磁盘产物也要有 probe/模式元数据，否则 copy/repair 门槛失效
             j.repair = repair;
             j.allowHevc = allowHevc;
-            if (repair) j.startOffset = readStartOffset(id);
+            j.startOffset = readStartOffset(id);
             String ff0 = ffmpegPath();
             if ((preferCopy || repair) && j.probeSnap == null && !ff0.isEmpty()) {
                 Probe p0 = probe(ff0, source);
@@ -1002,14 +1025,23 @@ public final class Transcode {
         pruneProducts();
         // 硬解任务才无条件抢通道；软件任务不打断正在被观看的旧任务（见 stopOtherJobs）
         stopOtherJobs(j.id, hwCapable);
+        /*
+         * ★ 起点重转必须重编码，不能走 copy（2026-11-24 实测）。
+         *
+         * `-ss N -i … -c:v copy` 在 ffmpeg 9 的 HLS/MP4 输入上**不裁切**：
+         * 产物仍是整段（实测 30s 源 seek 6s 出 30s），清单时间轴与播放进度全错。
+         * 重编码时 `-ss` 才是输入快进（测试 30s→24s、分片回到 2s）。
+         * 代价是这一次跳转不保留原画码流，由前端在提示里说明。
+         */
+        if (probe != null && startSec > 1) probe.copyVideo = false;
         j.probeSnap = probe;
         j.repair = repair;
         j.allowHevc = allowHevc;
-        j.startOffset = repair ? Math.max(0, startSec) : 0;
-        if (j.repair && j.startOffset > 1 && !ensureFiller(j, ff, j.startOffset)) {
+        j.startOffset = startSec > 1 ? Math.max(0, startSec) : 0;
+        if (j.startOffset > 1 && !ensureFiller(j, ff, j.startOffset)) {
             j.startOffset = 0;
         }
-        if (repair) saveStartOffset(id, j.startOffset);
+        saveStartOffset(id, j.startOffset);
         if (probe != null) saveDuration(id, probe.duration);
         j.ffPath = ff;
         try {
@@ -1702,9 +1734,11 @@ public final class Transcode {
         if (startSec <= 1) return false;
         Path fl = fillPlaylistOf(j.id);
         Path off = dirOf(j.id).resolve(".fill-offset");
+        Path seg = dirOf(j.id).resolve("fill-0000.ts");
         try {
             java.nio.file.Files.createDirectories(dirOf(j.id));
-            if (java.nio.file.Files.isRegularFile(fl) && java.nio.file.Files.isRegularFile(off)) {
+            if (java.nio.file.Files.isRegularFile(fl) && java.nio.file.Files.isRegularFile(off)
+                    && java.nio.file.Files.isRegularFile(seg)) {
                 String prev = new String(java.nio.file.Files.readAllBytes(off),
                         java.nio.charset.StandardCharsets.UTF_8).trim();
                 if (String.valueOf(startSec).equals(prev)) return true;
@@ -1718,19 +1752,25 @@ public final class Transcode {
                 });
             } catch (Exception ignored) {
             }
+            /*
+             * ★ 只编码 **10 秒**黑场，再在清单里重复引用同一个分片。
+             *
+             * 旧实现按 `-t startSec` 真编 startSec 秒：中途修复 20 分钟就要编
+             * 20 分钟的黑场（实测 90 秒还在跑），而 seek 重转要求首片几十秒内出来。
+             * 对播放器来说，清单时长由 EXTINF 求和决定，重复引用同一 URI 即可把
+             * 时间轴垫到目标点；每段前加 DISCONTINUITY，时间戳回退不会串。
+             */
             List<String> cmd = new ArrayList<>();
             cmd.add(ff); cmd.add("-hide_banner"); cmd.add("-loglevel"); cmd.add("error"); cmd.add("-y");
             cmd.add("-f"); cmd.add("lavfi"); cmd.add("-i"); cmd.add("color=black:s=640x360:r=25");
             cmd.add("-f"); cmd.add("lavfi"); cmd.add("-i"); cmd.add("anullsrc=r=48000:cl=stereo");
-            cmd.add("-t"); cmd.add(String.valueOf(startSec));
+            cmd.add("-t"); cmd.add("10");
             cmd.add("-c:v"); cmd.add("libx264"); cmd.add("-preset"); cmd.add("ultrafast");
-            cmd.add("-tune"); cmd.add("stillimage"); cmd.add("-g"); cmd.add("50");
+            cmd.add("-tune"); cmd.add("stillimage"); cmd.add("-g"); cmd.add("250");
             cmd.add("-pix_fmt"); cmd.add("yuv420p");
             cmd.add("-c:a"); cmd.add("aac"); cmd.add("-b:a"); cmd.add("64k");
-            cmd.add("-f"); cmd.add("hls"); cmd.add("-hls_time"); cmd.add("10");
-            cmd.add("-hls_list_size"); cmd.add("0");
-            cmd.add("-hls_segment_filename"); cmd.add(dirOf(j.id).resolve("fill-%04d.ts").toString());
-            cmd.add(fl.toString());
+            cmd.add("-f"); cmd.add("mpegts");
+            cmd.add(seg.toString());
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.redirectErrorStream(true);
             Process p = pb.start();
@@ -1743,14 +1783,26 @@ public final class Transcode {
             }, "fill-" + j.id);
             drain.setDaemon(true);
             drain.start();
-            boolean ok = p.waitFor(90, TimeUnit.SECONDS) && p.exitValue() == 0;
-            if (!ok) {
+            boolean ok = p.waitFor(60, TimeUnit.SECONDS) && p.exitValue() == 0;
+            if (!ok || !java.nio.file.Files.isRegularFile(seg)) {
                 System.err.println("[transcode] filler failed for " + j.id + " start=" + startSec);
                 return false;
             }
+            StringBuilder sb = new StringBuilder();
+            sb.append("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:10\n")
+              .append("#EXT-X-MEDIA-SEQUENCE:0\n");
+            int full = startSec / 10;
+            int rem = startSec % 10;
+            for (int i = 0; i < full; i++) {
+                sb.append("#EXT-X-DISCONTINUITY\n#EXTINF:10.0,\nfill-0000.ts\n");
+            }
+            if (rem > 0) {
+                sb.append("#EXT-X-DISCONTINUITY\n#EXTINF:").append(rem).append(".0,\nfill-0000.ts\n");
+            }
+            java.nio.file.Files.write(fl, sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             java.nio.file.Files.write(off, String.valueOf(startSec).getBytes(
                     java.nio.charset.StandardCharsets.UTF_8));
-            System.err.println("[transcode] filler ok " + j.id + " " + startSec + "s");
+            System.err.println("[transcode] filler ok " + j.id + " " + startSec + "s (repeated segment)");
             return true;
         } catch (Exception e) {
             System.err.println("[transcode] filler error " + j.id + ": " + e);
@@ -1779,7 +1831,9 @@ public final class Transcode {
               .append("#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-INDEPENDENT-SEGMENTS\n");
             for (String l : fl) {
                 String t = l.trim();
-                if (t.startsWith("#EXTINF") || t.endsWith(".ts")) sb.append(t).append('\n');
+                // 填充段之间必须保留 DISCONTINUITY：同一分片被重复引用，时间戳会回退
+                if (t.startsWith("#EXTINF") || t.endsWith(".ts")
+                        || t.startsWith("#EXT-X-DISCONTINUITY")) sb.append(t).append('\n');
             }
             sb.append("#EXT-X-DISCONTINUITY\n");
             for (String l : rw) {
@@ -2090,7 +2144,7 @@ public final class Transcode {
          * `-ss 390` 再编 6 秒只要 5 秒。
          * 输出时间轴从 0 开始，前端用 startOffset 换算显示的绝对进度。
          */
-        if (repair && startSec > 1) {
+        if (startSec > 1) {
             cmd.add("-ss"); cmd.add(String.valueOf(startSec));
         }
         cmd.add("-i"); cmd.add(source);
@@ -2439,7 +2493,8 @@ public final class Transcode {
                 s.id = id;
                 s.state = playable(id) ? "ready" : "idle";
                 s.segments = countSegments(id);
-                s.readySeconds = s.segments * SEG_SECONDS;
+                s.startOffset = readStartOffset(id);
+                s.readySeconds = readySecondsOf(id, s.startOffset, s.segments);
                 return s;
             }
             return null;
@@ -2462,8 +2517,39 @@ public final class Transcode {
         int n = countSegments(id);
         if (n > j.segments) j.lastSegmentAt = System.currentTimeMillis();
         j.segments = n;
-        j.readySeconds = (j.startOffset > 1 ? j.startOffset : 0) + n * SEG_SECONDS;
+        j.readySeconds = readySecondsOf(id, j.startOffset, n);
         return j;
+    }
+
+    /**
+     * 已转出的可播秒数 = 清单里所有 EXTINF 之和。
+     *
+     * <p>★ 不能再用 `分片数 × 2` 估算（2026-11-24 实测）：HLS 源的关键帧是
+     * 10 秒一个，`-force_key_frames` 在 `-ss` 后按绝对时间判断，切出来的分片
+     * 仍是 10 秒 —— 按 2 秒估会少报一大截，进度条上的"已转出"边界跟着偏左。
+     * 清单是播放器真正看到的时长，直接求和最准；没有清单时退回估算。
+     */
+    private static int readySecondsOf(String id, int startOffset, int segments) {
+        double sum = 0;
+        try {
+            Path p = playlistOf(id);
+            if (Files.isRegularFile(p)) {
+                for (String l : Files.readAllLines(p, StandardCharsets.UTF_8)) {
+                    String t = l.trim();
+                    if (!t.startsWith("#EXTINF:")) continue;
+                    int comma = t.indexOf(',');
+                    String num = (comma > 0 ? t.substring(8, comma) : t.substring(8)).trim();
+                    try {
+                        sum += Double.parseDouble(num);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        int byList = (int) Math.round(sum);
+        int byCount = (startOffset > 1 ? startOffset : 0) + segments * SEG_SECONDS;
+        return Math.max(byList, byCount);
     }
 
     private static int countSegments(String id) {
@@ -2507,7 +2593,9 @@ public final class Transcode {
         if (dur <= 0 && j.probeSnap != null) dur = j.probeSnap.duration;
         o.put("duration", (long) Math.round(dur));
         o.put("segments", hasPlaylist ? j.segments : 0);
+        // 绝对时间轴：readySeconds 已含 startOffset（起点重转时清单前段是黑场填充）
         o.put("readySeconds", hasPlaylist ? j.readySeconds : 0);
+        o.put("startOffset", j.startOffset);
         if (hasPlaylist && ("ready".equals(j.state) || j.segments > 0)) {
             o.put("playlist", "/api/transcode/" + j.id + "/index.m3u8");
         }

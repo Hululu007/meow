@@ -581,6 +581,26 @@ export async function fetchSites(): Promise<Site[]> {
   return r.sites
 }
 
+/**
+ * 配置里写了、但本构建加载不了的站点（issue #9 的「未生效」分组）。
+ *
+ * <p>不能混进 `/api/sites`：TV 端拿那张表往本地执行层导入，塞进去只会
+ * 变成点开即失败的幽灵项。这里给设置页做单独展示。
+ */
+export type PendingSite = { key: string; name: string; api: string; reason: string }
+
+export async function fetchPendingSites(): Promise<PendingSite[]> {
+  try {
+    const r = await fetch(`${apiBase()}/api/sites/pending`)
+    if (!r.ok) return []
+    const j = (await r.json()) as PendingSite[] | { pending?: PendingSite[]; sites?: PendingSite[] }
+    if (Array.isArray(j)) return j
+    return j.pending || j.sites || []
+  } catch {
+    return []
+  }
+}
+
 export async function fetchHome(site: string): Promise<HomeResult> {
   return request<HomeResult>(`/api/${encodeURIComponent(site)}/home`, {
     method: 'POST',
@@ -1675,6 +1695,23 @@ export interface ConfigImportResult {
    * 否则用户会以为「替换 = 清空」。
    */
   builtinSites?: number
+  /** 写进站点表的条数（含不可实现的）；sites 仍是"可用站数" */
+  configured?: number
+  /** 配置里有、本构建加载不了的站点与原因（issue #9） */
+  pendingSites?: PendingSite[]
+  /** 每条外部 jar 的装载结果（ok / md5Ok / encrypted / error，issue #14/#10） */
+  jars?: Array<{
+    spec?: string
+    name?: string
+    ok?: boolean
+    md5Ok?: boolean
+    encrypted?: boolean
+    encryptedReason?: string
+    error?: string
+  }>
+  /** 后端给的一句可行动结论（例如「已写入 100 站，当前只有 1 站可用」） */
+  hint?: string
+  jarsHint?: string
   skipped?: ConfigSkippedSite[]
   depot?: Array<{ url?: string; name?: string }>
   /** 当前生效的仓（多仓切换后用来打「当前」标记） */
@@ -1742,6 +1779,11 @@ export interface DepotEntry {
   csp?: number
   /** csp_ 里我们的 jar 有对应类的数量 —— 决定"导入后真能用几站" */
   inJar?: number
+  /**
+   * false = 本机没有内置 jar，inJar 是"未知"而不是 0（issue #9）。
+   * UI 不能把它算进"能用几站"，也不能显示成 0。
+   */
+  jarKnown?: boolean
   /** 苹果CMS 直连站（type=1），不需要 jar */
   direct?: number
   /** 给人看的一句话结论 */

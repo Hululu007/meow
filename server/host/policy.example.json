@@ -4,5 +4,6 @@
   "danmakuApi": "",
   "cacheQuotaGb": 8,
   "cacheEvictMode": "lru",
-  "cacheDir": ""
+  "cacheDir": "",
+  "jarStrictMd5": false
 }

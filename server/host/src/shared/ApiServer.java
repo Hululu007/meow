@@ -198,6 +198,9 @@ public class ApiServer {
         core.Jars.reload();
         // jar 的 Proxy 端口探测只覆盖 9978–9999，fpk 的 30011 不在范围内
         core.Jars.pinProxyPort(port);
+        // 启动时也要算一次「未生效站点」：否则加密壳/jar 未装载的站在
+        // 点开时只会回"缺少依赖类"，而不是导入期那句话（issue #10）
+        computeUnsupportedReasons();
         // 健康域已搬到 routes.HealthRoutes：先把核心注册表以最小接口注入，
         // 再让它读回落盘状态。注入必须在 load 之前——load 之后立刻可能有
         // 并发请求查 isSkipped，那时还没绑定就会 NPE。
@@ -1661,7 +1664,17 @@ public class ApiServer {
                 return;
             }
             if ("/api/sites".equals(path)) {
-                sendJson(ex, 200, sitesJson());
+                /*
+                 * includePending=1：把「配置里有、但本构建加载不了」的站点也列出来
+                 * （带 unsupported 原因）。默认不带 —— TV 端按这份表导入本地执行层，
+                 * 塞进不可实现的站只会在那边变成幽灵项（issue #9 的约定）。
+                 */
+                boolean includePending = "1".equals(query(ex).get("includePending"));
+                sendJson(ex, 200, sitesJson(includePending));
+                return;
+            }
+            if ("/api/sites/pending".equals(path)) {
+                sendJson(ex, 200, pendingSitesJson().toString());
                 return;
             }
             if ("/api/config".equals(path)) {
@@ -2161,8 +2174,7 @@ public class ApiServer {
              * 而日志里才有 "瓜子业务错误 code=300" —— 用户和客服都看不出是源站拒了。
              */
             Throwable root = unwrap(t);
-            String reason = root.getMessage() == null || root.getMessage().trim().isEmpty()
-                    ? root.getClass().getSimpleName() : root.getMessage();
+            String reason = friendlySourceError(root);
             sendJson(ex, 500, "{\"code\":-1,\"msg\":" + JSONObject.quote(reason) + "}");
         }
     }
@@ -2209,6 +2221,13 @@ public class ApiServer {
             o.put("version", VERSION);
             o.put("capabilities", caps);
             o.put("sites", siteCount());
+            /*
+             * configured vs implemented（issue #9 P2）：
+             * 前端原来只能从导入结果的 "100/1" 猜"配置里有几条、真正能用几条"。
+             * 这两个数字放在 health 里，随时能回答"为什么只剩这一个站"。
+             */
+            o.put("configuredSites", configuredSiteCount());
+            o.put("implementedSites", siteCount());
             o.put("ext", implementedExtCount());
             o.put("spiderJar", spiderJar);
             o.put("configLoaded", configLoaded);
@@ -2232,6 +2251,22 @@ public class ApiServer {
             }
             o.put("disabled", disabled);
             o.put("disabledCount", disabled.length());
+            /*
+             * 每条外部 jar 的装载结果（issue #14 P1）：md5Ok / encrypted / error。
+             * 排查"站点很少、点开就报错"时，这一块直接回答"jar 到底装上没有"，
+             * 不用让用户去翻日志。
+             */
+            JSONArray jars = jarsJsonSafe();
+            if (jars.length() > 0) {
+                o.put("jars", jars);
+                int bad = 0;
+                for (int i = 0; i < jars.length(); i++) {
+                    JSONObject j = jars.optJSONObject(i);
+                    if (j != null && !j.optBoolean("ok")) bad++;
+                }
+                o.put("jarFailedCount", bad);
+            }
+            if (core.Jars.hasEncrypted()) o.put("jarEncrypted", core.Jars.encryptedReason());
             /*
              * degraded / unsupported 交给 HealthRoutes.putSummary 拼：那边会把
              * "环境不支持"（drpy 没接运行时、ext 为空）从"源站反复失败"里分出来。
@@ -3198,10 +3233,18 @@ public class ApiServer {
                  */
                 String chain = loadFailureChain(site, t);
                 recordHealth(site, false, System.currentTimeMillis() - t0, chain);
-                String missing = missingClassOf(t);
+                // 导入期已经算出的「未生效原因」优先：加密壳/jar 未装载这类整批原因
+                // 比"缺少类 X"更能指导用户（issue #10：不要把内部类名甩给用户）
+                String known = SITE_UNSUPPORTED.get(site);
+                String friendly = known != null && !known.isEmpty()
+                        ? known : friendlySourceError(unwrap(t));
+                // 运行期失败也要进「未生效」分组（issue #10 第 3 项）：
+                // 类存在但 clinit/构造失败的站，导入期看不出来，只能在这里记住。
+                SITE_UNSUPPORTED.putIfAbsent(site, friendly);
+                core.LogBuffer.warn("api", site + " 实例化失败：" + describeError(t)
+                        + "（缺失类：" + missingClassOf(t) + "）");
                 return new JSONObject().put("code", -1)
-                        .put("msg", "该源在当前构建不可用"
-                                + (missing.isEmpty() ? "" : "（缺少 " + missing + "）"))
+                        .put("msg", friendly)
                         .toString();
             }
             JSONObject b = body == null || body.trim().isEmpty() ? new JSONObject() : new JSONObject(body);
@@ -3258,6 +3301,69 @@ public class ApiServer {
         String m = root.getMessage();
         String s = root.getClass().getSimpleName() + (m == null ? "" : " — " + firstLine(m));
         return s.length() > 300 ? s.substring(0, 300) : s;
+    }
+
+    /**
+     * 异常 → 用户能看懂的一句原因（issue #18）。
+     *
+     * <p>只剥壳不够：`InvocationTargetException` 剥完常常是
+     * `NullPointerException` 且 message 为 null，用户看到的还是纯类名。
+     * 这里按根因类别翻译成中文，类名与堆栈只进日志。
+     */
+    private static String friendlySourceError(Throwable t) {
+        /*
+         * 必须沿 cause 链找"真正的根因类别"：实例化失败被包成
+         * RuntimeException("cannot load spider …", ClassNotFoundException)，
+         * 只剥反射壳会停在 RuntimeException 上，用户又看到一句带内部类名的英文。
+         */
+        Throwable c = t;
+        Throwable deepest = t;
+        int depth = 0;
+        while (c != null && depth++ < 8) {
+            String r = classifySourceError(c);
+            if (r != null) return r;
+            if (c.getMessage() != null && !c.getMessage().trim().isEmpty()) deepest = c;
+            c = c.getCause();
+        }
+        // 取最内层有 message 的那层：外层常常只是 "cannot load spider …" 包装
+        Throwable root = deepest.getMessage() == null ? unwrap(t) : deepest;
+        if (root == null) return "源站异常（未知原因）";
+        String msg = root.getMessage() == null ? "" : firstLine(root.getMessage()).trim();
+        // 源站业务错误（如「瓜子业务错误 code=300」）本身已经可读：原样透出
+        if (!msg.isEmpty() && (msg.contains("业务错误") || msg.contains("接口请求失败")
+                || msg.contains("未登录") || msg.contains("Cookie"))) {
+            return msg.length() > 120 ? msg.substring(0, 120) + "…" : msg;
+        }
+        String cls = root.getClass().getSimpleName();
+        if (msg.isEmpty()) return "源站异常：" + cls;
+        String s = msg.length() > 120 ? msg.substring(0, 120) + "…" : msg;
+        return "源站异常：" + s;
+    }
+
+    /** 已知根因 → 一句人话；不认识返回 null（继续沿 cause 链找）。 */
+    private static String classifySourceError(Throwable root) {
+        if (root instanceof NoClassDefFoundError || root instanceof ClassNotFoundException) {
+            return "该源缺少依赖类，本构建不支持（需要对应源包 / jar）";
+        }
+        if (root instanceof UnsatisfiedLinkError) {
+            return "该源依赖的原生库不被本设备支持";
+        }
+        if (root instanceof NullPointerException) {
+            return "该源初始化失败（缺少宿主上下文或配置为空）";
+        }
+        if (root instanceof org.json.JSONException) {
+            return "源站返回的数据格式异常";
+        }
+        if (root instanceof java.net.SocketTimeoutException
+                || root instanceof java.util.concurrent.TimeoutException) {
+            return "源站超时，请稍后重试";
+        }
+        if (root instanceof java.net.UnknownHostException
+                || root instanceof java.net.ConnectException) {
+            return "源站连不上（域名解析或连接失败）";
+        }
+        if (root instanceof OutOfMemoryError) return "内容过大，后端内存不足";
+        return null;
     }
 
     /**
@@ -13059,11 +13165,12 @@ public class ApiServer {
              * 那个已经没人等的 ffmpeg（否则它会白转到看门狗 10 分钟）。
              */
             String cid = id;
+            int delStart = queryStartSec(q);
             if (cid.isEmpty() && !src.isEmpty()) {
-                cid = core.Transcode.idFor(src, preferCopy, repair);
+                cid = core.Transcode.idFor(src, preferCopy, repair, delStart);
             }
             if (cid.isEmpty() && !delLib.isEmpty() && !delPath.isEmpty()) {
-                cid = core.Transcode.idFor("lib|" + delLib + "|" + delPath, preferCopy, repair);
+                cid = core.Transcode.idFor("lib|" + delLib + "|" + delPath, preferCopy, repair, delStart);
             }
             boolean ok = !cid.isEmpty() && core.Transcode.cancel(cid);
             sendJson(ex, ok ? 200 : 404, new JSONObject().put("ok", ok).toString());
@@ -13105,9 +13212,12 @@ public class ApiServer {
         }
         boolean statusOnly = "status".equalsIgnoreCase(q.getOrDefault("mode", ""))
                 || "/api/transcode/status".equals(ex.getRequestURI().getPath());
+        // start=N：从源的第 N 秒起转（repair 的中途修复 / 普通转码的拖动 seek 超界）。
+        // 它参与幂等键，所以状态查询与取消必须带同一个值，否则会查到另一个任务。
+        int startSec = queryStartSec(q);
         if (statusOnly) {
             core.Transcode.Job j = core.Transcode.status(
-                    core.Transcode.idFor(src, preferCopy, repair));
+                    core.Transcode.idFor(src, preferCopy, repair, startSec));
             if (j == null) {
                 sendJson(ex, 200, new JSONObject().put("ok", true).put("state", "idle").toString());
                 return;
@@ -13115,18 +13225,19 @@ public class ApiServer {
             sendJson(ex, 200, core.Transcode.toJson(j).toString());
             return;
         }
-        // copy=1 remux（视频原样 copy）/ repair=1 原分辨率重编（修复丢帧）
-        // start=N：修复从源的第 N 秒开始（用户已看到中途，从头转要等几分钟才追上）
-        int startSec = 0;
-        try {
-            startSec = Integer.parseInt(trimToEmpty(q.get("start")));
-        } catch (Exception ignored) {
-            startSec = 0;
-        }
-        startSec = Math.max(0, Math.min(startSec, 24 * 3600));
         core.Transcode.Job j = core.Transcode.ensure(src, false, srcHeader, preferCopy, repair,
                 startSec, allowHevc);
         sendJson(ex, 200, core.Transcode.toJson(j).toString());
+    }
+
+    /** 转码 query 里的 start（秒），非法/缺省为 0，上限 24 小时。 */
+    private static int queryStartSec(Map<String, String> q) {
+        try {
+            int v = Integer.parseInt(trimToEmpty(q.get("start")));
+            return Math.max(0, Math.min(v, 24 * 3600));
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     /** 转码产物（清单与分片）。路径只允许单段，防穿越。 */
@@ -14859,9 +14970,19 @@ public class ApiServer {
                 if (api.startsWith("csp_")) {
                     csp++;
                     String cls = api.substring(4);
-                    // known == null 表示读不到 jar：这时不能断言"缺"，
-                    // 保守地全算作命中，让用户仍能导入（与 import 的退化策略一致）
-                    if (known == null || known.contains(cls)) inJar++;
+                    /*
+                     * known == null = 本机没有内置 jar，读不到类清单。
+                     *
+                     * ★ 这里**不能**把全部 csp 站算作命中（issue #9 实测）：
+                     * 探测显示"有站点能加载"，导入后却 0 站可用 —— 同一事实
+                     * 两个相反答案。现在给 jarKnown=false + inJar=-1（未知），
+                     * 前端显示"无法判断（缺 jar）"，不参与"能用几站"的排序。
+                     */
+                    if (known == null) {
+                        // 保持 inJar=0，由 jarKnown 表达"未知"，避免前端把 -1 当可用数
+                    } else if (known.contains(cls)) {
+                        inJar++;
+                    }
                 } else if (s.optInt("type", 3) == 1) {
                     dir++;
                 }
@@ -14870,12 +14991,16 @@ public class ApiServer {
             o.put("sites", sites.length());
             o.put("csp", csp);
             o.put("inJar", inJar);
+            // false = 本机没有内置 jar，无法判断这些 csp 类能不能加载
+            o.put("jarKnown", known != null);
             o.put("direct", dir);
             /*
              * 给人看的一句话。用户不需要知道 csp_ 是什么，只需要知道
              * "这个仓导进去有多少站真能用"。
              */
-            if (inJar == 0 && dir == 0) {
+            if (known == null && csp > 0 && dir == 0) {
+                o.put("hint", "无法判断（本机没有内置 jar）");
+            } else if (inJar == 0 && dir == 0) {
                 o.put("hint", "这个仓的站点我们一个都加载不了");
             } else if (inJar + dir < 5) {
                 o.put("hint", "只能用到很少几站");
@@ -15351,6 +15476,10 @@ public class ApiServer {
                     .put("mode", isMerge ? "merge" : "replace")
                     .put("onConflict", isMerge ? conflictMode : "")
                     .put("sites", okCount)
+                    .put("configured", kept.length())
+                    // 当前 jar 装载状态：预览阶段不下载/不转换，这里给的是上一次
+                    // reload 的结果，够用户判断"是不是 jar 早就没装上"
+                    .put("jars", jarsJsonSafe())
                     .put("totalSites", siteCount())
                     // 本地站点表**原始条数**（含未实现的），与 diff.total 同一口径。
                     // 用 siteCount() 会把"只有内置站能实现"的场景报成 1 个，
@@ -15471,8 +15600,15 @@ public class ApiServer {
                 .put("url", url)
                 .put("mode", isMerge ? "merge" : "replace")
                 .put("sites", okCount)
+                // 写进站点表的条数（含不可实现的），与 sites（可用数）分开报
+                .put("configured", kept.length())
                 .put("totalSites", siteCount())
                 .put("skipped", skipped)
+                // 未生效站点（配置里有、本构建加载不了）：key/name/api/reason
+                // 字段名不能叫 pending：GET /api/config/import 的同名字段是后台任务布尔
+                .put("pendingSites", pendingSitesJson())
+                // 每条 jar 的装载结果：ok / md5Ok / encrypted / error
+                .put("jars", jarsJsonSafe())
                 .put("depot", depotOut)
                 // 当前生效的仓（多仓切换后前端据此打「当前」标记）
                 .put("active", activeRepo)
@@ -15484,6 +15620,27 @@ public class ApiServer {
                 .put("diff", diff)
                 // 让前端能立刻显示「恢复上一次配置」：导入刚把旧配置挪进备份
                 .put("backup", configBackupInfo());
+        /*
+         * 「导入成功但一个站都用不了」是 issue #9 的核心误报：
+         * 旧响应只有 sites(可用) 与 totalSites(同样按可用算)，两个数字都是 0/1，
+         * 用户以为导入失败。这里直接给一句能行动的话。
+         */
+        int implemented = siteCount();
+        int builtin = implementedBaselineCount();
+        if (okCount > 0 && implemented <= builtin) {
+            String why;
+            if (core.Jars.hasEncrypted()) {
+                why = core.Jars.encryptedReason();
+            } else if (core.Jars.hasFailure()) {
+                why = "源 jar 未加载：" + firstLine(core.Jars.lastError());
+            } else {
+                why = "源 jar 未加载或缺少对应类";
+            }
+            res.put("hint", "已写入 " + kept.length() + " 站，当前只有 " + implemented
+                    + " 站可用（" + why + "）");
+        }
+        res.put("jarsHint", core.Jars.hasFailure()
+                ? "有源 jar 未装载，相关站点在本构建不可用" : "");
         // 多仓：记下索引/当前仓，重启后设置页仍能一键切换
         depotRemember(url, isDepot, activeRepo, isDepot ? depotOut : null);
         lastImport = res;
@@ -15592,6 +15749,8 @@ public class ApiServer {
             core.Jars.reload();
             core.Jars.pinProxyPort(port);
         }
+        // jar 装载结果 + 实现情况都定了，才能算出"哪些站未生效、为什么"
+        computeUnsupportedReasons();
     }
 
     /**
@@ -15688,6 +15847,16 @@ public class ApiServer {
         return n;
     }
 
+    /** 配置文件里的站点条数（含本构建加载不了的）。 */
+    private static int configuredSiteCount() {
+        try {
+            JSONArray arr = loadConfigSites().optJSONArray("sites");
+            return arr == null ? 0 : arr.length();
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
     /** 站点总数的原子快照（导入会在另一线程 clear+put）。 */
     private static int siteCount() {
         return implementedSiteCount();
@@ -15714,7 +15883,7 @@ public class ApiServer {
         return q;
     }
 
-    private static String sitesJson() throws Exception {
+    private static String sitesJson(boolean includePending) throws Exception {
         JSONArray arr = new JSONArray();
         for (Map.Entry<String, String> e : SITES.entrySet()) {
             // 空壳里默认表有 44 个名字，但没有 jar 的站不能当“可用源”下发；
@@ -15754,7 +15923,106 @@ public class ApiServer {
             }
             arr.put(o);
         }
+        if (includePending) {
+            JSONArray pending = pendingSitesJson();
+            for (int i = 0; i < pending.length(); i++) {
+                JSONObject p = pending.optJSONObject(i);
+                if (p == null) continue;
+                p.put("pending", true);
+                arr.put(p);
+            }
+        }
         return new JSONObject().put("sites", arr).toString();
+    }
+
+    /**
+     * 配置里写了、但本构建加载不了的站点（issue #9 的「未生效」分组）。
+     *
+     * <p>单独成端点而不是混进 /api/sites 默认输出：TV 端拿 /api/sites 往本地
+     * 执行层导入，塞进去只会变成那边点开即失败的幽灵项。
+     */
+    private static JSONArray pendingSitesJson() {
+        JSONArray arr = new JSONArray();
+        try {
+            JSONObject cfg = loadConfigSites();
+            JSONArray sites = cfg.optJSONArray("sites");
+            if (sites == null) return arr;
+            for (int i = 0; i < sites.length(); i++) {
+                JSONObject s = sites.optJSONObject(i);
+                if (s == null) continue;
+                String api = s.optString("api", "").trim();
+                String key = s.optString("key", "").trim();
+                if (key.isEmpty()) key = api;
+                if (key.isEmpty()) continue;
+                String runtime = SITE_UNSUPPORTED.get(key);
+                boolean visible = siteVisible(key);
+                // 可见但运行期失败过的站也要列出来：它的类能在，只是实例化/初始化失败
+                if (visible && (runtime == null || runtime.isEmpty())) continue;
+                arr.put(new JSONObject()
+                        .put("key", key)
+                        .put("name", s.optString("name", key))
+                        .put("api", api)
+                        .put("reason", runtime != null && !runtime.isEmpty()
+                                ? runtime : unsupportedReasonFor(api)));
+            }
+        } catch (Throwable t) {
+            core.LogBuffer.warn("sites", "读未生效站点失败：" + t);
+        }
+        return arr;
+    }
+
+    /**
+     * 未生效站点的原因（用户视角）。
+     *
+     * <p>顺序有意义：加密壳与 jar 装载失败是**整批**原因，先说它们，
+     * 避免每个站都回一句"缺少类 X"让人以为是单个源的问题。
+     */
+    private static String unsupportedReasonFor(String api) {
+        if (api != null && api.startsWith("csp_")) {
+            if (core.Jars.hasEncrypted()) {
+                String r = core.Jars.encryptedReason();
+                return r.isEmpty() ? "加密接口，本构建不支持" : r;
+            }
+            if (core.Jars.hasFailure()) {
+                String err = core.Jars.lastError();
+                return "源 jar 未加载：" + (err.length() > 80 ? err.substring(0, 80) + "…" : err);
+            }
+            return "缺少对应的 spider 类（源包未安装或版本不匹配）";
+        }
+        if (api != null && isScriptApi(api)) return "脚本运行时未就绪";
+        return "站点未生效（配置已写入，但本构建没有对应实现）";
+    }
+
+    /** key → 未生效原因；rebuildSites 末尾刷新。 */
+    private static final Map<String, String> SITE_UNSUPPORTED =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** jar 装载状态（异常不外抛：预览/导入不该因为状态序列化失败而报错）。 */
+    private static JSONArray jarsJsonSafe() {
+        try {
+            return core.Jars.statusJson();
+        } catch (Throwable t) {
+            return new JSONArray();
+        }
+    }
+
+    private static void computeUnsupportedReasons() {
+        SITE_UNSUPPORTED.clear();
+        try {
+            JSONArray sites = loadConfigSites().optJSONArray("sites");
+            if (sites == null) return;
+            for (int i = 0; i < sites.length(); i++) {
+                JSONObject s = sites.optJSONObject(i);
+                if (s == null) continue;
+                String api = s.optString("api", "").trim();
+                String key = s.optString("key", "").trim();
+                if (key.isEmpty()) key = api;
+                if (key.isEmpty() || siteVisible(key)) continue;
+                SITE_UNSUPPORTED.put(key, unsupportedReasonFor(api));
+            }
+        } catch (Throwable t) {
+            core.LogBuffer.warn("sites", "计算未生效站点失败：" + t);
+        }
     }
 
     private static String configJson() throws Exception {

@@ -38,6 +38,7 @@ import { skipWindowFrom, startAtFrom, subTracksFrom } from '@/api/playExtras'
 import { isHi10p, resolvePlaybackRoute, webCanDecodeVideo, webviewAudioCodecs } from '@/utils/playRoute'
 import { detectCodecCaps } from '@/utils/codecCaps'
 import { transcodeBadge, transcodeMediaInfo, type MediaSourceInfo } from '@/utils/mediaInfo'
+import { fmtSeekClock, transcodeRestartStart } from '@/utils/transcodeSeek'
 import type { MediaProbeResult } from '@/api/library'
 import { embedPlay, hasEmbedPlayer, hasNativePlayer, nativeCodecCaps, openNative } from '@/api/nativeBridge'
 import { meowDiagnose } from '@/ai/tools'
@@ -417,6 +418,8 @@ let pendingTranscode: {
   path?: string
   copy?: boolean
   repair?: boolean
+  /** 起点秒数（起点参与后端幂等键，取消/轮询必须带同一个值） */
+  start?: number
 } | null = null
 /**
  * **已经在播、但后端仍在边转边看**的任务（#15）。
@@ -431,6 +434,10 @@ let activeTranscode: {
   path?: string
   copy?: boolean
   repair?: boolean
+  /** 起点秒数（拖动 seek 超界后从目标点重转的任务） */
+  start?: number
+  /** 源站请求头（点播线路常要 UA/Referer；重转时必须带上） */
+  header?: string
 } | null = null
 
 /** 主动停掉"还在边转边看"的任务（切集/重试前调用）。 */
@@ -455,6 +462,17 @@ const parseFrom = ref('')
 /** 续播提示 */
 const resumeTip = ref<{ at: number; label?: string } | null>(null)
 let resumeApplied = false
+/**
+ * 拖动 seek 超界 → 从目标点重转后，新清单要在起播时跳回这个位置（秒）。
+ * 用 seek-at prop 传递：它由播放器在 loadedmetadata 时应用，比定时器可靠。
+ */
+let pendingSeekAfterRestart = 0
+
+function applySeekAfterRestart() {
+  if (pendingSeekAfterRestart <= 0) return
+  refreshSeekAt.value = Math.floor(pendingSeekAfterRestart)
+  pendingSeekAfterRestart = 0
+}
 
 /**
  * 进度回调是否可以落盘。
@@ -531,6 +549,8 @@ const libraryReadyCap = ref(0)
  */
 const libraryTotalDuration = ref(0)
 const libraryAhead = ref(0)
+/** 当前清单真实内容的起点（起点重转时 >0；前段是黑场填充，拖回去要重转） */
+const libraryStart = ref(0)
 /** 转码未完成时每 5 秒刷新一次「已转出」，进度条与可拖动上界跟着走 */
 let libraryPollTimer: number | undefined
 
@@ -548,11 +568,17 @@ function pollTranscodeProgress(params: Record<string, string>) {
       const q = new URLSearchParams({ ...params, mode: 'status' })
       const r = await fetch(`${apiBase()}/api/transcode?${q}`)
       if (!r.ok) return
-      const j = (await r.json()) as { state?: string; readySeconds?: number; duration?: number }
+      const j = (await r.json()) as {
+        state?: string
+        readySeconds?: number
+        duration?: number
+        startOffset?: number
+      }
       if (j.readySeconds) {
         libraryAhead.value = j.readySeconds
         libraryReadyCap.value = j.readySeconds
       }
+      if (typeof j.startOffset === 'number') libraryStart.value = j.startOffset
       if (j.duration) libraryTotalDuration.value = j.duration
       if (j.state === 'ready' || j.state === 'failed' || j.state === 'cancelled') stopLibraryPoll()
     } catch {
@@ -1351,7 +1377,7 @@ async function tryTranscode(src: string, copy = false, repair = false, startAt =
   const minH = healMinHeight
   healMinHeight = 0
   const myEpoch = playEpoch
-  pendingTranscode = { src, copy, repair }
+  pendingTranscode = { src, copy, repair, start: startAt }
   transcodeWaiting.value = true
   errorSource.value = 'play'
   hopError.value = ''
@@ -1384,7 +1410,7 @@ async function tryTranscode(src: string, copy = false, repair = false, startAt =
     }
     if (myEpoch !== playEpoch) {
       // 已经切集/换线：后端任务没人要了，停掉（仍在跑才停，转完的留着）
-      if (r.state === 'running') void cancelTranscode({ src, copy, repair })
+      if (r.state === 'running') void cancelTranscode({ src, copy, repair, start: startAt })
       return
     }
     pendingTranscode = null
@@ -1461,6 +1487,7 @@ async function tryTranscode(src: string, copy = false, repair = false, startAt =
     }
     libraryReadyCap.value = r.readySeconds || 0
     libraryAhead.value = r.readySeconds || 0
+    libraryStart.value = r.startOffset || 0
     libraryTotalDuration.value = r.duration || 0
     if (r.duration && r.readySeconds && r.readySeconds < r.duration - 5) {
       pollTranscodeProgress({
@@ -1498,7 +1525,7 @@ async function tryTranscode(src: string, copy = false, repair = false, startAt =
       }
     }
     // 已经在边转边看：记住坐标，离页/切集时主动撤（#15）
-    activeTranscode = { src, copy, repair }
+    activeTranscode = { src, copy, repair, start: startAt, header: headerStr }
     healPrev = null
     mediaInfo.value = transcodeMediaInfo(r)
     // 提示条压在单行里：HEVC 10-bit 4K → H.264 1080p（拿不到编码就退回原文案）
@@ -1518,12 +1545,50 @@ async function tryTranscode(src: string, copy = false, repair = false, startAt =
     lineHintTimer = window.setTimeout(() => (transcodeHint.value = ''), 8000)
     // 播放器直接吃后端给的清单地址；hls.js 会按需拉分片
     play.value = { url: absoluteApi(r.playlist) } as PlayResult
+    applySeekAfterRestart()
   } catch (e) {
     if (myEpoch !== playEpoch) return
     transcodeWaiting.value = false
     hopError.value = e instanceof Error ? e.message : String(e)
     error.value = playError.value || '播放失败'
     loadingText.value = ''
+  }
+}
+
+/**
+ * 用户拖到「还没转出来」的位置（issue #17）。
+ *
+ * <p>旧行为：夹到"已转出 - 2 秒"再跳 —— 用户看到的是拖了没反应/回弹。
+ * 现在从目标点重转一条（后端 `start=N` + 重复黑场分片保持绝对时间轴），
+ * 转出首片后自动跳回用户要的位置。
+ *
+ * <p>为什么必须停掉旧任务：两个 ffmpeg 写两份缓存事小，抢同一个硬件编码器
+ * 会互相把对方挤成 Generic error（见 stopOtherJobs 的实测注释）。
+ */
+async function onSeekBeyond(target: number) {
+  const t = activeTranscode
+  if (!t) return
+  const start = transcodeRestartStart(target)
+  // 已经在从更早的位置转：目标多半没超出那份任务的覆盖范围，别来回重启
+  if ((t.start || 0) >= 2 && start >= (t.start || 0) && start - (t.start || 0) < 8) return
+  pendingSeekAfterRestart = Math.max(0, Math.floor(target))
+  showSilentHint(`正在从 ${fmtSeekClock(start)} 开始转码…`, false)
+  const old = { ...t }
+  // 先保留旧坐标：新任务失败时用户还能再拖一次重试；成功会由 try* 覆盖。
+  // （旧任务已经取消，重复取消是幂等的）
+  void cancelTranscode(old)
+  // play.value 此刻是上一次的转码清单，header 已经不在里面：从任务坐标补回去，
+  // 否则需要 UA/Referer 的线路会在重转时 404（2026-11-23 咕噜4K 同类问题）
+  if (t.header) play.value = { ...(play.value as PlayResult), header: t.header }
+  /*
+   * copy（原画转封装）不能用于起点重转：`-ss` + `-c:v copy` 实测不裁切，
+   * 清单会从 0 重放。这里改走普通转码（重编码、分辨率按后端规则），
+   * 提示文案已说明"正在从 xx 开始转码"。repair 本来就是重编码，保持。
+   */
+  if (t.lib && t.path) {
+    await tryLibraryTranscode(t.lib, t.path, false, !!t.repair, start)
+  } else if (t.src) {
+    await tryTranscode(t.src, false, !!t.repair, start)
   }
 }
 
@@ -1601,7 +1666,7 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false, repa
   // 转码一旦开始，之前那条错误页要收掉（否则错误页盖着、用户在等转码却看着报错）
   playError.value = ''
   const myEpoch = playEpoch
-  pendingTranscode = { lib, path: file, copy, repair }
+  pendingTranscode = { lib, path: file, copy, repair, start: startAt }
   transcodeWaiting.value = true
   errorSource.value = 'play'
   // 从这一刻起不再把 query.direct 交给播放器（否则 <video> 会一直重试直连，
@@ -1619,7 +1684,7 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false, repa
       loadingText.value = transcodePhaseText(sec, ph, stalled)
     }, undefined, copy, repair, startAt, allowHevc)
     if (myEpoch !== playEpoch) {
-      if (r.state === 'running') void cancelTranscode({ lib, path: file, copy, repair })
+      if (r.state === 'running') void cancelTranscode({ lib, path: file, copy, repair, start: startAt })
       return
     }
     pendingTranscode = null
@@ -1672,6 +1737,7 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false, repa
     }
     libraryReadyCap.value = r.readySeconds || 0
     libraryAhead.value = r.readySeconds || 0
+    libraryStart.value = r.startOffset || 0
     libraryTotalDuration.value = r.duration || 0
     if (r.duration && r.readySeconds && r.readySeconds < r.duration - 5) {
       pollTranscodeProgress({
@@ -1705,7 +1771,7 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false, repa
       }
     }
     // 已经在边转边看：记住坐标，离页/切集时主动撤（#15）
-    activeTranscode = { lib, path: file, copy, repair }
+    activeTranscode = { lib, path: file, copy, repair, start: startAt }
     healPrev = null
     mediaInfo.value = transcodeMediaInfo(r)
     // 提示条压在单行里：HEVC 10-bit 4K → H.264 1080p（拿不到编码就退回原文案）
@@ -1723,6 +1789,7 @@ async function tryLibraryTranscode(lib: string, file: string, copy = false, repa
     clearTimeout(lineHintTimer)
     lineHintTimer = window.setTimeout(() => (transcodeHint.value = ''), 8000)
     play.value = { url: absoluteApi(r.playlist) } as PlayResult
+    applySeekAfterRestart()
     loading.value = false
   } catch (e) {
     if (myEpoch !== playEpoch) return
@@ -3610,6 +3677,7 @@ watch(
     libraryReadyCap.value = 0
     libraryTotalDuration.value = 0
     libraryAhead.value = 0
+    libraryStart.value = 0
     stopLibraryPoll()
     // 必须**先**把线路表加载出来，再取播放地址：
     // load() 里失败时要靠 lines 找下一条候选线路，lines 还空着就只能停在错误页。
@@ -3857,6 +3925,7 @@ onBeforeUnmount(() => {
       :src="src"
       :total-duration="libraryTotalDuration"
       :ahead-seconds="libraryAhead"
+      :ahead-start-seconds="libraryStart"
       :auto-play="!castSession"
       :danmaku-url="danmakuUrl"
       :title="`${title}${epName ? ' · ' + epName : ''}`"
@@ -3890,6 +3959,7 @@ onBeforeUnmount(() => {
       :cache-percent="cachePercent"
       @loaded="applyResume"
       @seek-applied="refreshSeekAt = 0"
+      @seek-beyond="onSeekBeyond"
       @stale-src="onStaleSrc"
       @ended="onEnded"
       @progress="onProgress"

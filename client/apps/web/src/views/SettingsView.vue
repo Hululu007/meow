@@ -73,6 +73,7 @@ import {
   getConfigBackup,
   getImportJobState,
   getCachedDepot,
+  fetchPendingSites,
   getLastConfigImport,
   importConfig,
   probeConfigDepot,
@@ -88,6 +89,7 @@ import {
   type ImportConflict,
   type ImportMode,
   type LiveSource,
+  type PendingSite,
 } from '@/api'
 // 应用自身的在线更新：复用插件清单（packages.meow-pc / meow-tv），不另造协议。
 // 清单读取与下载都在原生做（GitHub Release 资产无 CORS 头，页面 XHR 必被拦）。
@@ -1654,6 +1656,15 @@ const failedSkipCount = computed(
   () => store.sites.filter((s) => s.health?.skippedFailed && !s.health?.disabled).length,
 )
 
+/** 拉「未生效」列表（失败不打扰用户：这是诊断信息，不是主流程） */
+async function refreshPendingSites() {
+  try {
+    pendingSites.value = await fetchPendingSites()
+  } catch {
+    pendingSites.value = []
+  }
+}
+
 /**
  * 展开站点明细时重新拉一次：健康标记是"调用后才有"的，
  * 用启动时那份列表会显示成全部正常，看起来像功能没生效。
@@ -1661,7 +1672,7 @@ const failedSkipCount = computed(
 async function toggleSites() {
   showSites.value = !showSites.value
   if (showSites.value) {
-    await Promise.all([store.refreshSites(), loadHealthDetail()])
+    await Promise.all([store.refreshSites(), loadHealthDetail(), refreshPendingSites()])
     await loadSearchCacheStats()
   } else {
     siteSel.clear()
@@ -1737,10 +1748,28 @@ function onSitesKey(e: KeyboardEvent) {
  * 「把没用的源清理掉」和「看看某个源为什么没参与搜索」。两种都按**状态**找，
  * 不按名字找。实测 OECT 上 141 个失效源，靠滚动是找不到的。
  */
-type SiteFilter = 'all' | 'skipped' | 'failed' | 'unsupported' | 'disabled' | 'ok'
+type SiteFilter = 'all' | 'skipped' | 'failed' | 'unsupported' | 'disabled' | 'ok' | 'pending'
 
 const siteFilter = ref<SiteFilter>('all')
 const siteKeyword = ref('')
+/**
+ * 「未生效」站点：配置里有、本构建加载不了（issue #9）。
+ *
+ * 它们不在 /api/sites 里（TV 端拿那张表导入执行层，塞进去会变成幽灵项），
+ * 单独从 /api/sites/pending 取；原因由后端统一给（加密壳 / jar 未装载 / 缺类）。
+ */
+const pendingSites = ref<PendingSite[]>([])
+const pendingFiltered = computed(() => {
+  const kw = siteKeyword.value.trim().toLowerCase()
+  if (!kw) return pendingSites.value
+  return pendingSites.value.filter(
+    (p) =>
+      (p.name || '').toLowerCase().includes(kw) ||
+      (p.key || '').toLowerCase().includes(kw) ||
+      (p.api || '').toLowerCase().includes(kw) ||
+      (p.reason || '').toLowerCase().includes(kw),
+  )
+})
 /** 批量选择（key 集合）。用 Set 而不是数组：270 项下 includes 是 O(n²)。 */
 const siteSel = reactive(new Set<string>())
 
@@ -1754,6 +1783,8 @@ const siteFilterTabs = computed(() => {
     { id: 'unsupported' as const, label: '待配置', n: cnt('unsupported') },
     { id: 'disabled' as const, label: '已停用', n: cnt('disabled') },
     { id: 'ok' as const, label: '正常', n: cnt('ok') },
+    // 配置里有、但本构建加载不了（jar 未装 / 加密壳 / 缺类）
+    { id: 'pending' as const, label: '未生效', n: pendingSites.value.length },
   ]
 })
 
@@ -1777,6 +1808,8 @@ function matchFilter(s: Site, f: SiteFilter): boolean {
 
 /** 当前筛选 + 关键词之后实际展示的源。 */
 const visibleSites = computed(() => {
+  // 「未生效」是另一张表（pendingSites），不要拿 store.sites 冒充
+  if (siteFilter.value === 'pending') return []
   const kw = siteKeyword.value.trim().toLowerCase()
   return store.sortedSites.filter((s) => {
     if (!matchFilter(s, siteFilter.value)) return false
@@ -2259,6 +2292,12 @@ const cfgMsg = ref('')
 const cfgMsgOk = ref(false)
 const cfgSkipped = ref<ConfigSkippedSite[]>([])
 const cfgSummary = ref<{ sites: number; total: number; url: string } | null>(null)
+/** 导入后的可行动结论（「已写入 N 站，当前只有 M 站可用」） */
+const cfgHint = ref('')
+/** 配置里有、本构建加载不了的站点（加密壳 / jar 未装载 / 缺类） */
+const cfgPending = ref<PendingSite[]>([])
+/** 每条外部 jar 的装载结果（md5 不匹配 / 加密壳 / 下载失败） */
+const cfgJars = ref<NonNullable<ConfigImportResult['jars']>>([])
 
 /**
  * 导入分两步：先预览（后端 dryRun，只算不写），看清会加什么/丢什么，再确认。
@@ -2414,7 +2453,10 @@ async function loadDepotCache() {
     depotStale.value = r.stale === true
     if (r.entries?.length) {
       depotEntries.value = r.entries
-      const usable = r.entries.filter((e) => e.ok && (e.inJar || 0) + (e.direct || 0) > 0)
+      // jarKnown === false = 本机没有内置 jar，inJar 是未知而不是 0：不计入"能用"
+      const usable = r.entries.filter(
+        (e) => e.ok && e.jarKnown !== false && (e.inJar || 0) + (e.direct || 0) > 0,
+      )
       depotMsg.value = depotProbedAt.value
         ? `共 ${r.entries.length} 个仓，其中 ${usable.length} 个我们有站点能加载${depotStale.value ? '（超过 24 小时，建议刷新）' : ''}`
         : `共 ${r.entries.length} 个仓（还没探测过，点「刷新探测」看每个仓能用几站）`
@@ -2453,7 +2495,9 @@ async function probeDepot() {
     depotActive.value = r.active || ''
     depotProbedAt.value = r.probedAt || Date.now()
     depotStale.value = false
-    const usable = depotEntries.value.filter((e) => e.ok && (e.inJar || 0) + (e.direct || 0) > 0)
+    const usable = depotEntries.value.filter(
+      (e) => e.ok && e.jarKnown !== false && (e.inJar || 0) + (e.direct || 0) > 0,
+    )
     depotMsg.value = depotEntries.value.length
       ? `共 ${depotEntries.value.length} 个仓，其中 ${usable.length} 个我们有站点能加载`
       : '这个地址里没有仓'
@@ -2669,6 +2713,9 @@ async function doPreviewImport() {
   cfgMsg.value = ''
   cfgSkipped.value = []
   cfgPreview.value = null
+  cfgHint.value = ''
+  cfgPending.value = []
+  cfgJars.value = []
   try {
     const r = await importConfig(url, {
       mode: importMode.value,
@@ -2683,6 +2730,9 @@ async function doPreviewImport() {
     }
     cfgMsgOk.value = true
     cfgSkipped.value = r.skipped || []
+    cfgJars.value = r.jars || []
+    cfgHint.value = ''
+    cfgPending.value = []
     cfgPreview.value = {
       url,
       sites: r.sites || 0,
@@ -2808,6 +2858,9 @@ async function doImportConfig() {
     cfgMsgOk.value = true
     cfgSummary.value = { sites: r.sites || 0, total: r.totalSites || 0, url }
     cfgSkipped.value = r.skipped || []
+    cfgHint.value = r.hint || ''
+    cfgPending.value = r.pendingSites || []
+    cfgJars.value = r.jars || []
     cfgPreview.value = null
     // 多仓：后端已把"当前仓/索引/仓列表"落盘，这里同步本地状态（「当前」标记）
     if (r.active) depotActive.value = r.active
@@ -6599,8 +6652,18 @@ onBeforeUnmount(() => {
           <span
             v-if="e.ok"
             class="shrink-0 rounded-full px-2 py-0.5 text-[10px]"
-            :class="(e.inJar || 0) + (e.direct || 0) >= 5 ? 'bg-ok/15 text-ok' : 'bg-warn/15 text-warn'"
-            :title="`总 ${e.sites} 站，其中带类的 ${e.csp} 个、我们 jar 里有 ${e.inJar} 个、直连 ${e.direct} 个`"
+            :class="
+              e.jarKnown === false
+                ? 'bg-field text-ink-3'
+                : (e.inJar || 0) + (e.direct || 0) >= 5
+                  ? 'bg-ok/15 text-ok'
+                  : 'bg-warn/15 text-warn'
+            "
+            :title="
+              e.jarKnown === false
+                ? `总 ${e.sites} 站，其中带类的 ${e.csp} 个；本机没有内置 jar，无法判断能加载几站`
+                : `总 ${e.sites} 站，其中带类的 ${e.csp} 个、我们 jar 里有 ${e.inJar} 个、直连 ${e.direct} 个`
+            "
           >
             {{ e.hint }}
           </span>
@@ -6637,6 +6700,50 @@ onBeforeUnmount(() => {
           {{ cfgSummary.url }}
         </span>
       </p>
+      <!--
+        「导入成功但一个站都用不了」（issue #9）：后端给一句可行动的结论，
+        不能只靠 sites/totalSites 两个数字让用户猜。
+      -->
+      <p
+        v-if="cfgHint"
+        class="mt-1.5 rounded-md bg-warn/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-warn"
+      >
+        {{ cfgHint }}
+      </p>
+      <!-- 外部 jar 的状态（md5 不匹配 / 加密壳 / 下载失败，issue #14 / #10） -->
+      <div v-if="cfgJars.length" class="mt-1.5 rounded-md bg-field px-2.5 py-1.5">
+        <div class="text-[11px] text-ink-3">源 jar 状态</div>
+        <ul class="mt-1 space-y-0.5">
+          <li
+            v-for="(j, i) in cfgJars.slice(0, 4)"
+            :key="'jar-' + i"
+            class="text-[11px] leading-relaxed"
+            :class="j.ok && j.md5Ok && !j.encrypted ? 'text-ink-3' : 'text-warn'"
+          >
+            {{ j.name || j.spec }}
+            <template v-if="j.encrypted">— 加密 Guard 壳：{{ j.encryptedReason || '本构建不支持' }}</template>
+            <template v-else-if="!j.ok">— 未装载：{{ j.error || '下载/加载失败' }}</template>
+            <template v-else-if="!j.md5Ok">— md5 不匹配（已按宽松模式挂载；policy.json 设 jarStrictMd5=true 可恢复严格）</template>
+            <template v-else>— 已装载</template>
+          </li>
+        </ul>
+      </div>
+      <!-- 配置里有、但本构建加载不了的站点（加密壳 / jar 未装载 / 缺类） -->
+      <div v-if="cfgPending.length" class="mt-1.5 rounded-md bg-field px-2.5 py-1.5">
+        <div class="text-[11px] text-ink-3">
+          未生效 {{ cfgPending.length }} 站（站点明细里可看全量）
+        </div>
+        <ul class="mt-1 space-y-0.5">
+          <li
+            v-for="(p, i) in cfgPending.slice(0, 5)"
+            :key="'pend-' + i"
+            class="truncate text-[11px] text-ink-2"
+            :title="p.api + ' — ' + p.reason"
+          >
+            {{ p.name || p.key }} — {{ p.reason }}
+          </li>
+        </ul>
+      </div>
       <div v-if="cfgSkipped.length" class="mt-1.5 rounded-md bg-field px-2.5 py-1.5">
         <div class="text-[11px] text-ink-3">跳过 {{ cfgSkipped.length }} 站（原因前 5 条）</div>
         <ul class="mt-1 space-y-0.5">
@@ -8547,7 +8654,7 @@ onBeforeUnmount(() => {
             :disabled="probing"
             :title="siteSel.size ? `探测选中的 ${siteSel.size} 个源` : '探测当前筛选里的全部源'"
           >
-            {{ probing ? '探活中…' : siteSel.size ? `探测选中(${siteSel.size})` : '探测当前' }}
+            {{ probing ? '探活中…' : siteSel.size ? `探测选中(${siteSel.size})` : siteFilter === 'all' ? '检测全部' : '检测当前' }}
           </button>
           <button
             class="rounded-md bg-card px-2.5 py-1 text-[11px] hover:bg-card-hover"
@@ -8649,7 +8756,35 @@ onBeforeUnmount(() => {
           tabindex="0"
           class="mt-1.5 min-h-0 flex-1 overflow-y-auto rounded-lg bg-field px-3 outline-none"
         >
-<ul class="divide-y divide-line text-[13px]">
+<!-- 「未生效」：配置里写了，但本构建加载不了（加密壳 / jar 未装载 / 缺类） -->
+<ul v-if="siteFilter === 'pending'" class="divide-y divide-line text-[13px]">
+          <li v-if="!pendingFiltered.length" class="py-6 text-center text-xs text-ink-3">
+            没有未生效的源
+          </li>
+          <li
+            v-for="p in pendingFiltered"
+            :key="'pending-' + p.key"
+            class="flex items-start gap-3 py-2"
+          >
+            <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+              <div class="flex min-w-0 items-center gap-2">
+                <span class="shrink-0 text-ink">{{ p.name || p.key }}</span>
+                <span class="shrink-0 rounded bg-warn/15 px-1.5 py-0.5 text-[10px] text-warn">
+                  未生效
+                </span>
+                <span class="min-w-0 truncate text-[11px] text-ink-3" :title="p.reason">
+                  {{ p.reason }}
+                </span>
+              </div>
+              <div class="flex min-w-0 items-center gap-2 text-[10px] text-ink-3">
+                <code class="min-w-0 max-w-[22rem] shrink truncate rounded bg-field px-1.5 py-0.5" :title="p.api">
+                  {{ p.api }}
+                </code>
+              </div>
+            </div>
+          </li>
+        </ul>
+        <ul v-else class="divide-y divide-line text-[13px]">
           <li v-if="!visibleSites.length" class="py-6 text-center text-xs text-ink-3">
             没有符合条件的源
           </li>

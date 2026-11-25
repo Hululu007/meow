@@ -85,7 +85,7 @@ TV 端只读 `spider`，Fongmi 也一样——它们不认 `spiderJvm`。
 | 步骤 | 行为 |
 |---|---|
 | 下载 | 按 URL 拉取；已有同 md5 缓存则跳过 |
-| 校验 | md5 不匹配 → **拒绝加载**（不会用半截文件启动） |
+| 校验 | md5 不匹配 → 默认**仍挂载 + WARN**（`policy.jarStrictMd5=true` 才拒绝加载）；下载失败但本地已有缓存时沿用缓存；同 URL 失败后 10 分钟冷却 |
 | 缓存 | 落在 `data/jars/` |
 | 转换 | JVM 读 dex 时先 `Dex2Jvm` 转 class（导入期 + 挂载前各一次），缓存键带 `-fix1` |
 | 装载 | JVM：`URLClassLoader`；TV：`DexClassLoader` |

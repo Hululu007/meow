@@ -41,8 +41,10 @@ describe('4K 丢帧修复：原分辨率显卡重编', () => {
 
   it('模式参与幂等键：copy / repair 不复用普通转码产物', () => {
     expect(T).toContain('public static String idFor(String source, boolean copy, boolean repair)')
-    expect(T).toContain('idFor(sourceUrl, preferCopy, repair)')
-    expect(T).toContain('idFor(key, preferCopy, repair)')
+    // 起点也参与幂等键（issue #17：从 20:00 重转的产物不能和从 0 转的共用目录）
+    expect(T).toContain('public static String idFor(String source, boolean copy, boolean repair, int startSec)')
+    expect(T).toContain('idFor(sourceUrl, preferCopy, repair, startSec)')
+    expect(T).toContain('idFor(key, preferCopy, repair, startSec)')
   })
 
   it('探测失败与"没有硬件编码器"分开报，且不偷偷缩到 1080p', () => {
@@ -61,7 +63,7 @@ describe('4K 丢帧修复：原分辨率显卡重编', () => {
     expect(T).toContain('composeMerged')
     expect(T).toContain('#EXT-X-DISCONTINUITY')
     expect(T).toContain('raw.m3u8')
-    const i = T.indexOf('if (repair && startSec > 1)')
+    const i = T.indexOf('if (startSec > 1)')
     expect(i).toBeGreaterThan(-1)
     expect(T.slice(i, i + 120)).toContain('"-ss"')
   })

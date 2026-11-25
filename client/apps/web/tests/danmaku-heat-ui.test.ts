@@ -42,7 +42,9 @@ describe('时间轴密度带：双条 / 内嵌 / 关闭', () => {
     expect(PLAYER).toContain('function onHeatUp')
     expect(PLAYER).toContain('function onHeatClick')
     const i = PLAYER.indexOf('function onHeatClick')
-    expect(PLAYER.slice(i, i + 300)).toContain('seekTo(t)')
+    // 用户主动 seek 统一走 userSeek：超出「已转出」范围时交给父组件从目标点重转，
+    // 不能静默夹回（issue #17 的"拖了没反应/回弹"）
+    expect(PLAYER.slice(i, i + 300)).toContain('userSeek(t)')
   })
 
   it('内嵌模式画在进度条内部、播放/缓冲之上仍保留', () => {
