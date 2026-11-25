@@ -67,6 +67,9 @@ struct WebView: UIViewRepresentable {
                     case "keepAwake":
                         // 远程调试必须让屏幕别自动锁：息屏 = App 挂起 = 网关端口消失
                         ScreenAwake.apply(dict["value"] as? Bool ?? false)
+                    case "volume":
+                        // 网页改不了 iOS 系统音量，交给 MPVolumeView（SystemVolume）
+                        SystemVolume.set((dict["value"] as? NSNumber)?.intValue ?? 0)
                     default:
                         break
                     }

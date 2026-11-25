@@ -117,7 +117,7 @@ cd client/apps/web && npx vitest run tests/device-profile.test.ts
 
 | 能力 | 探测方式 | 位置 |
 |---|---|---|
-| 系统音量/亮度 | `meowTv.getVolume/setVolume/getBrightness/setBrightness` 存在 | `api/nativeBridge.ts` |
+| 系统音量/亮度 | `meowTv.getVolume/setVolume/getBrightness/setBrightness` 或 `meowIos.setVolume` 存在 | `api/nativeBridge.ts` |
 | 原生播放器兜底 | `meowTv.nativePlayerAvailable()` | `nativeBridge.ts` / `VideoPlayer.vue` |
 | 原生输入框（遥控器打字） | `meowTv.inputText` 存在 | `nativeBridge.ts` |
 | 原生 HLS | `video.canPlayType('application/vnd.apple.mpegurl')` | `player/mediaKind.ts` `hasNativeHls()` |
@@ -161,7 +161,7 @@ cd client/apps/web && npx vitest run tests/device-profile.test.ts
 | 直播页 | 视口方向引导 | 同 | 同 | 方向键归属 `__meowTvKeyOwner` + 锁横屏 + 大屏隐藏引导 | 同 | 同 |
 | 双击画面 | 全屏 | 分左/中/右区 | 分区 | 分区 | 全屏 | 全屏 |
 | 竖滑亮度/音量 | 无（鼠标） | 有 | 有 | 有（**系统桥**真调） | 无 | 无 |
-| 系统音量/亮度 | — | **iPhone 提示「用侧键」** | 同 | 真机桥 | — | — |
+| 系统音量/亮度 | — | **iPhone 真机桥（MPVolumeView）** | 同 | 真机桥 | — | — |
 | 原生播放器兜底 | 无 | 无 | 无 | **ExoPlayer** | 无 | 无 |
 | 投屏 | 有（同源 base） | 有 | 有 | 有（LAN 监听） | 有（LAN 监听） | 有（同源） |
 | 在线更新 | 无安装包 | 无 | 无 | APK 清单（A3/A4/A7） | setup/插件（A5/A7） | **fpk 应用中心**（A8） |
@@ -220,7 +220,7 @@ cd client/apps/web && npx vitest run tests/device-profile.test.ts
 | 原生播放器兜底 | `meowTv.nativePlayerAvailable()` / `openNative(url,title,headers,pos)` | TV 壳 | `nativeBridge.ts` |
 | 原生输入框 | `meowTv.inputText(title, initial, mask, theme)` | TV 壳 | 搜索/设置输入 |
 | 主题推给原生页 | `meowTv.setUiTheme(json)`（TV 配置页没有 WebView） | TV 壳 | `nativeBridge.ts` |
-| 系统音量/亮度 | `get/setVolume`、`get/setBrightness` | TV 壳 | nativeBridge |
+| 系统音量/亮度 | TV：`get/setVolume`、`get/setBrightness`；iOS：`meowIos.setVolume`（MPVolumeView） | TV / iOS 壳 | nativeBridge |
 | 伪全屏事件 | `window` 自定义事件 `meow:pseudofs`（detail=boolean） | 全端（iOS 触发） | VideoPlayer → App.vue |
 | 托盘/关闭行为 | `tauriInvoke` 命令（`desktop_*`）；关窗提示由 Rust `window.__meowTrayHint?.()` 触发 `TrayHintDialog` | PC 壳 | `api/index.ts`、`App.vue`、`TrayHintDialog.vue` |
 | 目录选择 | PC：Tauri dialog；TV：`MANAGE_EXTERNAL_STORAGE` + 内置浏览器；Web：目录选择器 | 三端不同 | `components/library/LibraryAddDialog.vue` / `api/library.ts` |

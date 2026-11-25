@@ -39,6 +39,7 @@ const webMain = read(join(WEB, 'src', 'main.ts'))
 const iosNative = read(join(ROOT, 'server', 'host', 'src', 'shared', 'platform', 'IosNative.java'))
 const projectYml = read(join(ROOT, 'client', 'apps', 'ios', 'project.yml'))
 const staticServerSwift = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'StaticServer.swift'))
+const systemVolumeSwift = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'SystemVolume.swift'))
 const danmuScript = read(join(ROOT, 'client', 'apps', 'ios', 'scripts', 'prepare-danmu-payload.sh'))
 const player = read(join(WEB, 'src', 'components', 'player', 'VideoPlayer.vue'))
 const appStore = read(join(WEB, 'src', 'stores', 'app.ts'))
@@ -271,6 +272,24 @@ describe('iOS：导航失效（2026-11-25）', () => {
     expect(staticServerSwift).toContain('ensureServing')
     expect(bootstrapSwift).toContain('startStaticWatchdog')
     expect(bootstrapSwift).toContain('appBecameActive')
+  })
+})
+
+describe('iOS：播放页（2026-11-25）', () => {
+  it('音量走 MPVolumeView 系统桥；手势与底栏共用 applyVolumePct', () => {
+    expect(systemVolumeSwift).toContain('MPVolumeView')
+    expect(bootstrapSwift).toContain('meowIos.volume=')
+    expect(bootstrapSwift).toContain("op:'volume'")
+    expect(webViewSwift).toContain('SystemVolume.set')
+    expect(player).toContain('function applyVolumePct')
+    expect(player).toContain('applyVolumePct(pct, { save: false })')
+    // 没有系统桥时「请用手机侧键」必须自动消失（旧版漏了定时器 → 浮层常驻）
+    expect(player).toContain('scheduleSwipeHintHide(1200)')
+  })
+
+  it('触屏语义：单击只切控制栏，双击中区暂停；iOS 不落鼠标分支', () => {
+    expect(player).toContain('isIosShell()),')
+    expect(player).toContain("recentDown === 'mouse'")
   })
 })
 

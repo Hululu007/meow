@@ -628,10 +628,34 @@ function systemCtl(): MeowTvSystemCtl | null {
   }
 }
 
-/** 这个环境能不能调系统音量/亮度（TV 壳 1.0.6+；浏览器/PC 都返回 false） */
+/**
+ * iOS 壳的系统音量桥（IPA）。
+ *
+ * <p>WKWebView 里 `video.volume = x` 静默无效，壳通过 MPVolumeView 写系统音量：
+ * `meowIos.volume` 是启动快照（0–100，-1 = 读不到），`setVolume(v)` 单向设置。
+ * 读不到（-1）就当没有桥，播放器退回「请用手机侧键」提示，不假装能调。
+ */
+interface MeowIosSysCtl {
+  volume?: number
+  setVolume?(v: number): void
+}
+
+function iosCtl(): MeowIosSysCtl | null {
+  try {
+    const b = (window as unknown as { meowIos?: MeowIosSysCtl }).meowIos
+    if (!b || typeof b.setVolume !== 'function') return null
+    return b
+  } catch {
+    return null
+  }
+}
+
+/** 这个环境能不能调系统音量（TV 壳 / iOS 壳；浏览器/PC 都返回 false） */
 export function hasSystemVolume(): boolean {
   const b = systemCtl()
-  return !!b && typeof b.getVolume === 'function' && typeof b.setVolume === 'function'
+  if (b && typeof b.getVolume === 'function' && typeof b.setVolume === 'function') return true
+  // iOS：setVolume 存在就认（volume 快照可能是 -1，只影响手势起点，不影响能不能写）
+  return !!iosCtl()
 }
 
 export function hasSystemBrightness(): boolean {
@@ -642,24 +666,42 @@ export function hasSystemBrightness(): boolean {
 /** 读系统音量（0–100）；不可用返回 null */
 export function systemVolume(): number | null {
   const b = systemCtl()
-  if (!b?.getVolume) return null
-  try {
-    const v = Number(b.getVolume())
-    return Number.isFinite(v) && v >= 0 ? Math.min(100, Math.round(v)) : null
-  } catch {
-    return null
+  if (b?.getVolume) {
+    try {
+      const v = Number(b.getVolume())
+      if (Number.isFinite(v) && v >= 0) return Math.min(100, Math.round(v))
+    } catch {
+      /* 落 iOS / 兜底 */
+    }
   }
+  const ios = iosCtl()
+  const iv = Number(ios?.volume)
+  return Number.isFinite(iv) && iv >= 0 ? Math.min(100, Math.round(iv)) : null
 }
 
 /** 设系统音量（0–100）；不可用或失败返回 false */
 export function setSystemVolume(v: number): boolean {
+  const pct = Math.max(0, Math.min(100, Math.round(v)))
   const b = systemCtl()
-  if (!b?.setVolume) return false
-  try {
-    return !!b.setVolume(Math.max(0, Math.min(100, Math.round(v))))
-  } catch {
-    return false
+  if (b?.setVolume) {
+    try {
+      return !!b.setVolume(pct)
+    } catch {
+      /* 落 iOS / 兜底 */
+    }
   }
+  const ios = iosCtl()
+  if (ios?.setVolume) {
+    try {
+      ios.setVolume(pct)
+      // 同步本地快照：下次 systemVolume() 读到的就是刚设的值（原生异步回读没必要）
+      if (Number.isFinite(Number(ios.volume))) ios.volume = pct
+      return true
+    } catch {
+      return false
+    }
+  }
+  return false
 }
 
 /** 读屏幕亮度（0–100）；-1（自动）或不可用都返回 null */

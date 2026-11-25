@@ -2490,7 +2490,16 @@ function onStageClick(e: MouseEvent) {
    *   MouseEvent('click'))` 是 undefined —— 用反向判据会把这两类也当鼠标，
    *   遥控器 OK 键就从"唤出控制栏/聚焦"变成"暂停"（属于回退）。
    */
-  const mouseClick = (e as PointerEvent).pointerType === 'mouse'
+  const recentDown =
+    Date.now() - lastDownAt < PRESS_SNAPSHOT_MS ? lastDownPointerType : ''
+  /*
+   * iOS：click 是 WKWebView 合成的 MouseEvent，`pointerType` 可能是 'mouse'
+   * （即使手指点的），只信 pointerdown 的真实来源。iPad 接触控板时
+   * pointerdown 会报 'mouse'，仍走桌面语义；手指点是 'touch'。
+   */
+  const mouseClick = isIosShell()
+    ? recentDown === 'mouse'
+    : (e as PointerEvent).pointerType === 'mouse'
   if (isTouch.value && !mouseClick) {
     /*
      * 触屏单击（2026-11-12 用户口径，三区统一）：
@@ -2539,7 +2548,13 @@ function hideControlBar() {
 const isTouch = ref(
   typeof window !== 'undefined' &&
     (window.matchMedia?.('(pointer: coarse)').matches ||
-      'ontouchstart' in window),
+      'ontouchstart' in window ||
+      /*
+       * IPA：WKWebView 在个别 iOS 版本上 `pointer: coarse` 会报 false，
+       * 只靠触屏事件判断会落到"鼠标单击=暂停"分支（2026-11-25 用户报
+       * IPA 单击暂停）。壳身份是确定的，直接算触屏。
+       */
+      isIosShell()),
 )
 
 /** 双击位置落点：左 1/3 / 中 / 右 1/3 */
@@ -2784,30 +2799,29 @@ function onStagePointerMove(e: PointerEvent) {
   e.preventDefault()
 }
 
+/** 竖滑浮层自动消失；iPhone 的「请用侧键」提示给长一点，仍会自动收。 */
+function scheduleSwipeHintHide(ms = 900) {
+  if (swipeHintTimer) window.clearTimeout(swipeHintTimer)
+  swipeHintTimer = window.setTimeout(() => (swipeHint.value = null), ms)
+}
+
 /** 把当前手势值写进系统（拿不到系统接口时退回元素音量 / 只提示） */
 function applySwipe(kind: 'volume' | 'brightness', pct: number) {
-  if (kind === 'volume' && !hasSystemVolume() && IPHONE_NO_VOLUME) {
-    /*
-     * iPhone/iPod 上系统禁止网页控制音量（video.volume 赋值被静默忽略，
-     * 系统音量纹丝不动）——手势进度是假的，直接说明真实操作方式。
-     * TV/安卓壳有系统桥，不受影响。
-     */
-    swipeHint.value = { kind, pct, system: false, note: '请用手机侧键' }
-    rememberGesture(kind, pct)
-    return
-  }
   if (kind === 'volume') {
-    const ok = setSystemVolume(pct)
-    if (!ok) {
-      // 浏览器/PC：退回元素音量（至少能调，只是不影响系统）
-      const v = video.value
-      if (v) {
-        v.volume = pct / 100
-        volume.value = v.volume
-        v.muted = pct === 0
-        muted.value = v.muted
-      }
+    const ok = hasSystemVolume()
+    if (!ok && IPHONE_NO_VOLUME) {
+      /*
+       * 没有系统音量桥的 iPhone（旧包/桥初始化失败）：网页改不了音量，
+       * 只给一次短提示。★ 之前这里直接 return，**没排隐藏定时器**，
+       * 浮层会一直挂在画面上（2026-11-25 用户截图）。
+       */
+      swipeHint.value = { kind, pct, system: false, note: '请用手机侧键' }
+      rememberGesture(kind, pct)
+      scheduleSwipeHintHide(1200)
+      return
     }
+    // 与底栏滑块同一个入口：元素音量 + 系统音量 + muted/volume 状态一起更新
+    applyVolumePct(pct, { save: false })
     swipeHint.value = { kind, pct, system: ok }
   } else {
     const ok = setSystemBrightness(pct)
@@ -2816,8 +2830,7 @@ function applySwipe(kind: 'volume' | 'brightness', pct: number) {
     swipeHint.value = { kind, pct, system: ok }
   }
   rememberGesture(kind, pct)
-  if (swipeHintTimer) window.clearTimeout(swipeHintTimer)
-  swipeHintTimer = window.setTimeout(() => (swipeHint.value = null), 900)
+  scheduleSwipeHintHide()
 }
 
 /**
@@ -2972,8 +2985,8 @@ function onStageWheel(e: WheelEvent) {
   // 落盘延后 400ms：一次连续滚动只写一次
   if (wheelSaveTimer) window.clearTimeout(wheelSaveTimer)
   wheelSaveTimer = window.setTimeout(() => {
-    const v = video.value
-    if (v) savePrefs({ volume: v.volume, muted: v.muted }, { silent: true })
+    // 用状态值而不是 v.volume：iOS 上元素音量赋值被忽略，读回来还是 1
+    savePrefs({ volume: volume.value, muted: muted.value }, { silent: true })
   }, 400)
 }
 
@@ -2981,8 +2994,8 @@ function endSwipe() {
   if (!swipe.active) return
   // 只在松手时落盘一次：localStorage 每帧写会卡顿
   if (swipe.kind === 'volume') {
-    const v = video.value
-    if (v) savePrefs({ volume: v.volume, muted: v.muted }, { silent: true })
+    // 同上：iOS 的 v.volume 不可信，用状态值
+    savePrefs({ volume: volume.value, muted: muted.value }, { silent: true })
   }
   swipe.active = false
   swipe.kind = ''
@@ -3635,29 +3648,44 @@ function onHeatClick(e: MouseEvent) {
   if (t != null) seekTo(t)
 }
 
-function onVolumeInput(e: Event) {
+/**
+ * 统一的音量入口：底栏滑块、右侧竖滑、鼠标滚轮都走这里。
+ *
+ * <p>必须有系统桥时写系统音量（TV 的 AudioManager / iOS 的 MPVolumeView）：
+ * iPhone 上 `video.volume = x` 是静默无效的，只改元素音量等于假控件。
+ */
+function applyVolumePct(pct: number, opts: { save?: boolean } = {}) {
+  const p = Math.max(0, Math.min(100, Math.round(pct)))
+  volume.value = p / 100
   const v = video.value
-  if (!v) return
-  volume.value = Number((e.target as HTMLInputElement).value) / 100
-  v.volume = volume.value
-  v.muted = volume.value === 0
-  muted.value = v.muted
-  // 高频项：静默落盘，不广播事件（否则会刷屏 WebDAV 同步）
-  savePrefs({ volume: volume.value, muted: muted.value }, { silent: true })
+  if (v) {
+    v.volume = volume.value
+    v.muted = p === 0
+  }
+  muted.value = p === 0
+  if (hasSystemVolume()) setSystemVolume(p)
+  if (opts.save !== false) {
+    // 高频项：静默落盘，不广播事件（否则会刷屏 WebDAV 同步）
+    savePrefs({ volume: volume.value, muted: muted.value }, { silent: true })
+  }
+  return p
+}
+
+function onVolumeInput(e: Event) {
+  applyVolumePct(Number((e.target as HTMLInputElement).value))
 }
 
 function toggleMute() {
   const v = video.value
   if (!v) return
-  v.muted = !v.muted
-  muted.value = v.muted
-  if (!v.muted && v.volume === 0) {
-    v.volume = 0.5
-    volume.value = 0.5
+  if (v.muted || v.volume === 0) {
+    // 取消静音：恢复原音量；原来就是 0 则给 50%
+    applyVolumePct(volume.value > 0 ? volume.value * 100 : 50)
+  } else {
+    v.muted = true
+    muted.value = true
+    savePrefs({ muted: muted.value, volume: volume.value }, { silent: true })
   }
-  // ★ 静音必须落盘：切集会重建整个播放页实例，
-  // 不存的话上一集静的音，下一集自动又有声了（实测复现）。
-  savePrefs({ muted: muted.value, volume: volume.value }, { silent: true })
 }
 
 function setRate(r: number) {
@@ -7199,13 +7227,13 @@ defineExpose({
 
     <!-- 底部控制栏 -->
     <div
-      class="meow-ctrl-bar meow-ctrl-mask absolute inset-x-0 bottom-0 z-30 px-3 pb-2.5 pt-10 sm:px-5 sm:pb-4 sm:pt-12"
+      class="meow-ctrl-bar meow-ctrl-mask absolute inset-x-0 bottom-0 z-30 px-3 pb-2 pt-7 sm:px-5 sm:pb-2.5 sm:pt-9"
       :class="showCtrl ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
       data-ctrl-root
     >
       <!-- 进度条：悬停显示时间，按下拖动只改视觉，松手才 seek -->
       <div
-        class="group/bar relative mb-2.5 cursor-pointer pb-2 pt-5"
+        class="group/bar relative mb-1.5 cursor-pointer pb-2 pt-5"
         @pointerdown="onBarDown"
         @pointermove="onBarMove"
         @pointerup="onBarUp"

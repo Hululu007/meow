@@ -168,6 +168,17 @@ iOS 要对齐这条，拆成两问：
   回环请求的 `GET /api/_debug/lan` 里下发，OPTIONS 放行给浏览器预检；
 - 状态跨重启保留（`policy.json`）。接口：`GET/POST /api/_debug/lan`。
 
+**播放页（2026-11-25 第三轮）**：
+
+- **音量**：WKWebView 里 `video.volume = x` 静默无效。新增 `SystemVolume.swift`（MPVolumeView）
+  写系统媒体音量，启动脚本注入 `meowIos.volume`（快照）与 `meowIos.setVolume`；
+  底栏滑块、右侧竖滑、鼠标滚轮统一走 `applyVolumePct()`，不再出现"滑条动了声音不变"。
+  读不到系统音量（-1）时保留「请用手机侧键」提示，且该浮层 1.2s 自动消失
+  （旧版漏了定时器，浮层会常驻）。
+- **点击语义**：iOS 强制按触屏处理（`isTouch` 加壳身份 + click 只信 pointerdown 来源），
+  单击只呼出/收起控制栏，双击中区才暂停/播放，左右区快退/快进；不再出现"点一下画面就暂停"。
+- **底栏高度**：渐变 padding 从 `pt-10/sm:pt-12` 压到 `pt-7/sm:pt-9`，下边距 `pb-2/sm:pb-2.5`。
+
 **测试 IPA 要给侧载商店的链接**：Actions artifact 需要登录、且下载下来是 zip，
 侧载商店用不了。`_ios.yml` 手动 dispatch 会把 IPA **直接上传**到独立的测试
 Release `ipa-test`（固定文件名，每次覆盖），链接永远不变：

@@ -50,6 +50,8 @@ final class Bootstrap: ObservableObject {
 
     private func boot() async {
         LaunchLog.write("boot start")
+        // MPVolumeView 必须先挂进窗口，才能拿到内部的 UISlider（系统音量桥）
+        SystemVolume.attach()
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dataDir = docs.appendingPathComponent("gateway", isDirectory: true)
@@ -190,6 +192,16 @@ final class Bootstrap: ObservableObject {
         js.append("window.meowIos.keepAwake=\(ScreenAwake.isOn ? "true" : "false")")
         js.append("window.meowIos.setKeepAwake=function(on){try{"
                   + "window.webkit.messageHandlers.meowIos.postMessage({op:'keepAwake',value:!!on})"
+                  + "}catch(e){}}")
+        /*
+         * 系统音量桥：网页改不了 iOS 音量，由原生写 MPVolumeView。
+         * `volume` 是启动时的快照（-1 = 读不到），setVolume 是单向设置；
+         * 前端自己维护这个值做连续性，不需要回读（系统侧变化由侧键产生，
+         * 下次手势的起点允许有偏差，比异步回读简单且不会跳）。
+         */
+        js.append("window.meowIos.volume=\(SystemVolume.current())")
+        js.append("window.meowIos.setVolume=function(v){try{"
+                  + "window.webkit.messageHandlers.meowIos.postMessage({op:'volume',value:Number(v)||0})"
                   + "}catch(e){}}")
         if base.isEmpty {
             js.append("localStorage.removeItem('meow.api');localStorage.removeItem('meow.api.scope')")

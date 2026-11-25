@@ -254,9 +254,10 @@ describe('④ 播放器底栏遮罩', () => {
     // 顶部要完全透明，否则底栏上沿会有一条硬边
     expect(block).toContain('rgba(0, 0, 0, 0) 100%')
     // 高度来源是控制栏 padding（渐变靠 padding 撑开）
-    // 2026-11-24：从 pt-16/sm:pt-20（栏高 178）压到 pt-10/sm:pt-12（≈141）。
+    // 2026-11-24：从 pt-16/sm:pt-20（栏高 178）压到 pt-10/sm:pt-12（≈141）；
+    // 2026-11-25 用户再报「底栏过高」→ pt-7/sm:pt-9、pb-2/sm:pb-2.5（≈125）。
     // 那 64/80px 是纯渐变留白，**和峰谷热图无关**（热图占的是进度条组的 pt-5）。
-    expect(player).toContain('pb-2.5 pt-10 sm:px-5 sm:pb-4 sm:pt-12')
+    expect(player).toContain('pb-2 pt-7 sm:px-5 sm:pb-2.5 sm:pt-9')
   })
 
   it('顶栏遮罩用「带平台段」的渐变（文字行在衰减区里，线性渐变必踩空）', () => {
