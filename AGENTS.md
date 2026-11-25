@@ -65,6 +65,15 @@ tmp/<YYYY-MM-DD>-<主题>/     例：tmp/2026-10-27-文档收缩/
 一次性脚本、抓包、截图都放进当天的主题目录，**不要直接扔 `tmp/` 根下**。
 旧的不追溯；**新增的一律进子目录**。
 
+**★ worktree 的 `tmp/` 不共享**（每个工作树各一份物理目录，gitignore 不随分支走）：
+
+- 验证产物、`--data-dir`、抓包、日志一律写主工作区**绝对路径**
+  `P:/workspace/ai-projects/meow/tmp/<日期>-<主题>/`，**不要写相对 `tmp/`** ——
+  cwd 决定落点，落在工作树里，收尾删工作树就一起没了（实测：
+  `--data-dir=../../tmp/...` 的测试实例，数据落在该 worktree，换 cwd 重启即找不到）。
+- worktree 自己的 `tmp/` 只放**退出即弃**的中间物（编译产物、临时截图）。
+- 跨会话语义的数据（请求样本、日志、结论）放主工作区 `tmp/` 或 `docs/`。
+
 ### 0.2 分支 / worktree 卫生（★ 2026-11-24 更新）
 
 **单会话默认不建 worktree；多会话并行必须一会话一分支一工作树**：
@@ -92,6 +101,21 @@ git worktree prune
 **不手删**：`.zcode/worktrees/*` 是 ZCode 宿主的会话回滚点，删掉会让历史会话的 rewind 失效。
 不使用 ZCode 的贡献者可忽略这一条。
 
+**分支状态三分（别靠记忆判断"合没合"）**：
+
+```bash
+git rev-list --left-right --count main...<branch>   # 左=main 独有，右=分支独有
+git cherry main <branch>                            # + 独有提交；- main 已有等价提交
+```
+
+| 分支独有数 | 判定 | 动作 |
+|---|---|---|
+| 0 | **已合入** | 直接收尾（tag → `worktree remove` → `branch -d`），当天做完 |
+| >0，且两点 diff 只显示"main 侧更完整" | **已被取代** | 给维护者看 `git diff --stat main <branch>`，同意后 `git tag backup/<说明>` + `-D` |
+| >0，正常演进 | **开发中 / 待合** | 进合并队列；工作树脏是正常状态，**不列为卡点** |
+
+`git worktree list` 里分支名前的 `+` 只表示"该分支被某个工作树检出"，**不是"未合并"**。
+
 **巡检（发版前跑一次，30 秒）**：
 
 ```bash
@@ -101,22 +125,25 @@ git branch --merged main          # 可安全删的
 git worktree prune --dry-run      # 目录已没了的孤儿登记
 ```
 
-**本机已知工作树（2026-11-24）**：
+**本机已知工作树（2026-11-25 快照，动手前重跑巡检，不要照表当现状）**：
 
-| 工作树 | 分支 / 说明 |
+| 工作树 | 分支 / 状态 |
 |---|---|
-| 主工作区 `P:/workspace/ai-projects/meow` | `main` |
-| `.worktree/ios-jvm` | `feat/ios-jvm`，iOS 方向，未合并 |
-| `.worktree/private-source-pack` | `private-main`，远程 `private/main`，私有线 |
-| `P:/workspace/ai-projects/meow-auth` | `feat/public-auth`，认证线，未合并 |
+| 主工作区 `P:/workspace/ai-projects/meow` | `main`，集成者占位 |
+| `.worktree/ios-jvm` | `feat/ios-jvm`，**已合入 main（0 独有）**，待收尾 tag + 删 |
+| `.worktree/private-source-pack` | `private-main`，远程 `private/main`，私有线，不参与公开 main |
+| `P:/workspace/ai-projects/meow-auth` | `feat/public-auth`，开发中，**挂起不旁问** |
+| 仅分支无工作树：`ipa-smoke` | 已被 main 的 `client/apps/ios`（含 4 个 `_ios*.yml` + `vendor/dex2jar`）取代，待 tag + 删 |
+| 仅分支无工作树：`backup/pre-scope-fix` | 历史备份分支，按"备份用 tag"转 tag 后删 |
+| `.zcode/worktrees/{90df,ea1f}` | ZCode 会话回滚点，detached，**不手删** |
 
 `.worktree/main-tv` 已并入主工作区；`feat/muse-sources` / `feat/fongmi-loaders`
 已用 tag `backup/muse-sources-20261124` / `backup/fongmi-loaders-20261124` 留底后删除。
 
-### 0.2.1 并行会话 / 合并纪律（★ 2026-11-24 定）
+### 0.2.1 并行会话 / 合并纪律（★ 2026-11-24 定，2026-11-25 修订）
 
 > 2026-11-24 差点把一条与 main 提交等价的旧分支整条合回 main，同时 76 条未提交
-> 混着 3 个会话；下面 10 条就是这次事故的收口。
+> 混着 3 个会话；下面 12 条就是这次事故的收口，第 11、12 条是 2026-11-25 集成实测补的。
 
 1. **一会话一分支一工作树（并行时强制）**：同时有 ≥2 个会话改同一仓库时，开工就建
    `feat/<主题>-<会话短id>` + `.worktree/<主题>`；prompt 里写死"只改这个 worktree/branch"。
@@ -128,7 +155,20 @@ git worktree prune --dry-run      # 目录已没了的孤儿登记
 4. **状态卡**：每个会话开始/结束各报一次：
    `worktree / branch / HEAD / dirty 数 / 改了哪些文件 / 跑了哪些测试 / ignored 里有什么要留`。
 5. **合并前四件事**：
-   - main 工作树 `git status --porcelain` 必须为空；
+   - main 工作树未提交文件 ∩ 待合分支触及文件必须为空（**不是要求 `git status` 全干净**：
+     merge 只拒绝会被改写的本地修改；打 tag、`worktree remove`、`branch -d` 这类纯引用
+     操作不写工作树，不受此限）：
+
+     ```bash
+     B=feat/<主题>
+     comm -12 \
+       <(git status --porcelain | sed -E 's/^.. //; s/.* -> //' | sort -u) \
+       <(git diff --name-only main..."$B" | sort -u)
+     ```
+
+     三点 diff 只取**分支侧**改动：main 侧改动已在 HEAD 里，merge 不会重写，算进交叠
+     只会放大噪声。**空 = 可合；命中 = 先处置命中项再合**。工作区在会话中会被别的写者
+     改动（实测一轮会话内从 18 个脏文件涨到 24 个），**合并前重跑这条**，不要用开局快照。
    - `git merge-tree --write-tree --name-only main <branch>` 预演冲突；
    - 查重复提交：`git show <commit> | git patch-id --stable` 对比，或 `git cherry main <branch>`
      （`-` 开头 = 已有等价提交）；
@@ -141,7 +181,24 @@ git worktree prune --dry-run      # 目录已没了的孤儿登记
    脏 worktree 不要 `-f` 直接删：先归档 `tmp/`、提交 WIP 或打 patch。
 9. **ignored 内容按会话归档**：截图/日志/测试视频放 `tmp/<日期>-<主题>/`；解密产物、私有源包、
    keystore、node_modules/dist/target 永不进 git。删 worktree 前把要留的 `tmp/` 拷到主工作区。
+   **收尾前必查三条**（`tmp/` 不跨工作树共享，只有绝对路径能引用）：
+
+   ```bash
+   ls <worktree>/tmp/                                                  # 里面有什么
+   grep -rn "<worktree 路径>" --include=*.py --include=*.sh \
+        --include=*.ps1 --include=*.json .                             # 有没有人引用
+   git -C <worktree> status --porcelain --ignored | grep '^!!'         # ignored 里要留什么
+   ```
+
+   三条都过了再 `worktree remove`：引用 0 命中、要留的已归档、其余归为一次性。
 10. **发版/推送单独授权**：push main、打 tag、跑 CI 都要单独确认；本地合并和远端发布分开。
+11. **集成窗口内主工作区写权归集成者**：只读（冒烟、读日志、看代码）随便进；写操作
+    （改文件、跑生成脚本、`checkout`/`stash`）会让两个会话同时改一个工作树，且
+    `checkout` 会把别人的未提交改动带到别的分支上。要并行就开 `.worktree/<主题>`，
+    这不违反第 1 条的"单会话不建"——那条针对的是无并行的场景。
+12. **脏工作区先 WIP 提交，再谈合并**：按第 3 条 WIP 提交，或归档到 `tmp/<日期>-<主题>/`，
+    解除污染后再动合并。**不要用 `stash` 跨会话传递未提交状态**——`refs/stash` 是仓库级
+    共享的，另一个会话 `stash pop` 就抢走了；`git checkout` 同理会把未提交改动带走。
 
 ---
 
