@@ -48,7 +48,7 @@ Web 端检查 `web` 容器能否连到 `apiserver`：页面能开但接口 503�
 
 - **Mac（含 Apple Silicon）**：没有桌面应用，本机用 Docker 起一套（镜像有 `linux/arm64`，原生跑），
   浏览器开 `http://localhost:30010`；或者直接开家里 NAS 上已有的实例，Mac 上什么都不用装。
-- **iPhone / iPad**：有客户端了——`Meow-unsigned-<版本>.ipa`，**未签名**，要用 Apple ID 自签装一次，
+- **iPhone / iPad**：有客户端了——`Meow-unsigned-*.ipa`，**未签名**，要用 Apple ID 自签装一次，
   步骤与边界见 [iPhone / iPad](/guide/ios)。不想签名就用 Safari 打开 `http://<后端 IP>:30010`，
   「分享 → 添加到主屏幕」当 App 用。
 

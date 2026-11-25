@@ -1,6 +1,6 @@
 # iPhone / iPad
 
-iPhone / iPad 现在有客户端了（IPA）。但官方只发布**未签名**的 `Meow-unsigned-<版本>.ipa`：
+iPhone / iPad 现在有客户端了（IPA）。但官方只发布**未签名**的 `Meow-unsigned-*.ipa`：
 要用自己的 Apple ID 签一次名才能装。不想签名就走 Safari 方案，功能一样，见方式二。
 
 > 端内自带后端（JVM），**不需要**另起 Docker 或 PC 后端；装好导入源包就能用。
@@ -9,14 +9,11 @@ iPhone / iPad 现在有客户端了（IPA）。但官方只发布**未签名**�
 
 ### 方式一：自签侧载（推荐）
 
-支持 URL 安装的侧载工具（LiveContainer / SideStore / Sideloadly 等）**直接填这条地址**：
-
-```text
-https://github.com/upchr/meow/releases/latest/download/Meow-unsigned-1.2.22.ipa
-```
-
-资产名带版本号，发新版会变；链接失效时到 [Releases](https://github.com/upchr/meow/releases/latest)
-页复制当次 `Meow-unsigned-<版本>.ipa` 的地址。想先下载再导入也行，文件在同一页。
+支持 URL 安装的侧载工具（LiveContainer / SideStore / Sideloadly 等）：在
+[Releases](https://github.com/upchr/meow/releases/latest) 里右键复制 `Meow-unsigned-*.ipa`
+的下载地址（形如 `…/releases/latest/download/Meow-unsigned-*.ipa`，把 `*` 换成当次版本号），
+填进侧载工具即可。
+想先下载再导入也行，文件在同一页。
 
 1. 按 [LiveContainer / SideStore 侧载教程](https://livecontainer.github.io/zh-CN/docs/installation/lc_sidestore)
    装：一个免费 Apple ID 就够，签名 **7 天有效**，过期重签；付费开发者账号可到 1 年。
