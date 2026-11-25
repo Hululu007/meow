@@ -1062,8 +1062,32 @@ try {
     $relsTmp = Join-Path ([IO.Path]::GetTempPath()) ("meow-rels-" + [guid]::NewGuid().ToString('N') + '.json')
     [IO.File]::WriteAllText($relsTmp, (@($allRels) | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 
-    & (Join-Path $PSScriptRoot 'gen-altstore-source.ps1') -ReleasesJson $relsTmp -OutFile $altstoreFile -Repo $Repo -RepoRoot $repoRoot
+    # 测试包的构建 metadata（publish_test 上传的 Meow-unsigned-test.json）：
+    # 给生成器提供测试 IPA 里真实的版本号，否则 SideStore 默认的版本校验会拦下。
+    # 取不到就传空 —— 生成器宁可不输出 nightly，也不写一个装不上的条目。
+    $testMetaPath = ''
+    try {
+        $testRel = Get-GhApi "/repos/$Repo/releases/tags/ipa-test"
+        $testMetaAsset = @($testRel.assets) | Where-Object { $_.name -eq 'Meow-unsigned-test.json' } | Select-Object -First 1
+        if ($testMetaAsset) {
+            $testMetaPath = Join-Path ([IO.Path]::GetTempPath()) ("meow-testmeta-" + [guid]::NewGuid().ToString('N') + '.json')
+            $hdrM = @('-H', 'Accept: application/octet-stream')
+            $tokM = $env:GITHUB_TOKEN
+            if (-not $tokM) { try { $tokM = (& gh auth token 2>$null).Trim() } catch { } }
+            if ($tokM) { $hdrM = @('-H', "Authorization: Bearer $tokM") + $hdrM }
+            & $CurlBin -s -L --fail --max-time 60 @hdrM -o $testMetaPath "https://api.github.com/repos/$Repo/releases/assets/$($testMetaAsset.id)" 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $testMetaPath)) {
+                Remove-Item $testMetaPath -Force -ErrorAction SilentlyContinue
+                $testMetaPath = ''
+            }
+        }
+    } catch {
+        $testMetaPath = ''
+    }
+
+    & (Join-Path $PSScriptRoot 'gen-altstore-source.ps1') -ReleasesJson $relsTmp -OutFile $altstoreFile -Repo $Repo -RepoRoot $repoRoot -TestMetaJson $testMetaPath
     Remove-Item $relsTmp -Force -ErrorAction SilentlyContinue
+    Remove-Item $testMetaPath -Force -ErrorAction SilentlyContinue
     $altstoreOk = $true
 } catch {
     Write-Host "  ! 侧载商店源清单生成失败（不阻塞 packages.json）：$($_.Exception.Message)" -ForegroundColor DarkYellow

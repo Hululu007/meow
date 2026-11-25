@@ -20,7 +20,10 @@ param(
     [string]$RepoRoot = '',
     # 源清单自身的公开地址（SideStore 里填这个）
     [string]$SourceURL = '',
-    [string]$MinOSVersion = '15.0'
+    [string]$MinOSVersion = '15.0',
+    # 测试包的真实构建元数据（publish_test 上传的 Meow-unsigned-test.json）。
+    # 没有它就不输出 nightly 条目 —— 见下面「测试包」段的原因。
+    [string]$TestMetaJson = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,30 +89,39 @@ $entries = @($byVer.Values | Sort-Object -Property { [version]$_.version } -Desc
 # 它不能进 stable 轨道（会把测试包推给所有正式用户），SideStore 的机制是
 # v2 源的 releaseChannels：设置里开「Beta Updates」并选 nightly 才可见。
 #
-# ★ 版本号必须 >= stable 的最新版，否则 SideStore 的 betaReleases 会整体丢弃
-#   （StoreApp.swift: betaSemVer >= stableSemVer 才用 beta 轨道）。
-#   测试包的 Info.plist 版本通常等于仓库当前版本（如 1.2.22），与 stable 相等时
-#   beta 轨道可用；但它每次覆盖同一链接、版本号不变，装完不会提示"更新"。
-#   所以这里用「下一补丁版 + -nightly」：既 >= stable，又能让每次覆盖后的
-#   测试包在已安装 nightly 的设备上显示为一次更新。
+# ★ 版本号必须用测试 IPA 里真实的 CFBundleShortVersionString：
+#   SideStore 的 VerifyAppOperation 默认开启版本校验
+#   （UserDefaults.isAppVersionVerificationEnabled 默认 true），源里写什么，
+#   下载完就要求 IPA 里的版本完全一致 —— 编一个号会直接 mismatchedVersion。
+#   所以版本/大小/日期从 publish_test 上传的 Meow-unsigned-test.json 读取；
+#   没有 metadata 的旧测试包宁可不输出 nightly，也不写一个装不上的条目。
+#
+# ★ 也不写 sha256：固定链接每次覆盖，写死的哈希下次构建必然不一致
+#   （isChecksumVerificationEnabled 默认 true，有哈希就比对）。
 $testEntry = $null
+$testMeta = $null
+if ($TestMetaJson -and (Test-Path -LiteralPath $TestMetaJson)) {
+    try {
+        $testMeta = [IO.File]::ReadAllText($TestMetaJson, [Text.UTF8Encoding]::new($false)) | ConvertFrom-Json
+    } catch {
+        Write-Host "  ! 测试包 metadata 解析失败：$($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+}
 foreach ($r in $rels) {
     foreach ($a in @($r.assets)) {
         if ($a.name -eq 'Meow-unsigned-test.ipa') {
+            if (-not $testMeta -or -not ([string]$testMeta.version)) { continue }
             $when = if ($r.updated_at) { [string]$r.updated_at } elseif ($r.published_at) { [string]$r.published_at } else { '' }
             if (-not $when) { continue }
             $pub = [datetimeoffset]::Parse($when)
-            $sha = ''
-            if ($a.digest -and ([string]$a.digest) -match '^sha256:([0-9a-fA-F]{64})$') { $sha = $Matches[1] }
-            $next = [version]$entries[0].version
-            $nextVer = "{0}.{1}.{2}-nightly" -f $next.Major, $next.Minor, ($next.Build + 1)
+            $metaDate = if ($testMeta.date) { ([datetimeoffset]::Parse([string]$testMeta.date)).ToString('yyyy-MM-dd') } else { $pub.ToString('yyyy-MM-dd') }
+            $metaSize = if ($testMeta.size) { [int64]$testMeta.size } else { [int64]$a.size }
             $cand = [pscustomobject]@{
-                version   = $nextVer
+                version   = [string]$testMeta.version
                 published = $pub
-                date      = $pub.ToString('yyyy-MM-dd')
+                date      = $metaDate
                 url       = "https://github.com/$Repo/releases/download/$($r.tag_name)/$($a.name)"
-                size      = [int64]$a.size
-                sha256    = $sha
+                size      = $metaSize
             }
             if (-not $testEntry -or $testEntry.published -lt $cand.published) { $testEntry = $cand }
         }
@@ -117,6 +129,12 @@ foreach ($r in $rels) {
 }
 if ($testEntry) {
     Write-Host ("  · 测试包：{0}（{1}，{2} 字节）" -f $testEntry.version, $testEntry.date, $testEntry.size) -ForegroundColor DarkGray
+    # beta 轨道要求 betaSemVer >= stableSemVer，否则 SideStore 直接丢弃 nightly。
+    try {
+        if ([version]($testEntry.version -replace '-.*$', '') -lt [version]$entries[0].version) {
+            Write-Host "  ! 测试包版本低于 stable 最新版，SideStore 的 nightly 轨道会不可见（重新 dispatch 测试包）" -ForegroundColor DarkYellow
+        }
+    } catch { }
 }
 
 # ---------------------------------------------------------------- 组装 JSON
