@@ -455,13 +455,13 @@ jobs:
 
             | 文件 | 说明 |
             |---|---|
-            | `meow-TV-${{ needs.plan.outputs.version }}.apk` | TV 空壳 |
-            | `tv-node-*.apk` | TV 运行时模块（独立版本线，版本见文件名） |
-            | `meow-setup-${{ needs.plan.outputs.version }}.exe` / `meow-bare-${{ needs.plan.outputs.version }}.exe` | PC 空壳 |
-            | `apiserver-${{ needs.plan.outputs.version }}.zip` | PC 后端插件 |
-            | `drpy-*.zip` / `danmu-api-*.zip` / `node-*.zip` / `ffmpeg-*.zip` | PC 插件（独立版本线，版本见文件名） |
-            | `meow_${{ needs.plan.outputs.version }}_x86.fpk` / `meow_${{ needs.plan.outputs.version }}_arm.fpk` | fnOS 套件（x86 / arm） |
-            | `Meow-unsigned-${{ needs.plan.outputs.version }}.ipa` | iOS 空壳（未签名，需自签侧载 / LiveContainer） |
+            | `meow-TV-*.apk` | TV 空壳 |
+            | `tv-node-*.apk` | TV 运行时模块 |
+            | `meow-setup-*.exe` / `meow-bare-*.exe` | PC 空壳 |
+            | `apiserver-*.zip` | PC 后端插件 |
+            | `drpy-*.zip` / `danmu-api-*.zip` / `node-*.zip` / `ffmpeg-*.zip` | PC 插件 |
+            | `meow_*.fpk` | fnOS 套件（x86 / arm） |
+            | `Meow-unsigned-*.ipa` | iOS 空壳（未签名，需自签侧载 / LiveContainer） |
             | `packages.json` | 客户端更新清单 |
             | `SHA256SUMS.txt` | 校验 |
 
