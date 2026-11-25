@@ -194,7 +194,7 @@ CPython→WASM（[pyodide/pyodide](https://github.com/pyodide/pyodide)）理论�
 | # | 步骤 | 落点 |
 |---|---|---|
 | 0 | 前置：合并 `feat/loader-probe`（pyrt 契约来源）到 main | —— |
-| 1 | 量 drpy 依赖体积，决定随包 / 精简 / 远端 | `server/drpy/package.json` |
+| 1 | ✅ 量 drpy 依赖并裁定随包（实测见 §7.1） | `server/drpy/package.json` |
 | 2 | CI 备料脚本：Python-Apple-support + stdlib + 静态 OpenSSL + lxml/pycryptodome | `client/apps/ios/scripts/prepare-python-runtime.sh`（新增） |
 | 3 | XcodeGen 资源 + CI 步骤 + 体积门禁 | `client/apps/ios/project.yml`、`.github/workflows/_ios.yml` |
 | 4 | 原生：CPython 线程 + 端口 + 健康检查 | `client/apps/ios/Meow/PythonRuntime.swift`（新增） |
@@ -203,6 +203,24 @@ CPython→WASM（[pyodide/pyodide](https://github.com/pyodide/pyodide)）理论�
 | 7 | pyrt 脚本裁剪（去多进程/venv/转发分支） | `server/pyrt/pyrt.py`（iOS 专用薄壳） |
 | 8 | 真机验收（§6 五项） | —— |
 | 9 | 出包 + 体积对比 + 冒烟 | `_ios.yml` |
+
+### 7.1 实测（2026-11-25，第一刀已落地）
+
+| 项 | 实测 |
+|---|---|
+| `npm ci --omit=dev` 后 node_modules | **19MB**（32 包；大头是 web-streams-polyfill 8.8MB + undici 2.1MB） |
+| undici 来源 | **cheerio@1.2** 的依赖（不是 drpy 直接用）→ iOS 上必须桩掉：JIT-less V8 加载真实 undici 抛 `WebAssembly is not defined` 会带走 App |
+| 裁剪后载荷 | **7.4MB**（undici 桩 + 删 `*.map` + 删 web-streams-polyfill 的 es6/es2018/ponyfill 分发 + 删 tests/docs） |
+| 本地冒烟 | 载荷 `node server.js` → `/health` `{"ok":true,...,"workers":12}`；`npm test` 8/8（脚本加载/home/category/search/req/cheerio.jinja2/vod_id） |
+| 合并入口冒烟 | 包装层 `require(MEOW_DRPY_DIR + '/server.js')` → drpy 起在 19330，`/health` ok（与弹幕同进程可行） |
+| 随包裁定 | **随包**（7.4MB）；`jsRuntime` 只在 key 为空时写 `http://127.0.0.1:19330`，不覆盖用户手配的远端 |
+
+已落地文件：`client/apps/ios/scripts/prepare-drpy-payload.sh`、`project.yml` 的 `build/drpy` 资源、
+`NodeBridge.swift` 的 `installDrpyIfNeeded()` / `writeJsRuntimeIfAbsent()` / 入口包装拉起 drpy、
+`_ios.yml` 的缓存键与体积门禁（26MB 上限）。
+
+仍未验证（要真机）：nodejs-mobile 对 `worker_threads` + `SharedArrayBuffer/Atomics` 的支持
+（drpy 的 sync-fetch 与 worker 池依赖它）——不通过时降级方案是把 POOL_SIZE 设为进程内串行。
 
 ---
 

@@ -27,6 +27,10 @@ enum NodeBridge {
     private static func node_start(_ argc: Int32,
                                    _ argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32
 
+    /// JS 源运行时（drpy）端口。与弹幕端口分开：宿主用 `GET {jsRuntime}/health`
+    /// 探活（见 ApiServer 的 scriptRuntimeUsable），不能和弹幕的根路径混用。
+    private static let drpyPort = 19330
+
     /// 在后台起 node；只生效一次。
     static func startIfPossible() {
         DispatchQueue.global(qos: .utility).async {
@@ -98,6 +102,17 @@ enum NodeBridge {
 
     private static func bootstrap() {
         guard let dir = installPayloadIfNeeded() else { return }
+        /*
+         * JS 源载荷（drpy）：与弹幕在**同一个 node 进程**里跑 —— nodejs-mobile
+         * 一个进程只能 node_start 一次，入口包装里串起来（见 writeEntryWrapper）。
+         * 装不起来只记日志：弹幕照旧，JS 源退回"jsRuntime 未配置"。
+         */
+        if let drpy = installDrpyIfNeeded() {
+            setenv("MEOW_DRPY_DIR", drpy.path, 1)
+            setenv("DRPY_PORT", "\(drpyPort)", 1)
+            setenv("DRPY_BIND", "127.0.0.1", 1)
+            writeJsRuntimeIfAbsent()
+        }
         let script = dir.appendingPathComponent("danmu_api/server.js").path
         guard FileManager.default.fileExists(atPath: script) else {
             LaunchLog.write("[node] server.js missing")
@@ -199,6 +214,17 @@ enum NodeBridge {
           } catch (e) {
             LOG('server import failed', e);
           }
+          /*
+           * JS 源运行时（drpy）：同一进程第二个 HTTP 监听。端口/绑定由 Swift 侧
+           * 经 env 传入；用绝对路径 require（wrapper 在 danmu 载荷目录，drpy 在
+           * Documents/drpy）。失败只记日志，不能带走弹幕，更不能带走 App。
+           */
+          try {
+            const d = process.env.MEOW_DRPY_DIR;
+            if (d) { require(d + '/server.js'); LOG('drpy started'); }
+          } catch (e) {
+            LOG('drpy import failed', e);
+          }
         })();
         """
         let f = dir.appendingPathComponent("meow-entry.cjs")
@@ -235,6 +261,59 @@ enum NodeBridge {
         } catch {
             LaunchLog.write("[node] payload copy failed: \(error.localizedDescription)")
             return nil
+        }
+    }
+
+    /// 包内 drpy 载荷 → Documents/drpy（版本变了重拷，与弹幕同语义）。
+    private static func installDrpyIfNeeded() -> URL? {
+        let fm = FileManager.default
+        guard let bundled = Bundle.main.resourceURL?.appendingPathComponent("drpy"),
+              fm.fileExists(atPath: bundled.appendingPathComponent("server.js").path) else {
+            LaunchLog.write("[node] drpy payload not bundled; js sources stay off")
+            return nil
+        }
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dest = docs.appendingPathComponent("drpy", isDirectory: true)
+        let want = version(at: bundled)
+        let have = version(at: dest)
+        if !want.isEmpty, want == have,
+           fm.fileExists(atPath: dest.appendingPathComponent("server.js").path) {
+            return dest
+        }
+        do {
+            try? fm.removeItem(at: dest)
+            try fm.copyItem(at: bundled, to: dest)
+            LaunchLog.write("[node] drpy installed \(want)")
+            return dest
+        } catch {
+            LaunchLog.write("[node] drpy copy failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// 把端内 drpy 地址写进 `policy.json` 的 `jsRuntime`（宿主只认这个键）。
+    ///
+    /// ★ 只在键为空时写：用户手配的远端 pyrt/drpy 不能被端内地址盖掉；
+    ///   也绝不整文件覆盖 —— policy.json 还有 authToken / corsOrigins / 缓存配额。
+    private static func writeJsRuntimeIfAbsent() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let f = docs.appendingPathComponent("gateway/policy.json")
+        var obj: [String: Any] = [:]
+        if let data = try? Data(contentsOf: f),
+           let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            obj = j
+        }
+        if let cur = obj["jsRuntime"] as? String, !cur.trimmingCharacters(in: .whitespaces).isEmpty {
+            LaunchLog.write("[node] jsRuntime already set; keep \(cur)")
+            return
+        }
+        obj["jsRuntime"] = "http://127.0.0.1:\(drpyPort)"
+        do {
+            let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: f, options: .atomic)
+            LaunchLog.write("[node] jsRuntime injected (drpy \(drpyPort))")
+        } catch {
+            LaunchLog.write("[node] write policy.json failed: \(error.localizedDescription)")
         }
     }
 
