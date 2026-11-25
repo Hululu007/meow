@@ -83,12 +83,27 @@ describe('回前台续播 / 双击暂停', () => {
     expect(tick.slice(0, 400)).toContain('onRestoreTick()')
   })
 
-  it('用户动手（点按/暂停）立刻关掉恢复窗口', () => {
+  it('恢复窗口只在真 seek / 用户暂停时关闭，点屏不关', () => {
     expect(player).toContain('function clearRestoreWindow()')
     const down = player.slice(player.indexOf('function onStagePointerDown('))
-    expect(down.slice(0, 300)).toContain('clearRestoreWindow()')
+    expect(down.slice(0, 400)).not.toContain('clearRestoreWindow()')
+    const bar = player.slice(player.indexOf('function onBarDown('))
+    expect(bar.slice(0, 300)).toContain('clearRestoreWindow()')
     const toggle = player.slice(player.indexOf('function toggle()'), player.indexOf('function toggle()') + 1300)
     expect(toggle).toContain('clearRestoreWindow()')
+  })
+
+  it('恢复目标取 max(current, lastGoodPos)：内核回退到后台起点也能纠回', () => {
+    const fn = player.slice(player.indexOf('function beginRestoreWindow('))
+    expect(fn).toContain('Math.max(restorePos, posBeforeHide, lastGoodPos, el?.currentTime || 0)')
+  })
+
+  it('双击检测走 pointerdown：切回前台 click 合成会延迟/丢失', () => {
+    expect(player).toContain('function maybeTouchPointerDouble(')
+    const down = player.slice(player.indexOf('function onStagePointerDown('))
+    expect(down.slice(0, 400)).toContain('maybeTouchPointerDouble(e)')
+    // click 侧要吞掉 pointer-dbl 带来的迟到 click
+    expect(player).toContain('Date.now() - pointerDblAt < 700')
   })
 
   it('恢复窗口不因"当前位置看起来正常"提前关闭（内核会稍后才重置）', () => {

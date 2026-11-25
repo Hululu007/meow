@@ -2507,6 +2507,51 @@ const DOUBLE_TAP_SLOP = 48
 /** 自识别双击刚执行的时刻：随后补发的原生 dblclick 要吞掉 */
 let syntheticDblAt = 0
 
+/*
+ * ★ pointerdown 级双击（2026-11-25 真机日志）：切回前台后 WKWebView 的
+ * click 合成会被系统/转屏动画拖慢或吞掉，日志里一次"双击"的两条 click
+ * 间隔 968ms、1131ms，永远落不进 320ms 窗口 → 首次切回怎么点都不暂停。
+ * pointerdown 是触摸原始事件，不受 click 合成影响；在第二下按下时就执行
+ * 双击动作，click 侧用 pointerDblAt 全部吞掉。
+ */
+let lastPTapAt = 0
+let lastPTapX = 0
+let lastPTapY = 0
+let pointerDblAt = 0
+/** 从后台回到前台的时刻：用于确认"首击是否被系统吞掉"的诊断日志 */
+let resumedAt = 0
+
+function maybeTouchPointerDouble(e: PointerEvent) {
+  if (!isMobileForm() || isTvShell()) return
+  if (e.pointerType === 'mouse') return
+  const now = Date.now()
+  const near =
+    lastPTapAt > 0 &&
+    now - lastPTapAt <= 420 &&
+    Math.abs(e.clientX - lastPTapX) <= DOUBLE_TAP_SLOP &&
+    Math.abs(e.clientY - lastPTapY) <= DOUBLE_TAP_SLOP
+  if (resumedAt && now - resumedAt < 6000) {
+    bgLog(
+      `EV pdown dt=${lastPTapAt ? now - lastPTapAt : -1} near=${near} ` +
+      `x=${Math.round(e.clientX)} y=${Math.round(e.clientY)}`,
+    )
+  }
+  if (!near) {
+    lastPTapAt = now
+    lastPTapX = e.clientX
+    lastPTapY = e.clientY
+    return
+  }
+  // 第二下按下 = 双击：立刻执行，别等 click（可能几百毫秒后才来或不来）
+  lastPTapAt = 0
+  pointerDblAt = now
+  syntheticDblAt = now
+  clearTimeout(clickTimer)
+  suppressNextClick()
+  bgLog(`EV pointer-dbl x=${Math.round(e.clientX)} y=${Math.round(e.clientY)}`)
+  touchDoubleTapAction(e as unknown as MouseEvent)
+}
+
 
 /** 标记"接下来那一次 click 不算单击"，400ms 后自动失效 */
 function suppressNextClick() {
@@ -2534,6 +2579,11 @@ function onStageClick(e: MouseEvent) {
   if (suppressClick) {
     suppressClick = false
     clearTimeout(suppressTimer)
+    return
+  }
+  // pointerdown 级双击已经执行过动作：它带来的 click（可能迟到几百毫秒）全部吞掉
+  if (pointerDblAt && Date.now() - pointerDblAt < 700) {
+    lastTapAt = 0
     return
   }
   /*
@@ -2810,13 +2860,17 @@ let longPressTimer: number | undefined
 let pressStart = { x: 0, y: 0 }
 
 function onStagePointerDown(e: PointerEvent) {
-  // 用户开始操作：回前台的进度恢复窗口失效（他可能就是要往回拖）
-  clearRestoreWindow()
   // 锁定状态：不记快照、不起长按/手势，点屏只闪解锁按钮
   if (locked.value) {
     flashLockHint()
     return
   }
+  /*
+   * ★ 这里**不能**清恢复窗口：用户切回来第一下往往是点屏幕想唤出控制栏，
+   *   清掉的话"内核稍后回退到后台起点"就没人纠正（2026-11-25 真机日志：
+   *   窗口正好被这一下点按关掉）。真正的用户 seek（进度条/横滑）才清。
+   */
+  maybeTouchPointerDouble(e)
   // ★ 先取"点击前"快照再做任何判断：onStageClick 用它决定单击是呼出还是收起。
   //   pointerdown 一定早于浏览器在 pointerup 后补发的合成 mousemove（见 pressVisible）。
   pressVisible = showCtrl.value
@@ -3123,6 +3177,8 @@ function endHseek(commit: boolean) {
   // 长拖会超过 engage 时的 400ms 抑制窗，松手前必须再压一次 click
   suppressNextClick()
   if (Math.abs(delta) < 0.5) return
+  // 用户横滑 seek 是明确的操作：回前台的自动恢复窗口失效
+  clearRestoreWindow()
   seekTo(hseek.target)
   // 与按键 seek 同款中央提示，松手后给一次"跳到了哪"的确认
   flashSeekHint(Math.round(delta))
@@ -3797,6 +3853,8 @@ function onBarLeave() {
 /** 按下即开始拖：只更新视觉位置，不 seek */
 function onBarDown(e: PointerEvent) {
   if (!duration.value) return
+  // 用户要手动拖进度：回前台的自动恢复窗口失效
+  clearRestoreWindow()
   const bar = e.currentTarget as HTMLElement
   bar.setPointerCapture?.(e.pointerId)
   const t = timeFromEvent(e)
@@ -6976,10 +7034,17 @@ function clearRestoreWindow() {
 function beginRestoreWindow(reason: string) {
   if (!isMobileForm() || isTvShell()) return
   if (posBeforeHide <= 5) return
-  restorePos = posBeforeHide
-  restoreUntil = Date.now() + 15_000
-  bgLog(`restore window open(${reason}) pos=${restorePos.toFixed(1)}`)
   const el = video.value
+  /*
+   * ★ 目标取各处见过的最大位置（2026-11-25 日志实锤）：
+   *   hidden 时 122.6 → 回前台 visible 时已播到 129.1 → ios-active 时内核
+   *   把 currentTime 回退到 122.6。只按 posBeforeHide 设目标，正好等于回退后
+   *   的位置，"恢复"等于没恢复。这里把可见那一刻的 currentTime / lastGoodPos
+   *   也算进去；后续再 open 只会抬高，不会降低。
+   */
+  restorePos = Math.max(restorePos, posBeforeHide, lastGoodPos, el?.currentTime || 0)
+  restoreUntil = Date.now() + 15_000
+  bgLog(`restore window open(${reason}) pos=${restorePos.toFixed(1)} ct=${(el?.currentTime || 0).toFixed(1)}`)
   if (el) applyRestoreSeek(el)
 }
 
@@ -7038,6 +7103,7 @@ function onVisibilityChange() {
       `userPausedAgo=${userPausedAt ? Date.now() - userPausedAt : -1}`,
     )
     bgKeepPlaying = false
+    resumedAt = Date.now()
     resumeAfterVisibility()
     /*
      * 回前台补一次全屏恢复（2026-11-25 用户报「切后台回来丢全屏」）：
@@ -7128,6 +7194,7 @@ function onIosActive() {
     `playingBeforeHide=${playingBeforeHide} userPausedAgo=${userPausedAt ? Date.now() - userPausedAt : -1}`,
   )
   bgKeepPlaying = false
+  resumedAt = Date.now()
   resumeAfterVisibility('ios-active')
   if (!isMobileForm()) return
   reapplyMobileOrientation()
