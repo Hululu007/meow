@@ -10,8 +10,8 @@ struct MeowApp: App {
         LaunchLog.write("app init")
         // 后台播放（2026-11-25 用户要求「切后台还能播」）：
         // 默认 category 是 soloAmbient，切后台/锁屏会被系统停音。这里只设 category，
-        // 真正开播时由前端调 meowIos.setAudioSession(true) 再 setActive
-        //（启动就 setActive 会抢走音频焦点，用户开着音乐进 App 就被打断）。
+        // 会话激活交给 scenePhase == .background 且页面报告在播时才做
+        //（见 AudioSession：在 play 路径上 setActive 会造成「播放 1s 自动暂停」）。
         AudioSession.configure()
     }
 
@@ -41,6 +41,13 @@ struct MeowApp: App {
                                 "window.__meowIosActive&&window.__meowIosActive()",
                                 completionHandler: nil)
                         }
+                    } else if phase == .background {
+                        /*
+                         * 进后台才激活音频会话：前台播放路径一律不碰（上一版在
+                         * 每次 play 里 setActive 导致「播放 1s 自动暂停」）。
+                         * 页面通过 meowIos.setPlaying 报告过"在播"才会真的激活。
+                         */
+                        AudioSession.appDidEnterBackground()
                     }
                 }
                 .preferredColorScheme(.dark)

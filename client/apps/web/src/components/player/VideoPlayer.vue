@@ -2401,10 +2401,17 @@ function stopMedia() {
 function toggle() {
   const v = video.value
   if (!v) return
-  if (v.paused) safePlay(v)
-  else {
+  if (v.paused) {
+    userPausedAt = 0
+    safePlay(v)
+  } else {
     // 用户主动暂停：取消还没执行的"补播"，否则 800ms 后会被自动播回去。
     autoPlayPending = false
+    // ★ 回前台的续播重试同样要撤（2026-11-25 真机：切后台用系统播放条恢复，
+    //   回前台后双击暂停会被 250ms/1.2s 的重试拉回播放，表现成"双击不能暂停"）
+    userPausedAt = Date.now()
+    bgKeepPlaying = false
+    cancelResumeTimers()
     v.pause()
   }
 }
@@ -6227,6 +6234,9 @@ onMounted(() => {
   }
   v?.addEventListener('play', () => {
     playing.value = true
+    userPausedAt = 0
+    // 原生侧记"现在在播"：切后台时只有这个状态为真才激活 AVAudioSession
+    notifyIosPlaying(true)
     dm.value?.start()
     dm.value?.sync(v.currentTime)
     wake()
@@ -6254,6 +6264,13 @@ onMounted(() => {
     //   实际代码没有清——起播 800ms 内用户暂停时，定时器到点会把它
     //   拉回播放（偶发，取决于 hls 时序）。
     autoPlayPending = false
+    /*
+     * iOS 切后台的一瞬，WebKit 会先派一次 pause（不是用户点的）。
+     * 只要"继续播"的意图还在，就把媒体拉回来（见 maybeKeepPlayingInBackground）；
+     * 前台暂停才告诉原生"现在没在播"，避免回后台时白激活一次音频会话。
+     */
+    if (document.visibilityState !== 'hidden') notifyIosPlaying(false)
+    else handleBackgroundPause()
     // 暂停时保持控制栏可见（用户暂停多半是要选集/换线）。
     // 收起的时机交给"最后一次按键后 5 秒"的定时器 —— 见 wake()。
     // ★ 这里不能只 clearTimeout 不重排：原来就是清掉计时器后什么也不做，
@@ -6671,6 +6688,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('pagehide', onPageHide)
   document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('meow:ios-active', onIosActive)
+  // 组件销毁后补播定时器仍会触发 → 用户已经离开播放页还被拉起来
+  cancelResumeTimers()
+  notifyIosPlaying(false)
   {
     const w = window as unknown as { __meowIosActive?: () => void }
     if (w.__meowIosActive === iosActiveBridge) w.__meowIosActive = undefined
@@ -6724,6 +6744,102 @@ let lastPlayedAt = 0
  */
 let posBeforeHide = 0
 
+/**
+ * 用户最近一次**主动**暂停的时间戳（毫秒）。
+ *
+ * <p>为什么需要：iOS 切后台时 WebKit 自己也会派 `pause`，和"用户点了暂停"
+ * 完全同形。用时间窗区分——`toggle()` / 对外 `pause()` 里写这个值，后台补播
+ * （`maybeKeepPlayingInBackground`）与回前台续播都要放过它，否则用户刚暂停
+ * 就被自动拉回播放（2026-11-25 真机：回前台双击暂停被重试拉回，表现成"双击
+ * 不能暂停"）。
+ */
+let userPausedAt = 0
+/** 移动端切后台时"用户希望继续播"（后台保播的意图位，回前台清除） */
+let bgKeepPlaying = false
+/** 进入 hidden 的时间戳：系统暂停只发生在切后台的头几秒 */
+let hiddenAt = 0
+/** resumeAfterVisibility 排的补播定时器（用户暂停时一次性撤掉） */
+const resumeTimers: number[] = []
+
+function cancelResumeTimers() {
+  for (const id of resumeTimers.splice(0)) window.clearTimeout(id)
+}
+
+/**
+ * 后台期间的 pause：区分"系统切后台时那一停"和"用户后来用锁屏/播放条暂停"。
+ *
+ * <p>3s 窗口内 = 系统停的，补播；窗口外 = 用户主动停的，尊重它并把续播意图清掉
+ * （否则回前台会把他刚暂停的视频又播起来）。
+ */
+function handleBackgroundPause() {
+  if (!isMobileForm() || isTvShell()) return
+  if (bgKeepPlaying && hiddenAt && Date.now() - hiddenAt < 3000) {
+    maybeKeepPlayingInBackground()
+    return
+  }
+  bgKeepPlaying = false
+  playingBeforeHide = false
+  notifyIosPlaying(false)
+}
+
+/** 告诉 iOS 壳"页面现在是否在播"（只有 true 时切后台才激活音频会话）。 */
+function notifyIosPlaying(on: boolean) {
+  const ios = (window as unknown as { meowIos?: { setPlaying?: (v: boolean) => void } }).meowIos
+  if (!ios || typeof ios.setPlaying !== 'function') return
+  try {
+    ios.setPlaying(on)
+  } catch {
+    /* 桥不存在/壳版本旧：忽略 */
+  }
+}
+
+/**
+ * iOS 切后台瞬间系统会派 `pause`（此时 visibilityState 已经是 hidden）。
+ *
+ * <p>只要有"继续播"的意图（切后台那一刻确实在播、且不是用户点的暂停），
+ * 就立刻把媒体拉回来。WKWebView 不会替我们这么做：声明了
+ * `UIBackgroundModes=audio` 只是允许后台出声，媒体被暂停后需要宿主动作；
+ * 原生侧在 scenePhase=.background 时激活 AVAudioSession（AudioSession.swift），
+ * 这里负责"重新 play"。两次（0/600ms）是因为会话激活与内核挂起恢复有先后。
+ */
+function maybeKeepPlayingInBackground() {
+  if (!isMobileForm() || isTvShell()) return
+  if (!bgKeepPlaying) return
+  // 只处理切后台头 3s 的系统暂停；之后用户用锁屏/播放条暂停的不要拉回
+  if (!hiddenAt || Date.now() - hiddenAt > 3000) return
+  if (userPausedAt && Date.now() - userPausedAt < 1500) return
+  const replay = (delay: number) => {
+    const id = window.setTimeout(() => {
+      const el = video.value
+      if (!el || el.ended || !bgKeepPlaying) return
+      if (document.visibilityState !== 'hidden') return
+      if (!el.paused) return
+      safePlay(el)
+    }, delay)
+    resumeTimers.push(id)
+  }
+  replay(0)
+  replay(600)
+}
+
+/**
+ * 回前台把进度拉回切后台时的位置。
+ *
+ * <p>判据只用"明显更小"（>5s）：后台一直在播时 currentTime 只会更大，不会倒退。
+ * 不再要求 playingBeforeHide —— 用户可能在后台用系统播放条暂停过，
+ * 进度同样不该丢（2026-11-25 真机反馈"进度无法带回"）。
+ */
+function restorePositionFromHide(el: HTMLVideoElement) {
+  if (!isMobileForm() || isTvShell()) return
+  if (posBeforeHide <= 5) return
+  if (el.currentTime >= posBeforeHide - 5) return
+  try {
+    el.currentTime = posBeforeHide
+  } catch {
+    /* 流不允许 seek 就算了，至少别停在 0 */
+  }
+}
+
 function pauseMediaOnHide() {
   const v = video.value
   playingBeforeHide = !!(v && !v.paused && !v.ended)
@@ -6734,6 +6850,7 @@ function pauseMediaOnHide() {
 
 function onVisibilityChange() {
   if (document.visibilityState !== 'hidden') {
+    bgKeepPlaying = false
     resumeAfterVisibility()
     /*
      * 回前台补一次全屏恢复（2026-11-25 用户报「切后台回来丢全屏」）：
@@ -6767,6 +6884,17 @@ function onVisibilityChange() {
       (!v.paused || Date.now() - lastPlayedAt < 3000)
     )
     posBeforeHide = v?.currentTime || 0
+    // 后台保播意图：只有"确实在播"才置位，用户自己暂停进后台的不要拉回来
+    bgKeepPlaying = playingBeforeHide
+    hiddenAt = Date.now()
+    if (bgKeepPlaying) {
+      notifyIosPlaying(true)
+      /*
+       * 有的系统版本**先暂停媒体再发 visibilitychange**：pause 事件已经错过，
+       * 这里补一次（此时 paused=true 也不能当"用户暂停"，用 userPausedAt 区分）。
+       */
+      if (v?.paused) maybeKeepPlayingInBackground()
+    }
     flushProgress(true)
     return
   }
@@ -6798,6 +6926,7 @@ function reapplyMobileOrientation() {
  * 两次调用都幂等：`playingBeforeHide` 已复位、pseudoFs 已为真时直接返回。
  */
 function onIosActive() {
+  bgKeepPlaying = false
   resumeAfterVisibility()
   if (!isMobileForm()) return
   reapplyMobileOrientation()
@@ -6811,9 +6940,19 @@ function iosActiveBridge() {
 
 /** 重新可见：把隐藏前正在播的续上（移动端后台保播 / TV 原生播放器返回） */
 function resumeAfterVisibility() {
-  if (!isTvEnv() && !(isMobileForm() && !isTvShell())) return
+  const mobile = isMobileForm() && !isTvShell()
+  if (!isTvEnv() && !mobile) return
+  const v0 = video.value
+  /*
+   * 位置兜底先做，且不依赖 playingBeforeHide：
+   * 用户可能在后台用系统播放条暂停/恢复过，回前台进度同样不能丢
+   *（2026-11-25 真机「进度无法带回」）。
+   */
+  if (v0 && !v0.ended) restorePositionFromHide(v0)
   if (!playingBeforeHide) return
   playingBeforeHide = false
+  // 用户刚点过暂停：不要再替他播
+  if (userPausedAt && Date.now() - userPausedAt < 2000) return
   const v = video.value
   if (!v || v.ended) return
   // 系统暂停期间取流管线可能停在半路：先推 hls，再补 play
@@ -6825,22 +6964,18 @@ function resumeAfterVisibility() {
     }
   }
   const retry = (delay: number) => {
-    window.setTimeout(() => {
+    const id = window.setTimeout(() => {
+      if (userPausedAt && Date.now() - userPausedAt < 2000) return
       const el = video.value
       if (!el || el.ended) return
       /*
        * 进度兜底（移动端）：WebView 被回收/流被重置后 currentTime 会从 0 开始，
        * 这时拉回切后台时的位置；后台一直播的话 currentTime 已经更大，不会倒退。
        */
-      if (isMobileForm() && !isTvShell() && posBeforeHide > 5 && el.currentTime < posBeforeHide - 5) {
-        try {
-          el.currentTime = posBeforeHide
-        } catch {
-          /* 流不允许 seek 就算了，至少把播放接上 */
-        }
-      }
+      if (isMobileForm() && !isTvShell()) restorePositionFromHide(el)
       if (el.paused) safePlay(el)
     }, delay)
+    resumeTimers.push(id)
   }
   // 250ms 一次不够：锁屏/系统状态栏切回来时 WebKit 接管媒体要更久，
   // 补一次 1.2s 的重试（仍是 paused 才播，不会打断已恢复的播放）。
@@ -7005,6 +7140,10 @@ function clearResume() {
 /** 暂停播放。投屏后本节要停，否则两边同时出声。 */
 function pause() {
   const v = video.value
+  // 外部（父组件/投屏）主动暂停：撤掉回前台续播的欠账，避免自己又播起来
+  userPausedAt = Date.now()
+  bgKeepPlaying = false
+  cancelResumeTimers()
   if (v && !v.paused) v.pause()
 }
 

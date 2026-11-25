@@ -220,6 +220,13 @@ final class Bootstrap: ObservableObject {
         js.append("window.meowIos.setVolume=function(v){try{"
                   + "window.webkit.messageHandlers.meowIos.postMessage({op:'volume',value:Number(v)||0})"
                   + "}catch(e){}}")
+        /*
+         * 播放状态桥：进后台时原生据此决定是否激活 AVAudioSession。
+         * 只报状态，不要求在 play 里 setActive —— 那会打断 WebKit（实测 1s 自停）。
+         */
+        js.append("window.meowIos.setPlaying=function(on){try{"
+                  + "window.webkit.messageHandlers.meowIos.postMessage({op:'playing',value:!!on})"
+                  + "}catch(e){}}")
         if base.isEmpty {
             js.append("localStorage.removeItem('meow.api');localStorage.removeItem('meow.api.scope')")
         } else {
