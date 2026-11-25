@@ -37,6 +37,13 @@ on:
       artifact:
         description: 产出的 artifact 名
         value: pc
+  # 手动入口：只出 artifact，不建 Release（与 _plugins / fpk / _docker 一致）
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（必填，如 1.2.22）'
+        required: true
+        type: string
 
 jobs:
   pc:
@@ -62,13 +69,21 @@ jobs:
         working-directory: client
         run: pnpm install --frozen-lockfile
 
-      # 前端 dist 由 release.yml 的 web job 统一构建（同一次 run 的 artifact）
+      # 前端 dist 由 release.yml 的 web job 统一构建（同一次 run 的 artifact）。
+      # 手动 dispatch 没有 artifact → 本地兜底构建（依赖已在上一/两步装好）。
       - name: 取前端 dist
+        id: webdist
         if: ${{ !inputs.warm_only }}
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: web-dist
           path: client/apps/web/dist
+
+      - name: 兜底构建前端（手动 dispatch 没有 web-dist artifact）
+        if: ${{ !inputs.warm_only && steps.webdist.outcome != 'success' }}
+        working-directory: client
+        run: pnpm --filter @meow/web build
 
       # warm 模式没有 web job 的 artifact：放一个占位 dist 让 tauri 的配置校验过，
       # 编译产物（deps + 本 crate）才是我们要缓存的东西。

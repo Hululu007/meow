@@ -28,6 +28,14 @@ on:
       artifact:
         description: 产出的 artifact 名
         value: tv-apk
+  # 手动入口：只出 APK artifact，不建 Release（与 _plugins / fpk / _docker 一致）。
+  # 签名材料走仓库 secrets（没有则按原有逻辑出 debug 签名包并告警）。
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（必填，如 1.2.22）'
+        required: true
+        type: string
 
 jobs:
   tv:
@@ -66,11 +74,33 @@ jobs:
 
       # 前端 dist 由 release.yml 的 web job 统一构建（同一次 run 的 artifact）。
       # 以前这里自己构建一份，三处重复且会漂移。
+      # 手动 dispatch 没有 artifact → 本地兜底构建。
       - name: 取前端 dist
+        id: webdist
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: web-dist
           path: client/apps/web/dist
+
+      - name: 准备 pnpm（兜底构建前端用）
+        if: steps.webdist.outcome != 'success'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - name: 准备 node（兜底构建前端用）
+        if: steps.webdist.outcome != 'success'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+      - name: 兜底构建前端（手动 dispatch 没有 web-dist artifact）
+        if: steps.webdist.outcome != 'success'
+        working-directory: client
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @meow/web build
 
       - name: 还原签名材料
         shell: bash
