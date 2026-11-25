@@ -169,7 +169,9 @@ if ($testEntry) {
         size                 = $testEntry.size
         minOSVersion         = $MinOSVersion
     }
-    if ($testEntry.sha256) { $testRelease.sha256 = $testEntry.sha256 }
+    # ★ 测试条目不带 sha256：链接固定、内容每次覆盖，写死的哈希在下次构建后
+    #   必然和下载到的包不一致（SideStore 的 VerifyAppOperation 有哈希就直接比对），
+    #   会把安装卡死在"校验失败"。size 只用于进度显示，过期不影响安装。
     $app.releaseChannels = @(
         [pscustomobject][ordered]@{ track = 'stable'; releases = $versions },
         [pscustomobject][ordered]@{ track = 'nightly'; releases = @([pscustomobject]$testRelease) }
