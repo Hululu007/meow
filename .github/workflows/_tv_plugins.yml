@@ -183,7 +183,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          D="release/runtime-node-${{ inputs.node_version }}"
+          # ★ 不能用 ${{ inputs.node_version }} 拼目录名：push 触发时 inputs 为空串，
+          #   D 变成 "release/runtime-node-"，ls 返回 2 被 set -e 直接终止 —— 而
+          #   `ls ... 2>/dev/null` 把原因也吞了，日志里只剩一句 "exit code 2"。
+          D=$(ls -d release/runtime-node-* 2>/dev/null | tail -1)
+          if [ -z "$D" ] || [ ! -d "$D" ]; then
+            echo "::error::没有 release/runtime-node-* 产物目录"; ls -la release || true; exit 1
+          fi
           for abi in arm64-v8a armeabi-v7a x86_64; do
             # 资产名带版本，所以用 glob 找（不能用固定名）
             apk=$(ls "$D"/tv-node-"$abi"-*.apk 2>/dev/null | head -1)
