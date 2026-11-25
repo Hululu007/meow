@@ -2,7 +2,7 @@
 # 准备 iOS 端内运行环境：
 #   1. 下载预编译的 OpenJDK 9 Zero for iOS arm64（Oct4Pie/lib-openjdk-9-ios）；
 #   2. 20 个静态库合并成 libOpenJDK.a（-all_load 链进主程序）；
-#   3. 裁掉 jmods/include/demo/.a，只留 lib/modules + conf + security + tzdb；
+#   3. 裁掉 jmods/include/demo/src.zip/.a，只留 lib/modules + conf + security + tzdb；
 #   4. 换掉包里 32 字节的占位 cacerts（换成构建机的真实信任库）；
 #   5. 把 web/dist 拷成 App 资源。
 #
@@ -102,11 +102,15 @@ mkdir -p "$OUT/jni"
 cp -R "$SRC/include" "$OUT/jni/include"
 
 # 运行期只需要 modules/conf/security/tzdb；静态库已经并进主程序。
+#
+# ★ src.zip 必须删（2026-11-25 实测 61,148,651 B，占 IPA 41%）：
+#   JDK 源码归档，只有 IDE/javac 查源码会用；运行时类全部在 lib/modules 里，
+#   全仓 Swift/Java/脚本没有任何引用。不删等于白带 61MB。
 find "$JHOME/lib" -name '*.a' -delete
 find "$JHOME/lib" -name '*.a.*' -delete
 find "$JHOME/lib" -name '*.symbols' -delete
 rm -rf "$JHOME/lib/server" "$JHOME/lib/jli" "$JHOME/lib/ct.sym" \
-       "$JHOME/lib/jrt-fs.jar" "$JHOME/jmods" "$JHOME/include" \
+       "$JHOME/lib/jrt-fs.jar" "$JHOME/lib/src.zip" "$JHOME/jmods" "$JHOME/include" \
        "$JHOME/demo" "$JHOME/man"
 find "$JHOME" -name '._*' -delete
 find "$JHOME" -name '.DS_Store' -delete

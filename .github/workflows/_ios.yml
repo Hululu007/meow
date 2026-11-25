@@ -220,6 +220,13 @@ jobs:
           (cd build/ipa && zip -qry "$GITHUB_WORKSPACE/artifacts/$IPA_NAME" Payload)
           ls -lh "$GITHUB_WORKSPACE/artifacts/$IPA_NAME"
           du -sh "$APP" || true
+          # ★ 门禁：JDK 源码包 src.zip 约 61MB（占 IPA 四成），运行期用不到，
+          #   prepare-runtime.sh 已经剔除；这里防止以后改脚本又把它带回来。
+          if unzip -l "$GITHUB_WORKSPACE/artifacts/$IPA_NAME" | grep -q 'openjdk/lib/src.zip'; then
+            echo "ERROR: openjdk/lib/src.zip 又被打进 IPA 了（应剔除，约 61MB）" >&2
+            exit 1
+          fi
+          echo "ipa bytes: $(stat -f%z "$GITHUB_WORKSPACE/artifacts/$IPA_NAME")"
           # 包里到底装了什么：条目数 / 体积 / 构建标识，闪退排查时先对这三个数
           echo "== bundle inventory =="
           find "$APP" -type f | wc -l
