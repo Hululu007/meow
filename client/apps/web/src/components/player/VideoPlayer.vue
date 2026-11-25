@@ -3658,12 +3658,18 @@ function applyVolumePct(pct: number, opts: { save?: boolean } = {}) {
   const p = Math.max(0, Math.min(100, Math.round(pct)))
   volume.value = p / 100
   const v = video.value
+  const sys = hasSystemVolume()
   if (v) {
-    v.volume = volume.value
+    /*
+     * 有系统音量桥时元素音量固定 1：TV 的 AudioManager 音量与元素音量是**相乘**的，
+     * 两边都写 pct 会让实际响度变成 pct²（50% 听着像 25%）。iOS 的元素音量本来
+     * 就被系统忽略，写 1 也无害。浏览器没有系统桥，仍然用元素音量。
+     */
+    v.volume = sys ? 1 : volume.value
     v.muted = p === 0
   }
   muted.value = p === 0
-  if (hasSystemVolume()) setSystemVolume(p)
+  if (sys) setSystemVolume(p)
   if (opts.save !== false) {
     // 高频项：静默落盘，不广播事件（否则会刷屏 WebDAV 同步）
     savePrefs({ volume: volume.value, muted: muted.value }, { silent: true })
