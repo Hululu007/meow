@@ -422,7 +422,7 @@ jobs:
             | `apiserver-*.zip` | PC 后端插件 |
             | `drpy-*.zip` / `danmu-api-*.zip` / `node-*.zip` / `ffmpeg-*.zip` | PC 插件 |
             | `meow_*.fpk` | fnOS 套件（x86 / arm） |
-            | `Meow-unsigned.ipa` | iOS 空壳（**未签名**，LiveContainer / 自签侧载；OpenJDK Zero 为 GPL-2.0+CE，不能上架） |
+            | `Meow-unsigned.ipa` | iOS 空壳（未签名，需自签侧载 / LiveContainer） |
             | `packages.json` | 客户端更新清单 |
             | `SHA256SUMS.txt` | 校验 |
 
