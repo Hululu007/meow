@@ -77,7 +77,10 @@ jobs:
           # ★ 必须带上 client/package.json：apiserver 的版本已改为运行时读 VERSION 文件，
           #   `server/host/src/**` 的 hash 不再随版本变；缓存单位是"打好包的 zip"（内含
           #   VERSION/manifest），键里不含版本就会在下一版复用旧 zip → 发出旧版本号。
-          key: plugins-${{ runner.os }}-${{ inputs.plugins_only || 'all' }}-${{ hashFiles('client/package.json', 'deploy/units.json', 'server/build-plugin.ps1', 'server/build-plugin-danmu.ps1', 'server/build-plugin-drpy.ps1', 'server/build-plugin-ffmpeg.ps1', 'server/plugin-manifests/**', 'server/host/src/**', 'server/drpy/**') }}
+          # ★ guard-libs / tools/guard（2026-11-25 补）：apiserver 插件会按平台裁剪
+          #   guard-libs（正则清单在 trim 脚本里、helper 源码在 tools/guard），漏进键里
+          #   会出现"改了裁剪清单却复用旧 zip"——和上面 manifests 那次同款事故。
+          key: plugins-${{ runner.os }}-${{ inputs.plugins_only || 'all' }}-${{ hashFiles('client/package.json', 'deploy/units.json', 'server/build-plugin.ps1', 'server/build-plugin-danmu.ps1', 'server/build-plugin-drpy.ps1', 'server/build-plugin-ffmpeg.ps1', 'server/plugin-manifests/**', 'server/host/src/**', 'server/host/guard-libs/**', 'server/tools/guard/**', 'server/drpy/**') }}
 
       # ── 静态载荷缓存（2026-11-13 新增）────────────────────────────────
       # 有两类"与代码无关、却每版都重新下载/重建"的东西，实测占本 job 一半：

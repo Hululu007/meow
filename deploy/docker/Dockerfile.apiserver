@@ -15,6 +15,19 @@ COPY server/host/libs ./libs
 COPY server/host/guard-libs ./host/guard-libs
 COPY server/tools/guard ./tools/guard
 RUN sh tools/guard/build-guard-helper.sh
+# guard-libs 只留本镜像架构的原生库（别的平台运行期永远不会加载，少 ~18MB）：
+# 规则见 server/tools/guard/trim-guard-libs.sh；探针确保本平台 .so 真能加载。
+# ★ _docker.yml 是 buildx 多架构（amd64 + arm64），必须按 TARGETARCH 选：
+#   写死 linux-x64 会让 arm64 镜像里放 x64 的 .so（能构建，一起守护进程就报
+#   UnsatisfiedLinkError）。普通 docker build 没有 TARGETARCH，按本机 amd64 处理。
+ARG TARGETARCH
+RUN case "${TARGETARCH:-amd64}" in \
+      arm64) TRIM_TARGET=linux-arm64 ;; \
+      amd64) TRIM_TARGET=linux-x64 ;; \
+      *) echo "未支持的架构: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    sh tools/guard/trim-guard-libs.sh "$TRIM_TARGET" host/guard-libs && \
+    java -cp "host/guard-libs/*" jvm.GuardNativeProbe
 # CI 会把插件 job 编好的 class 目录塞进这里（deploy/docker/prebuilt-classes）。
 # .class 与 CPU 架构无关，复用它就省掉 **arm64 在 QEMU 里再跑一遍 javac** ——
 # 2026-11-17 实测那一层 162.7 秒（amd64 40.8 秒），是整条 Docker 构建的最大头。

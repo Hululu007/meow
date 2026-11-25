@@ -230,6 +230,16 @@ if (Test-Path $guardBuild) {
     if (Test-Path $guardLibs) {
         if (Test-Path "$out\guard-libs") { Remove-Item "$out\guard-libs" -Recurse -Force }
         Copy-Item $guardLibs "$out\guard-libs" -Recurse -Force
+        # 只留 Windows 的原生库（别的平台运行期永远不会加载，见 trim 脚本头部）。
+        # 1.2.22 实测 34MB -> 14.9MB；裁完立刻用探针验证本平台 .dll 真能加载，
+        # 上游改目录名时在这里红，而不是等用户第一次用加密源。
+        $trim = Join-Path $root 'tools\guard\trim-guard-libs.ps1'
+        if (Test-Path $trim) {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $trim -Target win-x64 -Dir "$out\guard-libs"
+            if ($LASTEXITCODE -ne 0) { throw 'guard-libs 裁剪失败' }
+            & java -cp "$out\guard-libs\*" jvm.GuardNativeProbe
+            if ($LASTEXITCODE -ne 0) { throw 'guard-libs 原生库自检失败（GuardNativeProbe）' }
+        }
         $gmb = [math]::Round(((Get-ChildItem "$out\guard-libs" -Recurse | Measure-Object Length -Sum).Sum) / 1MB, 1)
         Write-Host "  guard-libs: ${gmb}MB" -ForegroundColor Green
     }

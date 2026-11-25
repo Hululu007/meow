@@ -175,6 +175,25 @@ cp "$JAR" "$PKG/app/seed/apiserver/apiserver.jar"
 if [ -d "$SRC/server/host/guard-libs" ]; then
     mkdir -p "$PKG/app/seed/apiserver/guard-libs"
     cp -a "$SRC/server/host/guard-libs/." "$PKG/app/seed/apiserver/guard-libs/"
+    # 只留本架构的原生库（别的平台运行期永远不会加载，见 trim 脚本头部）。
+    # fpk 的 x86/arm 是两次独立构建，PLATFORM 天然可用；不要挪到
+    # build-plugin-linux.sh 里做 —— 那条路径两腿共用，arm 会拿到 x64 的 .so。
+    case "$PLATFORM" in
+        arm) TRIM_TARGET=linux-arm64 ;;
+        *)   TRIM_TARGET=linux-x64 ;;
+    esac
+    bash "$SRC/server/tools/guard/trim-guard-libs.sh" "$TRIM_TARGET" "$PKG/app/seed/apiserver/guard-libs"
+    # 探针只在本机能执行目标原生库时跑（arm 包通常是在 x64 runner 上交叉组装的）
+    HOST_ARCH="$(uname -m)"
+    case "$PLATFORM:$HOST_ARCH" in
+        x86:x86_64|arm:aarch64|arm:arm64) RUN_PROBE=1 ;;
+        *) RUN_PROBE=0 ;;
+    esac
+    if [ "$RUN_PROBE" = 1 ] && command -v java >/dev/null 2>&1; then
+        java -cp "$PKG/app/seed/apiserver/guard-libs/*" jvm.GuardNativeProbe
+    else
+        echo "[fpk] 跳过原生库探针（$PLATFORM on $HOST_ARCH）"
+    fi
 fi
 # 后端版本文件：ApiServer 运行时读它（与 bin/VERSION 同一套思路），
 # 这样 jar 本身与版本无关，插件/Docker 的源码-hash 缓存才能跨版本复用。
@@ -258,9 +277,10 @@ ls -lh "$OUT/meow_${VER}_${PLATFORM}.fpk"
 #   2026-11-16 实测量级 19.5MiB（dex2jar 裁剪后）。1.1.7 那次没拦，一夜 +18MB。
 FPK_BYTES="$(stat -c%s "$OUT/meow_${VER}_${PLATFORM}.fpk")"
 # 24 → 60（2026-11-24）：1.2.22 起 fpk 带 guard-libs（unidbg/unicorn/keystone 等
-# 31 个 jar，实测 34MB）用于加载加密源；x86 包实测 54.1MiB。阈值仍保留 ——
-# 再涨 6MB 以上（比如又把某个大依赖顺手打进来）会继续报红。
-FPK_MAX_MIB="${FPK_MAX_MIB:-60}"
+# 31 个 jar，实测 34MB）用于加载加密源；x86 包实测 54.1MiB。
+# 60 → 45（2026-11-25）：guard-libs 按 CPU 架构裁剪（见 tools/guard/trim-guard-libs.sh），
+# 34MB → 16MB，fpk 实测 38.6MiB；阈值留 6MB 余量，再涨就报红。
+FPK_MAX_MIB="${FPK_MAX_MIB:-45}"
 if [ "$FPK_BYTES" -gt $((FPK_MAX_MIB * 1048576)) ]; then
     echo "fpk 体积 $(awk -v b="$FPK_BYTES" 'BEGIN{printf "%.1f", b/1048576}')MiB 超过绊线 ${FPK_MAX_MIB}MiB。" >&2
     echo "先看是不是有大依赖被顺手打进包（参考 dex2jar 裁剪：deploy/scripts/fetch-dex2jar.sh）。" >&2

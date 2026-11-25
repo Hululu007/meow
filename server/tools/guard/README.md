@@ -26,7 +26,27 @@ sh server/tools/guard/build-guard-helper.sh
 产物：`server/host/guard-libs/guard-helper.jar`。
 `guard-libs/` 里是 unidbg 0.9.9 + **unidbg-unicorn2 0.9.9** + unicorn 1.0.15 + dex2jar 2.4 + ASM（约 34MB），**不要**
 放进 `server/host/libs/`（宿主 javac 不需要）；PC 插件/Docker/fpk 构建脚本会自动
-把它复制到 `apiserver.jar` 同级的 `guard-libs/`。
+把它复制到 `apiserver.jar` 同级的 `guard-libs/`，并按目标平台裁剪（见下节）。
+
+## 按平台裁剪原生库（2026-11-25）
+
+六个 jar 里约 18MB 是"别的 CPU 平台"的 `.so/.dll/.dylib`，运行期永远不会被打开
+（`NativeLoader` 只按 `os.name`/`os.arch` 选一个目录；keystone/capstone/jna/demumble
+同理）。构建期用 `trim-guard-libs.sh|ps1` 裁掉，1.2.22 实测 34MB → 15~16MB：
+
+| 目标 | 保留（jar 内路径） | 谁在用 |
+|---|---|---|
+| `win-x64` | `unicorn-1.0.15`: `natives/windows_64/`；`unidbg-unicorn2`: 无；`keystone`: `win32-x86-64/`；`capstone`: `win32-x86-64/`；`jna`: `com/sun/jna/win32-x86-64/`；`demumble`: 无 | PC 插件（`build-plugin.ps1`） |
+| `linux-x64` | `unidbg-unicorn2`: `natives/linux_64/`；`unicorn-1.0.15`: 无；`keystone`: `linux-x86-64/`；`capstone`: `linux-x86-64/` + `natives/linux_64/`；`jna`: `com/sun/jna/linux-x86-64/`；`demumble`: `natives/linux_64/` | Docker 构建阶段 |
+| `linux-arm64` | 同 linux-x64，平台名换 `linux_arm64` / `linux-aarch64` | fpk arm（`build-fpk.sh`） |
+
+★ **unicorn 的两份原生库不能搞反**：Linux 走 unicorn2（`libunicorn.so` 自包含），
+Windows 走默认 legacy（`unicorn_java.dll`）。这也是上面"Linux 必须用 unicorn2"那段的
+另一半：把 legacy 的 natives 留在 Linux 上没用（`libunicorn_java.so` 加载会
+`undefined symbol: helper_div_i32`），把 unicorn2 的留在 Windows 上也没用。
+
+裁剪后必须跑 `jvm.GuardNativeProbe`（已接进三个打包脚本）：它按平台加载对应的
+unicorn + 触发 JNA，缺库时在构建期就红。规则改完先跑一次真解密（见「已验证」）。
 
 **Linux 必须用 unicorn2 后端**：`unicorn-1.0.15.jar` 的 `linux_64/libunicorn_java.so`
 是瘦身版（1.8MB，`AES_isbox`/`helper_div_i32` 未定义，`System.load` 直接失败）；
