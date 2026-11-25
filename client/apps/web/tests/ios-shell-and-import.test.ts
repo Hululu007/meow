@@ -245,6 +245,18 @@ describe('内核网络进程被回收：可恢复（图片全碎 + 按钮无反�
     expect(webViewSwift).toContain('webViewWebContentProcessDidTerminate')
   })
 
+  it('横幅不压顶栏、底不透明，恢复后自己消失（2026-11-25）', () => {
+    // bg-card 只有 5.5% 白，压在内容上等于没有底（用户截图：文字和搜索栏叠住）
+    expect(app).toContain('var(--color-elevated)')
+    expect(app).toContain('netBannerStyle')
+    // 顶栏之后、流内占位：sticky 到顶栏下沿，不再 fixed 盖住它
+    expect(app).toContain('calc(var(--header-h) + 0.5rem)')
+    // 探活成功自动收起：不能只靠用户点「重载」
+    expect(app).toContain('netHealthOk')
+    expect(app).toContain('probeNetRecovered')
+    expect(app).toContain('dismissNetBroken')
+  })
+
   it('刷新失败但旧列表还在时给反馈（不然「刷新」看着像坏的）', () => {
     expect(homeView).toContain('刷新失败：')
     expect(homeView).toContain('@click="loadHome()"')

@@ -872,10 +872,14 @@ public class ApiServer {
      * App 还活着，之后每个请求都立刻 {@code Load failed}（导入完成后就撞上）。
      * 这条线程从头到尾只 sleep，唯一作用就是"本进程活着期间 VM 不许退"。
      *
-     * <p><b>看门狗</b>（daemon）：每 15 秒真发一次 {@code GET /api/_hb}。
-     * 连续 2 次不通就停掉旧监听器重绑同一端口 —— 万一分发线程被异常带走，
-     * 网关能自己回来，而不是让用户看着"设置页已连接、首页断连"。
-     * 探活成功每 60 秒打一行 {@code [hb] ok}，给日志留时间戳（排障用）。
+     * <p><b>看门狗</b>（daemon）：每 5 秒真发一次 {@code GET /api/_hb}。
+     * 连接被拒（监听 socket 不在了）时 1.2 秒后再确认一次，仍然不通就停掉旧监听器
+     * 重绑同一端口 —— 万一分发线程被异常带走，网关能自己回来，而不是让用户看着
+     * "设置页已连接、首页断连"。探活成功每 60 秒打一行 {@code [hb] ok}，给日志留时间戳。
+     *
+     * <p><b>为什么是 5 秒而不是 15 秒</b>（2026-11-25）：iOS 从后台回来时，系统可能已经把
+     * 监听 socket 收走；15 秒一轮 + 连续 2 次 = 最多 30 秒断连，前端早报了 5 次网络失败。
+     * 连接被拒说明没有新连接可服务，确认 1.2 秒后重绑不会误伤在途视频流。
      */
     private static void startHostKeeper(final String bind, final int port, final int threads) {
         if (hostKeeperStarted) return;
@@ -894,16 +898,14 @@ public class ApiServer {
         keeper.start();
 
         Thread watchdog = new Thread(() -> {
-            int dead = 0;
             long lastBeat = 0;
             long lastBusy = 0;
             for (;;) {
                 try {
-                    Thread.sleep(15_000L);
+                    Thread.sleep(5_000L);
                     int st = probeState(port);
                     long now = System.currentTimeMillis();
                     if (st > 0) {
-                        dead = 0;
                         if (now - lastBeat >= 60_000L) {
                             lastBeat = now;
                             System.out.println("[hb] ok threads=" + Thread.activeCount()
@@ -915,27 +917,48 @@ public class ApiServer {
                          * 这里绝对不能重绑：重绑会掐掉所有在途的视频流，用户看到的就是
                          * "看着看着所有线路都播不出来"（2026-11-24 真机）。
                          */
-                        dead = 0;
                         if (now - lastBusy >= 60_000L) {
                             lastBusy = now;
                             System.out.println("[busy] gateway saturated (probe timed out), skip rebind");
                         }
                     } else {
-                        dead++;
-                        System.out.println("[watchdog] connect failed x" + dead);
-                        if (dead >= 2) {
+                        /*
+                         * 连接被拒 = 没有进程在听这个端口（分发线程死了 / VM 正在退）。
+                         * 1.2 秒后再确认：这期间如果有请求进来也会立刻失败，不会误伤在途流。
+                         */
+                        System.out.println("[watchdog] connect failed; confirming");
+                        Thread.sleep(1_200L);
+                        if (probeState(port) < 0) {
                             rebindListener(bind, port, threads);
-                            dead = 0;
+                        } else {
+                            System.out.println("[watchdog] back before rebind");
                         }
                     }
                 } catch (InterruptedException ignored) {
+                    // kickWatchdog()（App 回前台）会中断 sleep：马上进入下一轮探活
                 } catch (Throwable t) {
                     System.out.println("[watchdog] " + t);
                 }
             }
         }, "meow-host-watchdog");
         watchdog.setDaemon(true);
+        WATCHDOG = watchdog;
         watchdog.start();
+    }
+
+    /** 看门狗线程；端内壳回前台时 {@link #kickWatchdog()} 唤醒它。 */
+    private static volatile Thread WATCHDOG;
+
+    /**
+     * 端内壳回前台时踢一下看门狗。
+     *
+     * <p>iOS 挂起时整进程冻结，看门狗也停；回前台后如果干等 5 秒，用户会先看到
+     * 「后端连接中断」再等重绑。JNI（JvmBridge）在 scenePhase == active 时调这里，
+     * 让探活立刻跑一轮。
+     */
+    public static void kickWatchdog() {
+        Thread t = WATCHDOG;
+        if (t != null) t.interrupt();
     }
 
     /** 真发一次 HTTP 请求（只连上不算数：分发线程死了 backlog 仍会接连接）。 */

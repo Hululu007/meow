@@ -32,7 +32,7 @@ import {
   runCheck as runUpdateCheck,
 } from '@/stores/appUpdate'
 import { fpkMarkPrompted, fpkPromptDue } from '@/api/fpkUpgrade'
-import { isDesktop, listPlugins, tauriInvoke } from '@/api'
+import { currentBase, isDesktop, listPlugins, tauriInvoke } from '@/api'
 import { markChecked, runBackgroundChecks } from '@/stores/updateCenter'
 
 const store = useAppStore()
@@ -825,6 +825,8 @@ function uninstallTvBackHandler() {
 
 onBeforeUnmount(() => {
   window.removeEventListener('meow:net-unhealthy', onNetUnhealthy)
+  if (netShowTimer !== undefined) window.clearTimeout(netShowTimer)
+  stopNetProbe()
   // 只清自己挂的钩子，避免覆盖别的会话/组件设置的函数
   const w = window as unknown as { __meowTrayHint?: () => void }
   if (desktop && w.__meowTrayHint === showTrayHint) w.__meowTrayHint = undefined
@@ -900,23 +902,92 @@ const showStartupTip = computed(() => {
 })
 
 /**
- * 内核网络进程被系统回收（iOS / 移动端内存压力下常见）。
+ * 内核网络进程被系统回收 / 端内网关短暂断连。
  *
  * <p>症状成对出现：**所有图片突然全碎**（连本地静态图都裂）+ **按钮点了没反应**
- * （fetch 全失败，但页面还在、SPA 路由照走）。原因是 WKWebView 的网络进程被
- * 系统杀掉后没有重建，页面里的 requests 全部失败（2026-11-24 真机）。
- * 恢复办法只有一个：重载页面（会重建网络进程）。这里给一条明显的横幅 + 一键重载，
- * 不让用户以为是"图片坏了 / 按钮坏了"。
+ * （fetch 全失败，但页面还在、SPA 路由照走）。两种情况都会命中：
+ * ① WKWebView 的网络进程被系统杀掉；② iOS 端内网关（JVM）在后台恢复、看门狗重绑。
+ * 二者都表现为「没有 HTTP 响应」，前端分不出来，所以文案不写具体成因。
+ *
+ * <p>★ 2026-11-25 用户反馈：横幅压在顶栏上、背景只有 5.5% 白，文字和底下的
+ * 搜索栏/胶囊叠在一起看不清。这里改成**不透明面板 + 顶栏下方独立占位**：
+ * 横幅出现在 AppHeader 之后（不是盖在它上面），滚动时 sticky 在顶栏下沿。
+ *
+ * <p>★ 只有「重载」不是恢复路径：网关自愈（看门狗 2 秒内重绑）后横幅必须自己消失，
+ * 否则用户看到的就是「设置页明明已连接，顶部还在报后端挂了」。
  */
 const netBroken = ref(false)
+let netShowTimer: number | undefined
+let netProbeTimer: number | undefined
+
+/** 轻量探活：只认 HTTP 响应，不走 request()（避免失败再触发同类事件）。 */
+async function netHealthOk(): Promise<boolean> {
+  try {
+    const ctrl = new AbortController()
+    const timer = window.setTimeout(() => ctrl.abort(), 2500)
+    const res = await fetch(`${currentBase()}/api/_hb`, {
+      cache: 'no-store',
+      signal: ctrl.signal,
+    })
+    window.clearTimeout(timer)
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+function stopNetProbe() {
+  if (netProbeTimer !== undefined) {
+    window.clearTimeout(netProbeTimer)
+    netProbeTimer = undefined
+  }
+}
+
+/** 横幅出现后每 2 秒探一次；通了立刻收起（不再要求用户点重载）。 */
+async function probeNetRecovered() {
+  netProbeTimer = undefined
+  if (!netBroken.value) return
+  if (await netHealthOk()) {
+    netBroken.value = false
+    return
+  }
+  if (netBroken.value) netProbeTimer = window.setTimeout(probeNetRecovered, 2000)
+}
 
 function onNetUnhealthy() {
-  netBroken.value = true
+  if (netBroken.value || netShowTimer !== undefined) return
+  // 先压 1.5 秒再确认：看门狗重绑通常 1~2 秒完成，别让一次瞬时抖动弹「后端挂了」。
+  netShowTimer = window.setTimeout(async () => {
+    netShowTimer = undefined
+    if (await netHealthOk()) return
+    netBroken.value = true
+    netProbeTimer = window.setTimeout(probeNetRecovered, 2000)
+  }, 1500)
+}
+
+function dismissNetBroken() {
+  netBroken.value = false
+  stopNetProbe()
 }
 
 function reloadPage() {
   location.reload()
 }
+
+/** 横幅位置：有顶栏时贴着顶栏下沿；播放/直播页没有顶栏，让开刘海。 */
+const netBannerStyle = computed(() => {
+  const fullscreen = isPlay.value || isLive.value
+  return {
+    top: fullscreen
+      ? 'calc(env(safe-area-inset-top) + 0.5rem)'
+      : 'calc(var(--header-h) + 0.5rem)',
+    marginTop: fullscreen
+      ? 'calc(env(safe-area-inset-top) + 0.5rem)'
+      : '0.5rem',
+    // bg-card 只有 5.5% 白，压在内容上等于没有底（用户 2026-11-25 截图）。
+    background: 'var(--color-elevated)',
+  }
+})
 
 /**
  * 是否显示「后端未连接」大卡片。
@@ -1055,32 +1126,6 @@ onBeforeUnmount(() => stopDesktopShortcuts?.())
 
 <template>
   <!--
-    内核网络进程被回收的恢复横幅（iOS / 移动端内存压力下会出现）。
-    症状：图片突然全碎 + 按钮点了没反应（fetch 全挂），但页面与路由还活着。
-    Teleport 到 body：站内 <main> 有 relative z-10，直接放会被压在下面。
-  -->
-  <Teleport to="body">
-    <div
-      v-if="netBroken"
-      class="fixed left-2 right-2 z-[200] flex items-center gap-2 rounded-lg border border-hot/30 bg-card px-3 py-2 text-xs text-ink shadow-lg"
-      style="top: calc(env(safe-area-inset-top) + 0.5rem)"
-    >
-      <span class="min-w-0 flex-1 leading-snug">
-        界面与后端失联：图片和按钮会一起失效（系统回收了内核网络进程）。重载即恢复。
-      </span>
-      <button
-        class="shrink-0 rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-on-accent"
-        @click="reloadPage()"
-      >
-        重载
-      </button>
-      <button class="shrink-0 rounded bg-card px-2 py-1 text-[11px]" @click="netBroken = false">
-        忽略
-      </button>
-    </div>
-  </Teleport>
-
-  <!--
     背景层：fixed 铺满，z-0，在内容之下。
 
     ★ 根容器**不能有不透明底色**。之前这里写死 bg-base，把 z-0 的背景层
@@ -1117,6 +1162,46 @@ onBeforeUnmount(() => stopDesktopShortcuts?.())
     <DesktopTopChrome v-if="desktop && (isPlay || isLive)" />
 
     <AppHeader v-if="!isPlay && !isLive" class="relative z-20" />
+
+    <!--
+      内核网络进程被回收 / 端内网关短暂断连的恢复横幅。
+
+      ★ 2026-11-25 从 Teleport 改成「顶栏后的流内元素」：
+        原来 fixed 盖在顶栏上，bg-card 只有 5.5% 白，文字和搜索栏/胶囊叠在一起。
+        现在它自己占一行（不压任何内容），滚动时 sticky 在顶栏下沿。
+      ★ 「重载」不是唯一恢复路径：探活通了会自动收起（见 netBannerStyle 上方注释）。
+    -->
+    <div
+      v-if="netBroken"
+      class="sticky z-[200] mx-2 flex items-center gap-2.5 rounded-xl border border-hot/40 px-3 py-2.5 text-ink shadow-2"
+      :style="netBannerStyle"
+      role="status"
+      aria-live="polite"
+    >
+      <span class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-hot/15 text-hot">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" class="h-4 w-4">
+          <path d="M12 8v5" stroke-linecap="round" />
+          <circle cx="12" cy="16.5" r="0.6" fill="currentColor" stroke="none" />
+          <path d="M10.3 3.9 2.6 17.1A2 2 0 0 0 4.3 20h15.4a2 2 0 0 0 1.7-2.9L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+        </svg>
+      </span>
+      <div class="min-w-0 flex-1 leading-tight">
+        <div class="text-[13px] font-semibold">后端连接中断</div>
+        <div class="mt-0.5 text-[11px] text-ink-3">正在自动重连，恢复后本条自动消失</div>
+      </div>
+      <button
+        class="shrink-0 rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent"
+        @click="reloadPage()"
+      >
+        重载
+      </button>
+      <button
+        class="shrink-0 rounded-md px-2 py-1.5 text-[12px] text-ink-3"
+        @click="dismissNetBroken()"
+      >
+        忽略
+      </button>
+    </div>
 
     <!--
       AI 悬浮入口（docs/47 §三）。放在 App 级别而不是各页面：

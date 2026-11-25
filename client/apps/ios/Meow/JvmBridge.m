@@ -28,6 +28,12 @@
  */
 static char gJvmImagePath[PATH_MAX];
 
+/*
+ * 只供 kickWatchdog 用：VM 建好之后要能从任意线程（App 回前台）反射调
+ * ApiServer.kickWatchdog()，必须留着 JavaVM 指针。
+ */
+static JavaVM *gJavaVM = NULL;
+
 __attribute__((visibility("hidden")))
 void *MeowEmbeddedDlopen(const char *path, int mode) __asm__("_dlopen");
 void *MeowEmbeddedDlopen(const char *path, int mode) {
@@ -174,8 +180,44 @@ static jboolean meowNativeDownload(JNIEnv *env, jclass cls, jstring jurl, jstrin
 #endif
 }
 
-+ (nullable NSString *)logTail {
-#if TARGET_OS_SIMULATOR
+/*
+ * App 回前台：叫醒 Java 端看门狗，立刻探一次 /api/_hb。
+ *
+ * iOS 挂起期间所有线程冻结，系统还可能把监听 socket 收走；回前台后如果干等
+ * 看门狗下一轮（5 秒），用户先看到的是「后端连接中断」。这里只做一次
+ * AttachCurrentThread + 静态方法调用，不解引用任何页面对象。
+ */
++ (void)kickWatchdog {
+#if TARGET_OS_SIMULATOR || defined(MEOW_NO_JVM)
+    return;
+#else
+    if (gJavaVM == NULL) return;
+    JNIEnv *env = NULL;
+    BOOL attached = NO;
+    jint state = (*gJavaVM)->GetEnv(gJavaVM, (void **)&env, JNI_VERSION_1_8);
+    if (state == JNI_EDETACHED) {
+        if ((*gJavaVM)->AttachCurrentThread(gJavaVM, (void **)&env, NULL) != JNI_OK) return;
+        attached = YES;
+    } else if (state != JNI_OK || env == NULL) {
+        return;
+    }
+    jclass serverClass = (*env)->FindClass(env, "ApiServer");
+    if (serverClass != NULL) {
+        jmethodID kick = (*env)->GetStaticMethodID(env, serverClass, "kickWatchdog", "()V");
+        if (kick != NULL) (*env)->CallStaticVoidMethod(env, serverClass, kick);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionDescribe(env);
+            (*env)->ExceptionClear(env);
+        }
+        (*env)->DeleteLocalRef(env, serverClass);
+    } else {
+        (*env)->ExceptionClear(env);
+    }
+    if (attached) (*gJavaVM)->DetachCurrentThread(gJavaVM);
+#endif
+}
+
++ (nullable NSString *)logTail {#if TARGET_OS_SIMULATOR
     return nil;
 #else
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
@@ -355,6 +397,7 @@ static jboolean meowNativeDownload(JNIEnv *env, jclass cls, jstring jurl, jstrin
                 completion(NO, why);
                 return;
             }
+            gJavaVM = vm;
 
             /*
              * iOS 无 fork/exec：dex→class 走端内 dex2jar 库（vendor/dex2jar）。

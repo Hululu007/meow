@@ -203,6 +203,9 @@ function noteNetFailure() {
   netFailStamps.push(now)
   if (netFailStamps.length >= 5) {
     netFailStamps = []
+    // 留在 launch.log 里：下次真机报「后端掉了」时，先看这条与前后请求的错误原文，
+    // 区分「网关没响应」（连接被拒/重置）与「WebKit 网络进程被回收」（全是 Load failed）。
+    webLog(`net-unhealthy: 5 次网络级失败/10s base=${base()}`)
     try {
       window.dispatchEvent(new CustomEvent('meow:net-unhealthy'))
     } catch {

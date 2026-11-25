@@ -22,6 +22,10 @@ NS_ASSUME_NONNULL_BEGIN
                      port:(int)port
                completion:(void (^)(BOOL ok, NSString * _Nullable message))completion;
 
+/// App 回前台时叫醒 Java 看门狗（ApiServer.kickWatchdog），让它立刻探一次
+/// `/api/_hb`；iOS 挂起期间线程冻结，不踢就要干等下一轮。
++ (void)kickWatchdog;
+
 @end
 
 NS_ASSUME_NONNULL_END
