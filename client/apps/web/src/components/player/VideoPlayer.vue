@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { isBigScreenLandscape, showPlayerBackButton } from '@/compat/deviceForm'
+import { isBigScreenLandscape, isLandscapeViewport, showPlayerBackButton } from '@/compat/deviceForm'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Hls from 'hls.js'
@@ -2622,7 +2622,7 @@ let lockHintTimer: number | undefined
  */
 const landscapeViewport = ref(false)
 function syncLandscapeViewport() {
-  landscapeViewport.value = window.innerWidth > window.innerHeight
+  landscapeViewport.value = isLandscapeViewport()
 }
 
 /** 任一浮层展开：锁按钮要让位（右侧中部会压到面板） */
@@ -3519,6 +3519,9 @@ function onTimeUpdate() {
   const v = video.value
   if (!v) return
   currentTime.value = v.currentTime
+  // 最后一次"确实在播"的时刻：切后台时 iOS 可能先暂停再发 visibilitychange，
+  // 光看 v.paused 会把这种情况判成"用户自己暂停"，回来就不续播（2026-11-25）。
+  if (!v.paused) lastPlayedAt = Date.now()
   if (v.buffered.length) {
     buffered.value = (v.buffered.end(v.buffered.length - 1) / (v.duration || 1)) * 100
   }
@@ -4008,6 +4011,20 @@ function flashFsHint(msg: string) {
 const pseudoFs = ref(false)
 
 /**
+ * 界面上算不算"全屏"。
+ *
+ * <p>iOS 壳进播放页会自动转横屏（`pageLandscape`），横屏就是铺满态，但
+ * `pseudoFs` 仍是 false。只认 pseudoFs/fullscreen 的话图标永远是"进入全屏"，
+ * 点它只会再叠一层伪全屏、视觉无变化 —— 用户看到的就是「全屏按钮不生效」。
+ */
+const isFsUi = computed(
+  () =>
+    fullscreen.value ||
+    pseudoFs.value ||
+    (isIosShell() && !isTvShell() && landscapeViewport.value),
+)
+
+/**
  * 全屏播放的空闲光标：3 秒不动就隐藏，任何指针活动立刻恢复。
  *
  * <p>为什么不能只靠 CSS `cursor: none`：WebView2 的全屏合成场景里样式层
@@ -4209,6 +4226,29 @@ async function toggleFullscreen() {
   if (!el) return
   if (pseudoFs.value || document.fullscreenElement) {
     await exitPseudoFs()
+    /*
+     * iOS 壳退出全屏必须真的回到竖屏（2026-11-25 用户报「全屏/退出全屏不生效」）：
+     * 进播放页会自动转横屏（pageLandscape），此时横屏本身就是铺满态；
+     * 如果只把 pseudoFs 关掉，画面仍是横屏铺满 → 看起来什么都没发生。
+     */
+    if (isIosShell() && !isTvShell() && isLandscapeViewport()) {
+      pageLandscape = false
+      rotatedByFs = false
+      shellSetOrientation('portrait')
+    }
+    rememberFsIntent(false)
+    return
+  }
+  /*
+   * iOS 壳里没有 pseudoFs、但已经是横屏（进播放页自动转的 / 用户自己转的）：
+   * 这时用户点的是"退出全屏"——转回竖屏即可，不要再叠一层伪全屏。
+   * ★ 「自动全屏」和「手动全屏」原来是两套机制（pageLandscape vs pseudoFs），
+   *   所以自动横屏时点全屏/退出都不生效（2026-11-25 用户实测）。
+   */
+  if (isIosShell() && !isTvShell() && landscapeViewport.value) {
+    pageLandscape = false
+    rotatedByFs = false
+    shellSetOrientation('portrait')
     rememberFsIntent(false)
     return
   }
@@ -4269,7 +4309,7 @@ const FS_INTENT_TTL_MS = 12 * 3600_000
  * isTouch 也是 true，不该跟着变成"重开就全屏"。
  */
 function isMobileForm(): boolean {
-  return isIosShell() || Math.min(window.innerWidth, window.innerHeight) < 480
+  return isIosShell() || compactViewport.value
 }
 /**
  * 组件正在卸载（换集/换线路 → 整页重建）。
@@ -6662,6 +6702,8 @@ function onPageHide() {
  * PC 最小化仍保持"回来是暂停态"（用户主动离开，更可控）。
  */
 let playingBeforeHide = false
+/** 最后一次"确实在播"的时间戳（timeupdate 刷新，约 4Hz） */
+let lastPlayedAt = 0
 
 function pauseMediaOnHide() {
   const v = video.value
@@ -6675,11 +6717,14 @@ function onVisibilityChange() {
     resumeAfterVisibility()
     /*
      * 回前台补一次全屏恢复（2026-11-25 用户报「切后台回来丢全屏」）：
-     * WKWebView 被系统回收/重建或 HTML 全屏被丢弃时，pseudoFs/fullscreen
-     * 可能已经复位；意图还在就重新铺满（用户手势之外只能走伪全屏）。
+     * ① 全屏意图还在就重新铺满（WKWebView 被系统回收/重建时 pseudoFs 会复位）；
+     * ② iOS 壳的方向会被系统复位成竖屏，这里补回横屏。
      * ★ 只给移动端：PC 上 Alt+Tab 回来不该突然被塞进伪全屏。
      */
-    if (isMobileForm()) void restoreFsIntent()
+    if (isMobileForm()) {
+      void restoreFsIntent()
+      reapplyMobileOrientation()
+    }
     return
   }
   /*
@@ -6687,16 +6732,40 @@ function onVisibilityChange() {
    * 「切后台还能播」）。Info.plist 已有 UIBackgroundModes=audio，壳里再配
    * AVAudioSession(.playback)；这里主动 pause 就白配了。
    *
+   * ★ v.paused 不能单独当判据：iOS 有时**先暂停媒体再发** visibilitychange，
+   *   那一刻读到 paused=true 就会记成"不是我们停的"，回来不续播。用
+   *   lastPlayedAt（timeupdate 刷新）兜住 3 秒内的这种情况。
+   *
    * ★ TV 壳不能跳过：hidden 也可能是原生 ExoPlayer 盖上来了，不暂停会
    *   双重出声（mediaExclusive 依赖「是不是我们停的」这个标志）。
    */
   if (isMobileForm() && !isTvShell()) {
     const v = video.value
-    playingBeforeHide = !!(v && !v.paused && !v.ended)
+    playingBeforeHide = !!(
+      v &&
+      !v.ended &&
+      (!v.paused || Date.now() - lastPlayedAt < 3000)
+    )
     flushProgress(true)
     return
   }
   pauseMediaOnHide()
+}
+
+/**
+ * iOS 壳回前台：补回横屏（系统会把 App 方向复位成竖屏）。
+ *
+ * 只在"之前就是沉浸态"时补：伪全屏 / 进播放页自动转的横屏 / 全屏自己转的横屏。
+ * 用户主动退出全屏或竖屏观看时 pageLandscape/rotatedByFs 都是 false，不会误转。
+ */
+function reapplyMobileOrientation() {
+  if (!isIosShell() || isTvShell()) return
+  // 已经是横屏就不用补
+  if (isLandscapeViewport()) return
+  if (!(pseudoFs.value || pageLandscape || rotatedByFs)) return
+  // 伪全屏状态下补转，退出全屏时才知道要转回来
+  if (pseudoFs.value) rotatedByFs = true
+  shellSetOrientation('landscape')
 }
 
 /** 重新可见：把隐藏前正在播的续上（移动端后台保播 / TV 原生播放器返回） */
@@ -6714,11 +6783,17 @@ function resumeAfterVisibility() {
       /* 引擎已在销毁中就算了 */
     }
   }
-  window.setTimeout(() => {
-    const el = video.value
-    if (!el || el.ended) return
-    if (el.paused) safePlay(el)
-  }, 250)
+  const retry = (delay: number) => {
+    window.setTimeout(() => {
+      const el = video.value
+      if (!el || el.ended) return
+      if (el.paused) safePlay(el)
+    }, delay)
+  }
+  // 250ms 一次不够：锁屏/系统状态栏切回来时 WebKit 接管媒体要更久，
+  // 补一次 1.2s 的重试（仍是 paused 才播，不会打断已恢复的播放）。
+  retry(250)
+  retry(1200)
 }
 
 /**
@@ -7862,8 +7937,13 @@ defineExpose({
         </button>
 
         <!-- 全屏放在「更多」左侧：底部右侧的锚是更多，全屏是最常用的高频项，紧挨着它 -->
-        <button class="hit-44 grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10 tv-hide" title="全屏" @click="toggleFullscreen">
-          <svg v-if="!fullscreen" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <button
+          class="hit-44 grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-white/10 tv-hide"
+          :title="isFsUi ? '退出全屏' : '全屏'"
+          :aria-label="isFsUi ? '退出全屏' : '全屏'"
+          @click="toggleFullscreen"
+        >
+          <svg v-if="!isFsUi" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
           </svg>
           <svg v-else class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

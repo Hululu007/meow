@@ -171,17 +171,17 @@ const previewStyle = computed(() => ({
         压图时得垫底部渐变（0.88 → 0.72 黑），整张图会被压暗；
         名称离开图片后，缩略图只保留图片本身，选图才看得清。
     -->
-    <div class="flex flex-wrap gap-2.5">
+    <div class="grid grid-cols-3 gap-2.5 md:grid-cols-4">
       <!-- 无背景：永远第一个，不属于任何明暗组 -->
       <button
         v-if="noneItem"
         type="button"
-        class="group flex w-[8.5rem] shrink-0 flex-col gap-1.5 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/60"
+        class="group flex w-full min-w-0 shrink-0 flex-col gap-1.5 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/60"
         :title="noneItem.label"
         @click="pick(noneItem.value)"
       >
         <span
-          class="relative block h-[4.78125rem] w-full overflow-hidden rounded-lg border transition"
+          class="relative block wp-thumb w-full overflow-hidden rounded-lg border transition"
           :class="
             modelValue === noneItem.value
               ? 'border-accent/60 ring-1 ring-accent/40'
@@ -213,10 +213,10 @@ const previewStyle = computed(() => ({
       <!-- 我的图片（上传过才出现） -->
       <div
         v-if="customSrc"
-        class="group flex w-[8.5rem] shrink-0 flex-col gap-1.5 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-accent/60"
+        class="group flex w-full min-w-0 shrink-0 flex-col gap-1.5 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-accent/60"
       >
         <div
-          class="relative h-[4.78125rem] w-full overflow-hidden rounded-lg border transition"
+          class="relative wp-thumb w-full overflow-hidden rounded-lg border transition"
           :class="
             modelValue === 'custom'
               ? 'border-accent/60 ring-1 ring-accent/40'
@@ -260,31 +260,37 @@ const previewStyle = computed(() => ({
         </button>
       </div>
 
-      <!-- 上传入口：高度=图片 4.78125rem + 间距 0.375rem + 名称行 1rem，和左侧卡片齐平 -->
+      <!-- 上传入口：与其它卡片同列同高（预览框 aspect 16:9 + 名称行） -->
       <button
         type="button"
-        class="grid h-[6.15625rem] w-[8.5rem] shrink-0 place-items-center rounded-lg border border-dashed border-line-hover text-ink-3 transition hover:border-accent/50 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/60 disabled:opacity-50"
+        class="group flex w-full min-w-0 shrink-0 flex-col gap-1.5 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/60 disabled:opacity-50"
         :disabled="uploading"
         title="从本机选择图片（自动压缩到 1920px 宽的 WebP）"
         @click="openPicker"
       >
-        <span class="flex flex-col items-center gap-1 text-[11px]">
-          <svg
-            v-if="!uploading"
-            class="h-5 w-5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-          >
-            <path d="M12 16V4m0 0L8 8m4-4 4 4" />
-            <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
-          </svg>
-          <span
-            v-else
-            class="h-4 w-4 animate-spin rounded-full border-2 border-line-hover border-t-accent"
-          />
-          {{ uploading ? '处理中' : '上传图片' }}
+        <span
+          class="grid wp-thumb w-full place-items-center rounded-lg border border-dashed border-line-hover text-ink-3 transition group-hover:border-accent/50 group-hover:text-accent"
+        >
+          <span class="flex flex-col items-center gap-1 text-[11px]">
+            <svg
+              v-if="!uploading"
+              class="h-5 w-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+            >
+              <path d="M12 16V4m0 0L8 8m4-4 4 4" />
+              <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+            </svg>
+            <span
+              v-else
+              class="h-4 w-4 animate-spin rounded-full border-2 border-line-hover border-t-accent"
+            />
+          </span>
+        </span>
+        <span class="block w-full truncate px-0.5 text-[11px] leading-4 text-ink-2">
+          {{ uploading ? '处理中…' : '上传图片' }}
         </span>
       </button>
 
@@ -299,17 +305,17 @@ const previewStyle = computed(() => ({
         <span class="text-[11px] text-ink-3">{{ g.title }}</span>
         <span class="h-px flex-1 bg-line" />
       </div>
-      <div class="flex flex-wrap gap-2.5">
+      <div class="grid grid-cols-3 gap-2.5 md:grid-cols-4">
         <button
           v-for="w in g.items"
           :key="w.value || 'none'"
           type="button"
-          class="group flex w-[8.5rem] shrink-0 flex-col gap-1.5 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/60"
+          class="group flex w-full min-w-0 shrink-0 flex-col gap-1.5 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/60"
           :title="w.label"
           @click="pick(w.value)"
         >
           <span
-            class="relative block h-[4.78125rem] w-full overflow-hidden rounded-lg border transition"
+            class="relative block wp-thumb w-full overflow-hidden rounded-lg border transition"
             :class="
               modelValue === w.value
                 ? 'border-accent/60 ring-1 ring-accent/40'
@@ -356,3 +362,22 @@ const previewStyle = computed(() => ({
     <p v-if="errMsg" class="w-full text-[11px] text-hot">{{ errMsg }}</p>
   </div>
 </template>
+
+<style scoped>
+/*
+ * 缩略图比例。
+ *
+ * 现代内核用 aspect-ratio；投影仪 Chromium 66 不认识它，而 legacy-css 的
+ * `aspect-video` padding-top 兜底是按**父容器**宽度算的 —— 放进网格会被
+ * 拉成几百像素高，所以给一个固定高兜底，@supports 命中时才改回按自身宽度算。
+ */
+.wp-thumb {
+  height: 4.5rem;
+}
+@supports (aspect-ratio: 16 / 9) {
+  .wp-thumb {
+    height: auto;
+    aspect-ratio: 16 / 9;
+  }
+}
+</style>

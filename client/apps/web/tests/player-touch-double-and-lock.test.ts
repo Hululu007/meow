@@ -78,6 +78,12 @@ function centerRect(el: Element) {
   })
 }
 
+/** 手机 CSS 视口（jsdom 默认 1024×768 是桌面形态） */
+function setViewport(width: number, height: number) {
+  Object.defineProperty(window, 'innerWidth', { value: width, configurable: true })
+  Object.defineProperty(window, 'innerHeight', { value: height, configurable: true })
+}
+
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms))
 }
@@ -157,11 +163,6 @@ describe('iOS 双击兜底（不依赖 dblclick）', () => {
 })
 
 describe('移动端全屏锁定', () => {
-  /** 手机 CSS 视口（jsdom 默认 1024×768 是桌面形态，canLock 会判成非移动端） */
-  function setViewport(width: number, height: number) {
-    Object.defineProperty(window, 'innerWidth', { value: width, configurable: true })
-    Object.defineProperty(window, 'innerHeight', { value: height, configurable: true })
-  }
   afterEach(() => setViewport(1024, 768))
 
   async function enterFullscreen(w: ReturnType<typeof mountPlayer>) {
@@ -251,12 +252,41 @@ describe('移动端全屏锁定', () => {
     await w.vm.$nextTick()
 
     // 全屏按钮此时是"退出全屏"，点它 → pseudoFs=false → watch 自动解锁
-    const fsBtn = w.findAll('button').find((b) => b.attributes('title') === '全屏')
+    const fsBtn = w.findAll('button').find((b) => b.attributes('aria-label') === '退出全屏')
     await fsBtn!.trigger('click')
     await w.vm.$nextTick()
     await sleep(50)
     await w.vm.$nextTick()
     expect(w.findAll('button').some((b) => b.attributes('aria-label') === '锁定画面')).toBe(false)
+    w.unmount()
+  })
+})
+
+describe('iOS 壳：自动横屏与全屏按钮同一套语义', () => {
+  afterEach(() => {
+    setViewport(1024, 768)
+    document.documentElement.removeAttribute('data-shell')
+    delete (window as unknown as { meowIos?: unknown }).meowIos
+  })
+
+  it('自动横屏时按钮是「退出全屏」，点它转回竖屏', async () => {
+    document.documentElement.dataset.shell = 'ios'
+    setViewport(844, 390)
+    const w = mountPlayer()
+    fakeMedia(w)
+    await w.vm.$nextTick()
+
+    const btn = w.findAll('button').find((b) => b.attributes('aria-label') === '退出全屏')
+    expect(btn, '自动横屏铺满时全屏按钮应显示为退出全屏').toBeTruthy()
+
+    const calls: string[] = []
+    ;(window as unknown as { meowIos?: unknown }).meowIos = {
+      setOrientation: (m: string) => calls.push(m),
+    }
+    await btn!.trigger('click')
+    await w.vm.$nextTick()
+
+    expect(calls, '退出全屏必须让壳转回竖屏，否则看起来没反应').toEqual(['portrait'])
     w.unmount()
   })
 })

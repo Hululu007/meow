@@ -31,6 +31,17 @@ export function isBigScreenLandscape(): boolean {
 }
 
 /**
+ * 视口是否横屏（宽 > 高）。
+ *
+ * <p>播放页「自动转横屏 = 铺满全屏」的判据要用它，避免业务组件里散写
+ * `innerWidth > innerHeight`（`tests/device-profile.test.ts` 门禁）。
+ */
+export function isLandscapeViewport(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.innerWidth > window.innerHeight
+}
+
+/**
  * 播放页左上角「返回」是否显示。
  *
  * <p>判据：**TV 壳里、大屏横屏、且没见过真实指针输入（鼠标/触摸）就不显示**。
