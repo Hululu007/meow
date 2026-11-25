@@ -169,6 +169,27 @@ describe('原生音频会话时机', () => {
     expect(player).toContain('restoreSystemBrightness()')
   })
 
+  it('iOS 边缘返回手势：默认开，播放/直播页关掉', () => {
+    expect(webview).toContain('allowsBackForwardNavigationGestures = true')
+    expect(webview).toContain('case "navGesture":')
+    expect(bootstrap).toContain('window.meowIos.setNavGesture=function')
+    expect(bridgeTs).toContain('export function setIosNavGesture')
+    expect(player).toContain('setIosNavGesture(false)')
+    expect(player).toContain('setIosNavGesture(true)')
+    const live = read(join(WEB, 'src', 'views', 'LiveView.vue'))
+    expect(live).toContain('setIosNavGesture(false)')
+    // 直播页左上角返回改成与播放页一致的圆形按钮
+    expect(live).toContain('grid h-9 w-9 place-items-center rounded-full')
+  })
+
+  it('侧键改音量：KVO 回传页面弹浮层（MPVolumeView 会抑制系统 HUD）', () => {
+    const vol = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'SystemVolume.swift'))
+    expect(vol).toContain('"outputVolume"')
+    expect(vol).toContain('__meowVolumeChanged')
+    expect(player).toContain('__meowVolumeChanged =')
+    expect(player).toContain('function onIosVolumeChanged(')
+  })
+
   it('暂停浮层中央播放按钮在双击暂停后有静默期', () => {
     expect(player).toContain('function onPauseOverlayClick()')
     expect(player).toContain('overlayGuardUntil = Date.now() + 2500')

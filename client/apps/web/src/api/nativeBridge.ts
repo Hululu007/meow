@@ -778,6 +778,21 @@ export function restoreSystemBrightness(): void {
   }
 }
 
+/**
+ * iOS 边缘返回手势开关。
+ *
+ * <p>播放页/直播页要关掉：左边缘右滑会被原生当成"返回上一页"，
+ * 和横滑调进度、全屏手势打架。其它页面保持开启（用户要的系统返回手势）。
+ */
+export function setIosNavGesture(on: boolean): void {
+  try {
+    const b = (window as unknown as { meowIos?: { setNavGesture?: (v: boolean) => void } }).meowIos
+    if (b && typeof b.setNavGesture === 'function') b.setNavGesture(on)
+  } catch {
+    /* 旧壳没有这个桥：忽略 */
+  }
+}
+
 /* ------------------------------------------------------------------ 输入状态同步 */
 
 /**

@@ -46,7 +46,12 @@ struct WebView: UIViewRepresentable {
         view.backgroundColor = .black
         view.scrollView.backgroundColor = .black
         view.scrollView.contentInsetAdjustmentBehavior = .never
-        view.allowsBackForwardNavigationGestures = false
+        /*
+         * 原生边缘返回手势（2026-11-25 用户反馈）：之前一直是 false，所以 IPA 里
+         * 从左边缘右滑不会回上一页。开着；播放页/直播页会通过 navGesture 桥
+         * 临时关掉，避免和横滑调进度、全屏手势打架。
+         */
+        view.allowsBackForwardNavigationGestures = true
         view.load(URLRequest(url: url))
         return view
     }
@@ -86,6 +91,10 @@ struct WebView: UIViewRepresentable {
                     case "brightness":
                         // 负数 = 还原进入播放页前的亮度
                         SystemBrightness.set((dict["value"] as? NSNumber)?.intValue ?? -1)
+                    case "navGesture":
+                        // 播放/直播页关掉边缘返回手势，避免和横滑 seek 冲突
+                        message.webView?.allowsBackForwardNavigationGestures =
+                            dict["value"] as? Bool ?? true
                     default:
                         break
                     }

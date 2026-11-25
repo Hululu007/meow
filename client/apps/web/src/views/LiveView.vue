@@ -48,6 +48,7 @@ import Hls from 'hls.js'
 import { addLiveSource, fetchLive, fetchLivePlaylist, proxyStream, type LiveChannel, type LiveGroup } from '@/api'
 import { isTvEnv } from '@/composables/useCardCols'
 import {
+  setIosNavGesture,
   setSystemBrightness,
   setSystemVolume,
   systemBrightness,
@@ -2409,6 +2410,8 @@ function handleTvMenuHere(): boolean {
 
 onMounted(() => {
   void load()
+  // iOS：直播页关掉原生边缘返回手势（横滑/全屏手势会抢），离开时恢复
+  setIosNavGesture(false)
   // ★ 挂载就把「5 秒后收起控制栏」的计时排上（2026-11-12）：
   //   原来只有 wake() 被调用过才计时，冷启动进直播页 showCtrl 一直是 true，
   //   底栏和左上角返回键都常驻在画面上。
@@ -2449,6 +2452,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  // 恢复原生边缘返回手势（直播页里是关掉的）
+  setIosNavGesture(true)
   // 先停媒体再拆 hls（见 stopMedia 的说明）
   if (bufWatchdogTimer) { clearInterval(bufWatchdogTimer); bufWatchdogTimer = undefined }
   stopMedia()
@@ -2535,15 +2540,15 @@ onBeforeUnmount(() => {
     -->
     <button
       v-if="!current && !showGuide"
-      class="absolute z-30 flex items-center gap-1 rounded-full bg-white/12 py-1.5 pl-2 pr-3 text-xs text-white/85 backdrop-blur transition hover:bg-white/20 active:scale-95"
+      class="absolute z-30 grid h-9 w-9 place-items-center rounded-full bg-white/10 text-white/90 backdrop-blur transition hover:bg-white/20 active:scale-95"
       style="left: calc(0.75rem + env(safe-area-inset-left)); top: calc(0.75rem + env(safe-area-inset-top))"
       title="返回"
+      aria-label="返回"
       @click="leaveLive"
     >
       <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
         <path d="m15 18-6-6 6-6" />
       </svg>
-      返回
     </button>
 
     <!-- 加载态：转圈 + 已等待秒数（/api/live 要 10-12 秒，只有转圈用户分不清在干活还是卡死） -->

@@ -230,6 +230,13 @@ final class Bootstrap: ObservableObject {
                   + "window.webkit.messageHandlers.meowIos.postMessage({op:'brightness',value:Number(v)})"
                   + "}catch(e){}}")
         /*
+         * 边缘返回手势开关：播放页/直播页关掉（横滑调进度会抢手势），
+         * 其它页面开着。
+         */
+        js.append("window.meowIos.setNavGesture=function(on){try{"
+                  + "window.webkit.messageHandlers.meowIos.postMessage({op:'navGesture',value:!!on})"
+                  + "}catch(e){}}")
+        /*
          * 播放状态桥：进后台时原生据此决定是否激活 AVAudioSession。
          * 只报状态，不要求在 play 里 setActive —— 那会打断 WebKit（实测 1s 自停）。
          */

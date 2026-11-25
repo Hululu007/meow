@@ -30,6 +30,7 @@ import {
   setSystemBrightness,
   setSystemVolume,
   restoreSystemBrightness,
+  setIosNavGesture,
   tvCancelPowerTimer,
   tvPowerTimerState,
   tvProbeRoot,
@@ -3980,6 +3981,25 @@ function onHeatClick(e: MouseEvent) {
  * <p>必须有系统桥时写系统音量（TV 的 AudioManager / iOS 的 MPVolumeView）：
  * iPhone 上 `video.volume = x` 是静默无效的，只改元素音量等于假控件。
  */
+/** 最近一次"应用主动设系统音量"的时间（KVO 回调去重用） */
+let lastVolumeSetAt = 0
+
+/**
+ * 侧键/控制中心改音量时的浮层。
+ *
+ * <p>为什么需要：iOS 上窗口里挂了 MPVolumeView（我们用它写系统音量）后，
+ * 系统音量 HUD 就不弹了；用户按侧键"音量变了但没有任何提示"（2026-11-25 真机）。
+ * 原生侧 KVO AVAudioSession.outputVolume，变化时调这里，弹播放页自己的浮层。
+ */
+function onIosVolumeChanged(pct: number) {
+  if (!isMobileForm() || isTvShell()) return
+  // 应用自己滑出来的变化已经有浮层了，别重置计时
+  if (Date.now() - lastVolumeSetAt < 900) return
+  const p = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)))
+  swipeHint.value = { kind: 'volume', pct: p, system: true }
+  scheduleSwipeHintHide()
+}
+
 function applyVolumePct(pct: number, opts: { save?: boolean } = {}) {
   const p = Math.max(0, Math.min(100, Math.round(pct)))
   volume.value = p / 100
@@ -3995,7 +4015,11 @@ function applyVolumePct(pct: number, opts: { save?: boolean } = {}) {
     v.muted = p === 0
   }
   muted.value = p === 0
-  if (sys) setSystemVolume(p)
+  if (sys) {
+    setSystemVolume(p)
+    // 标记"这次是应用自己调的"：KVO 回调别再弹一次浮层
+    lastVolumeSetAt = Date.now()
+  }
   if (opts.save !== false) {
     // 高频项：静默落盘，不广播事件（否则会刷屏 WebDAV 同步）
     savePrefs({ volume: volume.value, muted: muted.value }, { silent: true })
@@ -6732,6 +6756,17 @@ onMounted(() => {
   window.addEventListener('meow:tv-focus', onTvFocusMoved)
   window.addEventListener('blur', stopKeyScan)
   window.addEventListener('meow:prefs', onPrefs)
+  /*
+   * iOS：播放页关掉原生边缘返回手势（左边缘右滑会跟横滑 seek/全屏手势打架），
+   * 离开时在 onUnmounted 里恢复。
+   */
+  setIosNavGesture(false)
+  /*
+   * 侧键/控制中心改系统音量：MPVolumeView 挂在窗口上会把系统音量 HUD 抑制掉，
+   * 所以由原生 KVO 回调这里，弹播放页自己的音量浮层（对齐主流 App）。
+   */
+  ;(window as unknown as { __meowVolumeChanged?: (pct: number) => void }).__meowVolumeChanged =
+    onIosVolumeChanged
   document.addEventListener('fullscreenchange', onFullscreenChange)
   window.addEventListener('resize', () => {
     dm.value?.resize()
@@ -6880,6 +6915,12 @@ onBeforeUnmount(() => {
   notifyIosPlaying(false)
   // iOS 竖滑改的是真实屏幕亮度：离开播放页还原，别把用户手机亮度留在那
   restoreSystemBrightness()
+  // 恢复原生边缘返回手势（播放页里是关掉的）
+  setIosNavGesture(true)
+  {
+    const w = window as unknown as { __meowVolumeChanged?: (pct: number) => void }
+    if (w.__meowVolumeChanged === onIosVolumeChanged) w.__meowVolumeChanged = undefined
+  }
   {
     const w = window as unknown as { __meowIosActive?: () => void }
     if (w.__meowIosActive === iosActiveBridge) w.__meowIosActive = undefined
