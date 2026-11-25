@@ -1,7 +1,7 @@
 # iOS 端接入（IPA 形态与发版）
 
 ::: warning 现状（2026-11-25）：iOS 工程**已合入 main**，真机已跑通本地网关
-`client/apps/ios/` 出未签名 IPA，**已随 1.2.22 作为 `Meow-unsigned.ipa` 发布**；
+`client/apps/ios/` 出未签名 IPA，**已随 1.2.22 作为 `Meow-unsigned-1.2.22.ipa` 发布**；
 不上架 App Store，用户用 Apple ID 自签安装（见 [iPhone / iPad](/guide/ios)）。
 真机（LiveContainer 侧载）验证到：JVM 启动、`/api/health` ok、豆瓣首页出数据、源导入能写盘。
 本文的「落地契约」部分仍然有效；下面 §0 是与契约不一致的**已实现部分**，

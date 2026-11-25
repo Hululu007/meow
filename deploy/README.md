@@ -361,7 +361,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/build-plugins
 | TV | `猫窝-TV-0.9.17.apk` | `meow-TV-0.9.17.apk` |
 | PC 安装包 | `猫窝_0.9.17_x64-setup.exe` | `meow-setup-0.9.17.exe` |
 | PC 裸 exe | `猫窝-裸exe-0.9.17.exe` | `meow-bare-0.9.17.exe` |
-| iOS（未签名） | —（CI 专属） | `Meow-unsigned.ipa` |
+| iOS（未签名） | —（CI 专属） | `Meow-unsigned-<版本>.ipa` |
 | 插件 | `apiserver-0.9.17.zip` 等 | 同左 |
 
 **为什么不一样**：GitHub 把非 ASCII 附件名转义成 `-`/`_`（实测显示成

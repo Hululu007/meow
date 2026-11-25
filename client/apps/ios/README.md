@@ -55,7 +55,7 @@ xcodebuild -project Meow.xcodeproj -scheme Meow -configuration Release \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 mkdir -p build/ipa/Payload
 cp -R build/dd-device/Build/Products/Release-iphoneos/Meow.app build/ipa/Payload/
-(cd build/ipa && zip -qry Meow-unsigned.ipa Payload)
+(cd build/ipa && zip -qry Meow-unsigned-local.ipa Payload)
 ```
 
 模拟器（不内嵌 JVM，用 `--api-base` 连 macOS 上的同一个 ApiServer 做 UI 验证）：

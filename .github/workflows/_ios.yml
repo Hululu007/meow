@@ -55,6 +55,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 版本号统一在这里解析一次（与 _docker/_pc_shell/_tv 同约定）：
+      # 传了 inputs.version 就用它；留空则读 Info.plist（bump-version 维护的那份）。
+      # 产物文件名与 artifact 名都用这个值，和 TV/PC/fpk 的 <名字>-<版本> 对齐。
+      - name: 解析版本
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          v='${{ inputs.version }}'
+          if [ -z "$v" ]; then
+            v=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" client/apps/ios/Meow/Info.plist)
+          fi
+          [ -n "$v" ] || { echo "读不到版本号" >&2; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "版本：$v"
+
       - uses: pnpm/action-setup@v4
         with:
           version: 11.9.0
@@ -191,8 +207,8 @@ jobs:
           test -n "$APP"
           rm -rf build/ipa && mkdir -p build/ipa/Payload
           cp -R "$APP" build/ipa/Payload/
-          IPA_NAME="Meow-unsigned.ipa"
-          if [ "$NOJVM" = "1" ]; then IPA_NAME="Meow-unsigned-nojvm.ipa"; fi
+          IPA_NAME="Meow-unsigned-${{ steps.ver.outputs.version }}.ipa"
+          if [ "$NOJVM" = "1" ]; then IPA_NAME="Meow-unsigned-nojvm-${{ steps.ver.outputs.version }}.ipa"; fi
           (cd build/ipa && zip -qry "$GITHUB_WORKSPACE/artifacts/$IPA_NAME" Payload)
           ls -lh "$GITHUB_WORKSPACE/artifacts/$IPA_NAME"
           du -sh "$APP" || true
@@ -279,7 +295,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-ipa${{ inputs.nojvm && '-nojvm' || '' }}-${{ github.run_number }}
+          # 与发布资产同名对齐：ios-ipa-<版本>[-nojvm]；解析失败时退回 run_number
+          name: ios-ipa-${{ steps.ver.outputs.version || github.run_number }}${{ inputs.nojvm && '-nojvm' || '' }}
           path: artifacts/**
           retention-days: 14
           if-no-files-found: warn

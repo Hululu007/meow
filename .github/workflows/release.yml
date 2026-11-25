@@ -247,7 +247,7 @@ jobs:
   # 全量发版要像 TV/PC 一样有 IPA，不再靠 feat/ios-jvm 的 push 单独出包。
   # 只跑全量（release-v*）与手动 dispatch；tv-v*/pc-v* 等单链不带，
   # 因为 macOS runner 计时按 2× 算，不该为不带 iOS 的发版付这笔。
-  # 产物名 Meow-unsigned.ipa 由 publish 的 `*.ipa` 收进主 Release。
+  # 产物名 Meow-unsigned-<版本>.ipa 由 publish 的 `*.ipa` 收进主 Release。
   ios:
     name: iOS IPA
     needs: plan
@@ -461,7 +461,7 @@ jobs:
             | `apiserver-*.zip` | PC 后端插件 |
             | `drpy-*.zip` / `danmu-api-*.zip` / `node-*.zip` / `ffmpeg-*.zip` | PC 插件 |
             | `meow_*.fpk` | fnOS 套件（x86 / arm） |
-            | `Meow-unsigned.ipa` | iOS 空壳（未签名，需自签侧载 / LiveContainer） |
+            | `Meow-unsigned-*.ipa` | iOS 空壳（未签名，需自签侧载 / LiveContainer） |
             | `packages.json` | 客户端更新清单 |
             | `SHA256SUMS.txt` | 校验 |
 

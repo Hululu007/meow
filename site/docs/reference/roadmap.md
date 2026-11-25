@@ -33,7 +33,7 @@
 
 **现在有两种用法**：
 
-- **IPA**（推荐）：随 1.2.22 发布 `Meow-unsigned.ipa`，端内自带 JVM 后端与弹幕聚合，
+- **IPA**（推荐）：随 1.2.22 发布 `Meow-unsigned-1.2.22.ipa`，端内自带 JVM 后端与弹幕聚合，
   不连外部后端也能导源、搜索、播放。装法见 [iPhone / iPad](/guide/ios)。
 - **Safari**：不装 App，Safari 打开后端地址 →「分享 → 添加到主屏幕」。
 
