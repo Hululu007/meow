@@ -2459,6 +2459,29 @@ let pressAt = 0
 /** 快照有效期：正常点击 pointerdown→click 只有几十毫秒，留足慢速点击余量 */
 const PRESS_SNAPSHOT_MS = 800
 
+/**
+ * 点击级双击识别（不依赖 dblclick）。
+ *
+ * ★ iOS WKWebView 对手指双击常常只派发两次 click、从不发 dblclick
+ *   （2026-11-25 真机报「第一击显示控制栏、第二击又把它收起来」：
+ *   旧逻辑里每个 click 各自在 220ms 后 toggle，双击就退化成亮栏→收栏）。
+ *   这里在第二次 click 落点与上一次相近且间隔够短时直接执行双击动作，
+ *   并压掉随后可能补发的原生 dblclick。
+ *
+ * ★ Android WebView / 桌面 Chrome 的顺序是 click1 → click2 → dblclick：
+ *   click2 先由这里执行动作，原生 dblclick 用 syntheticDblAt 去重，
+ *   不会快进 20 秒或暂停两次。
+ */
+let lastTapAt = 0
+let lastTapX = 0
+let lastTapY = 0
+/** 两次 click 之间的最大间隔（再长就按两次独立单击处理） */
+const DOUBLE_TAP_MS = 320
+/** 两次点击的落点容差（手指有抖动；超过就不是同一位置的双击） */
+const DOUBLE_TAP_SLOP = 48
+/** 自识别双击刚执行的时刻：随后补发的原生 dblclick 要吞掉 */
+let syntheticDblAt = 0
+
 
 /** 标记"接下来那一次 click 不算单击"，400ms 后自动失效 */
 function suppressNextClick() {
@@ -2471,6 +2494,17 @@ function suppressNextClick() {
 
 function onStageClick(e: MouseEvent) {
   clearTimeout(clickTimer)
+  /*
+   * 锁定状态：画面点击只负责闪出解锁按钮，不切控制栏、不改播放状态。
+   * 放在 suppressClick 之前，锁定时任何"迟到的 click"也一律吞掉。
+   */
+  if (locked.value) {
+    suppressClick = false
+    clearTimeout(suppressTimer)
+    lastTapAt = 0
+    flashLockHint()
+    return
+  }
   // 关浮层/长按产生的 click 不当作播放暂停
   if (suppressClick) {
     suppressClick = false
@@ -2501,6 +2535,30 @@ function onStageClick(e: MouseEvent) {
     ? recentDown === 'mouse'
     : (e as PointerEvent).pointerType === 'mouse'
   if (isTouch.value && !mouseClick) {
+    /*
+     * ★ 自识别双击（2026-11-25 iOS 真机，见 lastTapAt 注释）：
+     *   第二次 click 与上一次的落点、间隔都在阈值内 → 这就是双击，
+     *   撤掉第一击排下的"切控制栏"定时器，直接执行双击动作。
+     *   不这样做时 iOS 永远走不到 onStageDblClick（WKWebView 不发）。
+     */
+    const now = Date.now()
+    if (
+      lastTapAt > 0 &&
+      now - lastTapAt <= DOUBLE_TAP_MS &&
+      Math.abs(e.clientX - lastTapX) <= DOUBLE_TAP_SLOP &&
+      Math.abs(e.clientY - lastTapY) <= DOUBLE_TAP_SLOP
+    ) {
+      lastTapAt = 0
+      clearTimeout(clickTimer)
+      syntheticDblAt = now
+      // 双击后浏览器可能再补发一次 click（Android WebView 实测），吞掉它
+      suppressNextClick()
+      touchDoubleTapAction(e)
+      return
+    }
+    lastTapAt = now
+    lastTapX = e.clientX
+    lastTapY = e.clientY
     /*
      * 触屏单击（2026-11-12 用户口径，三区统一）：
      *   单击 = 只呼出/收起控制栏；
@@ -2536,6 +2594,51 @@ function hideControlBar() {
   if (isTvEnv()) clearTvFocus()
 }
 
+// ---------------------------------------------------------------- 全屏锁定（移动端）
+
+/**
+ * 全屏锁定：屏蔽画面上的全部触摸手势，只留一个解锁按钮。
+ *
+ * <p>对齐主流 App（B 站/爱奇艺）的「锁」：躺着看片时手滑点到画面，不该
+ * 暂停、快进或把控制栏弹出来。锁定状态下：
+ *   <ul>
+ *     <li>单击 / 双击 / 长按 / 竖滑 / 横滑一律忽略；</li>
+ *     <li>点屏幕只在左侧闪出解锁按钮（1.6s 后自己收），点它才解锁；</li>
+ *     <li>退出全屏自动解锁，避免下次进播放页还是锁着的。</li>
+ *   </ul>
+ * 只在触屏 + 全屏（含 iOS 伪全屏）出现；TV 靠遥控器，没有误触问题。
+ */
+const locked = ref(false)
+/** 锁定状态下点屏幕后短暂显示解锁按钮 */
+const lockHint = ref(false)
+let lockHintTimer: number | undefined
+
+const canLock = computed(
+  () => isTouch.value && !isTvShell() && (fullscreen.value || pseudoFs.value),
+)
+
+function flashLockHint() {
+  lockHint.value = true
+  clearTimeout(lockHintTimer)
+  lockHintTimer = window.setTimeout(() => (lockHint.value = false), 1600)
+}
+
+function toggleLock() {
+  locked.value = !locked.value
+  if (locked.value) {
+    // 按钮就在控制栏里：锁上后必须立刻收栏，否则旁边那些按钮仍可误触
+    clearTimeout(clickTimer)
+    openPanel(null)
+    showCtrl.value = false
+    clearTimeout(hideTimer)
+    flashLockHint()
+    return
+  }
+  lockHint.value = false
+  clearTimeout(lockHintTimer)
+  wake()
+}
+
 // ---------------------------------------------------------------- 触屏 / 手势
 
 /**
@@ -2569,9 +2672,30 @@ function zoneOf(e: MouseEvent): Zone {
   return 'mid'
 }
 
+/** 触屏双击动作：左区 -10s / 右区 +10s / 中区暂停。自识别与原生 dblclick 共用 */
+function touchDoubleTapAction(e: MouseEvent) {
+  // 横滑 seek 刚结束：浏览器可能把"松手 + 再点一下"判成双击，不响应
+  if (Date.now() - hseekEndedAt < 350) return
+  const zone = zoneOf(e)
+  if (zone === 'left') {
+    seekBy(-10)
+    flashSeekHint(-10)
+    return
+  }
+  if (zone === 'right') {
+    seekBy(10)
+    flashSeekHint(10)
+    return
+  }
+  // 中区双击：立即暂停/播放（单击只切控制栏，在 click 定时器里被这里清掉）
+  toggle()
+}
+
 /** 双击：触屏左右分区快进/快退，其余全屏 */
 function onStageDblClick(e: MouseEvent) {
   clearTimeout(clickTimer)
+  // 锁定状态：双击不响应（含 iPad 触控板产生的原生 dblclick）
+  if (locked.value) return
   /*
    * ★ 吞掉"迟到的 click"（2026-11-16 手势实测踩过）。
    *
@@ -2595,19 +2719,13 @@ function onStageDblClick(e: MouseEvent) {
   const pointerMouse =
     (e as PointerEvent).pointerType === 'mouse' || recent === 'mouse'
   if (isTouch.value && !pointerMouse) {
-    const zone = zoneOf(e)
-    if (zone === 'left') {
-      seekBy(-10)
-      flashSeekHint(-10)
-      return
-    }
-    if (zone === 'right') {
-      seekBy(10)
-      flashSeekHint(10)
-      return
-    }
-    // 中区双击：立即暂停/播放（单击只切控制栏，在 click 定时器里被这里清掉）
-    toggle()
+    /*
+     * 自识别双击已经处理过这次双击（click2 先到、dblclick 后到）：
+     * 再执行一次会快进 20 秒/暂停两次，这里直接吞掉。
+     * 500ms 足够覆盖 click2→dblclick 的派发间隔，又短于两次独立双击。
+     */
+    if (Date.now() - syntheticDblAt < 500) return
+    touchDoubleTapAction(e)
     return
   }
   toggleFullscreen()
@@ -2632,6 +2750,11 @@ let longPressTimer: number | undefined
 let pressStart = { x: 0, y: 0 }
 
 function onStagePointerDown(e: PointerEvent) {
+  // 锁定状态：不记快照、不起长按/手势，点屏只闪解锁按钮
+  if (locked.value) {
+    flashLockHint()
+    return
+  }
   // ★ 先取"点击前"快照再做任何判断：onStageClick 用它决定单击是呼出还是收起。
   //   pointerdown 一定早于浏览器在 pointerup 后补发的合成 mousemove（见 pressVisible）。
   pressVisible = showCtrl.value
@@ -2709,6 +2832,8 @@ function swipeRange(): number {
 }
 
 function onStagePointerMove(e: PointerEvent) {
+  // 锁定状态：锁定时才开始的手势不存在（pointerdown 已拦），这里只是兜底
+  if (locked.value) return
   const isMouse = e.pointerType === 'mouse'
   // 横滑 seek 进行中：只更新预览（鼠标拖动需保持左键按下）
   if (hseek.active) {
@@ -3012,6 +3137,11 @@ function endLongPress() {
 }
 
 function onStagePointerUp(e: PointerEvent) {
+  if (locked.value) {
+    // 锁定时 pointerdown 没记起点，不能让这里用旧 pressStart 判"滑动"
+    clearTimeout(longPressTimer)
+    return
+  }
   if (hseek.active) {
     endHseek(true)
     return
@@ -3033,6 +3163,7 @@ function onStagePointerUp(e: PointerEvent) {
 
 /** 系统打断手势（pointercancel）：横滑回退预览，不提交 seek */
 function onStagePointerCancel() {
+  if (locked.value) return
   if (hseek.active) {
     endHseek(false)
     return
@@ -3881,6 +4012,16 @@ watch([fullscreen, pseudoFs], ([fs, pfs]) => {
   // 进入全屏先亮出光标再计时；退出全屏必须恢复，否则桌面端指针会一直藏着
   if (fs || pfs) cursorIdle.activity()
   else cursorIdle.stop()
+  /*
+   * 退出全屏自动解锁（2026-11-25）。
+   * 锁是全屏防误触用的；退出后还锁着，用户会以为播放页坏了（点哪都没反应），
+   * 而且解锁入口只在全屏里才显眼。宁可解锁，也不要留下一个无入口的状态。
+   */
+  if (!fs && !pfs && locked.value) {
+    locked.value = false
+    lockHint.value = false
+    clearTimeout(lockHintTimer)
+  }
 })
 
 /**
@@ -4954,6 +5095,8 @@ let prevConsumeBack: (() => boolean) | null = null
 const CTRL_HIDE_MS = 5000
 
 function wake() {
+  // 锁定状态下任何"唤醒"都不该把控制栏放出来（点屏、合成 mousemove 都是）
+  if (locked.value) return
   const wasHidden = !showCtrl.value
   showCtrl.value = true
   lastUserActionAt = Date.now()
@@ -6330,6 +6473,8 @@ onBeforeUnmount(() => {
   flushProgress(true)
   clearStartupWatchdog()
   clearNoAudioWatch()
+  // 锁定提示的 1.6s 定时器跟着组件走，别在卸载后再写 ref
+  clearTimeout(lockHintTimer)
   // WebAudio 探测通道随组件销毁（不关的话每进一次播放页泄漏一个 AudioContext）
   void noAudioCtx?.close()
   noAudioCtx = undefined
@@ -6809,9 +6954,10 @@ defineExpose({
       <div class="h-11 w-11 animate-spin rounded-full border-2 border-white/25 border-t-player" />
     </div>
 
-    <!-- 暂停浮层：点一下继续播放。中央显示 当前时间 / 总时长 -->
+    <!-- 暂停浮层：点一下继续播放。中央显示 当前时间 / 总时长
+         锁定状态下整个隐藏：那个播放按钮是 pointer-events-auto 的误触入口 -->
     <div
-      v-if="showPauseOverlay && !playing && !errorMsg && duration > 0 && !loadingSrc && !buffering"
+      v-if="showPauseOverlay && !locked && !playing && !errorMsg && duration > 0 && !loadingSrc && !buffering"
       class="pointer-events-none absolute inset-0 z-20 grid place-items-center"
       @dblclick="onStageDblClick"
     >
@@ -6891,7 +7037,7 @@ defineExpose({
       否则会和底栏自带的进度条重复。
     -->
     <div
-      v-if="prefs.showMiniProgress && duration > 0 && !showCtrl && !errorMsg"
+      v-if="prefs.showMiniProgress && !locked && duration > 0 && !showCtrl && !errorMsg"
       class="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-[3px] bg-white/15"
     >
       <div class="h-full bg-player transition-[width] duration-300" :style="{ width: shownPct + '%' }" />
@@ -7231,6 +7377,25 @@ defineExpose({
       </div>
     </div>
 
+    <!--
+      锁定状态的解锁入口（移动端全屏防误触）。
+      锁定后画面不响应任何点击/手势，点一下只把这个按钮闪出来；
+      放左侧中部是拇指自然落点，也不挡进度条与底栏。
+    -->
+    <button
+      v-if="locked && lockHint"
+      type="button"
+      class="absolute left-3 top-1/2 z-40 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full bg-black/60 text-ink shadow-xl ring-1 ring-white/20"
+      aria-label="解锁画面"
+      title="解锁"
+      @click.stop="toggleLock"
+    >
+      <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="4.5" y="10.5" width="15" height="10" rx="2" />
+        <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" />
+      </svg>
+    </button>
+
     <!-- 底部控制栏 -->
     <div
       class="meow-ctrl-bar meow-ctrl-mask absolute inset-x-0 bottom-0 z-30 px-3 pb-2 pt-7 sm:px-5 sm:pb-2.5 sm:pt-9"
@@ -7547,6 +7712,24 @@ defineExpose({
           <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 12a9 9 0 1 1-3-6.7" />
             <path d="M21 4v5h-5" />
+          </svg>
+        </button>
+
+        <!--
+          全屏锁定（移动端）：防误触。只触屏 + 全屏出现（canLock），
+          TV 靠遥控器不需要、也避免挤占底栏；锁定后控制栏立刻收起，
+          点屏左侧闪出解锁按钮（见上方浮动按钮）。
+        -->
+        <button
+          v-if="canLock"
+          class="hit-44 grid h-8 w-8 shrink-0 place-items-center rounded-full transition hover:bg-white/10 sm:h-9 sm:w-9"
+          title="锁定画面（防误触）"
+          aria-label="锁定画面"
+          @click.stop="toggleLock"
+        >
+          <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="4.5" y="10.5" width="15" height="10" rx="2" />
+            <path d="M8 10.5V7a4 4 0 0 1 7.5-1.9" />
           </svg>
         </button>
 

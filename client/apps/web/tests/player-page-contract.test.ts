@@ -297,7 +297,11 @@ describe('直播播放页：播放交互（缓冲/音量/亮度/调试/画中画
     expect(body, '单击要延迟 220ms 判双击').toContain('}, 220)')
     const d = player.indexOf('function onStageDblClick')
     const dbl = player.slice(d, d + 1600)
-    expect(dbl, '中区双击要立即 toggle').toContain('toggle()')
+    // 双击动作已抽到 touchDoubleTapAction（2026-11-25 iOS 点击级兜底共用）
+    expect(dbl, '双击要交给统一动作').toContain('touchDoubleTapAction(e)')
+    const t = player.indexOf('function touchDoubleTapAction')
+    const tap = player.slice(t, t + 900)
+    expect(tap, '中区双击要立即 toggle').toContain('toggle()')
   })
 
   it('触屏长按：左右 2× 快退/快进，中间无动作（不再是长按倍速）', () => {
