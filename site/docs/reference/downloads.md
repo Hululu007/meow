@@ -10,7 +10,7 @@
 | Windows 电脑 | `meow-setup-<版本>.exe`（安装版）<br>`meow-bare-<版本>.exe`（免安装） | [PC](/guide/pc) |
 | 安卓电视 / 投影仪 / 手机 | `meow-TV-<版本>.apk` | [TV](/guide/tv) |
 | 飞牛 fnOS | `meow_<版本>_x86.fpk` / `meow_<版本>_arm.fpk` | [飞牛](/guide/fnos) |
-| iPhone / iPad | `Meow-unsigned-*.ipa`（未签名，要自己签） | [iPhone / iPad](/guide/ios) |
+| iPhone / iPad | `Meow-unsigned.ipa`（固定名，始终最新；未签名，要自己签） | [iPhone / iPad](/guide/ios) |
 | NAS / 服务器 / Mac | **不用下载**：Docker 起后端，浏览器打开 | [Docker](/guide/web-docker) |
 
 - 不确定该走哪条路：先看 [快速开始 · 路线选择](/guide/quick-start#路线选择)。
@@ -32,7 +32,7 @@ Docker 直接拉镜像；Windows、TV 与 iOS 目前只有 GitHub 一个下载�
 | `meow-setup-<版本>.exe` | Windows | PC 安装版（NSIS），带开始菜单与卸载 |
 | `meow-bare-<版本>.exe` | Windows | PC 免安装版，解压即用 |
 | `meow-TV-<版本>.apk` | Android TV / 投影仪 / 安卓手机 | TV 壳，release 签名 |
-| `Meow-unsigned-*.ipa` | iPhone / iPad（iOS 15+） | 未签名，需 Apple ID 自签侧载；免费账号 7 天有效 |
+| `Meow-unsigned.ipa`（固定名）/ `Meow-unsigned-*.ipa`（版本化） | iPhone / iPad（iOS 15+） | 未签名，需 Apple ID 自签侧载；免费账号 7 天有效 |
 | `meow_<版本>_x86.fpk` | 飞牛 fnOS x86_64 | 原生套件 |
 | `meow_<版本>_arm.fpk` | 飞牛 fnOS arm64 | 原生套件 |
 | `tv-node-arm64-v8a-<node版本>.apk` | arm64-v8a | TV 运行时模块 |
