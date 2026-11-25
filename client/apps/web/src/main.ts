@@ -444,17 +444,24 @@ async function bootstrap() {
 function warmLazyRoutes() {
   if (!isIosShell()) return
   const run = () => {
+    const jobs: Array<{ name: string; load: () => Promise<unknown> }> = []
     for (const r of router.getRoutes()) {
       const c = r.components?.default as unknown
       if (typeof c !== 'function') continue
-      try {
-        void (c as () => Promise<unknown>)().catch(() => {
-          /* 单个 chunk 失败不影响其他页面；StaticServer 探活会兜底 */
-        })
-      } catch {
-        /* ignore */
-      }
+      jobs.push({ name: r.path, load: c as () => Promise<unknown> })
     }
+    void Promise.allSettled(jobs.map((j) => j.load())).then((rs) => {
+      const bad = rs
+        .map((r, i) => (r.status === 'rejected' ? jobs[i].name : ''))
+        .filter(Boolean)
+      // 留在 launch.log / 服务端日志：真机再报"点导航没反应"时，先看这条
+      // 判断预热有没有成功（失败 = 当时 9979 静态服务已经不健康）。
+      reportClientLog(
+        bad.length ? 'warn' : 'info',
+        `routes warmed: ${jobs.length - bad.length}/${jobs.length}` +
+          (bad.length ? ` failed: ${bad.slice(0, 4).join(',')}` : ''),
+      )
+    })
   }
   const ric = (
     window as unknown as {
