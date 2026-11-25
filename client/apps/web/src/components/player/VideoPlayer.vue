@@ -2613,8 +2613,35 @@ const locked = ref(false)
 const lockHint = ref(false)
 let lockHintTimer: number | undefined
 
+/**
+ * 视口是否横屏。
+ *
+ * <p>移动端进播放页会自动转横屏（`tryLandscape` → `pageLandscape`），这时画面
+ * 已经铺满整个屏幕，但 `pseudoFs` 仍是 false —— 锁定按钮不能只认全屏 API，
+ * 否则「自动横屏播放」时整条锁入口消失（2026-11-25 用户真机报）。
+ */
+const landscapeViewport = ref(false)
+function syncLandscapeViewport() {
+  landscapeViewport.value = window.innerWidth > window.innerHeight
+}
+
+/** 任一浮层展开：锁按钮要让位（右侧中部会压到面板） */
+const anyPanelOpen = computed(
+  () =>
+    showEpPanel.value ||
+    showLinePanel.value ||
+    showDmPanel.value ||
+    showMore.value ||
+    showDmSearch.value ||
+    showHelp.value,
+)
+
 const canLock = computed(
-  () => isTouch.value && !isTvShell() && (fullscreen.value || pseudoFs.value),
+  () =>
+    isTouch.value &&
+    !isTvShell() &&
+    // 手机横屏（自动转屏后画面已铺满）也算"全屏"；PC 触摸屏不在这里放大锁
+    (fullscreen.value || pseudoFs.value || (landscapeViewport.value && compactViewport.value)),
 )
 
 function flashLockHint() {
@@ -2626,7 +2653,7 @@ function flashLockHint() {
 function toggleLock() {
   locked.value = !locked.value
   if (locked.value) {
-    // 按钮就在控制栏里：锁上后必须立刻收栏，否则旁边那些按钮仍可误触
+    // 锁上后必须立刻收栏：锁定态只留右侧那一个解锁按钮
     clearTimeout(clickTimer)
     openPanel(null)
     showCtrl.value = false
@@ -4035,6 +4062,21 @@ function syncCompactViewport() {
   compactViewport.value = Math.min(window.innerWidth, window.innerHeight) < 480
 }
 
+/*
+ * 锁定只在「可锁状态」下有意义。竖屏/退出全屏/窗口态时必须自动解开，
+ * 否则锁按钮整个不渲染，用户会卡在一个点哪都没反应、又没有解锁入口的状态。
+ *
+ * ★ 必须放在 compactViewport 声明之后：watch 创建时会立刻读一次 canLock，
+ *   提前注册会踩 `Cannot access 'isTouch'/'compactViewport' before initialization`
+ *   （2026-11-25 vitest 实测）。
+ */
+watch(canLock, (ok) => {
+  if (ok || !locked.value) return
+  locked.value = false
+  lockHint.value = false
+  clearTimeout(lockHintTimer)
+})
+
 /**
  * 是否显示"返回"按钮。
  *
@@ -4200,17 +4242,21 @@ async function toggleFullscreen() {
 }
 
 /**
- * 记住"用户想全屏"这个意图，供换集后的新页面恢复。
+ * 记住"用户想全屏"这个意图，供换集 / 切后台回来时恢复。
  *
  * <p><b>为什么需要</b>（2026-10-31 用户报的问题 6）：PC 全屏播放时，
  * 一集结束切下一集会**退出全屏**。原因是换集走 `router.replace`，
  * 而 `App.vue` 以 `fullPath` 作 key 重建了整页 —— 新组件实例的
  * `pseudoFs`/`fullscreen` 都是初始值 false，全屏自然就没了。
  *
- * <p>存 sessionStorage（不是 localStorage）：只该跨"这一集到下一集"，
- * 关掉应用再进来不该自动全屏。
+ * <p>★ 2026-11-25 改存 localStorage（原来 sessionStorage）：iOS 切后台几分钟
+ * 被系统杀掉 WebView / App 后，sessionStorage 一起没了，回前台（或重新进播放页）
+ * 全屏状态就丢了（用户真机报）。localStorage 带 12 小时有效期 + 离开播放页
+ * 立即清除，所以「隔天再进播放页」不会莫名自动全屏。
  */
 const FS_INTENT_KEY = 'meow.play.fsIntent'
+/** 全屏意图有效期：超过这个时间视为过期（App 被杀后隔很久进来不自动全屏） */
+const FS_INTENT_TTL_MS = 12 * 3600_000
 /**
  * 组件正在卸载（换集/换线路 → 整页重建）。
  *
@@ -4221,15 +4267,15 @@ let unmounting = false
 
 function rememberFsIntent(on: boolean) {
   try {
-    if (on) sessionStorage.setItem(FS_INTENT_KEY, '1')
-    else sessionStorage.removeItem(FS_INTENT_KEY)
+    if (on) localStorage.setItem(FS_INTENT_KEY, String(Date.now()))
+    else localStorage.removeItem(FS_INTENT_KEY)
   } catch {
-    /* 隐私模式下 sessionStorage 可能不可用，忽略 */
+    /* 隐私模式下 localStorage 可能不可用，忽略 */
   }
 }
 
 /**
- * 换集后恢复全屏。
+ * 换集 / 回前台恢复全屏。
  *
  * <p><b>为什么恢复成"伪全屏"而不是再调一次 `requestFullscreen`</b>：
  * 真全屏 API 要求**用户手势**，页面刚重建时没有任何手势，调用必然
@@ -4240,7 +4286,10 @@ function rememberFsIntent(on: boolean) {
 async function restoreFsIntent() {
   let want = false
   try {
-    want = sessionStorage.getItem(FS_INTENT_KEY) === '1'
+    const ts = Number(localStorage.getItem(FS_INTENT_KEY))
+    want = Number.isFinite(ts) && ts > 0 && Date.now() - ts < FS_INTENT_TTL_MS
+    // 过期 / 脏数据：顺手清掉，避免一直留着
+    if (!want) localStorage.removeItem(FS_INTENT_KEY)
   } catch {
     return
   }
@@ -6407,8 +6456,10 @@ onMounted(() => {
     dm.value?.resize()
     checkOrientation()
     syncCompactViewport()
+    syncLandscapeViewport()
   })
   syncCompactViewport()
+  syncLandscapeViewport()
   // 关页面/切走前补一次，避免最后几秒丢掉
   window.addEventListener('pagehide', onPageHide)
   // 隐藏到托盘/最小化不会触发 pagehide，音频会继续播；用 visibilitychange 兜住
@@ -6588,14 +6639,34 @@ function pauseMediaOnHide() {
 function onVisibilityChange() {
   if (document.visibilityState !== 'hidden') {
     resumeAfterVisibility()
+    /*
+     * 回前台补一次全屏恢复（2026-11-25 用户报「切后台回来丢全屏」）：
+     * WKWebView 被系统回收/重建或 HTML 全屏被丢弃时，pseudoFs/fullscreen
+     * 可能已经复位；意图还在就重新铺满（用户手势之外只能走伪全屏）。
+     */
+    void restoreFsIntent()
+    return
+  }
+  /*
+   * 移动端（iOS / 手机 WebView）：后台继续播（2026-11-25 用户要求
+   * 「切后台还能播」）。Info.plist 已有 UIBackgroundModes=audio，壳里再配
+   * AVAudioSession(.playback)；这里主动 pause 就白配了。
+   *
+   * ★ TV 壳不能跳过：hidden 也可能是原生 ExoPlayer 盖上来了，不暂停会
+   *   双重出声（mediaExclusive 依赖「是不是我们停的」这个标志）。
+   */
+  if (isTouch.value && !isTvShell()) {
+    const v = video.value
+    playingBeforeHide = !!(v && !v.paused && !v.ended)
+    flushProgress(true)
     return
   }
   pauseMediaOnHide()
 }
 
-/** 重新可见：把隐藏前正在播的续上（仅 TV；PC 最小化保持"回来是暂停态"） */
+/** 重新可见：把隐藏前正在播的续上（移动端后台保播 / TV 原生播放器返回） */
 function resumeAfterVisibility() {
-  if (!isTvEnv()) return
+  if (!isTvEnv() && !(isTouch.value && !isTvShell())) return
   if (!playingBeforeHide) return
   playingBeforeHide = false
   const v = video.value
@@ -6878,6 +6949,7 @@ defineExpose({
         showCtrl ? 'opacity-100' : 'pointer-events-none invisible opacity-0',
         isDesktopShell() ? 'pl-24' : 'pl-4 sm:pl-5',
       ]"
+      :style="isTouch ? { paddingTop: 'calc(env(safe-area-inset-top) + 0.75rem)' } : undefined"
     >
       <!--
         ★ TV 上不给返回按钮（用户要求，2026-11-02）。
@@ -7378,21 +7450,43 @@ defineExpose({
     </div>
 
     <!--
-      锁定状态的解锁入口（移动端全屏防误触）。
-      锁定后画面不响应任何点击/手势，点一下只把这个按钮闪出来；
-      放左侧中部是拇指自然落点，也不挡进度条与底栏。
+      锁定 / 解锁（移动端全屏，右侧边界上下居中，2026-11-25 用户口径）。
+      · 未锁定：随控制栏显隐（主流 App 的「锁」都在播放层上，不占底栏）；
+      · 锁定后：控制栏收起，点屏幕任意处在**同一位置**闪出解锁按钮；
+      · 浮层展开时让位（右侧中部会压到面板）。
     -->
     <button
-      v-if="locked && lockHint"
+      v-if="canLock && !anyPanelOpen && ((!locked && showCtrl) || (locked && lockHint))"
       type="button"
-      class="absolute left-3 top-1/2 z-40 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full bg-black/60 text-ink shadow-xl ring-1 ring-white/20"
-      aria-label="解锁画面"
-      title="解锁"
+      class="absolute top-1/2 z-40 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/60 text-ink shadow-xl ring-1 ring-white/20"
+      style="right: max(0.75rem, env(safe-area-inset-right))"
+      :aria-label="locked ? '解锁画面' : '锁定画面'"
+      :title="locked ? '解锁' : '锁定画面（防误触）'"
       @click.stop="toggleLock"
     >
-      <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <!-- 已锁定：闭锁（高亮，一眼看出当前状态） -->
+      <svg
+        v-if="locked"
+        class="h-5 w-5 text-player"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+      >
         <rect x="4.5" y="10.5" width="15" height="10" rx="2" />
         <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" />
+      </svg>
+      <!-- 未锁定：开锁（提示"点我锁屏"） -->
+      <svg
+        v-else
+        class="h-5 w-5"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+      >
+        <rect x="4.5" y="10.5" width="15" height="10" rx="2" />
+        <path d="M8 10.5V7a4 4 0 0 1 7.5-1.9" />
       </svg>
     </button>
 
@@ -7681,6 +7775,23 @@ defineExpose({
           </svg>
         </button>
 
+        <!--
+          弹幕设置（移动端）：紧贴搜索图标右侧，直接开面板。
+          以前只有「更多」菜单里有入口，手机全屏要看设置得先点更多（2026-11-25 用户要求）。
+          PC/TV 仍在「更多」菜单（本按钮 isTouch 才渲染）。
+        -->
+        <button
+          v-if="isTouch"
+          class="hidden h-7 w-7 shrink-0 place-items-center rounded-md bg-white/10 transition hover:bg-white/20 sm:grid"
+          title="弹幕设置"
+          aria-label="弹幕设置"
+          @click.stop="toggleDmPanel($event)"
+        >
+          <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 6h16M4 12h10M4 18h7" />
+          </svg>
+        </button>
+
         <!-- 倍速 -->
         <RateSelect
           class="shrink-0"
@@ -7712,24 +7823,6 @@ defineExpose({
           <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 12a9 9 0 1 1-3-6.7" />
             <path d="M21 4v5h-5" />
-          </svg>
-        </button>
-
-        <!--
-          全屏锁定（移动端）：防误触。只触屏 + 全屏出现（canLock），
-          TV 靠遥控器不需要、也避免挤占底栏；锁定后控制栏立刻收起，
-          点屏左侧闪出解锁按钮（见上方浮动按钮）。
-        -->
-        <button
-          v-if="canLock"
-          class="hit-44 grid h-8 w-8 shrink-0 place-items-center rounded-full transition hover:bg-white/10 sm:h-9 sm:w-9"
-          title="锁定画面（防误触）"
-          aria-label="锁定画面"
-          @click.stop="toggleLock"
-        >
-          <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="4.5" y="10.5" width="15" height="10" rx="2" />
-            <path d="M8 10.5V7a4 4 0 0 1 7.5-1.9" />
           </svg>
         </button>
 
@@ -7941,7 +8034,12 @@ defineExpose({
         </svg>
         刷新
       </button>
-      <button class="menu-item" @click="toggleDmPanel($event)">
+      <!--
+        弹幕设置：移动端横屏走底栏（搜索图标右侧）；竖屏 <sm 底栏放不下，
+        保留在菜单里（同一入口两处互补，和「搜索弹幕」的 `sm:hidden` 同款）。
+        PC/TV 始终走菜单。
+      -->
+      <button class="menu-item" :class="isTouch ? 'sm:hidden' : ''" @click="toggleDmPanel($event)">
         <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M4 6h16M4 12h10M4 18h7" />
         </svg>

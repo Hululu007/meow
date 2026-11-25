@@ -207,6 +207,33 @@ describe('移动端全屏锁定', () => {
     w.unmount()
   })
 
+  it('自动横屏播放（未点全屏）也有锁按钮', async () => {
+    // iPhone 横屏 CSS 视口：844×390（短边 < 480 → compact）
+    Object.defineProperty(window, 'innerWidth', { value: 844, configurable: true })
+    Object.defineProperty(window, 'innerHeight', { value: 390, configurable: true })
+    const w = mountPlayer()
+    fakeMedia(w)
+    await w.vm.$nextTick()
+    expect(
+      w.findAll('button').some((b) => b.attributes('aria-label') === '锁定画面'),
+      '自动转横屏后锁按钮不能消失（用户 2026-11-25 真机报）',
+    ).toBe(true)
+    w.unmount()
+    Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true })
+    Object.defineProperty(window, 'innerHeight', { value: 768, configurable: true })
+  })
+
+  it('移动端底栏提供弹幕设置入口（搜索图标右侧），不再收进更多', async () => {
+    const w = mountPlayer()
+    fakeMedia(w)
+    const btn = w.findAll('button').find((b) => b.attributes('aria-label') === '弹幕设置')
+    expect(btn, '底栏缺少弹幕设置按钮').toBeTruthy()
+    await btn!.trigger('click')
+    await w.vm.$nextTick()
+    expect(w.find('[data-panel="dm"]').exists()).toBe(true)
+    w.unmount()
+  })
+
   it('退出全屏自动解锁（不留无入口的锁定状态）', async () => {
     const w = mountPlayer()
     fakeMedia(w)

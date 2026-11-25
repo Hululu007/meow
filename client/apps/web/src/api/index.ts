@@ -197,8 +197,24 @@ export function reportClientLog(
  * 这里抛事件让 App 弹一条「重载即恢复」的横幅，别让用户以为是图/按钮坏了。
  */
 let netFailStamps: number[] = []
+/**
+ * 回前台宽限（2026-11-25 用户报「切后台几分钟回来弹后端连接中断」）。
+ *
+ * iOS/手机上应用切后台会被系统挂起：Java 网关线程、WebView 的请求一起停。
+ * 回前台的第一次批量请求（首页、播放页续数据）必然失败几笔，凑满
+ * 「5 次网络级失败/10s」就弹横幅 —— 但那只是挂起恢复，不是后端挂了。
+ * 回前台后调用 holdNetFailures()，这段时间的失败不计数。
+ */
+let netGraceUntil = 0
+
+export function holdNetFailures(ms = 4000): void {
+  netGraceUntil = Date.now() + ms
+  netFailStamps = []
+}
+
 function noteNetFailure() {
   const now = Date.now()
+  if (now < netGraceUntil) return
   netFailStamps = netFailStamps.filter((t) => now - t < 10_000)
   netFailStamps.push(now)
   if (netFailStamps.length >= 5) {

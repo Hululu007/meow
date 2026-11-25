@@ -329,7 +329,8 @@ describe('DanmakuRenderer', () => {
     const r = new DanmakuRenderer(host)
     const box = host.firstElementChild as HTMLElement
     Object.defineProperty(box, 'clientWidth', { value: 800, configurable: true })
-    Object.defineProperty(box, 'clientHeight', { value: 450, configurable: true })
+    // 用 540 高（矮屏补偿的分界）：字号基准仍是 22，测的是 scale 本身
+    Object.defineProperty(box, 'clientHeight', { value: 540, configurable: true })
     r.resize()
 
     // 透明度
@@ -343,7 +344,7 @@ describe('DanmakuRenderer', () => {
     // 显示区域（轨道高度随字号变，期望值按实际公式算）
     r.setOptions({ area: 1 })
     const st = r.debugState()
-    expect(st.laneCount).toBe(Math.max(3, Math.floor(450 / st.laneHeight)))
+    expect(st.laneCount).toBe(Math.max(3, Math.floor(540 / st.laneHeight)))
 
     // 滚动时长：影响位置推进速度。
     //
@@ -746,10 +747,21 @@ describe('弹幕重叠扫描', () => {
     expect(narrowW).toBeLessThan(wideW)
   })
 
-  it('横屏和 PC 的字号完全不受窄屏补偿影响', () => {
+  it('横屏手机按矮屏补偿缩字号；540p 以上（TV/PC）完全不变', () => {
+    // 短边 < 480 的横屏（手机）：可视高度小，字号按 H/480 缩，避免"弹幕太大"
     for (const [w, h] of [
       [640, 360],
       [844, 390],
+    ]) {
+      const r = setup(w, h)
+      const f = r.debugState().fontSize
+      expect(f, `${w}x${h}`).toBeLessThan(22)
+      expect(f, `${w}x${h}`).toBeGreaterThanOrEqual(12)
+      r.destroy()
+    }
+    // 540p 及以上：维持 22 基准（TV 960×540 / PC / 大屏）
+    for (const [w, h] of [
+      [960, 540],
       [1280, 720],
       [1920, 1080],
     ]) {

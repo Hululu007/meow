@@ -32,7 +32,7 @@ import {
   runCheck as runUpdateCheck,
 } from '@/stores/appUpdate'
 import { fpkMarkPrompted, fpkPromptDue } from '@/api/fpkUpgrade'
-import { currentBase, isDesktop, listPlugins, tauriInvoke } from '@/api'
+import { currentBase, holdNetFailures, isDesktop, listPlugins, tauriInvoke } from '@/api'
 import { markChecked, runBackgroundChecks } from '@/stores/updateCenter'
 
 const store = useAppStore()
@@ -264,6 +264,8 @@ function syncWallpaperAttr(on: boolean) {
 onMounted(async () => {
   // 内核网络进程被回收时（图片全碎 + 按钮无反应）弹恢复横幅
   window.addEventListener('meow:net-unhealthy', onNetUnhealthy)
+  // 切后台回前台：给挂起恢复的请求失败一个宽限期，别误报「后端连接中断」
+  document.addEventListener('visibilitychange', onAppVisibility)
   // 首次关闭提示：壳只负责 eval 这个全局函数，弹层在本组件里
   if (desktop) {
     ;(window as unknown as { __meowTrayHint?: () => void }).__meowTrayHint = showTrayHint
@@ -825,6 +827,7 @@ function uninstallTvBackHandler() {
 
 onBeforeUnmount(() => {
   window.removeEventListener('meow:net-unhealthy', onNetUnhealthy)
+  document.removeEventListener('visibilitychange', onAppVisibility)
   if (netShowTimer !== undefined) window.clearTimeout(netShowTimer)
   stopNetProbe()
   // 只清自己挂的钩子，避免覆盖别的会话/组件设置的函数
@@ -968,6 +971,22 @@ function onNetUnhealthy() {
 function dismissNetBroken() {
   netBroken.value = false
   stopNetProbe()
+}
+
+/**
+ * 回前台（2026-11-25 用户报「切后台几分钟回来弹后端连接中断」）。
+ *
+ * iOS/手机切后台会被挂起：Java 网关线程停、WebView 请求全断。回前台最初的
+ * 几笔请求必然失败，但那不是后端挂了 —— 先给 4 秒宽限不计数；横幅如果已经
+ * 弹出来，立刻探活一次，通了直接收起（不等 2 秒轮询）。
+ */
+function onAppVisibility() {
+  if (document.visibilityState !== 'visible') return
+  holdNetFailures(4000)
+  if (!netBroken.value) return
+  void netHealthOk().then((ok) => {
+    if (ok) netBroken.value = false
+  })
 }
 
 function reloadPage() {

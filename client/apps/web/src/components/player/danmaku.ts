@@ -497,7 +497,18 @@ export class DanmakuRenderer {
     // 窄屏补偿：以 640px 为界（约等于 Tailwind 的 sm 断点），
     // 越窄缩得越多，但不低于 0.62 倍，避免手机上字太小
     const narrow = W >= 640 ? 1 : Math.max(0.62, W / 640)
-    return Math.max(12, Math.min(40, base * narrow))
+    /*
+     * 矮屏补偿（2026-11-25 用户真机「弹幕太大了」）。
+     *
+     * 22px 是按 540p 以上的视口定的；手机横屏的可视高度只有 320~430px，
+     * 同样 22px 相对画面明显偏大（iPhone 横屏 390px 高时占 5.6% 屏幕高，
+     * 相当于 1080p 上的 60px）。以 480px 为基准线性缩到 0.66 倍：
+     *   · 844×390 → 0.81 倍（约 18px）
+     *   · 640×360 → 0.75 倍（约 17px）
+     * 540p 及以上的 TV / PC 完全不受影响（仍 22px）。
+     */
+    const short = Math.min(1, Math.max(0.66, this.H / 480))
+    return Math.max(12, Math.min(40, base * narrow * short))
   }
 
   /**
