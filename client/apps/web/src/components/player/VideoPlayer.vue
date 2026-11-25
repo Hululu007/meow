@@ -3295,6 +3295,9 @@ async function lockLandscapeQuietly() {
 }
 
 function checkOrientation() {
+  // 方向可能由原生壳转过（个别 WKWebView 版本的 resize 事件不一定来），
+  // 这里顺带刷一次，isFsUi / canLock 才能跟上「自动横屏 = 全屏」。
+  syncLandscapeViewport()
   if (!isTouch.value) return
   const portrait = window.innerHeight > window.innerWidth
   // 真全屏时浏览器会自己处理方向，不用打扰；
