@@ -485,7 +485,7 @@ async function request<T>(
 
 async function requestUncached<T>(
   path: string,
-  options: { method?: string; body?: unknown; timeout?: number; keepalive?: boolean } = {},
+  options: { method?: string; body?: unknown; timeout?: number; keepalive?: boolean; retried?: boolean } = {},
 ): Promise<T> {
   const { method = 'GET', body, timeout = 60_000, keepalive } = options
   // 桌面端地址未定时不要发同源请求（会命中 dev 服务器代理，连到不该连的后端）
@@ -556,6 +556,16 @@ async function requestUncached<T>(
           : String((e as { message?: unknown })?.message ?? e)
       webLog(`fetch ${method} ${base()}${path} failed after ${Date.now() - startedAt}ms: ${why}`)
       noteNetFailure()
+      /*
+       * 回前台重绑窗口内的静默重试（2026-11-25 日志 A4）：
+       * iOS 看门狗重绑 9978 的 1–2s 内，一批 GET 全失败（实测 7 条
+       * /api/config/*）。只重试 GET 且只在宽限期内、最多一次 ——
+       * POST 可能是建搜索任务/导入配置，重放不幂等。
+       */
+      if (method === 'GET' && Date.now() < netGraceUntil && !options.retried) {
+        await new Promise((r) => setTimeout(r, 700))
+        return requestUncached<T>(path, { ...options, retried: true })
+      }
     }
     throw e
   } finally {

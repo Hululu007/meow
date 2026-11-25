@@ -65,8 +65,20 @@ public final class JvmHttpServer extends HttpServer {
                  */
                 long ms = System.currentTimeMillis() - t0;
                 if (ms >= 3000) {
+                    /*
+                     * 代理类请求把 query 也带上（脱敏后截断）：只看 `/api/proxy/image`
+                     * 不知道卡在哪个上游主机（日志 A13，2026-11-25）。
+                     * 其它路径不带 query（搜索词等敏感内容不进日志）。
+                     */
+                    String path = ex.getRequestURI().getPath();
+                    String q = ex.getRequestURI().getRawQuery();
+                    if (q != null && !q.isEmpty()
+                            && (path.endsWith("/proxy/image") || path.endsWith("/proxy/stream"))) {
+                        String scrubbed = q.length() > 200 ? q.substring(0, 200) + "…" : q;
+                        path = path + "?" + scrubbed;
+                    }
                     System.out.println("[slow] " + ex.getRequestMethod() + " "
-                            + ex.getRequestURI().getPath() + " " + ms + "ms");
+                            + path + " " + ms + "ms");
                 }
             }
         });

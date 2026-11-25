@@ -3,6 +3,7 @@ server/host/src/SpiderHost.java
 server/host/src/Test.java
 server/host/src/android/annotation/SuppressLint.java
 server/host/src/android/app/Activity.java
+server/host/src/android/app/ActivityThread.java
 server/host/src/android/app/AlertDialog.java
 server/host/src/android/app/Application.java
 server/host/src/android/app/Dialog.java

@@ -354,6 +354,11 @@ static jboolean meowNativeDownload(JNIEnv *env, jclass cls, jstring jurl, jstrin
                 [@"-Duser.dir=" stringByAppendingString:dataDir],
                 [@"-Duser.home=" stringByAppendingString:dataDir],
                 [@"-Djava.io.tmpdir=" stringByAppendingString:tmp],
+                // 版本唯一来源是 Info.plist（bump-version 维护）。不传的话
+                // ApiServer.resolveVersion() 在 iOS 上找不到 VERSION 文件，
+                // 日志会打成 "[api] unknown listening ..."（2026-11-25 日志 A13）。
+                [@"-Dmeow.version=" stringByAppendingString:
+                    ([[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"] ?: @"")],
                 [@"-Djavax.net.ssl.trustStore=" stringByAppendingString:trustStore],
                 @"-Djavax.net.ssl.trustStoreType=PKCS12",
                 @"-Djava.awt.headless=true",

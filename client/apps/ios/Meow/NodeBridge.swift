@@ -18,6 +18,8 @@ enum NodeBridge {
 
     private static let lock = NSLock()
     private static var started = false
+    /// 稳定计时只排一次：回前台补写 host 文件不该再起一个 5 分钟线程
+    private static var stableTimerScheduled = false
 
     /// nodejs-mobile 唯一对外的 C 接口：`int node_start(int argc, char *argv[])`。
     /// 用 @_silgen_name 直接声明，避免依赖框架的 modulemap。
@@ -118,6 +120,14 @@ enum NodeBridge {
             let argv: [UnsafeMutablePointer<CChar>?] = [
                 strdup("node"),
                 strdup("--unhandled-rejections=warn"),
+                /*
+                 * 关掉实验性内置 fetch（undici）。nodejs-mobile 的 V8 没编 WASM，
+                 * undici 的 lazyllhttp 一初始化就抛 `WebAssembly is not defined`。
+                 * 入口虽然把 fetch 换成了 node-fetch，但 Node 18 的 globalThis.fetch
+                 * 是惰性 getter，任何一次误触（含读取 Headers/Request/Response）
+                 * 都会把 undici 拉起来。从源头关掉最稳（2026-11-25 日志 A8）。
+                 */
+                strdup("--no-experimental-fetch"),
                 // 与 JVM(512m)、WKWebView 同住一个进程：V8 默认堆上限很大（~1.5G），
                 // 让它按需长会挤压 WebKit 的图像解码，真机表现是「图片突然全碎」。
                 strdup("--max-old-space-size=160"),
@@ -164,10 +174,11 @@ enum NodeBridge {
             if (typeof f === 'function') {
               Object.defineProperty(globalThis, 'fetch', { value: f, configurable: true, writable: true });
             }
-            if (m && m.Headers && typeof globalThis.Headers === 'undefined') globalThis.Headers = m.Headers;
-            if (m && m.Request && typeof globalThis.Request === 'undefined') globalThis.Request = m.Request;
-            if (m && m.Response && typeof globalThis.Response === 'undefined') globalThis.Response = m.Response;
-            LOG('fetch -> node-fetch');
+            // ★ 不要读 `typeof globalThis.Headers/Request/Response`：Node 18 的
+            //   全局是惰性 getter，读一下就会加载 undici（无 WASM → 抛错）。
+            //   无条件覆盖成 node-fetch 的实现，代价只是丢掉内置类。
+            const def = (k, v) => { if (v) Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true }); };
+            def('Headers', m && m.Headers); def('Request', m && m.Request); def('Response', m && m.Response);            LOG('fetch -> node-fetch');
           } catch (e) {
             LOG('node-fetch unavailable', e);
           }
@@ -233,21 +244,58 @@ enum NodeBridge {
         let deadline = Date().addingTimeInterval(240)
         while Date() < deadline {
             if httpAlive(probe) {
-                let tpl = "http://127.0.0.1:\(port)/api/v2/fongmi/danmaku?name={name}&episode={episode}"
-                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                let f = docs.appendingPathComponent("gateway/danmaku-host.txt")
-                do {
-                    try tpl.write(to: f, atomically: true, encoding: .utf8)
-                    LaunchLog.write("[node] healthy; danmaku host injected")
-                    scheduleStableReset()
-                } catch {
-                    LaunchLog.write("[node] write host failed: \(error.localizedDescription)")
-                }
+                writeHostFile()
                 return
             }
             Thread.sleep(forTimeInterval: 3)
         }
         LaunchLog.write("[node] health timeout (built-in danmaku stays)")
+    }
+
+    /// 写 data/danmaku-host.txt（宿主每次弹幕请求重读它）。
+    private static func writeHostFile() {
+        let tpl = "http://127.0.0.1:\(port)/api/v2/fongmi/danmaku?name={name}&episode={episode}"
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let f = docs.appendingPathComponent("gateway/danmaku-host.txt")
+        do {
+            try tpl.write(to: f, atomically: true, encoding: .utf8)
+            LaunchLog.write("[node] healthy; danmaku host injected")
+            lock.lock()
+            let first = !stableTimerScheduled
+            if first { stableTimerScheduled = true }
+            lock.unlock()
+            if first { scheduleStableReset() }
+        } catch {
+            LaunchLog.write("[node] write host failed: \(error.localizedDescription)")
+        }
+    }
+
+    /**
+     回前台哨兵（2026-11-25 日志 A2）。
+
+     <p>iOS 挂起会回收监听 socket：进程还在、端口没了，宿主每次弹幕请求都打
+     一个死端口（`Connection refused`，还会把本机 host 打进失败冷却）。
+
+     <p>处置：探活失败就**摘掉 danmaku-host.txt**，让 ApiServer 回退内置弹幕源；
+     探活成功则补写（文件可能被清过）。**不在进程内重启 node** ——
+     nodejs-mobile 的 `node_start` 只支持调用一次，二次调用会把 App 一起带走；
+     下次冷启动自然恢复。
+     */
+    static func ensureServing() {
+        DispatchQueue.global(qos: .utility).async {
+            lock.lock()
+            let wasStarted = started
+            lock.unlock()
+            guard wasStarted else { return }
+            if httpAlive("http://127.0.0.1:\(port)/") {
+                writeHostFile()
+                return
+            }
+            LaunchLog.write("[node] service dead after resume; drop danmaku host (built-in fallback)")
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            try? FileManager.default.removeItem(
+                at: docs.appendingPathComponent("gateway/danmaku-host.txt"))
+        }
     }
 
     /// 同步 GET：拿到任何 HTTP 响应（状态 < 500）就算「服务活着」。

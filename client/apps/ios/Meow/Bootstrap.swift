@@ -21,6 +21,8 @@ final class Bootstrap: ObservableObject {
     private let staticServer = StaticServer()
     private var started = false
     private var staticWatchdog: Timer?
+    /// 静态服务重启后自动重试加载过没有（限次，防循环）
+    private var autoRetriedAfterRestart = false
 
     nonisolated init() {}
 
@@ -146,11 +148,26 @@ final class Bootstrap: ObservableObject {
         }
     }
 
-    /// 回前台：立刻补一次静态服务探活 + 唤醒 Java 看门狗。
+    /// 回前台：立刻补一次静态服务探活 + 唤醒 Java 看门狗 + node 弹幕服务探活。
     func appBecameActive() {
         LaunchLog.write("scene active; ensure static server + kick watchdog")
         JvmBridge.kickWatchdog()
-        Task { await staticServer.ensureServing() }
+        // node 的监听 socket 也会被挂起回收：探活失败就摘掉 danmaku-host.txt，
+        // 让后端回退内置弹幕源（见 NodeBridge.ensureServing 的注释）。
+        NodeBridge.ensureServing()
+        Task {
+            await staticServer.ensureServing()
+            /*
+             * A5（2026-11-25 日志）：静态服务重启后，如果页面**从没加载成功**
+             * 且停在失败态，自动重试一次（限次防循环）——用户不必去点开屏页。
+             * 已经加载成功的 SPA 不受静态服务重启影响，不重载（不打断播放）。
+             */
+            if failed && !webReady && !autoRetriedAfterRestart {
+                autoRetriedAfterRestart = true
+                LaunchLog.write("auto retry web load after static restart")
+                retry()
+            }
+        }
     }
 
     // MARK: - helpers

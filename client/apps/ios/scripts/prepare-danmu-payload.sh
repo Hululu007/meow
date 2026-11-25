@@ -49,6 +49,21 @@ rm -f "$OUT/build-forward-widget.js" "$OUT/Dockerfile" 2>/dev/null || true
 [ -f "$OUT/danmu_api/server.js" ] || { echo "[danmu] 载荷结构不对：缺 danmu_api/server.js" >&2; exit 2; }
 [ -d "$OUT/node_modules" ] || { echo "[danmu] 载荷结构不对：缺 node_modules" >&2; exit 2; }
 
+# 加固：让监听地址尊重 DANMU_API_BIND（iOS 壳已设 127.0.0.1）。
+# 上游 server-listen-util.js 把 host 写死成 '::' / '0.0.0.0'，等于把 19321/5321
+# 暴露到整个局域网。发布出来的 zip 里还是旧代码，这里解包后打补丁；
+# PC/TV 的插件构建（server/build-plugin-danmu.ps1）打同一处补丁。
+UTIL="$OUT/danmu_api/utils/server-listen-util.js"
+if [ -f "$UTIL" ]; then
+  sed -i.bak \
+    -e "s/host: '::'/host: (process.env.DANMU_API_BIND || '::')/" \
+    -e "s/host: '0.0.0.0'/host: (process.env.DANMU_API_BIND || '0.0.0.0')/" \
+    "$UTIL"
+  rm -f "$UTIL.bak"
+  grep -q "DANMU_API_BIND" "$UTIL" || { echo "[danmu] DANMU_API_BIND 补丁未命中" >&2; exit 3; }
+  echo "[danmu] listen util patched for DANMU_API_BIND"
+fi
+
 echo "$VERSION" > "$OUT/.payload-version"
 du -sh "$OUT"
 echo "[danmu] ok: $OUT"

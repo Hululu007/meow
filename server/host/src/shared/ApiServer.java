@@ -534,11 +534,28 @@ public class ApiServer {
         return 24;
     }
 
-    private static final ExecutorService FANOUT = Executors.newCachedThreadPool(r -> {
-        Thread t = new Thread(null, r, "meow-fanout", SEARCH_STACK_BYTES);
-        t.setDaemon(true);
-        return t;
-    });
+    /**
+     * 源站扇出池。
+     *
+     * <p>★ 2026-11-25 从"无上限 cached"改成**固定 64 线程**（日志 A7：旧包线程
+     * 峰值 188，新包 135）。iOS 上 JVM 与 WKWebView 同进程，线程数会直接顶高
+     * 常驻内存，极端时触发 Jetsam 把整个 App 带走。
+     *
+     * <p>为什么是"固定线程 + 无界队列"而不是"cached + 上限 + CallerRuns"：
+     * 一次搜索会提交 200+ 个源任务，无界队列负责排队、不会 reject，也不会像
+     * CallerRuns 那样把任务塞回聚合线程同步跑（那等于取消并发限流，
+     * `tests/health-classification.test.ts` 有门禁）。64 与 4 核设备上的
+     * 搜索并发（≤24）留了余量，探活/解析也共用这个池。
+     */
+    private static final int FANOUT_MAX = 64;
+    private static final ExecutorService FANOUT = new java.util.concurrent.ThreadPoolExecutor(
+            FANOUT_MAX, FANOUT_MAX, 60L, java.util.concurrent.TimeUnit.SECONDS,
+            new java.util.concurrent.LinkedBlockingQueue<>(),
+            r -> {
+                Thread t = new Thread(null, r, "meow-fanout", SEARCH_STACK_BYTES);
+                t.setDaemon(true);
+                return t;
+            });
 
     /**
      * 单条解析器的超时。
@@ -801,7 +818,11 @@ public class ApiServer {
         System.out.println("[api] " + VERSION + " listening on http://127.0.0.1:" + actualPort);
         System.out.println("[api] sites: " + siteCount() + " | ext: " + implementedExtCount());
         System.out.println("[api] data: " + core.DataPaths.root().toAbsolutePath());
-        System.out.println("[api] danmaku api: " + (danmakuApiConfigured() ? "configured" : "not configured (using built-in hosts)"));
+        System.out.println("[api] danmaku api: " + (danmakuApiConfigured()
+                ? "configured"
+                : (bundledDanmakuHost().isEmpty()
+                        ? "not configured (using built-in hosts)"
+                        : "built-in node host (danmaku-host.txt)")));
         /*
          * 说清 /spider-latest.jar 下发的是哪种形态。
          *
@@ -5899,7 +5920,12 @@ public class ApiServer {
      *
      * <p>cached 池：一次搜索占一个，结束后释放；并发搜索（用户快速改词）时短暂多几个。
      */
-    private static final ExecutorService SEARCH_ORCH = Executors.newCachedThreadPool(r -> {
+    /**
+     * 搜索编排池：无上限的 cached 池在并发搜索多时会按搜索数建线程（日志 A7）。
+     * 固定 8 个足够（一次搜索只占 1 个，且真正并发在 FANOUT）；
+     * 超出的搜索排队，快照显示 0 条直到轮到——可接受，且不再无限涨线程。
+     */
+    private static final ExecutorService SEARCH_ORCH = Executors.newFixedThreadPool(8, r -> {
         Thread t = new Thread(r, "meow-search-orch");
         t.setDaemon(true);
         return t;
@@ -8519,6 +8545,12 @@ public class ApiServer {
                 Thread.sleep(5_000);
                 long t0 = System.currentTimeMillis();
                 String r = fetchDanmakuAutoPrefetch(clean, ep);
+                if (r == null) {
+                    // 主请求在跑 → 预取主动让路；这不是"没抓到结果"（日志 A13）
+                    System.err.println("[danmaku] prefetch " + clean + " ep" + ep
+                            + " 跳过（主请求进行中，由主请求写缓存）");
+                    return;
+                }
                 int n = countTags(r);
                 /*
                  * 质量门：低于 120 条基本是残缺结果（正常剧集几千条）。
@@ -8791,9 +8823,10 @@ public class ApiServer {
     private static String fetchDanmakuAutoPrefetch(String clean, int ep) {
         String cacheKey = "dm|" + clean + "|" + ep;
         if (DANMAKU_INFLIGHT.contains(cacheKey)) {
+            // null = 跳过（主请求在跑），调用方不要把它记成"无结果"
             System.err.println("[danmaku] prefetch skipped (main request running): "
                     + clean + " ep" + ep);
-            return "";
+            return null;
         }
         DANMAKU_PREFETCHING.add(cacheKey);
         DM_NO_NEGATIVE_CACHE.set(Boolean.TRUE);
@@ -11970,7 +12003,16 @@ public class ApiServer {
         @Override
         public java.net.Socket createSocket(java.net.Socket s, String host, int port, boolean autoClose)
                 throws java.io.IOException {
-            return wrap(base.createSocket(s, host, port, autoClose));
+            /*
+             * ★ host 是**解析后的 IP**（URL 已被换成 IP），不能原样交给 TLS。
+             *
+             * 踩过（2026-11-25 真机日志，iqiyi/360kan）：
+             * `No subject alternative names matching IP address 111.13.235.191 found`。
+             * 原因：JSSE 的主机名校验用 layered socket 的 peer host ——
+             * 传 IP 进去就按 IP 校验证书 SAN，而证书只有域名 SAN，必然失败。
+             * 这里忽略传入的 host，改用构造时保存的原域名，SNI 与校验都对。
+             */
+            return wrap(base.createSocket(s, this.sni.getAsciiName(), this.port, autoClose));
         }
 
         @Override
@@ -13345,6 +13387,15 @@ public class ApiServer {
             // 图片不做手动跳转跟随：不跟随等于直接拒绝跳到内网，
             // 而正常图床的跳转极少；若确有需要再按 stream 的写法补。
             c.setInstanceFollowRedirects(false);
+            /*
+             * ★ 单路径也要设 connectTimeout（2026-11-25 真机日志）。
+             *
+             * 踩过：多 IP 分支有 6s，单路径只有 readTimeout —— 坏图床（或 TUN
+             * 下的黑洞地址）会卡在三次握手，实测 `[slow] /api/proxy/image` 出现过
+             * 229~275s，同时 HTTP 线程池 48 个被海报墙占满。
+             * 连接阶段就该 6s 失败：坏图换源/占位，别拖住整个池。
+             */
+            c.setConnectTimeout(6_000);
             c.setReadTimeout(15_000);
             c.setRequestProperty("User-Agent", ua);
             // 防盗链图床要 Referer，而调用方（前端 PosterImage）不会知道该填什么。
