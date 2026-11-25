@@ -1,6 +1,15 @@
 import SwiftUI
 import WebKit
 
+/// 当前 WKWebView 的弱引用。
+///
+/// <p>用途：`scenePhase == .active` 时给页面补发一次 `meow:ios-active` 事件。
+/// `visibilitychange` 在 iOS 上偶尔早于/晚于 scene 真正 active，播放器靠这个
+/// 事件做续播与横屏恢复（2026-11-25 用户报「切后台回来偶尔不自动播」）。
+enum WebViewRegistry {
+    static weak var view: WKWebView?
+}
+
 struct WebView: UIViewRepresentable {
     let url: URL
     let script: String
@@ -30,6 +39,7 @@ struct WebView: UIViewRepresentable {
         config.userContentController = controller
 
         let view = WKWebView(frame: .zero, configuration: config)
+        WebViewRegistry.view = view
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         view.isOpaque = false

@@ -6561,6 +6561,9 @@ onMounted(() => {
   window.addEventListener('pagehide', onPageHide)
   // 隐藏到托盘/最小化不会触发 pagehide，音频会继续播；用 visibilitychange 兜住
   document.addEventListener('visibilitychange', onVisibilityChange)
+  // iOS 壳回前台的可靠信号（原生 scenePhase == .active 时 eval）
+  window.addEventListener('meow:ios-active', onIosActive)
+  ;(window as unknown as { __meowIosActive?: () => void }).__meowIosActive = iosActiveBridge
   // TV 壳从原生播放器（ExoPlayer）返回时的恢复广播（mediaExclusive.ts 发出）
   window.addEventListener('meow:webview-resume', onWebviewResume)
   // ★ 实测 WebView2 在窗口被 Tauri hide() 后仍报 visibilityState='visible'，
@@ -6689,6 +6692,11 @@ onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', onFullscreenChange)
   window.removeEventListener('pagehide', onPageHide)
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  window.removeEventListener('meow:ios-active', onIosActive)
+  {
+    const w = window as unknown as { __meowIosActive?: () => void }
+    if (w.__meowIosActive === iosActiveBridge) w.__meowIosActive = undefined
+  }
   window.removeEventListener('meow:webview-resume', onWebviewResume)
   const w = window as unknown as { __meowPauseMedia?: () => void }
   if (w.__meowPauseMedia === pauseMediaOnHide) w.__meowPauseMedia = undefined
@@ -6801,6 +6809,26 @@ function reapplyMobileOrientation() {
   // 伪全屏状态下补转，退出全屏时才知道要转回来
   if (pseudoFs.value) rotatedByFs = true
   shellSetOrientation('landscape')
+}
+
+/**
+ * iOS 壳「真正回到前台」的原生信号。
+ *
+ * <p>`MeowApp` 在 `scenePhase == .active` 时 eval `window.__meowIosActive()`。
+ * 比 `visibilitychange` 可靠：个别场景后者会早于/晚于 scene 真正 active，
+ * 续播与横屏恢复都会漏（2026-11-25 用户实测「偶尔不自动播」）。
+ * 两次调用都幂等：`playingBeforeHide` 已复位、pseudoFs 已为真时直接返回。
+ */
+function onIosActive() {
+  resumeAfterVisibility()
+  if (!isMobileForm()) return
+  reapplyMobileOrientation()
+  void restoreFsIntent()
+}
+
+/** 挂到 window 供原生调用；卸载时按引用比较摘掉 */
+function iosActiveBridge() {
+  window.dispatchEvent(new Event('meow:ios-active'))
 }
 
 /** 重新可见：把隐藏前正在播的续上（移动端后台保播 / TV 原生播放器返回） */

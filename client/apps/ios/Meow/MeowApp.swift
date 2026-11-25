@@ -35,6 +35,13 @@ struct MeowApp: App {
                         AudioSession.configure()
                         boot.appBecameActive()
                         ShellOrientation.reapplyOnActivate()
+                        // 给页面补一个"真正回到前台"的信号：播放器用它续播/恢复横屏，
+                        // 不依赖 visibilitychange 的时序（2026-11-25 用户实测会漏）。
+                        DispatchQueue.main.async {
+                            WebViewRegistry.view?.evaluateJavaScript(
+                                "window.__meowIosActive&&window.__meowIosActive()",
+                                completionHandler: nil)
+                        }
                     }
                 }
                 .preferredColorScheme(.dark)
