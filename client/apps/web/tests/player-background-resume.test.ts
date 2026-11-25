@@ -102,8 +102,18 @@ describe('回前台续播 / 双击暂停', () => {
     expect(player).toContain('function maybeTouchPointerDouble(')
     const down = player.slice(player.indexOf('function onStagePointerDown('))
     expect(down.slice(0, 400)).toContain('maybeTouchPointerDouble(e)')
-    // click 侧要吞掉 pointer-dbl 带来的迟到 click
-    expect(player).toContain('Date.now() - pointerDblAt < 700')
+    // pointer 双击后 1.5s 内的迟到 click 全部吞掉（放在 suppressClick 之前）
+    expect(player).toContain('ignoreClicksUntil = now + 1500')
+    const click = player.slice(player.indexOf('function onStageClick('))
+    const ignoreAt = click.indexOf('Date.now() < ignoreClicksUntil')
+    const suppressAt = click.indexOf('if (suppressClick)')
+    expect(ignoreAt).toBeGreaterThan(-1)
+    expect(suppressAt).toBeGreaterThan(ignoreAt)
+  })
+
+  it('双击暂停后 0.9s 内的 play 请求忽略（防迟到 click 把暂停播回去）', () => {
+    const toggle = player.slice(player.indexOf('function toggle()'), player.indexOf('function toggle()') + 1600)
+    expect(toggle).toContain("toggle→play ignored (pause <900ms ago)")
   })
 
   it('恢复窗口不因"当前位置看起来正常"提前关闭（内核会稍后才重置）', () => {

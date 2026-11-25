@@ -275,7 +275,7 @@ describe('直播播放页：播放交互（缓冲/音量/亮度/调试/画中画
       'utf8',
     )
     const i = player.indexOf('function onStageClick')
-    const body = player.slice(i, i + 3200)
+    const body = player.slice(i, i + 5200)
     /*
      * 关键判据：这个 click 之后还会冒泡到根节点触发 onWrapClick 的 wake()，
      * 所以必须记下**点击前**的可见状态 —— 否则 220ms 后无条件 toggle 会把

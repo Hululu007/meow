@@ -2428,6 +2428,14 @@ function toggle() {
     bgLog(`toggle→pause paused=${v.paused} ct=${v.currentTime.toFixed(1)} vis=${document.visibilityState}`)
     v.pause()
   } else {
+    /*
+     * 刚暂停不到 0.9s 的"play 请求"几乎都是迟到 click 造成的重复动作
+     * （真机：双击暂停后立刻被播回去）。真要恢复，再点一次即可。
+     */
+    if (userPausedAt && Date.now() - userPausedAt < 900) {
+      bgLog('toggle→play ignored (pause <900ms ago)')
+      return
+    }
     userPausedAt = 0
     bgLog(`toggle→play paused=${v.paused} ct=${v.currentTime.toFixed(1)} vis=${document.visibilityState}`)
     safePlay(v)
@@ -2518,6 +2526,15 @@ let lastPTapAt = 0
 let lastPTapX = 0
 let lastPTapY = 0
 let pointerDblAt = 0
+/**
+ * 这一时刻之前的 click 一律不处理。
+ *
+ * <p>★ 2026-11-25 真机：pointer 双击执行后，WKWebView 还会把两次点击的
+ * click 迟到几百毫秒再补发；有的 click 落在 700ms 吞掉窗口之外，click 侧的
+ * 自识别双击又执行了一次 → 暂停后立刻被"播回去"（前两次双击都这样，
+ * 第三次没有迟到 click 就正常）。这里给一个更宽的静默期。
+ */
+let ignoreClicksUntil = 0
 /** 从后台回到前台的时刻：用于确认"首击是否被系统吞掉"的诊断日志 */
 let resumedAt = 0
 
@@ -2546,6 +2563,7 @@ function maybeTouchPointerDouble(e: PointerEvent) {
   lastPTapAt = 0
   pointerDblAt = now
   syntheticDblAt = now
+  ignoreClicksUntil = now + 1500
   clearTimeout(clickTimer)
   suppressNextClick()
   bgLog(`EV pointer-dbl x=${Math.round(e.clientX)} y=${Math.round(e.clientY)}`)
@@ -2575,14 +2593,33 @@ function onStageClick(e: MouseEvent) {
     flashLockHint()
     return
   }
+  /*
+   * pointer 级双击已经执行过动作：它带来的迟到 click 全部吞掉。
+   * ★ 必须放在 suppressClick 之前：suppressClick 是一次性的，
+   *   可能已经被更早的迟到 click 消费掉，之后的双击 click 就会漏进来
+   *   再执行一次 toggle（真机：暂停后立刻又被播回去）。
+   */
+  if (Date.now() < ignoreClicksUntil) {
+    const now = Date.now()
+    if (isMobileForm()) {
+      bgLog(
+        `EV click swallowed x=${Math.round(e.clientX)} y=${Math.round(e.clientY)} ` +
+        `left=${ignoreClicksUntil - now}ms`,
+      )
+    }
+    suppressClick = false
+    clearTimeout(suppressTimer)
+    lastTapAt = 0
+    return
+  }
   // 关浮层/长按产生的 click 不当作播放暂停
   if (suppressClick) {
     suppressClick = false
     clearTimeout(suppressTimer)
     return
   }
-  // pointerdown 级双击已经执行过动作：它带来的 click（可能迟到几百毫秒）全部吞掉
-  if (pointerDblAt && Date.now() - pointerDblAt < 700) {
+  // pointerdown 级双击已经执行过动作：兜底（ignoreClicksUntil 之外的极端迟到）
+  if (pointerDblAt && Date.now() - pointerDblAt < 2000) {
     lastTapAt = 0
     return
   }
@@ -2634,6 +2671,7 @@ function onStageClick(e: MouseEvent) {
       syntheticDblAt = now
       // 双击后浏览器可能再补发一次 click（Android WebView 实测），吞掉它
       suppressNextClick()
+      if (isMobileForm()) bgLog(`EV click-dbl(src=clicks) x=${Math.round(e.clientX)} y=${Math.round(e.clientY)}`)
       touchDoubleTapAction(e)
       return
     }
@@ -2834,7 +2872,8 @@ function onStageDblClick(e: MouseEvent) {
      * 再执行一次会快进 20 秒/暂停两次，这里直接吞掉。
      * 500ms 足够覆盖 click2→dblclick 的派发间隔，又短于两次独立双击。
      */
-    if (Date.now() - syntheticDblAt < 500) return
+    // 迟到窗口可能到 1s 以上（真机 click 合成被转屏拖慢），放宽到 1.5s
+    if (Date.now() - syntheticDblAt < 1500) return
     touchDoubleTapAction(e)
     return
   }
