@@ -39,10 +39,19 @@ public final class LocalSites {
     static final class Site {
         String key = "";       // 路由用的名字（/api/{key}/home）
         String name = "";      // 显示名
-        String api = "";       // csp_Xxx
+        String api = "";       // csp_Xxx（jar 站）/ http…js（脚本站）
         String jar = "";       // jar 地址（不含 ;md5;）
         String md5 = "";       // 期望 md5，空 = 不校验
         String ext = "";       // 站点 ext（spider 的 init 参数）
+        /**
+         * 脚本地址（.js）。与 {@link #jar} 二选一：
+         * 有 js 走内置 QuickJS，有 jar 走 DexClassLoader。
+         *
+         * <p>为什么单独一个字段而不复用 jar：两条链路的缓存、校验、失败原因
+         * 完全不同（jar 要 md5 + 只读 + dex 优化；js 是文本，改了内容就该重下）。
+         * 混用一个字段后面必然要靠 api 前缀猜，猜错就是"下载了 js 却当 jar 加载"。
+         */
+        String js = "";
     }
 
     private static final Map<String, Site> TABLE = new LinkedHashMap<>();
@@ -69,7 +78,10 @@ public final class LocalSites {
                 s.jar = o.optString("jar", "");
                 s.md5 = o.optString("md5", "");
                 s.ext = o.optString("ext", "");
-                if (!s.key.isEmpty() && !s.api.isEmpty() && !s.jar.isEmpty()) {
+                s.js = o.optString("js", "");
+                // jar 站与脚本站二选一：两者都空说明这条记录没用（旧版本写的 csp_ 无 jar）
+                if (!s.key.isEmpty() && !s.api.isEmpty()
+                        && (!s.jar.isEmpty() || !s.js.isEmpty())) {
                     TABLE.put(s.key, s);
                 }
             }
@@ -89,6 +101,7 @@ public final class LocalSites {
                 o.put("jar", s.jar);
                 o.put("md5", s.md5);
                 o.put("ext", s.ext);
+                o.put("js", s.js);
                 arr.put(o);
             }
             ctx.getSharedPreferences(PREF, Context.MODE_MULTI_PROCESS)
@@ -136,6 +149,35 @@ public final class LocalSites {
                 JSONObject o = sites.optJSONObject(i);
                 if (o == null) continue;
                 String api = o.optString("api", "");
+                /*
+                 * 脚本源（.js / .mjs）：内置 QuickJS 之后 TV 能本地跑了。
+                 *
+                 * <p>判据不看 `csp_` 前缀——脚本站的 api 是一个 URL（常见
+                 * `http://…/drpy2.min.js`、相对路径 `./js/a.js`，有的还带 `?v=3`）。
+                 * 只判结尾会漏掉带 query 的（实测配置里就有），所以放宽到"路径段以
+                 * .js/.mjs 结束，后面允许 query/fragment"。
+                 *
+                 * <p>直接 http 的 CMS 源（api 是 `…/api.php/provide/vod`）仍然不本地跑：
+                 * 那是采集接口，由后端 CmsSource 转发，端上执行没意义。
+                 */
+                String pathOnly = api;
+                int q = pathOnly.indexOf('?');
+                if (q >= 0) pathOnly = pathOnly.substring(0, q);
+                int h = pathOnly.indexOf('#');
+                if (h >= 0) pathOnly = pathOnly.substring(0, h);
+                boolean isScript = pathOnly.endsWith(".js") || pathOnly.endsWith(".mjs");
+                if (isScript) {
+                    Site s = new Site();
+                    s.key = o.optString("key", api);
+                    s.name = o.optString("name", s.key);
+                    s.api = api;
+                    s.js = absolutize(api, configBase);
+                    Object ext = o.opt("ext");
+                    s.ext = ext == null ? "" : String.valueOf(ext);
+                    TABLE.put(s.key, s);
+                    r.imported++;
+                    continue;
+                }
                 if (!api.startsWith("csp_")) {
                     r.skipped++;
                     continue;

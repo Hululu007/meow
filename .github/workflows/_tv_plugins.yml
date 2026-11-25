@@ -135,11 +135,55 @@ jobs:
           # ubuntu runner 自带 pwsh；脚本内部已按平台切 curl.exe/curl
           pwsh -NoProfile -File build-runtime-module.ps1 -NodeVersion "${{ inputs.node_version }}"
 
+      # ── Python 运行时模块（Chaquopy）────────────────────────────────
+      # 与 node 模块不同：没有"上游二进制"要下，但 Chaquopy 的 pip 要联网取
+      # Android wheel，且要求构建机的 Python 与 target 一致（3.10）。
+      # ubuntu-24.04 自带 3.12 会被 Chaquopy 拒绝，必须 setup-python 钉版本。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 构建 Python 模块（arm64 + v7a）
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd client/apps/tv/runtime-python
+          # -PbuildPython 覆盖 build.gradle 里的平台默认值（Windows pyenv 路径）
+          pwsh -NoProfile -File build-runtime-module.ps1 -OutDir "$GITHUB_WORKSPACE/release/runtime-python-0.1.0"
+
+      - name: 自检 Python 模块
+        shell: bash
+        run: |
+          set -euo pipefail
+          D="release/runtime-python-0.1.0"
+          for abi in arm64-v8a armeabi-v7a; do
+            apk=$(ls "$D"/tv-python-*-*.apk 2>/dev/null | grep -- "$abi" | head -1 || true)
+            if [ -z "$apk" ]; then
+              # 产物名用的是 flavor（arm64/v7a），不是完整 abi 名
+              flavor=$([ "$abi" = "arm64-v8a" ] && echo arm64 || echo v7a)
+              apk=$(ls "$D"/tv-python-"$flavor"-*.apk 2>/dev/null | head -1 || true)
+            fi
+            if [ -z "$apk" ] || [ ! -f "$apk" ]; then
+              echo "::error::缺 $abi 的 python 模块 apk"; ls -la "$D" || true; exit 1
+            fi
+            # 包内必须真的有 libpython（否则装上就 UnsatisfiedLinkError）
+            unzip -l "$apk" | grep -q "lib/$abi/libpython3" || { echo "::error::$apk 里没有 lib/$abi/libpython3*"; exit 1; }
+            # 必须有 Chaquopy 的 stdlib
+            unzip -l "$apk" | grep -q "assets/chaquopy" || { echo "::error::$apk 里没有 assets/chaquopy"; exit 1; }
+            echo "ok $abi $(du -h "$apk" | cut -f1) $(sha256sum "$apk" | cut -c1-12)"
+          done
+
       - name: 自检产物
         shell: bash
         run: |
           set -euo pipefail
-          D="release/runtime-node-${{ inputs.node_version }}"
+          # ★ 不能用 ${{ inputs.node_version }} 拼目录名：push 触发时 inputs 为空串，
+          #   D 变成 "release/runtime-node-"，ls 返回 2 被 set -e 直接终止 —— 而
+          #   `ls ... 2>/dev/null` 把原因也吞了，日志里只剩一句 "exit code 2"。
+          D=$(ls -d release/runtime-node-* 2>/dev/null | tail -1)
+          if [ -z "$D" ] || [ ! -d "$D" ]; then
+            echo "::error::没有 release/runtime-node-* 产物目录"; ls -la release || true; exit 1
+          fi
           for abi in arm64-v8a armeabi-v7a x86_64; do
             # 资产名带版本，所以用 glob 找（不能用固定名）
             apk=$(ls "$D"/tv-node-"$abi"-*.apk 2>/dev/null | head -1)
@@ -156,4 +200,5 @@ jobs:
           name: tv-plugins
           path: |
             release/runtime-node-*/tv-node-*.apk
+            release/runtime-python-*/tv-python-*.apk
           if-no-files-found: error

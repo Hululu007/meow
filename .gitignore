@@ -193,3 +193,10 @@ docs/49-TV遥控与焦点导航.md
 docs/50-三个同类项目实现分析与借鉴.md
 smoke/fixtures/feimao-tv-with-jar.json
 smoke/tv-feimao-smoke.py
+
+# pyrt 的源脚本是私有内容（与 spider.jar / config.sites.json 同性质）：
+# 只入库加载器（pyrt.py）、契约（scripts/base）与依赖清单，源本身由源包导入。
+server/pyrt/scripts/py/*.py
+!server/pyrt/scripts/py/.gitkeep
+# pyrt 运行期写出的源站域名（私有内容，与 scripts/py 同性质）
+server/pyrt/xiuxiu_domain.txt

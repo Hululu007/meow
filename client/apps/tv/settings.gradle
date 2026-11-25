@@ -23,3 +23,5 @@ rootProject.name = "meow-tv"
 include(":app")
 include(":plugin-api")
 include(":runtime-node")
+
+include(":runtime-python")

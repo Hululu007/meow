@@ -771,3 +771,26 @@ if (typeof window !== 'undefined') {
   // 在 main.ts 很早的位置），那时的事件本模块收不到。
   pushThemeToShell()
 }
+
+/**
+ * TV 壳的 Python 运行时模块状态（`py-runtime.json` 原文解析）。
+ *
+ * <p>没装模块 / 老壳没有 `pyRuntime` 方法 → 返回 null（UI 上不渲染这一行，
+ * 而不是显示"未安装"误导用户去装一个他可能根本不需要的东西）。
+ *
+ * <p>字段：`{running, port, version, error, pid}`。`running:true` 表示 Python
+ * 的 pyrt 已经在 `port` 上监听。
+ */
+export function tvPyRuntime(): Record<string, unknown> | null {
+  try {
+    const b = (window as unknown as { meowTv?: Record<string, unknown> }).meowTv
+    if (!b || typeof b.pyRuntime !== 'function') return null
+    const raw = (b.pyRuntime as () => unknown)()
+    if (typeof raw !== 'string' || !raw.trim().startsWith('{')) return null
+    const obj = JSON.parse(raw) as Record<string, unknown>
+    // 空对象 = 还没跑过（文件不存在），按"无状态"处理
+    return Object.keys(obj).length > 0 ? obj : null
+  } catch {
+    return null
+  }
+}

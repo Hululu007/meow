@@ -51,6 +51,20 @@
       "why": "drpy/Node 运行时，200+ 个 .js 源依赖它"
     },
     {
+      "id": "pyrt",
+      "chain": "plugins",
+      "script": "server/build-plugin-pyrt.ps1",
+      "required": false,
+      "why": "Python 源运行时（.py 本地执行 + .js 转发 drpy）；构建机没有 python 时跳过，不影响 .js/.jar 源"
+    },
+    {
+      "id": "tv-python",
+      "chain": "tv-plugins",
+      "script": "client/apps/tv/runtime-python/build-runtime-module.ps1",
+      "required": false,
+      "why": "TV Python 运行时模块（Chaquopy）：按 ABI 出 2 个 APK（arm64 21MB / v7a 17MB）；首次构建需联网装 Android wheel"
+    },
+    {
       "id": "tv-node",
       "chain": "tv-plugins",
       "script": "client/apps/tv/runtime-node/build-runtime-module.ps1",

@@ -5,7 +5,7 @@ use axum::{
     http::{header, HeaderName, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{any, get},
+    routing::{any, get, post},
     Router,
 };
 use tower_http::services::{ServeDir, ServeFile};
@@ -65,6 +65,9 @@ fn app_routes(state: AppState) -> Router {
         // 必须在 /api/*path 之前显式注册：否则会被当成站点名转给后端
         .route("/api/health", get(crate::health::api_health))
         .route("/api/_shell/info", get(crate::health::shell_info))
+        // 运行时依赖重扫：用户刚在应用中心装完 java/node/python，不必重启应用。
+        // 同样必须排在 /api/*path 之前。
+        .route("/api/_shell/deps/rescan", post(crate::health::rescan_deps))
         // 卷号回查：`app/installed` 恒缺 installVolumeID/installType（跨版本实测），
         // 浏览器又够不到应用中心的 unix socket，只能由壳代查（socket 不可用时
         // 退回 TRIM_APPDEST_VOL，原因见 appcenter.rs 顶部）。必须排在 /api/*path 之前。
