@@ -2640,8 +2640,10 @@ const canLock = computed(
   () =>
     isTouch.value &&
     !isTvShell() &&
-    // 手机横屏（自动转屏后画面已铺满）也算"全屏"；PC 触摸屏不在这里放大锁
-    (fullscreen.value || pseudoFs.value || (landscapeViewport.value && compactViewport.value)),
+    // 只给移动形态（手机短边 <480 / iOS 壳）：Windows 触摸屏全屏不该冒出锁按钮
+    (compactViewport.value || isIosShell()) &&
+    // 手机横屏（自动转屏后画面已铺满）也算"全屏"
+    (fullscreen.value || pseudoFs.value || landscapeViewport.value),
 )
 
 function flashLockHint() {
@@ -4257,6 +4259,18 @@ async function toggleFullscreen() {
 const FS_INTENT_KEY = 'meow.play.fsIntent'
 /** 全屏意图有效期：超过这个时间视为过期（App 被杀后隔很久进来不自动全屏） */
 const FS_INTENT_TTL_MS = 12 * 3600_000
+
+/**
+ * 移动端形态（短边 < 480 或 iOS 壳）。
+ *
+ * <p>全屏意图的持久化范围按形态分：**PC/TV 仍用 sessionStorage**（关掉应用
+ * 再开不该自动全屏），只有手机用 localStorage（WebView/App 被系统杀掉后
+ * 回来还要恢复全屏）。用短边而不是 isTouch：Windows 触摸屏笔记本的
+ * isTouch 也是 true，不该跟着变成"重开就全屏"。
+ */
+function isMobileForm(): boolean {
+  return isIosShell() || Math.min(window.innerWidth, window.innerHeight) < 480
+}
 /**
  * 组件正在卸载（换集/换线路 → 整页重建）。
  *
@@ -4267,10 +4281,25 @@ let unmounting = false
 
 function rememberFsIntent(on: boolean) {
   try {
-    if (on) localStorage.setItem(FS_INTENT_KEY, String(Date.now()))
-    else localStorage.removeItem(FS_INTENT_KEY)
+    if (on) {
+      /*
+       * 移动端 → localStorage（带时间戳，供 App 被系统杀掉后恢复）；
+       * PC/TV → sessionStorage（只在本次会话跨集有效，重开应用不自动全屏）。
+       * 两边都清掉另一份，避免旧值串台。
+       */
+      if (isMobileForm()) {
+        localStorage.setItem(FS_INTENT_KEY, String(Date.now()))
+        sessionStorage.removeItem(FS_INTENT_KEY)
+      } else {
+        sessionStorage.setItem(FS_INTENT_KEY, '1')
+        localStorage.removeItem(FS_INTENT_KEY)
+      }
+    } else {
+      localStorage.removeItem(FS_INTENT_KEY)
+      sessionStorage.removeItem(FS_INTENT_KEY)
+    }
   } catch {
-    /* 隐私模式下 localStorage 可能不可用，忽略 */
+    /* 隐私模式下 storage 可能不可用，忽略 */
   }
 }
 
@@ -4286,10 +4315,15 @@ function rememberFsIntent(on: boolean) {
 async function restoreFsIntent() {
   let want = false
   try {
-    const ts = Number(localStorage.getItem(FS_INTENT_KEY))
-    want = Number.isFinite(ts) && ts > 0 && Date.now() - ts < FS_INTENT_TTL_MS
-    // 过期 / 脏数据：顺手清掉，避免一直留着
-    if (!want) localStorage.removeItem(FS_INTENT_KEY)
+    if (isMobileForm()) {
+      const ts = Number(localStorage.getItem(FS_INTENT_KEY))
+      want = Number.isFinite(ts) && ts > 0 && Date.now() - ts < FS_INTENT_TTL_MS
+      // 过期 / 脏数据：顺手清掉，避免一直留着
+      if (!want) localStorage.removeItem(FS_INTENT_KEY)
+    } else {
+      // PC/TV：沿用原会话内语义（跨集恢复，重开应用不恢复）
+      want = sessionStorage.getItem(FS_INTENT_KEY) === '1'
+    }
   } catch {
     return
   }
@@ -6643,8 +6677,9 @@ function onVisibilityChange() {
      * 回前台补一次全屏恢复（2026-11-25 用户报「切后台回来丢全屏」）：
      * WKWebView 被系统回收/重建或 HTML 全屏被丢弃时，pseudoFs/fullscreen
      * 可能已经复位；意图还在就重新铺满（用户手势之外只能走伪全屏）。
+     * ★ 只给移动端：PC 上 Alt+Tab 回来不该突然被塞进伪全屏。
      */
-    void restoreFsIntent()
+    if (isMobileForm()) void restoreFsIntent()
     return
   }
   /*
@@ -6655,7 +6690,7 @@ function onVisibilityChange() {
    * ★ TV 壳不能跳过：hidden 也可能是原生 ExoPlayer 盖上来了，不暂停会
    *   双重出声（mediaExclusive 依赖「是不是我们停的」这个标志）。
    */
-  if (isTouch.value && !isTvShell()) {
+  if (isMobileForm() && !isTvShell()) {
     const v = video.value
     playingBeforeHide = !!(v && !v.paused && !v.ended)
     flushProgress(true)
@@ -6666,7 +6701,7 @@ function onVisibilityChange() {
 
 /** 重新可见：把隐藏前正在播的续上（移动端后台保播 / TV 原生播放器返回） */
 function resumeAfterVisibility() {
-  if (!isTvEnv() && !(isTouch.value && !isTvShell())) return
+  if (!isTvEnv() && !(isMobileForm() && !isTvShell())) return
   if (!playingBeforeHide) return
   playingBeforeHide = false
   const v = video.value

@@ -9,7 +9,7 @@
  * 2. 移动端全屏的「锁定」：锁定后点画面不能暂停/快进/弹控制栏，
  *    只在左侧闪出解锁按钮；点它恢复。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 
 // 必须在 import VideoPlayer 之前把环境摆成"触屏设备"（isTouch 导入时定型）
@@ -157,6 +157,13 @@ describe('iOS 双击兜底（不依赖 dblclick）', () => {
 })
 
 describe('移动端全屏锁定', () => {
+  /** 手机 CSS 视口（jsdom 默认 1024×768 是桌面形态，canLock 会判成非移动端） */
+  function setViewport(width: number, height: number) {
+    Object.defineProperty(window, 'innerWidth', { value: width, configurable: true })
+    Object.defineProperty(window, 'innerHeight', { value: height, configurable: true })
+  }
+  afterEach(() => setViewport(1024, 768))
+
   async function enterFullscreen(w: ReturnType<typeof mountPlayer>) {
     const fsBtn = w.findAll('button').find((b) => b.attributes('title') === '全屏')
     if (!fsBtn) throw new Error('底栏没有全屏按钮')
@@ -166,9 +173,11 @@ describe('移动端全屏锁定', () => {
     await w.vm.$nextTick()
   }
 
-  it('全屏才出现锁定按钮（竖屏/窗口态不给）', async () => {
+  it('竖屏不显示锁定按钮，进全屏才出现', async () => {
+    setViewport(390, 844)
     const w = mountPlayer()
     fakeMedia(w)
+    await w.vm.$nextTick()
     expect(w.findAll('button').some((b) => b.attributes('aria-label') === '锁定画面')).toBe(false)
     await enterFullscreen(w)
     expect(w.findAll('button').some((b) => b.attributes('aria-label') === '锁定画面')).toBe(true)
@@ -176,6 +185,7 @@ describe('移动端全屏锁定', () => {
   })
 
   it('锁定后点画面不播放/暂停，只闪出解锁按钮；点解锁恢复', async () => {
+    setViewport(390, 844)
     const w = mountPlayer()
     const v = fakeMedia(w)
     const stage = stageOf(w)
@@ -209,8 +219,7 @@ describe('移动端全屏锁定', () => {
 
   it('自动横屏播放（未点全屏）也有锁按钮', async () => {
     // iPhone 横屏 CSS 视口：844×390（短边 < 480 → compact）
-    Object.defineProperty(window, 'innerWidth', { value: 844, configurable: true })
-    Object.defineProperty(window, 'innerHeight', { value: 390, configurable: true })
+    setViewport(844, 390)
     const w = mountPlayer()
     fakeMedia(w)
     await w.vm.$nextTick()
@@ -219,8 +228,6 @@ describe('移动端全屏锁定', () => {
       '自动转横屏后锁按钮不能消失（用户 2026-11-25 真机报）',
     ).toBe(true)
     w.unmount()
-    Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true })
-    Object.defineProperty(window, 'innerHeight', { value: 768, configurable: true })
   })
 
   it('移动端底栏提供弹幕设置入口（搜索图标右侧），不再收进更多', async () => {
@@ -235,6 +242,7 @@ describe('移动端全屏锁定', () => {
   })
 
   it('退出全屏自动解锁（不留无入口的锁定状态）', async () => {
+    setViewport(390, 844)
     const w = mountPlayer()
     fakeMedia(w)
     await enterFullscreen(w)
