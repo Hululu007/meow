@@ -1,0 +1,9 @@
+# pyrt 侧车依赖。与 Fongmi 的 chaquo/runtime/requirements.txt 取交集：
+# 那边是 28 个包（含 numpy/openblas，给 yapf 和数值计算用），我们这批源只需要
+# 抓取 + 解析 + 解密这三类，装多了只是让镜像变大。
+requests>=2.31
+urllib3>=2.0
+beautifulsoup4>=4.12
+lxml>=5.0
+pyquery>=2.0
+pycryptodome>=3.20

@@ -1,0 +1,140 @@
+/*
+ * TV 的 Python 运行时模块（Chaquopy）：把 CPython 3.10 打进独立 APK。
+ *
+ * 为什么是独立 APK 而不是进主包：Chaquopy 会把整个 CPython + 标准库 + 依赖
+ * 打进 APK，`requests` 这一套约 13MB/abi。主包现在是 25MB，塞进去直接翻倍。
+ * 做成模块后，只有真要跑 .py 源的用户才装。
+ *
+ * 为什么 target 3.10：Chaquopy 17.2.0 的稳定档；且本机 pyenv 里有 3.10.6
+ * 正好能当 buildPython（Chaquopy 要求 build/target 版本一致）。
+ *
+ * ★ buildPython 是**构建机**上的 Python，不参与打包。换机器/换 CI 时要改这里，
+ *   或改用 `-PbuildPython=...`。
+ *
+ * ★ ABI 按 flavor 拆：与 tv-node 同一套命名（tv-python-<abi>-<ver>.apk），
+ *   客户端 RuntimeModuleCatalog 按 platform 挑。
+ *   x86_64 不出包 —— MuMu / 电视盒子的 x86_64 靠 libnb 转译 arm64。
+ */
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python' version '17.2.0'
+}
+
+android {
+    namespace 'com.meow.runtime.python'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.meow.runtime.python"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"
+    }
+
+    flavorDimensions = ['abi']
+    productFlavors {
+        arm64 {
+            dimension 'abi'
+            ndk { abiFilters "arm64-v8a" }
+        }
+        v7a {
+            dimension 'abi'
+            ndk { abiFilters "armeabi-v7a" }
+        }
+    }
+
+    /*
+     * 签名：与主 APK 用同一套 keystore（keystore.properties + meow-release.jks）。
+     * 不配的话 assembleRelease 产出的是**未签名** APK，安装时报
+     * `INSTALL_PARSE_FAILED_NO_CERTIFICATES`（实测）。
+     * 没有 keystore.properties 时回退 debug 签名，保证 CI/新克隆能出包。
+     */
+    def ksProps = new File(rootDir, 'keystore.properties')
+    signingConfigs {
+        release {
+            if (ksProps.exists()) {
+                def p = new Properties()
+                ksProps.withInputStream { p.load(it) }
+                storeFile file(p['storeFile'])
+                storePassword p['storePassword']
+                keyAlias p['keyAlias']
+                keyPassword p['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig ksProps.exists() ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+}
+
+/*
+ * 产物名：tv-python-<abi>-<ver>.apk，与 tv-node 同一套命名，
+ * 由 sync-packages.ps1 汇总进 packages.json 的 tv-python-<abi> 条目。
+ * AGP 8 要在 androidComponents 里改（`applicationVariants.outputs` 上的
+ * outputFileName 已是只读 String，调 .set() 会报 "No signature of method"）。
+ */
+androidComponents {
+    onVariants(selector().all()) { v ->
+        v.outputs.each { o ->
+            o.outputFileName.set("tv-python-${v.flavorName}-${o.versionName.get()}.apk")
+        }
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version = "3.10"
+        /*
+         * buildPython 是**构建机**上的 Python，只用来跑 pip，不参与打包。
+         * 优先级：-PbuildPython=... → 环境变量 → 平台默认。
+         * ★ CI（ubuntu）必须用 3.10（与 target 一致），且要用 actions/setup-python
+         *   钉版本 —— ubuntu-24.04 自带的是 3.12，Chaquopy 会拒绝。
+         */
+        def pyOverride = project.findProperty('buildPython')
+                ?: System.getenv('MEOW_BUILD_PYTHON')
+        buildPython(pyOverride
+                ? pyOverride
+                : (org.gradle.internal.os.OperatingSystem.current().isWindows()
+                        ? "O:/tools/pyenv-win-master/pyenv-win/versions/3.10.6/python.exe"
+                        : "python3"))
+        pip {
+            /*
+             * PyPI 直连在本机不稳（实测 SSLError: EOF occurred in violation of
+             * protocol），加国内镜像兜底。注意用 --extra-index-url 而不是
+             * --index-url：Chaquopy 自己的 Android wheel 仓库必须保留在
+             * index 列表里，否则 lxml/pycryptodome 这类 native 包找不到。
+             */
+            options "--extra-index-url", "https://pypi.tuna.tsinghua.edu.cn/simple"
+            // 纯 Python：requests 一套（含 urllib3/certifi/charset_normalizer/idna）
+            install "requests"
+            /*
+             * 带 native 扩展的三个。Chaquopy 会为每个 ABI 单独 pip，
+             * wheel 从它自己的 Android 仓库取；取不到就构建失败（不会静默降级成
+             * 纯 py），这正是我们要的行为 —— 静默降级会变成"装上能启动、
+             * 一 import lxml 就 ImportError"。
+             *
+             * 体积代价：lxml 约 +3MB/abi、pycryptodome 约 +5MB/abi、
+             * pyquery 纯 py 可忽略。
+             */
+            install "lxml"
+            install "pyquery"
+            install "pycryptodome"
+        }
+    }
+}
+
+dependencies {
+    // 运行时模块接口（宿主与本模块各编一份，靠类名+签名对齐）
+    implementation project(':plugin-api')
+}

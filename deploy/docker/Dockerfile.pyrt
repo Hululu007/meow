@@ -1,0 +1,38 @@
+# pyrt 运行时：把 .py 源接到 CPython 里执行（第五个容器）。
+#
+# 为什么不让 apiserver 直接跑：后端是 JRE，没有 Python；JVM 上唯一能跑 py 的
+# GraalPy 全套 253MB（23.1.0 实测：language 78.6 + resources 114.9 + truffle 15.8
+# + python-home 44），是 CPython 镜像的 2 倍多，且标准 OpenJDK 上只能解释执行。
+#
+# 为什么用 slim 而不是 alpine：lxml 在 alpine 上要现场编译（gcc + libxml2-dev +
+# libxslt-dev，最后镜像反而更大且构建慢）。slim 有 manylinux wheel，pip 直接装。
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# 依赖单独一层，改代码不用重装
+COPY server/pyrt/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY server/pyrt/pyrt.py ./
+# 基类契约（scripts/base）随镜像走；源脚本（scripts/py）不进镜像，
+# 由数据卷挂载 —— 源是私有内容，且改源不该触发重建镜像。
+COPY server/pyrt/scripts/base ./scripts/base
+
+ENV PYRT_PORT=19331
+# 必须 0.0.0.0：compose 发布端口与 `apiserver → http://pyrt:19331` 都走网桥。
+ENV PYRT_BIND=0.0.0.0
+ENV PYRT_SCRIPTS=/data/py-scripts
+# 同一 compose 网络里的 drpy，.js 源转发给它
+ENV PYRT_DRPY=http://drpy:9330
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 19331
+
+# ★ 必须有 CMD：python:3.12-slim 的默认 CMD 是裸 `python3`（进 REPL），
+# 非交互模式下立刻 EOF 退出 —— 容器状态是 `Exited (0)` 且**没有任何日志**，
+# 很容易误判成"镜像构建失败"。实测第一次就踩了这个。
+CMD ["python", "pyrt.py"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:19331/health',timeout=3).status==200 else 1)"

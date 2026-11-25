@@ -1,0 +1,56 @@
+﻿<#
+.SYNOPSIS
+  构建 TV 的 Python 运行时模块（Chaquopy），按 ABI 出 APK。
+
+.DESCRIPTION
+  与 tv-node 的差别：这里没有"上游二进制要下载"这一步 —— CPython、标准库与
+  wheel 全由 Chaquopy 插件在构建期处理（pip 会按 ABI 取 Android wheel）。
+  所以脚本只做三件事：调 gradle、收集产物、改名成 tv-python-<abi>-<ver>.apk。
+
+  ★ 依赖：构建机要有一个与 target 匹配的 Python（3.10）。
+    Windows 默认取 pyenv 的 3.10.6；其他平台用 python3，CI 要用
+    actions/setup-python 钉 3.10，否则 Chaquopy 直接拒绝。
+  ★ 网络：Chaquopy 的 pip 要连 pypi 与它自己的 Android wheel 仓库。
+    国内环境建议在 pip 块里加 --extra-index-url 镜像（build.gradle 已配）。
+
+.EXAMPLE
+  ./build-runtime-module.ps1
+  ./build-runtime-module.ps1 -Flavors arm64 -OutDir ../../release/runtime-python-0.1.0
+#>
+[CmdletBinding()]
+param(
+    [string[]]$Flavors = @('arm64', 'v7a'),
+    [string]$OutDir
+)
+
+$ErrorActionPreference = 'Stop'
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$tvRoot = Split-Path -Parent $here
+$repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $tvRoot))
+if (-not $OutDir) { $OutDir = Join-Path $repoRoot 'release\runtime-python-0.1.0' }
+
+$gradle = if (Test-Path 'C:\Android\gradle-8.9\bin\gradle.bat') {
+    'C:\Android\gradle-8.9\bin\gradle.bat'
+} else { 'gradle' }
+
+foreach ($f in $Flavors) {
+    $task = ":runtime-python:assemble$($f.Substring(0,1).ToUpper() + $f.Substring(1))Release"
+    Write-Host "== $f -> $task ==" -ForegroundColor Cyan
+    Push-Location $tvRoot
+    try {
+        & $gradle $task
+        if ($LASTEXITCODE -ne 0) { throw "gradle $task 失败（exit $LASTEXITCODE）" }
+    } finally {
+        Pop-Location
+    }
+}
+
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$found = Get-ChildItem -Path (Join-Path $here 'build\outputs\apk') -Recurse -Filter 'tv-python-*.apk'
+if (-not $found) { throw "没有产出任何 tv-python-*.apk（看 gradle 输出）" }
+foreach ($f in $found) {
+    Copy-Item $f.FullName (Join-Path $OutDir $f.Name) -Force
+    $mb = [math]::Round($f.Length / 1MB, 2)
+    Write-Host "  $($f.Name)  ${mb}MB" -ForegroundColor Green
+}
+Write-Host "产物目录：$OutDir"

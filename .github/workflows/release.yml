@@ -247,7 +247,7 @@ jobs:
   # 全量发版要像 TV/PC 一样有 IPA，不再靠 feat/ios-jvm 的 push 单独出包。
   # 只跑全量（release-v*）与手动 dispatch；tv-v*/pc-v* 等单链不带，
   # 因为 macOS runner 计时按 2× 算，不该为不带 iOS 的发版付这笔。
-  # 产物名 Meow-unsigned-<版本>.ipa 由 publish 的 `*.ipa` 收进主 Release。
+  # 产物名 Meow-unsigned-*.ipa（另留固定名 Meow-unsigned.ipa）由 publish 的 `*.ipa` 收进主 Release。
   ios:
     name: iOS IPA
     needs: plan
@@ -333,6 +333,15 @@ jobs:
           #   单链 tv-v*/pc-v* 等没有 fpk artifact，find 不会命中，行为不变。
           # ★ 含 .ipa（2026-11-24）：iOS job 上传 ios-ipa-<run>，同样进主 Release。
           find dist -type f \( -name '*.apk' -o -name '*.exe' -o -name '*.zip' -o -name '*.fpk' -o -name '*.ipa' \) -exec cp {} upload/ \; || true
+          # 固定名副本（2026-11-25 用户口径）：侧载工具按 URL 直接装，
+          # latest/download 必须精确文件名、版本化名字每版都变 → 额外留一份 Meow-unsigned.ipa。
+          # 跳过 nojvm 变体（排障用，不该覆盖标准包）。
+          for f in upload/Meow-unsigned-*.ipa; do
+            [ -e "$f" ] || continue
+            case "$f" in *-nojvm-*) continue ;; esac
+            cp "$f" upload/Meow-unsigned.ipa
+            break
+          done
           ls -la upload
           # 公开壳发布守卫：绝不允许源包混进 Release
           # （.ipa 里也不该有：iOS 载荷只有 host.jar + danmu-api 运行时，仍在 IP 外）
@@ -461,8 +470,9 @@ jobs:
             | `apiserver-*.zip` | PC 后端插件 |
             | `drpy-*.zip` / `danmu-api-*.zip` / `node-*.zip` / `ffmpeg-*.zip` | PC 插件 |
             | `meow_*.fpk` | fnOS 套件（x86 / arm） |
-            | `Meow-unsigned-*.ipa` | iOS 空壳（未签名，需自签侧载 / LiveContainer） |
+            | `Meow-unsigned-*.ipa`（版本化）/ `Meow-unsigned.ipa`（固定名，始终指向最新） | iOS 空壳（未签名，需自签侧载 / LiveContainer） |
             | `packages.json` | 客户端更新清单 |
+            | `altstore-source.json` | 侧载商店源（SideStore / LiveContainer / AltStore），每版一条 |
             | `SHA256SUMS.txt` | 校验 |
 
   sync-packages:

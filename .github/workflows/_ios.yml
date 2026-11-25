@@ -331,11 +331,19 @@ jobs:
           IPA=$(ls artifacts/Meow-unsigned-*.ipa | grep -v nojvm | head -1)
           test -n "$IPA"
           cp "$IPA" artifacts/Meow-unsigned-test.ipa
+          # 源清单要用的构建 metadata：版本号取刚构建的 CFBundleShortVersionString，
+          # CI 不另编版本号 —— SideStore 默认开启版本校验（isAppVersionVerificationEnabled），
+          # 源里写什么，下载完就要求 IPA 里的版本完全一致。
+          SIZE=$(stat -f%z artifacts/Meow-unsigned-test.ipa)
+          SHA=$(shasum -a 256 artifacts/Meow-unsigned-test.ipa | awk '{print $1}')
+          printf '{"version":"%s","size":%s,"sha256":"%s","date":"%s"}\n' \
+            '${{ steps.ver.outputs.version }}' "$SIZE" "$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            > artifacts/Meow-unsigned-test.json
           if ! gh release view ipa-test --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create ipa-test --repo "$GITHUB_REPOSITORY" --prerelease \
               --target "$GITHUB_SHA" \
               --title "iOS 测试包（临时）" \
               --notes "手动 dispatch 的未签名测试 IPA。固定文件名 Meow-unsigned-test.ipa，每次覆盖；正式版见 release-v*。"
           fi
-          gh release upload ipa-test artifacts/Meow-unsigned-test.ipa \
+          gh release upload ipa-test artifacts/Meow-unsigned-test.ipa artifacts/Meow-unsigned-test.json \
             --repo "$GITHUB_REPOSITORY" --clobber

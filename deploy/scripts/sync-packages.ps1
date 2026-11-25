@@ -1019,6 +1019,119 @@ if (-not $DryRun -and -not $SkipUpload) {
     Write-Host "✅ 已上传 $ManifestAssetName 到 $tag（回读校验通过）" -ForegroundColor Green
 }
 
+# ---------------------------------------------------------------- 侧载商店源清单
+#
+# SideStore / LiveContainer / AltStore 读的是**每版一条**的 versions[] 数组：
+# 每条指向该版本自己的 IPA（不是固定名），并带版本号、日期与 CHANGELOG 更新说明 ——
+# 与 fpk 的 fnpack.json 同一个思路：发版后在 CI 里重建，用户刷新源即可看到新版本。
+#
+# 托管两处（与 packages.json 同构）：
+#   · Release 资产 altstore-source.json → .../releases/latest/download/altstore-source.json
+#   · updates 分支镜像 → raw.githubusercontent.com/<repo>/updates/altstore-source.json（兜底）
+#
+# 生成/上传失败都不阻塞 packages.json：侧载商店少一个源，不影响 PC/TV 更新。
+$altstoreAssetName = 'altstore-source.json'
+$altstoreFile = Join-Path ([IO.Path]::GetTempPath()) ("meow-altstore-" + [guid]::NewGuid().ToString('N') + '.json')
+$altstoreOk = $false
+try {
+    Write-Host "`n生成侧载商店源清单 …" -ForegroundColor Cyan
+
+    # 列出全部 release（分页；只保留生成源清单需要的字段，避免把 release 正文
+    # 全部序列化到临时文件）。GitHub 单页上限 100。
+    $allRels = New-Object System.Collections.ArrayList
+    $page = 1
+    while ($true) {
+        $batch = @(Get-GhApi "/repos/$Repo/releases?per_page=100&page=$page")
+        if ($batch.Count -eq 0) { break }
+        foreach ($r in $batch) {
+            [void]$allRels.Add([pscustomobject]@{
+                tag_name     = $r.tag_name
+                draft        = [bool]$r.draft
+                prerelease   = [bool]$r.prerelease
+                published_at = $r.published_at
+                updated_at   = $r.updated_at
+                assets       = @($r.assets | ForEach-Object {
+                    [pscustomobject]@{ name = $_.name; size = $_.size; digest = $_.digest }
+                })
+            })
+        }
+        if ($batch.Count -lt 100) { break }
+        $page++
+        if ($page -gt 30) { break }   # 安全阀：3000 个 release
+    }
+    $relsTmp = Join-Path ([IO.Path]::GetTempPath()) ("meow-rels-" + [guid]::NewGuid().ToString('N') + '.json')
+    [IO.File]::WriteAllText($relsTmp, (@($allRels) | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+
+    # 测试包的构建 metadata（publish_test 上传的 Meow-unsigned-test.json）：
+    # 给生成器提供测试 IPA 里真实的版本号，否则 SideStore 默认的版本校验会拦下。
+    # 取不到就传空 —— 生成器宁可不输出 nightly，也不写一个装不上的条目。
+    $testMetaPath = ''
+    try {
+        $testRel = Get-GhApi "/repos/$Repo/releases/tags/ipa-test"
+        $testMetaAsset = @($testRel.assets) | Where-Object { $_.name -eq 'Meow-unsigned-test.json' } | Select-Object -First 1
+        if ($testMetaAsset) {
+            $testMetaPath = Join-Path ([IO.Path]::GetTempPath()) ("meow-testmeta-" + [guid]::NewGuid().ToString('N') + '.json')
+            $hdrM = @('-H', 'Accept: application/octet-stream')
+            $tokM = $env:GITHUB_TOKEN
+            if (-not $tokM) { try { $tokM = (& gh auth token 2>$null).Trim() } catch { } }
+            if ($tokM) { $hdrM = @('-H', "Authorization: Bearer $tokM") + $hdrM }
+            & $CurlBin -s -L --fail --max-time 60 @hdrM -o $testMetaPath "https://api.github.com/repos/$Repo/releases/assets/$($testMetaAsset.id)" 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $testMetaPath)) {
+                Remove-Item $testMetaPath -Force -ErrorAction SilentlyContinue
+                $testMetaPath = ''
+            }
+        }
+    } catch {
+        $testMetaPath = ''
+    }
+
+    & (Join-Path $PSScriptRoot 'gen-altstore-source.ps1') -ReleasesJson $relsTmp -OutFile $altstoreFile -Repo $Repo -RepoRoot $repoRoot -TestMetaJson $testMetaPath
+    Remove-Item $relsTmp -Force -ErrorAction SilentlyContinue
+    Remove-Item $testMetaPath -Force -ErrorAction SilentlyContinue
+    $altstoreOk = $true
+} catch {
+    Write-Host "  ! 侧载商店源清单生成失败（不阻塞 packages.json）：$($_.Exception.Message)" -ForegroundColor DarkYellow
+}
+
+# 自己也是一个独立资产；上传失败同样不阻塞发版（updates 分支仍会带上）。
+if (-not $DryRun -and -not $SkipUpload -and $altstoreOk) {
+    Write-Host "上传 $altstoreAssetName 到 Release $tag …" -ForegroundColor Cyan
+    $tokA = $env:GITHUB_TOKEN
+    if (-not $tokA) { try { $tokA = (& gh auth token 2>$null).Trim() } catch { } }
+    if (-not $tokA) {
+        Write-Host "  ! 没有令牌，跳过上传（updates 分支仍会更新）" -ForegroundColor DarkYellow
+    } else {
+        try {
+            $relA = Get-GhApi "/repos/$Repo/releases/tags/$tag"
+            $oldA = ($relA.assets | Where-Object { $_.name -eq $altstoreAssetName } | Select-Object -First 1)
+            if ($oldA) {
+                $codeA = & $CurlBin -s -X DELETE --max-time 30 -w '%{http_code}' `
+                    -H "Authorization: Bearer $tokA" `
+                    -H 'Accept: application/vnd.github+json' `
+                    -o NUL "https://api.github.com/repos/$Repo/releases/assets/$($oldA.id)" 2>$null
+                if ("$codeA".Trim() -notin @('204', '200', '404')) { throw "删除旧资产失败（HTTP $codeA）" }
+            }
+            $upBaseA = ($relA.upload_url -replace '\{.*\}$', '')
+            $okA = $false
+            for ($i = 1; $i -le 5; $i++) {
+                $respA = & $CurlBin -s -X POST --max-time 120 `
+                    -H "Authorization: Bearer $tokA" `
+                    -H 'Accept: application/vnd.github+json' `
+                    -H 'Content-Type: application/json' `
+                    --data-binary "@$altstoreFile" `
+                    "${upBaseA}?name=$altstoreAssetName" 2>&1 | Out-String
+                if ($respA -match '"state"\s*:\s*"uploaded"') { $okA = $true; break }
+                Write-Host "  · 上传失败（第 $i 次）：$($respA.Substring(0, [Math]::Min(160, $respA.Length)))" -ForegroundColor DarkYellow
+                Start-Sleep -Seconds 2
+            }
+            if (-not $okA) { throw '上传失败（重试 5 次）' }
+            Write-Host "  ✅ 已上传 $altstoreAssetName" -ForegroundColor Green
+        } catch {
+            Write-Host "  ! $altstoreAssetName 上传失败（不阻塞发版）：$($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+    }
+}
+
 # ---------------------------------------------------------------- 静态清单分支
 #
 # 开源后客户端在 API 失败/限流时可拉：
@@ -1056,9 +1169,21 @@ if (-not $DryRun) {
         } catch {
             Write-Host "  ! history.json 生成失败（$($_.Exception.Message)），本次只发 packages.json" -ForegroundColor DarkYellow
         }
+        # 侧载商店源清单：与 packages.json/history.json 同一个 orphan 提交。
+        # 生成失败（$altstoreOk=false）时跳过，不阻塞前两个文件。
+        if ($altstoreOk -and (Test-Path -LiteralPath $altstoreFile)) {
+            try {
+                $altBlob = (& git -C $repoRoot hash-object -w $altstoreFile).Trim()
+                if ($LASTEXITCODE -eq 0 -and $altBlob) {
+                    & git -C $repoRoot update-index --add --cacheinfo "100644,$altBlob,altstore-source.json" 2>&1 | Out-Null
+                }
+            } catch {
+                Write-Host "  ! altstore-source.json 未并入 updates 分支：$($_.Exception.Message)" -ForegroundColor DarkYellow
+            }
+        }
         $tree = (& git -C $repoRoot write-tree).Trim()
         if ($LASTEXITCODE -ne 0 -or -not $tree) { throw "write-tree 失败" }
-        $commit = (& git -C $repoRoot -c user.email="actions@github.com" -c user.name="github-actions" commit-tree $tree -m "chore(updates): packages.json + history.json for $tag").Trim()
+        $commit = (& git -C $repoRoot -c user.email="actions@github.com" -c user.name="github-actions" commit-tree $tree -m "chore(updates): packages.json + history.json + altstore-source.json for $tag").Trim()
         if ($LASTEXITCODE -ne 0 -or -not $commit) { throw "commit-tree 失败" }
         # PowerShell 会把 git 的 "To https://..." 当作 NativeCommandError；
         # 这里临时放宽 ErrorAction，真正结果只看 $LASTEXITCODE。

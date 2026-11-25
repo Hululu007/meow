@@ -3,10 +3,14 @@ use std::sync::{Arc, RwLock};
 
 use serde_json::{json, Value};
 
-/// P0 只声明 java-21-openjdk。顺序：MEOW_JAVA → 同卷依赖目录 → /var/apps 包装目录 → PATH。
+/// 飞牛官方运行时依赖（developer.fnnas.com/docs/core-concepts/runtime）：
+/// java-21-openjdk / nodejs_v22 / python312，bin 目录统一在 `<dep>/target/bin`。
+/// 顺序：MEOW_* 环境变量 → 同卷依赖目录 → /var/apps 包装目录 → PATH。
 const JAVA_DEPS: &[&str] = &["java-21-openjdk", "java-17-openjdk"];
-/// P0 不声明 nodejs_v22，但有人可能已装；探测到就如实上报（drpy 到 P1 才用）。
 const NODE_DEPS: &[&str] = &["nodejs_v22", "nodejs_v24"];
+/// python312 官方示例的 bin 是 `python3`；自编译/别家包可能只给 `python`。
+const PYTHON_DEPS: &[&str] = &["python312", "python311", "python310", "python3"];
+const PYTHON_BINS: &[&str] = &["python3", "python"];
 
 #[derive(Clone, Debug, Default)]
 pub struct BinInfo {
@@ -20,6 +24,7 @@ pub struct BinInfo {
 pub struct Deps {
     java: Arc<RwLock<BinInfo>>,
     node: Arc<RwLock<BinInfo>>,
+    python: Arc<RwLock<BinInfo>>,
 }
 
 impl Deps {
@@ -27,6 +32,7 @@ impl Deps {
         let deps = Deps {
             java: Arc::new(RwLock::new(BinInfo::default())),
             node: Arc::new(RwLock::new(BinInfo::default())),
+            python: Arc::new(RwLock::new(BinInfo::default())),
         };
         deps.rescan(app_dest);
         deps
@@ -35,10 +41,12 @@ impl Deps {
     /// 依赖可能在我们启动之后才被装上（用户先装应用、再去应用中心补依赖），
     /// 所以探测要可重复调用。
     pub fn rescan(&self, app_dest: &Path) {
-        let java = resolve("java", "MEOW_JAVA", app_dest, JAVA_DEPS, &["--version"]);
-        let node = resolve("node", "MEOW_NODE", app_dest, NODE_DEPS, &["-v"]);
+        let java = resolve(&["java"], "MEOW_JAVA", app_dest, JAVA_DEPS, &["--version"]);
+        let node = resolve(&["node"], "MEOW_NODE", app_dest, NODE_DEPS, &["-v"]);
+        let python = resolve(PYTHON_BINS, "MEOW_PYTHON", app_dest, PYTHON_DEPS, &["--version"]);
         *self.java.write().unwrap() = java;
         *self.node.write().unwrap() = node;
+        *self.python.write().unwrap() = python;
     }
 
     pub fn java_path(&self) -> Option<PathBuf> {
@@ -61,10 +69,21 @@ impl Deps {
         }
     }
 
+    /// `.py` 源的运行时。缺它时 pyrt 插件起不来，但 jar/CMS 源不受影响。
+    pub fn python_path(&self) -> Option<PathBuf> {
+        let p = self.python.read().unwrap();
+        if p.ok {
+            p.path.clone()
+        } else {
+            None
+        }
+    }
+
     pub fn json(&self) -> Value {
         json!({
             "java": bin_json(&self.java.read().unwrap()),
             "node": bin_json(&self.node.read().unwrap()),
+            "python": bin_json(&self.python.read().unwrap()),
         })
     }
 }
@@ -78,7 +97,15 @@ fn bin_json(info: &BinInfo) -> Value {
     })
 }
 
-fn resolve(bin: &str, env_key: &str, app_dest: &Path, deps: &[&str], version_args: &[&str]) -> BinInfo {
+/// `bins` 是多候选可执行名（python 在部分包里只有 `python` 没有 `python3`），
+/// 按给定顺序试；第一个能执行的就胜出，与依赖目录的优先级无关。
+fn resolve(
+    bins: &[&str],
+    env_key: &str,
+    app_dest: &Path,
+    deps: &[&str],
+    version_args: &[&str],
+) -> BinInfo {
     let mut candidates: Vec<(PathBuf, String)> = Vec::new();
 
     if let Ok(v) = std::env::var(env_key) {
@@ -88,18 +115,32 @@ fn resolve(bin: &str, env_key: &str, app_dest: &Path, deps: &[&str], version_arg
         }
     }
 
-    // dirname($TRIM_APPDEST) 就是 @appcenter 所在目录，依赖与应用同卷
-    if let Some(center) = app_dest.parent() {
-        for dep in deps {
-            candidates.push((center.join(dep).join("bin").join(bin), format!("dep:{dep}")));
+    for bin in bins {
+        // dirname($TRIM_APPDEST) 就是 @appcenter 所在目录，依赖与应用同卷
+        if let Some(center) = app_dest.parent() {
+            for dep in deps {
+                candidates.push((center.join(dep).join("bin").join(bin), format!("dep:{dep}")));
+            }
         }
-    }
-    // /var/apps/<dep>/target 是指向 @appcenter/<dep> 的软链，等价但更稳定
-    for dep in deps {
-        candidates.push((
-            PathBuf::from("/var/apps").join(dep).join("target").join("bin").join(bin),
-            format!("varapp:{dep}"),
-        ));
+        // /var/apps/<dep>/target 是指向 @appcenter/<dep> 的软链，等价但更稳定
+        for dep in deps {
+            candidates.push((
+                PathBuf::from("/var/apps").join(dep).join("target").join("bin").join(bin),
+                format!("varapp:{dep}"),
+            ));
+        }
+        /*
+         * 系统路径直接拼：飞牛用应用中心拉起服务时 **PATH 很精简**，
+         * 实测 `/usr/bin/python3` 存在但 `path_lookup` 摸不到（deps.python 报 ok:false）。
+         * 手工 ssh 跑同一个二进制时又能探测到 —— 差别只在 PATH，
+         * 所以不能只靠末尾的 PATH 兜底。
+         */
+        for dir in ["/usr/bin", "/usr/local/bin", "/bin"] {
+            candidates.push((
+                PathBuf::from(dir).join(bin),
+                format!("path:{dir}"),
+            ));
+        }
     }
 
     for (path, source) in candidates {
@@ -114,13 +155,15 @@ fn resolve(bin: &str, env_key: &str, app_dest: &Path, deps: &[&str], version_arg
     }
 
     // 最后看 PATH：fnOS 实测不会给应用脚本注入依赖 bin，这条只是兜底
-    if let Some(path) = path_lookup(bin) {
-        return BinInfo {
-            ok: true,
-            version: detect_version(&path, version_args),
-            path: Some(path),
-            source: Some("path".to_string()),
-        };
+    for bin in bins {
+        if let Some(path) = path_lookup(bin) {
+            return BinInfo {
+                ok: true,
+                version: detect_version(&path, version_args),
+                path: Some(path),
+                source: Some("path".to_string()),
+            };
+        }
     }
 
     BinInfo::default()

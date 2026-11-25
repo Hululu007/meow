@@ -218,5 +218,23 @@ dependencies {
 
     // org.json：Android 自带（android.jar 里的 org.json.JSONObject 与后端
     // android-json.jar 同源），不需要声明。
+
+    /*
+     * QuickJS：TV 端内置 .js 源加载器。
+     *
+     * <p>选它而不是 libnode 的理由是**体积**：QuickJS 的 .so 只有 1.5MB(arm64)/
+     * 1.0MB(v7a)，可以直接进主包；libnode 是 46MB/abi，必须做运行时模块。
+     * 我们的 JS 源（vbox 方言）只用 `req` + `print` 两个宿主函数，不需要 Node 的
+     * fs/crypto 等内建，QuickJS 足够。
+     *
+     * <p>so 在 src/main/jniLibs/{arm64-v8a,armeabi-v7a}/，来自 Fongmi 的
+     * quickjs/libs/runtime-release.aar（该 AAR 的 classes.jar 是空的，
+     * 真正的 Java 绑定在 libs/quickjs-wrapper.jar 里）。
+     *
+     * <p>★ 不要用 jar 里的 `QuickJSLoader`：它引用 Fongmi 的 `RuntimeModule`，
+     * 我们没有那个类，一加载就 NoClassDefFoundError。用
+     * `new QuickJS(() -> System.loadLibrary("quickjs-wrapper"))`。
+     */
+    implementation files('libs/quickjs-wrapper.jar')
 }
 

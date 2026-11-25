@@ -1,0 +1,43 @@
+{
+  "_comment": "Python 源侧车：.py 本地执行、.js 转发给本机 drpy。协议与 drpy 同形（POST /{site}/{action} + X-DRPY-Api），所以宿主 callScriptRuntime 一行都不用改。脚本放在 <appData>/py-scripts（私有内容，不入公开库）。",
+  "id": "pyrt",
+  "name": "Python 脚本运行时",
+  "capability": "runtime",
+  "required": false,
+  "fatal": false,
+  "version": "0.1.0",
+  "exec": "python",
+  "execFallback": [
+    "../python/python.exe",
+    "python3",
+    "python.exe"
+  ],
+  "args": [
+    "pyrt.py"
+  ],
+  "cwd": ".",
+  "port": 19331,
+  "portFallback": [
+    19332,
+    19333,
+    19334,
+    19335
+  ],
+  "health": "/health",
+  "healthExpect": "\"ok\":true",
+  "healthTimeoutMs": 20000,
+  "healthIntervalMs": 500,
+  "autostart": true,
+  "env": {
+    "PYRT_PORT": "{port}",
+    "PYRT_DRPY": "http://127.0.0.1:9330",
+    "PYRT_SCRIPTS": "{appData}/py-scripts"
+  },
+  "inject": {
+    "target": "{appData}/data/policy.json",
+    "key": "jsRuntime",
+    "value": "http://127.0.0.1:{port}",
+    "force": true,
+    "_why": "pyrt 能同时服务 .py 与 .js（转发给 drpy），jsRuntime 该指向它；force 只覆盖另一个本机插件的地址，用户手配的局域网地址仍保留"
+  }
+}

@@ -185,6 +185,7 @@ import { clearSearchHistory, listSearchHistory } from '@/stores/searchHistory'
 import { iosNotify, tvInlineInput } from '@/api/nativeBridge'
 import { qrSvg } from '@/utils/qr'
 import FpkUpgradePanel from '@/components/common/FpkUpgradePanel.vue'
+import RuntimeDepsPanel from '@/components/common/RuntimeDepsPanel.vue'
 import UpdateCenter from '@/components/common/UpdateCenter.vue'
 import GitAccelPanel from '@/components/common/GitAccelPanel.vue'
 import { alertDialog, confirmDialog } from '@/composables/useConfirm'
@@ -6761,6 +6762,12 @@ onBeforeUnmount(() => {
       <p v-if="advMsg" class="mt-1 text-[11px]" :class="advMsg.startsWith('已') ? 'text-ok' : 'text-hot'">
         {{ advMsg }}
       </p>
+
+      <!-- ── 运行时依赖（只 fpk）──
+        与上面「JS 运行时」是两件事：上面填的是 drpy 的**服务地址**，
+        这里报的是 meowd 探测到的**本机可执行文件**（java/node/python）。
+        组件内部自己判 capability==='fpk'，Web/PC/TV 不渲染。 -->
+      <RuntimeDepsPanel />
 
       <!-- ── 搜索行为 ──
            从原「浏览与搜索」区搬来。这些是"搜索怎么跑"的参数，
