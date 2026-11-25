@@ -44,7 +44,7 @@ enum AudioSession {
     static func appDidEnterBackground() {
         guard configured, wantPlayback else { return }
         let session = AVAudioSession.sharedInstance()
-        guard !session.isActive else { return }
+        // 没有公开的 isActive：setActive(true) 对已激活会话是幂等的，直接调
         do {
             try session.setActive(true)
             LaunchLog.write("audio session: active for background playback")
