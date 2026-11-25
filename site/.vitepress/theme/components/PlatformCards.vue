@@ -38,7 +38,7 @@ const platforms = [
     title: '端内跑完整后端',
     desc: '同一份前端做成 IPA，端内用 OpenJDK Zero 起同一个 Java 宿主，不连别的设备也能出源。',
     points: ['未签名 IPA，需 Apple ID 自签', '端内 JVM + 弹幕聚合', '无 ffmpeg，片库转码不可用'],
-    code: 'Meow-unsigned.ipa',
+    code: 'Meow-unsigned-x.y.z.ipa',
     href: withBase('/guide/ios.html'),
     action: '安装与自签',
   },

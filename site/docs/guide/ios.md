@@ -9,11 +9,18 @@ iPhone / iPad 现在有客户端了（IPA）。但官方只发布**未签名**�
 
 ### 方式一：自签侧载（推荐）
 
-1. 从 [Releases](https://github.com/upchr/meow/releases/latest) 下载 `Meow-unsigned-<版本>.ipa`
-   （和 PC / TV 的包在同一个 Release 页）。
-2. 按 [LiveContainer / SideStore 侧载教程](https://livecontainer.github.io/zh-CN/docs/installation/lc_sidestore)
+支持 URL 安装的侧载工具（LiveContainer / SideStore / Sideloadly 等）**直接填这条地址**：
+
+```text
+https://github.com/upchr/meow/releases/latest/download/Meow-unsigned-1.2.22.ipa
+```
+
+资产名带版本号，发新版会变；链接失效时到 [Releases](https://github.com/upchr/meow/releases/latest)
+页复制当次 `Meow-unsigned-<版本>.ipa` 的地址。想先下载再导入也行，文件在同一页。
+
+1. 按 [LiveContainer / SideStore 侧载教程](https://livecontainer.github.io/zh-CN/docs/installation/lc_sidestore)
    装：一个免费 Apple ID 就够，签名 **7 天有效**，过期重签；付费开发者账号可到 1 年。
-3. 首次打开若提示「未受信任的开发者」：设置 → 通用 → VPN 与设备管理 → 信任对应描述文件。
+2. 首次打开若提示「未受信任的开发者」：设置 → 通用 → VPN 与设备管理 → 信任对应描述文件。
 
 ::: tip 为什么没有直接能装的包
 iOS 装 App 必须签名。项目没有付费开发者账号，也不上 App Store，
