@@ -731,6 +731,7 @@ public class ApiServer {
     public static void main(String[] args) throws Exception {
         // 先把参数交给 DataPaths（它可能在任何静态初始化里被调用）
         core.DataPaths.MainArgs.set(args);
+        String argBind = null;
         for (String a : args) {
             // 支持三种写法：裸数字 / --port=NNNN / --port NNNN 的后半段
             if (!a.isEmpty() && !a.startsWith("--")) {
@@ -743,6 +744,8 @@ public class ApiServer {
                     port = Integer.parseInt(a.substring("--port=".length()).trim());
                 } catch (NumberFormatException ignored) {
                 }
+            } else if (a.startsWith("--bind=")) {
+                argBind = a.substring("--bind=".length()).trim();
             }
         }
         // 端口也可用环境变量覆盖（Docker / PC sidecar 友好）
@@ -766,8 +769,24 @@ public class ApiServer {
         // 参数就绪后再做依赖 DataPaths 的初始化（静态块里做会丢掉 --data-dir）
         boot();
         String bind = "0.0.0.0";
+        if (argBind != null && !argBind.isEmpty()) bind = argBind;
         String envBind = System.getenv("MEOW_BIND");
         if (envBind != null && !envBind.trim().isEmpty()) bind = envBind.trim();
+        /*
+         * 局域网调试：iOS 默认只绑回环，开关打开后改绑 0.0.0.0（并按请求强制令牌）。
+         * 其他平台（PC / Docker / TV）保持原行为：默认 0.0.0.0，不受这个开关影响。
+         */
+        JSONObject policy0 = loadPolicy();
+        LAN_DEBUG_ENABLED = policy0.optBoolean("lanDebug", false);
+        LAN_DEBUG_TOKEN = policy0.optString("lanToken", "");
+        if (IS_IOS && LAN_DEBUG_ENABLED && LAN_DEBUG_TOKEN.isEmpty()) {
+            // 老配置只开了开关没存令牌：补一个，否则局域网请求会全部 401。
+            LAN_DEBUG_TOKEN = newLanToken();
+            policy0.put("lanToken", LAN_DEBUG_TOKEN);
+            savePolicy(policy0);
+        }
+        if (IS_IOS && LAN_DEBUG_ENABLED) bind = "0.0.0.0";
+        BIND_ADDR = bind;
 
         listen(bind, port, 48);
         STARTED_AT = System.currentTimeMillis();
@@ -840,6 +859,8 @@ public class ApiServer {
      */
     public static platform.HttpServer listen(String bind, int port, int threads) throws Exception {
         platform.ServerProvider.autoDetect();
+        BIND_ADDR = bind;
+        LISTEN_THREADS = threads;
         platform.HttpServer server = platform.HttpServer.create(
                 new InetSocketAddress(bind, port), 0);
         server.start(ApiServer::handle, threads);
@@ -860,6 +881,33 @@ public class ApiServer {
 
     /** 守夜/看门狗只起一次（listen 可能被重绑逻辑再次调用）。 */
     private static volatile boolean hostKeeperStarted;
+
+    /** 当前监听地址；局域网调试开关会在运行时改它并重绑。 */
+    private static volatile String BIND_ADDR = "0.0.0.0";
+
+    /** listen() 的工作线程数，重绑时要沿用。 */
+    private static volatile int LISTEN_THREADS = 48;
+
+    /**
+     * 是否 iOS 端内宿主。
+     *
+     * <p>局域网调试开关只对 iOS 生效：PC / Docker / TV 本来就要给局域网或前端访问，
+     * 默认拒绝非回环请求会把它们全打断。
+     */
+    private static final boolean IS_IOS =
+            "true".equals(System.getProperty("meow.dex2jar.inprocess", ""))
+                    || System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("ios");
+
+    /**
+     * 局域网调试（iOS 专用）。
+     *
+     * <p>默认关闭：网关只绑 127.0.0.1，别的设备连不上。
+     * 打开后绑 0.0.0.0，且**所有非回环请求**（含 GET）都必须带 16 位令牌，
+     * 令牌只在回环请求的 /api/_debug/lan 里下发。
+     * 与 policy.json 的 authToken 分开：后者是"写操作令牌"，这里保护整台手机的网关。
+     */
+    private static volatile boolean LAN_DEBUG_ENABLED;
+    private static volatile String LAN_DEBUG_TOKEN = "";
 
     /**
      * 宿主保活 + 自探活。
@@ -929,7 +977,7 @@ public class ApiServer {
                         System.out.println("[watchdog] connect failed; confirming");
                         Thread.sleep(1_200L);
                         if (probeState(port) < 0) {
-                            rebindListener(bind, port, threads);
+                            rebindListener(port, threads);
                         } else {
                             System.out.println("[watchdog] back before rebind");
                         }
@@ -997,7 +1045,8 @@ public class ApiServer {
     }
 
     /** 分发线程被带走后的自愈：停掉旧监听器，在原端口重建。 */
-    private static void rebindListener(String bind, int port, int threads) {
+    private static void rebindListener(int port, int threads) {
+        String bind = BIND_ADDR;
         try {
             platform.HttpServer old = HOST;
             if (old != null) {
@@ -1010,7 +1059,7 @@ public class ApiServer {
                     new InetSocketAddress(bind, port), 0);
             again.start(ApiServer::handle, threads);
             HOST = again;
-            System.out.println("[watchdog] listener rebound on " + port);
+            System.out.println("[watchdog] listener rebound on " + bind + ":" + port);
         } catch (Throwable t) {
             System.out.println("[watchdog] rebind failed: " + t);
         }
@@ -1426,6 +1475,23 @@ public class ApiServer {
 
         String method = ex.getRequestMethod();
         String path = ex.getRequestURI().getPath();
+        /*
+         * iOS 局域网调试闸门（只 iOS）。
+         *
+         * 默认关闭时网关只绑回环，这里再兜一层：万一系统还留着旧的 0.0.0.0 监听，
+         * 非回环请求也不能偷偷读数据。打开后所有非回环请求（含 GET）都要令牌；
+         * OPTIONS 放行 —— 浏览器预检不带 X-Meow-Token，拦了正常请求也发不出去。
+         */
+        if (IS_IOS && !"OPTIONS".equalsIgnoreCase(method) && !isLoopbackRequest(ex)) {
+            if (!LAN_DEBUG_ENABLED) {
+                sendJson(ex, 403, "{\"code\":-1,\"msg\":\"lan debug disabled\"}");
+                return;
+            }
+            if (!lanTokenMatches(ex)) {
+                sendJson(ex, 401, "{\"code\":-1,\"msg\":\"bad lan token\"}");
+                return;
+            }
+        }
         // 看门狗自探活：写在 [req] 之前，否则每 15 秒刷一行日志淹掉真问题
         if ("/api/_hb".equals(path)) {
             byte[] hb = "ok".getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -1645,6 +1711,10 @@ public class ApiServer {
             }
             if ("/spider-latest.jar".equals(path)) {
                 handleSpiderJar(ex);
+                return;
+            }
+            if ("/api/_debug/lan".equals(path)) {
+                handleLanDebug(ex);
                 return;
             }
             if ("/api/policy".equals(path)) {
@@ -11531,6 +11601,139 @@ public class ApiServer {
             sendJson(ex, 400, new JSONObject().put("code", -1)
                     .put("msg", "bad policy: " + e).toString());
         }
+    }
+
+    // ---------------------------------------------------------------- 局域网调试（iOS）
+
+    /**
+     * `GET /api/_debug/lan` 读状态；`POST` 开/关。
+     *
+     * <p>只为 iOS 提供：默认网关只绑回环，这个开关把它暴露到局域网，并生成 16 位令牌。
+     * 令牌只在**回环请求**的响应里下发（别的设备知道 URL 也拿不到令牌）。
+     * 关闭动作也只接受回环请求，防止局域网里的设备把开关关掉。
+     */
+    private static void handleLanDebug(HttpExchange ex) throws Exception {
+        if (!IS_IOS) {
+            sendJson(ex, 404, "{\"code\":-1,\"msg\":\"not ios\"}");
+            return;
+        }
+        String method = ex.getRequestMethod();
+        boolean loop = isLoopbackRequest(ex);
+        if ("GET".equalsIgnoreCase(method)) {
+            sendJson(ex, 200, lanDebugStateJson(loop).toString());
+            return;
+        }
+        if (!loop) {
+            sendJson(ex, 403, "{\"code\":-1,\"msg\":\"loopback only\"}");
+            return;
+        }
+        String body = read(ex.getRequestBody());
+        JSONObject in = body.trim().isEmpty() ? new JSONObject() : new JSONObject(body);
+        boolean on = in.optBoolean("enabled", false);
+        JSONObject p = loadPolicy();
+        if (on) {
+            if (LAN_DEBUG_TOKEN == null || LAN_DEBUG_TOKEN.isEmpty()) LAN_DEBUG_TOKEN = newLanToken();
+            LAN_DEBUG_ENABLED = true;
+            p.put("lanDebug", true);
+            p.put("lanToken", LAN_DEBUG_TOKEN);
+            savePolicy(p);
+            // 先把响应发出去，再延迟重绑 —— 先 stop 旧监听会把这次响应也掐掉。
+            sendJson(ex, 200, lanDebugStateJson(true).toString());
+            applyLanBind("0.0.0.0");
+        } else {
+            LAN_DEBUG_ENABLED = false;
+            LAN_DEBUG_TOKEN = "";
+            p.put("lanDebug", false);
+            p.remove("lanToken");
+            savePolicy(p);
+            sendJson(ex, 200, lanDebugStateJson(true).toString());
+            applyLanBind("127.0.0.1");
+        }
+    }
+
+    private static JSONObject lanDebugStateJson(boolean includeToken) throws org.json.JSONException {
+        JSONObject o = new JSONObject()
+                .put("enabled", LAN_DEBUG_ENABLED)
+                .put("port", port)
+                .put("url", LAN_DEBUG_ENABLED ? lanUrl() : "");
+        if (includeToken && LAN_DEBUG_ENABLED) o.put("token", LAN_DEBUG_TOKEN);
+        return o;
+    }
+
+    /** 回环请求才下发令牌；局域网设备即使猜中端点也拿不到。 */
+    private static boolean isLoopbackRequest(HttpExchange ex) {
+        try {
+            java.net.InetAddress a = ex.getRemoteAddress().getAddress();
+            return a != null && a.isLoopbackAddress();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static boolean lanTokenMatches(HttpExchange ex) throws IOException {
+        String want = LAN_DEBUG_TOKEN;
+        if (want == null || want.isEmpty()) return false;
+        String got = ex.getRequestHeaders().getFirst("X-Meow-Token");
+        if (got == null || got.trim().isEmpty()) got = query(ex).get("token");
+        if (got == null) return false;
+        return java.security.MessageDigest.isEqual(
+                want.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                got.trim().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private static String newLanToken() {
+        byte[] b = new byte[8];
+        new java.security.SecureRandom().nextBytes(b);
+        StringBuilder sb = new StringBuilder(16);
+        for (byte x : b) sb.append(String.format("%02x", x));
+        return sb.toString();
+    }
+
+    /** 局域网里能访问到本机的地址（优先 en0，排除 utun/awdl/bridge 等虚拟网卡）。 */
+    private static String lanUrl() {
+        String enAddr = null;
+        String anyAddr = null;
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> nis =
+                    java.net.NetworkInterface.getNetworkInterfaces();
+            while (nis != null && nis.hasMoreElements()) {
+                java.net.NetworkInterface ni = nis.nextElement();
+                if (!ni.isUp() || ni.isLoopback()) continue;
+                String name = ni.getName() == null ? "" : ni.getName().toLowerCase(java.util.Locale.ROOT);
+                if (name.startsWith("utun") || name.startsWith("awdl") || name.startsWith("llw")
+                        || name.startsWith("bridge") || name.startsWith("anpi")
+                        || name.startsWith("pdp_ip")) {
+                    continue;
+                }
+                java.util.Enumeration<java.net.InetAddress> as = ni.getInetAddresses();
+                while (as.hasMoreElements()) {
+                    java.net.InetAddress a = as.nextElement();
+                    if (a instanceof java.net.Inet4Address && a.isSiteLocalAddress()) {
+                        String u = "http://" + a.getHostAddress() + ":" + port;
+                        if ("en0".equals(name)) return u;
+                        if (name.startsWith("en") && enAddr == null) enAddr = u;
+                        if (anyAddr == null) anyAddr = u;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return enAddr != null ? enAddr : (anyAddr != null ? anyAddr : "");
+    }
+
+    /** 换绑地址：延迟 200ms 让当前响应先写完，再 stop 旧监听重建。 */
+    private static void applyLanBind(String bind) {
+        if (bind.equals(BIND_ADDR)) return;
+        BIND_ADDR = bind;
+        Thread t = new Thread(() -> {
+            try {
+                Thread.sleep(200L);
+            } catch (InterruptedException ignored) {
+            }
+            rebindListener(port, LISTEN_THREADS);
+        }, "lan-debug-rebind");
+        t.setDaemon(true);
+        t.start();
     }
 
     // ---------------------------------------------------------------- dns

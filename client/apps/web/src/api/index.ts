@@ -1076,6 +1076,24 @@ export async function savePolicy(patch: Policy): Promise<Policy> {
   return request<Policy>('/api/policy', { method: 'POST', body: patch })
 }
 
+/** iOS 局域网调试状态（默认关闭；打开后网关绑 0.0.0.0 并要求令牌）。 */
+export interface LanDebugState {
+  enabled: boolean
+  port: number
+  /** 形如 http://192.168.1.5:9978；关闭时为空串 */
+  url: string
+  /** 只有回环请求拿得到；局域网设备读不到 */
+  token?: string
+}
+
+export async function fetchLanDebug(): Promise<LanDebugState> {
+  return request<LanDebugState>('/api/_debug/lan')
+}
+
+export async function setLanDebug(enabled: boolean): Promise<LanDebugState> {
+  return request<LanDebugState>('/api/_debug/lan', { method: 'POST', body: { enabled } })
+}
+
 export interface DnsResult {
   host: string
   ip: string

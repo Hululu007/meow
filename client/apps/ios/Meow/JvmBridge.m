@@ -467,12 +467,19 @@ static jboolean meowNativeDownload(JNIEnv *env, jclass cls, jstring jurl, jstrin
                 return;
             }
 
+            /*
+             * 默认只绑回环：iOS 是手机，网关不该默认暴露到同一 Wi-Fi。
+             * 「维护 → 调试 → 远程调试」打开后宿主会自己改绑 0.0.0.0 并要求令牌，
+             * 状态存在 policy.json（lanDebug / lanToken），重启也保持。
+             */
             jclass stringClass = (*env)->FindClass(env, "java/lang/String");
-            jobjectArray arguments = (*env)->NewObjectArray(env, 2, stringClass, NULL);
+            jobjectArray arguments = (*env)->NewObjectArray(env, 3, stringClass, NULL);
             jstring portArg = (*env)->NewStringUTF(env, [[NSString stringWithFormat:@"--port=%d", port] UTF8String]);
             jstring dataArg = (*env)->NewStringUTF(env, [[@"--data-dir=" stringByAppendingString:dataDir] UTF8String]);
+            jstring bindArg = (*env)->NewStringUTF(env, "--bind=127.0.0.1");
             (*env)->SetObjectArrayElement(env, arguments, 0, portArg);
             (*env)->SetObjectArrayElement(env, arguments, 1, dataArg);
+            (*env)->SetObjectArrayElement(env, arguments, 2, bindArg);
 
             jvmLogWrite([NSString stringWithFormat:@"[meow-jvm] starting ApiServer (data=%@)\n",
                          dataDir].UTF8String);

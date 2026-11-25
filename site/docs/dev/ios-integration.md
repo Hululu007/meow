@@ -136,6 +136,38 @@ iOS 要对齐这条，拆成两问：
 尚未定位到具体成因。上面的改动是**把两种可能都缩短到可见窗口内并自动恢复**，
 不是"已找到根因"。下次复现要取 `Documents/launch.log` 与 `Documents/jvm.log`。
 
+### 0.6 第三轮真机（续）：点导航没反应 + 远程调试开关
+
+用户补充：顶栏搜索 / AI / 直播、详情页「去搜索」、剧集点击全部没反应，
+但同一页的纯前端按钮（切播放源胶囊）正常，设置页也进得去。
+
+**分界就是判据**：不经过 router 的按钮正常、所有 `router.push` 都失败 =
+懒加载路由 chunk 拉不到（不是 click 被挡）。iOS 的 web 资源由壳内 9979
+静态服务提供；它在切后台/系统回收后可能不再 accept。Java 网关（9978）有看门狗
+会自愈，静态服务此前没有 —— 所以 API 正常、页面里所有"要去新页面"的按钮全点不动。
+
+修法：
+
+- `main.ts` 的 `warmLazyRoutes()`：首屏后把 router 的全部懒加载 chunk 预热进内存，
+  导航不再依赖 9979；
+- `StaticServer.ensureServing()` + `Bootstrap.startStaticWatchdog()`：每 15s 探活
+  `/index.html`，失效就在原端口重建；`scenePhase == active` 时也补一次。
+
+**残留判定**：这次同样没拿到 `launch.log` 里的 `router:` 行，所以"静态服务失效"
+是基于分界现象的推断。新包若再复现，先看「运行日志」有没有
+`router: Failed to fetch dynamically imported module`：有 → 静态服务/chunk；
+没有 → click 层（再查覆盖层与 pointer-events）。
+
+**远程调试开关（对齐 TV）**：iOS 之前没有开关，且宿主默认绑 `0.0.0.0`（文档还写只绑回环）。
+现在：
+
+- 启动参数固定 `--bind=127.0.0.1`；设置页「维护 → 调试」可开关；
+- 打开 → `policy.json` 写 `lanDebug=true` + 16 位 `lanToken`，宿主延迟 200ms
+  重绑 `0.0.0.0`；关闭 → 清 token、重绑回环；
+- 非回环请求（**含 GET**）全部要求 `X-Meow-Token`（或 `?token=`）；token 只在
+  回环请求的 `GET /api/_debug/lan` 里下发，OPTIONS 放行给浏览器预检；
+- 状态跨重启保留（`policy.json`）。接口：`GET/POST /api/_debug/lan`。
+
 ---
 
 ::: warning 以下为「落地契约」原文（2026-11-17 口径）

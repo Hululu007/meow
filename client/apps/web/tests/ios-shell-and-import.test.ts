@@ -38,6 +38,7 @@ const screenAwake = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'ScreenAwak
 const webMain = read(join(WEB, 'src', 'main.ts'))
 const iosNative = read(join(ROOT, 'server', 'host', 'src', 'shared', 'platform', 'IosNative.java'))
 const projectYml = read(join(ROOT, 'client', 'apps', 'ios', 'project.yml'))
+const staticServerSwift = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'StaticServer.swift'))
 const danmuScript = read(join(ROOT, 'client', 'apps', 'ios', 'scripts', 'prepare-danmu-payload.sh'))
 const player = read(join(WEB, 'src', 'components', 'player', 'VideoPlayer.vue'))
 const appStore = read(join(WEB, 'src', 'stores', 'app.ts'))
@@ -260,6 +261,29 @@ describe('内核网络进程被回收：可恢复（图片全碎 + 按钮无反�
   it('刷新失败但旧列表还在时给反馈（不然「刷新」看着像坏的）', () => {
     expect(homeView).toContain('刷新失败：')
     expect(homeView).toContain('@click="loadHome()"')
+  })
+})
+
+describe('iOS：导航失效（2026-11-25）', () => {
+  it('路由 chunk 预热 + 静态服务 15s 探活（点搜索/剧集没反应的根因）', () => {
+    // 分界：纯前端按钮（切播放源）正常、所有 router.push 没反应 = 懒加载 chunk 拉不到
+    expect(webMain).toContain('warmLazyRoutes')
+    expect(staticServerSwift).toContain('ensureServing')
+    expect(bootstrapSwift).toContain('startStaticWatchdog')
+    expect(bootstrapSwift).toContain('appBecameActive')
+  })
+})
+
+describe('iOS：局域网调试开关（对齐 TV）', () => {
+  it('默认只绑回环；开关端点 + 非回环请求令牌', () => {
+    expect(host).toContain('/api/_debug/lan')
+    expect(host).toContain('lanDebug')
+    expect(host).toContain('lanTokenMatches')
+    expect(host).toContain('isLoopbackRequest')
+    // iOS 启动参数显式回环；policy.lanDebug=true 时才由宿主改绑 0.0.0.0
+    expect(jvmBridgeM).toContain('--bind=127.0.0.1')
+    expect(view).toContain('toggleIosDebug')
+    expect(view).toContain('X-Meow-Token')
   })
 })
 

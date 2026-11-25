@@ -20,12 +20,14 @@ import {
   clearSearchCache,
   fetchPolicy,
   fetchSearchCacheStats,
+  fetchLanDebug,
   isDesktop,
   isLoopbackUrl,
   pluginBase,
   readManualApi,
   resolveDns,
   savePolicy,
+  setLanDebug,
   setRuntimeBase,
   type SearchCacheStats,
 } from '@/api'
@@ -3708,9 +3710,54 @@ async function refreshPcDebug() {
   }
 }
 
+/**
+ * iOS 局域网调试状态。
+ *
+ * <p>默认关闭（网关只绑 127.0.0.1）；打开后宿主改绑 0.0.0.0 并生成 16 位令牌，
+ * 所有非本机请求（含 GET）都要带 X-Meow-Token。令牌只在回环请求里下发，
+ * 所以只有本机设置页看得到。
+ */
+async function refreshIosLan() {
+  try {
+    const s = await fetchLanDebug()
+    dbg.enabled = !!s.enabled
+    dbg.running = !!s.enabled
+    dbg.url = s.url || ''
+    dbg.token = s.token || ''
+    dbg.hint = ''
+  } catch (e) {
+    dbg.enabled = false
+    dbg.running = false
+    dbg.url = ''
+    dbg.token = ''
+    dbg.hint = '读取远程调试状态失败：' + String((e as { message?: unknown })?.message ?? e)
+  }
+}
+
+async function toggleIosDebug() {
+  if (dbg.busy) return
+  dbg.busy = true
+  try {
+    const s = await setLanDebug(!dbg.enabled)
+    dbg.enabled = !!s.enabled
+    dbg.running = !!s.enabled
+    dbg.url = s.url || ''
+    dbg.token = s.token || ''
+    dbg.hint = ''
+    // 调试期间保持亮屏（对齐 TV 的隐式行为；TV 没有这个开关，iOS 也不再单独给）。
+    // 关闭调试就恢复自动锁屏，避免一直亮着耗电。
+    if (keepAwake.value !== !!s.enabled) setKeepAwake(!!s.enabled)
+  } catch (e) {
+    dbg.hint = '切换失败：' + String((e as { message?: unknown })?.message ?? e)
+  } finally {
+    dbg.busy = false
+  }
+}
+
 function refreshDebug() {
   if (debugPlatform.value === 'tv') refreshTvDebug()
   else if (debugPlatform.value === 'pc') void refreshPcDebug()
+  else if (debugPlatform.value === 'ios') void refreshIosLan()
 }
 refreshDebug()
 
@@ -8232,13 +8279,12 @@ onBeforeUnmount(() => {
               debugPlatform === 'tv'
                 ? '局域网 PC 可读取状态 / 截图 / 派发按键'
                 : debugPlatform === 'ios'
-                  ? '运行信息 · 复制诊断 · 重载界面'
+                  ? '局域网 PC 可直连网关读取状态 / 调接口'
                   : '内置 MCP 服务，供外部工具读取状态 / 截图 / 派发按键'
             }}
           </span>
           <span class="flex-1" />
           <span
-            v-if="debugPlatform !== 'ios'"
             class="text-[11px]"
             :class="dbg.running ? 'text-accent' : 'text-ink-3'"
           >
@@ -8274,47 +8320,30 @@ onBeforeUnmount(() => {
           </p>
         </div>
 
-        <!-- iOS：没有常驻调试进程（切后台即挂起），给排障三件套 -->
+        <!-- iOS：局域网调试开关（对齐 TV）+ 排障三件套 -->
         <div v-else class="mt-2 space-y-2">
-          <div class="space-y-1">
-            <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] text-ink-3">
-              <span>构建 <code class="select-all text-accent">{{ iosDiag.build || '?' }}</code></span>
-              <span>版本 {{ iosDiag.version || '?' }}</span>
-            </div>
-            <div class="text-[11px] text-ink-3">
-              网关 <code class="select-all text-accent">{{ iosDiag.apiBase || '(未就绪)' }}</code>
-            </div>
-            <div class="text-[11px] text-ink-3">{{ iosDiag.runtime }}</div>
-          </div>
           <div class="flex flex-wrap items-center gap-2">
             <button
-              class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-dim"
-              @click="copyIosDiagnostics()"
+              class="rounded-md px-3 py-1.5 text-xs font-medium"
+              :class="dbg.enabled
+                ? 'bg-card hover:bg-card-hover'
+                : 'bg-accent text-on-accent hover:bg-accent-dim'"
+              :disabled="dbg.busy"
+              @click="toggleIosDebug()"
             >
-              复制诊断
+              {{ dbg.busy ? '切换中…' : dbg.enabled ? '关闭远程调试' : '开启远程调试' }}
             </button>
-            <button
-              class="rounded-md bg-card px-3 py-1.5 text-xs hover:bg-card-hover"
-              @click="reloadWebView()"
-            >
-              重载界面
-            </button>
+            <span v-if="dbg.url" class="text-[11px] text-ink-3">{{ dbg.url }}</span>
           </div>
-          <!-- 远程调试必须让屏幕别自动锁：息屏 = App 挂起 = 网关端口消失 -->
-          <div class="flex items-center justify-between gap-3 rounded-lg bg-field px-3 py-2">
-            <div class="min-w-0">
-              <div class="text-xs">保持亮屏</div>
-              <div class="text-[11px] leading-relaxed text-ink-3">
-                远程调试期间防止自动锁屏；息屏后 iOS 会挂起应用，网关端口随之消失
-              </div>
-            </div>
-            <ToggleSwitch
-              :model-value="keepAwake"
-              label="保持亮屏"
-              @update:model-value="setKeepAwake"
-            />
+          <!-- 令牌只在回环请求里下发：局域网设备知道地址也拿不到 -->
+          <div v-if="dbg.enabled && dbg.token" class="space-y-1">
+            <span class="block text-[11px] text-ink-3">
+              令牌（PC 侧放 X-Meow-Token 头；分隔符可省略）
+            </span>
+            <code class="select-all rounded bg-field px-2 py-1 text-xs tracking-wider text-accent">
+              {{ groupToken(dbg.token) }}
+            </code>
           </div>
-          <p v-if="diagMsg" class="text-[11px] text-accent">{{ diagMsg }}</p>
         </div>
 
         <!-- 令牌要能被抄写：投影仪上没有 adb，验收方只能看屏幕。
@@ -8336,8 +8365,9 @@ onBeforeUnmount(() => {
             每次开启都会换新令牌，关闭后服务立即停止。
           </template>
           <template v-else-if="debugPlatform === 'ios'">
-            同一 Wi-Fi 下可用 http://设备IP:9978 直连调试（App 需保持前台，切后台会被系统挂起）；
-            「图片全碎 / 按钮没反应」多半是内核网络进程被系统回收，点「重载界面」即恢复。
+            开关关闭时网关只接受本机请求；打开后局域网 PC 用上面的地址直连（非本机请求
+            都要带令牌），每次开启都会生成新令牌。App 切后台会被系统挂起，调试期间请保持前台。
+            「图片全碎 / 按钮没反应」先试「备份与诊断」里的「重载界面」。
           </template>
           <template v-else>
             只监听 127.0.0.1，不对外网开放。
@@ -8361,6 +8391,22 @@ onBeforeUnmount(() => {
         <span>备份可搬走；日志与重置用来排障</span>
         <span class="flex-1" />
         <div class="flex items-center gap-1">
+          <!-- iOS 排障：诊断信息与重载入口从「调试」区移到这里（TV 没有这两项，
+               调试区保持两端一致：状态 / 开关 / 地址 / 令牌） -->
+          <button
+            v-if="ios"
+            class="rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink"
+            @click="copyIosDiagnostics()"
+          >
+            复制诊断
+          </button>
+          <button
+            v-if="ios"
+            class="rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink"
+            @click="reloadWebView()"
+          >
+            重载界面
+          </button>
           <button
             class="rounded-md px-2 py-1 text-[11px] text-ink-3 transition hover:bg-card-hover hover:text-ink"
             @click="exportBackup"
@@ -8382,6 +8428,7 @@ onBeforeUnmount(() => {
       <TilePanel :items="maintTiles" :cols="3" class="mt-2 shrink-0" />
 
       <p v-if="backupMsg" class="mt-2 text-[11px] text-ink-3">{{ backupMsg }}</p>
+      <p v-if="diagMsg" class="mt-2 text-[11px] text-accent">{{ diagMsg }}</p>
 
     
       </template>
