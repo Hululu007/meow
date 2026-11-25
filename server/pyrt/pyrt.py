@@ -92,9 +92,19 @@ def log(*a):
 
 
 def load_spider(api, ext):
-    """按 (脚本路径, ext) 缓存实例；ext 变了要重新 init。"""
+    """按 (脚本路径, ext) 缓存实例；ext 变了要重新 init。
+
+    三种坏 api 都要给明确错误：`spec_from_file_location` 对空串（拼成目录）和
+    未知扩展名都返回 None，随后 `module_from_spec(None)` 抛
+    `AttributeError: 'NoneType' object has no attribute 'loader'` —— 这个报错
+    完全不指向真正原因（漏发请求头），实测排查了两轮才定位。
+    """
+    if not api:
+        raise ValueError("missing X-DRPY-Api header（只有路径段不够，pyrt 靠这个头找脚本）")
     if not os.path.isabs(api):
         api = os.path.join(PY_DIR, api)
+    if os.path.isdir(api):
+        raise IsADirectoryError("api 是目录而不是脚本: " + api)
     if not os.path.exists(api):
         raise FileNotFoundError("py script not found: " + api)
     key = api + "|" + (ext or "")
@@ -112,6 +122,15 @@ def load_spider(api, ext):
     if cls is None:
         raise RuntimeError("no Spider class in " + api)
     sp = cls()
+    # 注入代理基址：源脚本的 _proxy_base() 先调 getProxyUrl(True)，拿不到才兜底
+    # 127.0.0.1:18080（vbox 客户端的约定）。不注入的后果是"能搜、封面裂、播不了"——
+    # vod_pic 与 m3u8 全指向一个不存在的服务，而搜索接口本身完全正常。
+    try:
+        _pkey = getattr(sp, "PLATFORM_KEY", "") or os.path.splitext(os.path.basename(api))[0]
+        _pbase = "http://127.0.0.1:%d/proxy?do=py&key=%s" % (PORT, _pkey)
+        sp.getProxyUrl = lambda *a, **k: _pbase
+    except Exception:
+        pass
     init = getattr(sp, "init", None)
     if callable(init):
         try:
@@ -282,7 +301,58 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _serve_proxy(self):
+        """图片/流代理（vbox 同形：?do=py&key=<site>&type=img|video&u=<url>&r=<referer>）。
+
+        为什么必须有：源脚本的 getProxyUrl() 拿不到壳注入的方法时会兜底到
+        127.0.0.1:18080/proxy（vbox 客户端的约定）。缺这个端点时 vod_pic 与
+        播放地址全指向一个不存在的服务——表现为"能搜、封面裂、播不了"，
+        而搜索接口本身完全正常，很容易漏掉。
+
+        Range 必须透传：视频拖动、部分播放器起播都靠 206。
+        """
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        target = (qs.get("u") or [""])[0]
+        referer = (qs.get("r") or [""])[0]
+        if not target:
+            self._send(400, b'{"code":-1,"msg":"missing u"}')
+            return
+        try:
+            hdrs = {
+                "User-Agent": self.headers.get("User-Agent")
+                or "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 Chrome/87 Mobile Safari/537.36",
+                "Accept": "*/*",
+            }
+            if referer:
+                hdrs["Referer"] = referer
+            rng = self.headers.get("Range")
+            if rng:
+                hdrs["Range"] = rng
+            up = urllib.request.Request(target, headers=hdrs)
+            with urllib.request.urlopen(up, timeout=45) as r:
+                self.send_response(r.status)
+                self.send_header("Content-Type", r.headers.get("Content-Type") or "application/octet-stream")
+                for h in ("Content-Length", "Content-Range", "Accept-Ranges", "Last-Modified", "ETag"):
+                    v = r.headers.get(h)
+                    if v:
+                        self.send_header(h, v)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except urllib.error.HTTPError as e:
+            self._send(e.code, json.dumps({"code": -1, "msg": "upstream %d" % e.code}).encode())
+        except Exception as e:
+            self._send(502, json.dumps({"code": -1, "msg": "proxy: %s" % e}).encode())
+
     def do_GET(self):
+        # 图片/视频流走 GET（源站的 <img src> 与 m3u8 分片都是 GET）
+        _p = urllib.parse.urlparse(self.path).path
+        if _p == "/proxy":
+            return self._serve_proxy()
         if self.path in ("/", "/health"):
             self._send(200, b'{"ok":true,"service":"pyrt"}')
         else:
@@ -308,6 +378,9 @@ class Handler(BaseHTTPRequestHandler):
         # ── 脚本注入端点（跨进程/跨 uid 用）──
         # 模块跑在独立进程时，宿主的 filesDir 它读不到；容器场景同理。
         # 宿主把这些脚本 POST 过来，这里落到本进程可写的 PY_DIR。
+        if path == "/proxy" or path.startswith("/proxy?"):
+            return self._serve_proxy()
+
         if path.startswith("/_put/"):
             name = os.path.basename(urllib.parse.unquote(path[len("/_put/"):]))
             try:
