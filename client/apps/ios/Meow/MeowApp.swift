@@ -13,6 +13,9 @@ struct MeowApp: App {
         // Info.plist 已有 UIBackgroundModes=audio，但默认 audio session 是
         // soloAmbient —— 切后台/锁屏时系统会直接停音。改成 playback 才能续播
         // （代价：静音拨片不再拦截媒体声，视频 App 的常规做法）。
+        //
+        // ★ 只设 category、不在启动时 setActive：后者会抢走音频焦点，
+        //   用户开着音乐进 App 就被打断。真正开播时 WebKit 会自己激活会话。
         Self.configureAudioSession()
     }
 
@@ -21,7 +24,6 @@ struct MeowApp: App {
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .moviePlayback, options: [])
-            try session.setActive(true)
             LaunchLog.write("audio session: playback")
         } catch {
             LaunchLog.write("audio session failed: \(error.localizedDescription)")
