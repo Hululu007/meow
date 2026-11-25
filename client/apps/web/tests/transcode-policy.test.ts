@@ -99,8 +99,8 @@ describe('取消语义：切集/换线/离开页面要真的停掉后端任务',
   })
 
   it('后端 DELETE 接受 src / lib+path，按幂等键反推 id', () => {
-    expect(API).toContain('core.Transcode.idFor(src, preferCopy, repair)')
-    expect(API).toContain('core.Transcode.idFor("lib|" + delLib + "|" + delPath, preferCopy, repair)')
+    expect(API).toContain('core.Transcode.idFor(src, preferCopy, repair, delStart)')
+    expect(API).toContain('core.Transcode.idFor("lib|" + delLib + "|" + delPath, preferCopy, repair, delStart)')
   })
 })
 

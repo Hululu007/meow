@@ -27,7 +27,9 @@ describe('源实例化失败：不 500、可分类、说清缺什么', () => {
     expect(J, '没提取缺失类').toMatch(/private static String missingClassOf\(/)
     expect(J, '缺类的两种消息形态没覆盖').toContain('Failed resolution of: L')
     expect(J).toContain("Didn't find class")
-    expect(J, '用户看到的还是 500 而不是人话').toContain('该源在当前构建不可用')
+    // issue #18：只剥反射壳还不够，NPE/缺类/JSON 错要翻译成中文原因
+    expect(J, '500 归因映射缺失').toContain('friendlySourceError')
+    expect(J, '缺类没有翻译成人话').toContain('该源缺少依赖类')
   })
 
   it('失败要进健康表（classify 靠 cannot load spider 判 unsupported）', () => {

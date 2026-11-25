@@ -270,8 +270,12 @@ describe('可播判据与并发（2026-11-17 第二轮回修：播几秒就卡�
     expect(i).toBeGreaterThan(-1)
     const body = s.slice(i, s.indexOf('private static int countSegments', i))
     expect(body).not.toContain('j.state = "ready"')
-    // 中途修复会把 startOffset 加进已转出时长；只锁"由分片数推算"这个语义
-    expect(body).toContain('n * SEG_SECONDS')
+    // 中途修复/起点重转会把 startOffset 加进已转出时长；语义仍是"由分片推算"
+    expect(body).toContain('readySecondsOf(id, j.startOffset, n)')
+    const helper = s.slice(s.indexOf('private static int readySecondsOf'))
+    expect(helper).toContain('segments * SEG_SECONDS')
+    // 清单存在时以 EXTINF 求和为准（HLS 源分片不是 2 秒，按数量估会少报）
+    expect(helper).toContain('#EXTINF:')
   })
 
   it('复用 running 任务前要验进程还活着（否则任务永远停在 running）', () => {

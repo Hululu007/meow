@@ -16,6 +16,7 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 外部 spider jar 加载器（CatVod 生态），**仅 JVM 生效**。
@@ -40,6 +41,62 @@ public final class Jars {
     /** 已就绪的 loader，按配置出现顺序尝试 */
     private static final List<URLClassLoader> LOADERS = new ArrayList<>();
     private static volatile boolean hookInstalled;
+
+    /**
+     * 每条 jar 规格最近一次的装载结果（issue #9/#14/#10 的可见性来源）。
+     *
+     * <p>这层必须存在：jar 准备失败原来只有一行 WARN，站点在列表里静默消失，
+     * 用户和客服都只能猜"是不是源挂了"。导入结果、站点明细、/api/health
+     * 都从这里取一致的说法。
+     */
+    public static final class Status {
+        public String spec = "";
+        public String name = "";
+        public boolean ok;
+        /** md5 与配置一致；配置没写 md5 时视为 true */
+        public boolean md5Ok = true;
+        public String md5Expected = "";
+        public String md5Actual = "";
+        public String error = "";
+        /** 加密 Guard 壳（assets/*.guard + ARM .so + 极小的 classes.dex） */
+        public boolean encrypted;
+        public String encryptedReason = "";
+        public long bytes;
+
+        public JSONObject json() throws Exception {
+            JSONObject o = new JSONObject();
+            o.put("spec", spec);
+            o.put("name", name);
+            o.put("ok", ok);
+            o.put("md5Ok", md5Ok);
+            o.put("bytes", bytes);
+            o.put("encrypted", encrypted);
+            if (!error.isEmpty()) o.put("error", error);
+            if (!md5Ok) {
+                o.put("md5Expected", md5Expected);
+                o.put("md5Actual", md5Actual);
+            }
+            if (encrypted && !encryptedReason.isEmpty()) o.put("encryptedReason", encryptedReason);
+            return o;
+        }
+    }
+
+    private static final List<Status> STATUS = new ArrayList<>();
+
+    /**
+     * 下载失败冷却：同 URL 10 分钟内不再重试（issue #14 P2）。
+     *
+     * <p>为什么需要：导入/启动都会 reload，源站挂了时每次都要等满超时 +
+     * 失败，一次导入卡十几秒。冷却期内有缓存就用缓存，没缓存直接报"冷却中"。
+     */
+    private static final Map<String, Long> FAIL_UNTIL =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long JAR_FAIL_COOLDOWN_MS = 10L * 60_000L;
+
+    /** 最近一次 prepare 的 md5 结果（prepare 是私有核心，reload 用它填 Status）。 */
+    private static volatile boolean LAST_MD5_OK = true;
+    private static volatile String LAST_MD5_EXPECTED = "";
+    private static volatile String LAST_MD5_ACTUAL = "";
 
     /** {@link #reload()} 的代次，见 generation() 的说明。 */
     private static final java.util.concurrent.atomic.AtomicInteger GENERATION =
@@ -165,6 +222,157 @@ public final class Jars {
         return p.endsWith("/") ? p + url : p + "/" + url;
     }
 
+    /** 装载结果快照（导入结果 / 站点明细 / /api/health 共用）。 */
+    public static synchronized JSONArray statusJson() throws Exception {
+        JSONArray arr = new JSONArray();
+        for (Status s : STATUS) arr.put(s.json());
+        return arr;
+    }
+
+    /** 有 jar 装载失败时返回第一句原因，否则空串。 */
+    public static synchronized String lastError() {
+        for (Status s : STATUS) {
+            if (!s.ok && !s.error.isEmpty()) return s.error;
+        }
+        return "";
+    }
+
+    /** 配置里有加密 Guard 壳（本构建的 JVM/桌面跑不了它的 ARM 原生库）。 */
+    public static synchronized boolean hasEncrypted() {
+        for (Status s : STATUS) {
+            if (s.encrypted) return true;
+        }
+        return false;
+    }
+
+    public static synchronized String encryptedReason() {
+        for (Status s : STATUS) {
+            if (s.encrypted && !s.encryptedReason.isEmpty()) return s.encryptedReason;
+        }
+        return "";
+    }
+
+    public static synchronized boolean hasFailure() {
+        for (Status s : STATUS) {
+            if (!s.ok) return true;
+        }
+        return false;
+    }
+
+    /**
+     * md5 不匹配是否按致命错误处理（policy.json 的 {@code jarStrictMd5}）。
+     *
+     * <p>默认 **false**：TVBox 生态里同一份配置能在 TVBox 跑、在我们这里整站消失，
+     * 最常见的原因就是配置作者换了 jar 却忘了改 {@code ;md5;}，或者图片 CDN
+     * 按 UA 返回了不同字节（实测两条都出现过）。不匹配时挂载 + WARN 比
+     * "整站不可见"有用得多；洁癖用户可显式打开。
+     */
+    public static boolean strictMd5() {
+        if (Boolean.getBoolean("meow.jarStrictMd5")) return true;
+        try {
+            String raw = DataPaths.read("policy.json");
+            if (raw != null && !raw.trim().isEmpty()) {
+                Object v = new JSONObject(raw).opt("jarStrictMd5");
+                if (v instanceof Boolean) return (Boolean) v;
+                if (v != null) return "true".equalsIgnoreCase(String.valueOf(v).trim());
+            }
+        } catch (Throwable ignored) {
+            /* 坏 policy 按默认（宽松）处理 */
+        }
+        return false;
+    }
+
+    private static void resetMd5State() {
+        LAST_MD5_OK = true;
+        LAST_MD5_EXPECTED = "";
+        LAST_MD5_ACTUAL = "";
+    }
+
+    /**
+     * 识别"加密 Guard 壳"jar（issue #10）。
+     *
+     * <p>判据全部来自 jar 条目，不联网：正常 spider jar 是 1–4MB 的 .class；
+     * 加密壳只带一个几十 KB 的 classes.dex，真逻辑在 assets/*.guard 里，
+     * 由 assets/*wexguard*.so 在运行时解密。这类包在 JVM / x86 设备上
+     * 必然点开才报 DexNative/UnsatisfiedLinkError，必须在导入期就说清。
+     */
+    static String detectEncrypted(File f) {
+        try (java.util.jar.JarFile jf = new java.util.jar.JarFile(f)) {
+            int classCount = 0;
+            long dexSize = 0;
+            boolean guardAsset = false;
+            boolean guardSo = false;
+            boolean nativeRef = false;
+            java.util.Enumeration<java.util.jar.JarEntry> en = jf.entries();
+            while (en.hasMoreElements()) {
+                java.util.jar.JarEntry e = en.nextElement();
+                String n = e.getName();
+                String ln = n.toLowerCase(java.util.Locale.ROOT);
+                if (n.endsWith(".class")) classCount++;
+                if ("classes.dex".equals(ln)) {
+                    dexSize = e.getSize();
+                    nativeRef = dexHasNativeBridge(jf, e);
+                }
+                if (ln.startsWith("assets/") && (ln.endsWith(".guard") || ln.endsWith(".grd"))) {
+                    guardAsset = true;
+                }
+                if ((ln.startsWith("assets/") || ln.startsWith("lib/"))
+                        && ln.endsWith(".so") && ln.contains("guard")) {
+                    guardSo = true;
+                }
+            }
+            boolean shell = classCount == 0 && dexSize > 0 && dexSize < 200L * 1024;
+            if (!guardAsset && !guardSo && !(shell && nativeRef)) return "";
+            String reason = "加密接口（jar 里只有 Guard 加密壳，需要影视仓宿主）";
+            String abi = deviceAbi();
+            if (abi.contains("x86") || abi.contains("amd64")) {
+                reason += "；该壳只带 ARM 原生库，本设备（" + abi + "）跑不了";
+            }
+            return reason;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** dex 里是否出现 DexNative / NativeLoader（加密壳的外部运行时桥）。 */
+    private static boolean dexHasNativeBridge(java.util.jar.JarFile jf, java.util.jar.JarEntry e) {
+        try (InputStream in = jf.getInputStream(e)) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            long total = 0;
+            while ((n = in.read(buf)) != -1) {
+                total += n;
+                if (total > 2L * 1024 * 1024) break;
+                out.write(buf, 0, n);
+            }
+            String s = new String(out.toByteArray(), java.nio.charset.StandardCharsets.ISO_8859_1);
+            return s.contains("DexNative") || s.contains("NativeLoader");
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 本进程的 CPU ABI（Android 用 Build，主机用 os.arch）。 */
+    private static String deviceAbi() {
+        String abi = "";
+        try {
+            Class<?> b = Class.forName("android.os.Build");
+            Object v = b.getField("CPU_ABI").get(null);
+            if (v instanceof String) abi = (String) v;
+            try {
+                Object arr = b.getField("SUPPORTED_ABIS").get(null);
+                if (arr instanceof String[] && ((String[]) arr).length > 0) {
+                    abi = ((String[]) arr)[0];
+                }
+            } catch (Throwable ignored) {
+            }
+        } catch (Throwable ignored) {
+        }
+        if (abi == null || abi.trim().isEmpty()) abi = System.getProperty("os.arch", "");
+        return abi == null ? "" : abi.toLowerCase(java.util.Locale.ROOT);
+    }
+
     public static synchronized void reload() {
         if (!isJvm()) return;   // Android 走 LocalSpiderHost 的 DexClassLoader，别插手
         closeAll();
@@ -178,14 +386,35 @@ public final class Jars {
          * 导入后首页请求超时，服务端日志只有 [req] 没有下文）。
          */
         GENERATION.incrementAndGet();
+        synchronized (Jars.class) {
+            STATUS.clear();
+        }
         for (String spec : collect()) {
+            Status st = new Status();
+            st.spec = spec;
             try {
                 File f = prepare(spec);
-                if (f == null) continue;
+                if (f == null) {
+                    st.error = "没有本地文件";
+                    addStatus(st);
+                    continue;
+                }
+                st.bytes = f.length();
+                st.name = f.getName();
+                st.md5Ok = LAST_MD5_OK;
+                st.md5Expected = LAST_MD5_EXPECTED;
+                st.md5Actual = LAST_MD5_ACTUAL;
+                String enc = detectEncrypted(f);
+                if (!enc.isEmpty()) {
+                    st.encrypted = true;
+                    st.encryptedReason = enc;
+                }
                 boolean guard = isJvm() && isGuardShell(f);
                 if (guard) {
                     File payload = materializeGuard(f);
                     if (payload == null) {
+                        st.error = "加密 Guard 壳解密失败";
+                        addStatus(st);
                         LogBuffer.warn("jar", "加密 Guard 壳解密失败，跳过 " + shortSpec(spec));
                         continue;
                     }
@@ -202,12 +431,25 @@ public final class Jars {
                 URLClassLoader loader = new URLClassLoader(new URL[]{f.toURI().toURL()}, Jars.class.getClassLoader());
                 LOADERS.add(loader);
                 if (guard) registerGuardLoader(loader, f);
+                st.ok = true;
+                addStatus(st);
                 LogBuffer.info("jar", (guard ? "已挂载加密源 " : "已挂载 ") + f.getName() + "（" + f.length() + "B）");
+                if (!st.md5Ok) {
+                    LogBuffer.warn("jar", "md5 不匹配但仍挂载（policy.jarStrictMd5=false）："
+                            + shortSpec(spec) + " 期望 " + st.md5Expected + " 实际 " + st.md5Actual);
+                }
+                if (st.encrypted) LogBuffer.warn("jar", "加密 Guard 壳：" + st.encryptedReason);
             } catch (Throwable t) {
+                st.error = t.getMessage() == null ? String.valueOf(t) : t.getMessage();
+                addStatus(st);
                 LogBuffer.warn("jar", "准备失败 " + shortSpec(spec) + " → " + t);
             }
         }
         installHook();
+    }
+
+    private static synchronized void addStatus(Status st) {
+        STATUS.add(st);
     }
 
     /** jar 集合的代次；每次 {@link #reload()} 自增。缓存方拿它做失效判据。 */
@@ -450,6 +692,7 @@ public final class Jars {
      * 缓存命中且 md5 一致就直接复用（避免每次启动重下 1MB+）。
      */
     private static File prepare(String spec) throws Exception {
+        resetMd5State();
         String url = spec;
         String md5 = "";
         int i = spec.toLowerCase().indexOf(";md5;");
@@ -470,7 +713,8 @@ public final class Jars {
         if (url.startsWith("file:") || !url.toLowerCase().startsWith("http")) {
             File f = url.startsWith("file:") ? new File(java.net.URI.create(url).getPath()) : new File(url);
             if (!f.isFile()) throw new Exception("本地 jar 不存在：" + f);
-            verify(f, md5);
+            // 本地文件是用户的原始文件：校验失败可以报错，**绝不能删**
+            checkMd5(f, md5, false);
             return f;
         }
 
@@ -479,7 +723,28 @@ public final class Jars {
         if (!dir.exists() && !dir.mkdirs()) throw new Exception("无法创建 jars 目录：" + dir);
         File dst = new File(dir, fileNameOf(url));
 
-        if (dst.isFile() && (md5.isEmpty() || md5.equalsIgnoreCase(md5Of(dst)))) return dst;
+        boolean hadCache = dst.isFile();
+        if (hadCache) {
+            if (md5.isEmpty()) return dst;
+            String got = md5Of(dst);
+            if (md5.equalsIgnoreCase(got)) return dst;
+            // 配置换了 md5（或旧包不对）：重下一次，仍不对再按宽松策略决定
+            LogBuffer.info("jar", "缓存 md5 不一致，重新下载：" + shortSpec(spec));
+        }
+        long now = System.currentTimeMillis();
+        Long failUntil = FAIL_UNTIL.get(url);
+        if (failUntil != null && failUntil > now) {
+            if (hadCache) {
+                String got = md5.isEmpty() ? "" : md5Of(dst);
+                LAST_MD5_EXPECTED = md5;
+                LAST_MD5_ACTUAL = got;
+                LAST_MD5_OK = md5.isEmpty() || md5.equalsIgnoreCase(got);
+                LogBuffer.info("jar", "下载冷却中，使用缓存 " + shortSpec(spec));
+                return dst;
+            }
+            long mins = Math.max(1, (failUntil - now + 59_999L) / 60_000L);
+            throw new Exception("最近下载失败，冷却中（约 " + mins + " 分钟后重试）");
+        }
 
         File part = new File(dst.getAbsolutePath() + ".part");
         /*
@@ -500,7 +765,7 @@ public final class Jars {
         for (String u : cands) {
             try {
                 downloadTo(part, u);
-                verify(part, md5);
+                checkMd5(part, md5);
                 if (!u.equals(url)) LogBuffer.info("jar", "加速命中：" + u);
                 ok = true;
                 break;
@@ -511,6 +776,22 @@ public final class Jars {
             }
         }
         if (!ok) {
+            FAIL_UNTIL.put(url, System.currentTimeMillis() + JAR_FAIL_COOLDOWN_MS);
+            /*
+             * 下载全失败（源站挂了/换了域名）但本地有缓存：宽松模式继续用缓存。
+             *
+             * 这类配置往往能用很久 —— 站点消失只因为"今天下不动 jar"，
+             * 比 md5 不匹配更冤（issue #14 的同一个坑，只是触发点更靠前）。
+             */
+            if (!strictMd5() && hadCache) {
+                String got = md5Of(dst);
+                LAST_MD5_EXPECTED = md5;
+                LAST_MD5_ACTUAL = got;
+                LAST_MD5_OK = md5.isEmpty() || md5.equalsIgnoreCase(got);
+                LogBuffer.warn("jar", "下载失败，沿用本地缓存 " + shortSpec(spec)
+                        + (LAST_MD5_OK ? "" : "（md5 不匹配）"));
+                return dst;
+            }
             if (last != null) throw last;
             throw new Exception("下载失败");
         }
@@ -520,7 +801,8 @@ public final class Jars {
             //noinspection ResultOfMethodCallIgnored
             part.delete();
         }
-        verify(dst, md5);
+        FAIL_UNTIL.remove(url);
+        checkMd5(dst, md5);
         return dst;
     }
 
@@ -584,15 +866,40 @@ public final class Jars {
         return false;
     }
 
-    private static void verify(File f, String md5) throws Exception {
-        if (md5 != null && !md5.isEmpty()) {
-            String got = md5Of(f);
-            if (!got.equalsIgnoreCase(md5)) {
+    /**
+     * 校验 md5。返回 false = 不一致但**保留文件**（宽松模式，见 {@link #strictMd5()}）。
+     *
+     * <p>踩过（2026-11-24 飞牛实测）：用户配置里 jar 的 {@code ;md5;} 值过期
+     * （维护者换了包没改 hash，或图片 CDN 按 UA 返回不同字节），旧实现删文件 + 抛异常，
+     * 结果**整站静默消失**，而同一份配置在 TVBox 上正常。不匹配不是"文件坏了"的
+     * 证据，先挂载再说；严格模式只给明确要求的人。
+     */
+    private static boolean checkMd5(File f, String md5) throws Exception {
+        return checkMd5(f, md5, true);
+    }
+
+    private static boolean checkMd5(File f, String md5, boolean deletable) throws Exception {
+        LAST_MD5_EXPECTED = md5 == null ? "" : md5;
+        if (md5 == null || md5.isEmpty()) {
+            LAST_MD5_OK = true;
+            LAST_MD5_ACTUAL = "";
+            return true;
+        }
+        String got = md5Of(f);
+        LAST_MD5_ACTUAL = got;
+        if (got.equalsIgnoreCase(md5)) {
+            LAST_MD5_OK = true;
+            return true;
+        }
+        LAST_MD5_OK = false;
+        if (strictMd5()) {
+            if (deletable) {
                 //noinspection ResultOfMethodCallIgnored
                 f.delete();
-                throw new Exception("md5 不匹配：期望 " + md5 + "，实际 " + got);
             }
+            throw new Exception("md5 不匹配：期望 " + md5 + "，实际 " + got);
         }
+        return false;
     }
 
     /** 文件名 = URL 末段 + URL 哈希前缀，避免不同站点的同名 jar 互相覆盖。 */

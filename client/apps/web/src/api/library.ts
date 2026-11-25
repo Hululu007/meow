@@ -693,8 +693,10 @@ export interface TranscodeResult {
   state?: 'idle' | 'running' | 'ready' | 'failed' | 'cancelled' | 'canceled'
   error?: string
   segments?: number
-  /** 已转出多少秒（增量产出，可边看边转） */
+  /** 已转出多少秒（增量产出，可边看边转）；含 startOffset，是绝对时间轴 */
   readySeconds?: number
+  /** 清单真实内容从第几秒开始（起点重转时前段是黑场填充；0 = 从 0 转） */
+  startOffset?: number
   /** 源真实总时长（秒）。转码未完成时 video.duration 只是已转出时长，靠它显示对的进度条 */
   duration?: number
   playlist?: string
@@ -751,8 +753,9 @@ export async function startLibraryTranscode(
   if (repair) {
     q.set('repair', '1')
     q.set('hev', allowHevc ? '1' : '0')
-    if (start > 1) q.set('start', String(Math.floor(start)))
   } else if (copy) q.set('copy', '1')
+  // start 对普通转码同样有效（拖动 seek 超出已转出范围时从目标点重转）
+  if (start > 1) q.set('start', String(Math.floor(start)))
   const r = await fetch(`${apiBase()}/api/transcode?${q}`)
   if (!r.ok) {
     // 后端 stage 前的预检（ffmpeg 缺失等）返回 502 + 人话 msg——
@@ -924,6 +927,7 @@ export async function waitLibraryTranscode(
         const q = new URLSearchParams({ lib, path, mode: 'status' })
         if (repair) q.set('repair', '1')
         else if (copy) q.set('copy', '1')
+        if (start > 1) q.set('start', String(Math.floor(start)))
         const r = await fetch(`${apiBase()}/api/transcode?${q}`)
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return (await r.json()) as TranscodeResult
@@ -949,6 +953,8 @@ export type TranscodeCancelCoords = {
   /** 与 start 时一致的模式（后端幂等键含模式，不带会停错任务） */
   copy?: boolean
   repair?: boolean
+  /** 与 start 时一致的起点秒数（起点参与幂等键，不带会停错任务） */
+  start?: number
 }
 
 /** 取消/保活共用的 query（坐标不全时返回空串）。 */
@@ -962,6 +968,7 @@ function transcodeQueryOf(t: TranscodeCancelCoords): string {
   } else return ''
   if (t.repair) q.set('repair', '1')
   else if (t.copy) q.set('copy', '1')
+  if (t.start && t.start > 1) q.set('start', String(Math.floor(t.start)))
   return q.toString()
 }
 
@@ -1010,8 +1017,9 @@ export async function startTranscode(
   if (repair) {
     q.set('repair', '1')
     q.set('hev', allowHevc ? '1' : '0')
-    if (start > 1) q.set('start', String(Math.floor(start)))
   } else if (copy) q.set('copy', '1')
+  // start 对普通转码同样有效（拖动 seek 超出已转出范围时从目标点重转）
+  if (start > 1) q.set('start', String(Math.floor(start)))
   const r = await fetch(`${apiBase()}/api/transcode?${q}`)
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   return (await r.json()) as TranscodeResult
@@ -1037,6 +1045,7 @@ export async function waitTranscode(
         const q = new URLSearchParams({ src, mode: 'status' })
         if (repair) q.set('repair', '1')
         else if (copy) q.set('copy', '1')
+        if (start > 1) q.set('start', String(Math.floor(start)))
         const r = await fetch(`${apiBase()}/api/transcode?${q}`)
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return (await r.json()) as TranscodeResult

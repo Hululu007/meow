@@ -879,6 +879,14 @@ public final class LibraryRoutes {
         boolean repair = "1".equals(q.get("repair"));
         // 客户端 HEVC 能力（同 ApiServer：不传按 true 保持旧行为）
         boolean allowHevc = !"0".equals(q.get("hev"));
+        // start 参与幂等键（普通转码的拖动 seek 超界也用它），状态查询必须带同一个值
+        int startSec = 0;
+        try {
+            startSec = Integer.parseInt(Api.trimToEmpty(q.get("start")));
+        } catch (Exception ignored) {
+            startSec = 0;
+        }
+        startSec = Math.max(0, Math.min(startSec, 24 * 3600));
         /*
          * ★ status 轮询必须排在「取源」之前（S1，2026-11-17 复查发现）。
          *
@@ -889,7 +897,7 @@ public final class LibraryRoutes {
          */
         if ("status".equalsIgnoreCase(q.getOrDefault("mode", ""))) {
             core.Transcode.Job j = core.Transcode.status(
-                    core.Transcode.idFor(key, preferCopy, repair));
+                    core.Transcode.idFor(key, preferCopy, repair, startSec));
             Api.sendJson(ex, 200, j == null
                     ? new JSONObject().put("ok", true).put("state", "idle").toString()
                     : core.Transcode.toJson(j).toString());
@@ -943,14 +951,6 @@ public final class LibraryRoutes {
             return;
         }
         // copy=1 remux / repair=1 原分辨率重编（修复丢帧）
-        // start=N：修复从第 N 秒开始（中途丢帧不用从头等到当前位置）
-        int startSec = 0;
-        try {
-            startSec = Integer.parseInt(Api.trimToEmpty(q.get("start")));
-        } catch (Exception ignored) {
-            startSec = 0;
-        }
-        startSec = Math.max(0, Math.min(startSec, 24 * 3600));
         core.Transcode.Job j = core.Transcode.ensureLocal(source, key, preferCopy, repair, startSec,
                 allowHevc);
         Api.sendJson(ex, 200, core.Transcode.toJson(j).toString());

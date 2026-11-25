@@ -10,6 +10,7 @@
  * 而 3 秒轮询对排查足够。轮询只在页面可见且有"实时"开关时进行。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   clearClientLogs,
   clearServerLogs,
@@ -24,6 +25,7 @@ import {
 import { confirmDialog } from '@/composables/useConfirm'
 import { uaText } from '@/compat/ua'
 
+const route = useRoute()
 const items = ref<LogItem[]>([])
 const serverStats = ref({ total: 0, errors: 0, warns: 0, capacity: 2000 })
 const loading = ref(true)
@@ -240,6 +242,9 @@ function doExport() {
 }
 
 onMounted(() => {
+  // 详情页「查看日志」带 ?kw=<站点名>：直接筛到那个源，用户不用自己猜关键词
+  const kw = typeof route.query.kw === 'string' ? route.query.kw.trim() : ''
+  if (kw) keyword.value = kw
   logEvent('info', 'ui', `日志页打开 · ${uaText().slice(0, 60)}`)
   void refresh()
 })

@@ -38,6 +38,21 @@ const store = useAppStore()
 const layout = getPrefs().searchLayout
 
 const wd = computed(() => (route.query.wd as string) || '')
+/**
+ * 搜不到时的空状态说明（issue #9）。
+ *
+ * <p>纯壳环境只剩内置豆瓣时，用户反复换关键词也不会出结果 —— 因为那个站
+ * 本身没有 search 实现，而界面上"所有站点都没有找到结果"看起来像关键词问题。
+ * 只有 1 个可用站时直接把"站太少"说出来，并给可行动的方向（导入源包）。
+ */
+const emptyHint = computed(() => {
+  const n = store.sites.length
+  if (n <= 1) {
+    const name = store.sites[0]?.name || '当前站点'
+    return `当前只有「${name}」可用，它可能不支持搜索；导入源包后可用站点会变多`
+  }
+  return '换个关键词，或扩大搜索范围再试'
+})
 const scope = ref<'current' | 'all'>('all')
 const keyword = ref(wd.value)
 /** 搜索框（进页面自动聚焦，见 onMounted） */
@@ -830,7 +845,7 @@ onBeforeUnmount(() => {
       class="mt-16"
       icon="🔍"
       :title="error"
-      hint="换个关键词，或扩大搜索范围再试"
+      :hint="emptyHint"
     >
       <button
         type="button"

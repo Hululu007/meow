@@ -114,6 +114,8 @@ Cache-Control: no-store, no-cache, must-revalidate
 | 字段 | 语义 |
 |---|---|
 | `version` / `sites` / `ext` / `configLoaded` / `spiderJar` / `nativeSources` | 版本、可见站点数、有 ext 的站点数、站点表非空、jar 可加载、原生源数 |
+| `configuredSites` / `implementedSites` | 配置里的站点条数 / 当前真正可用的条数；差距大时看 `jars` 与 `/api/sites/pending` |
+| `jars` / `jarFailedCount` / `jarEncrypted` | 每条外部 jar 的 `{spec,name,ok,md5Ok,bytes,encrypted,error?,encryptedReason?,md5Expected?,md5Actual?}` / 装载失败条数 / 加密 Guard 壳原因 |
 | `capabilities` | 固定 `danmaku/search/proxy/webdav/dns/state/parse`，配外部弹幕时加 `danmakuExternal`。**没有** `live`/`multiDepot`/`progress`/`favorites` |
 | `degraded` / `unsupported` / `disabled` | 降级 / 环境不支持（缺类、运行时未接）/ 手动停用 的 key 列表（各带 `*Count`） |
 | `now` | 服务器毫秒。一批源用本机时间生成签名，偏差过大会「搜索静默为空」 |
@@ -132,11 +134,22 @@ Cache-Control: no-store, no-cache, must-revalidate
 ```
 
 - 只有 `key`/`name`/`api`/`ext?`/`health?`；**没有** `searchable`/`timeout`/`categories`。
+- 默认只列「有实现 + 被配置承认」的站。`?includePending=1` 时追加配置里有、本构建
+  加载不了的站：多带 `pending:true` 与 `reason`（加密壳 / jar 未装载 / 缺类）。
+  **TV 端导入用的是默认形态**，不要给它塞 pending 项（会变成点开即失败的幽灵站）。
 - `ext` 是**已转义的 JSON 字符串**（双重编码），前端 `tryParse` 一次。
 - `health` 仅在有过记录时出现，字段：`ok/fail/degraded/disabled/unsupported/
   unsupportedReason/lastCount/lastCostMs/slowEmpty/timeoutStreak/lastTimeoutAt/
   lastOkAt/lastFailAt/skippedTimeout/skippedFailed/lastError`。
 - 已按「有实现 + 被配置承认」过滤（`siteVisible`），没有实现的基线名不会出现。
+- 有 `health.unsupported` 的站也会出现在这里（类在、但实例化/初始化失败），
+  同时会进 `/api/sites/pending`（见 2.2.1）。
+
+### 2.2.1 `GET /api/sites/pending`
+
+`[]` 或 `[{"key":"GuardOne","name":"加密一","api":"csp_GuardOne","reason":"加密接口…"}]`。
+数据 = 配置里 `siteVisible` 为假、或运行期实例化失败过的站；原因由后端统一给，
+前端不要自己猜。**不影响 `/api/sites` 的既有语义**。
 
 ### 2.3 `GET /api/config`
 
@@ -173,7 +186,9 @@ Cache-Control: no-store, no-cache, must-revalidate
   （只覆盖传入的键），返回完整 policy（**含 `authToken`**）。坏 JSON → 400。
 常用键：`authToken`、`corsOrigins`、`rateLimit{parse,proxy,windowSec}`、`filterAds`、
 `safeDns`、`dnsProvider`、`jsRuntime`、`danmakuApi`、`trustProxy`、`cacheQuotaGb`、
-`cacheEvictMode`、`cacheDir`、`llmRelay.enabled`。
+`cacheEvictMode`、`cacheDir`、`jarStrictMd5`、`llmRelay.enabled`。
+`jarStrictMd5=true` 时 jar 的 `;md5;` 不一致按致命错误处理（默认 `false`：
+不匹配仍挂载 + WARN，避免配置作者忘了改 hash 就整站消失）。
 
 ### 2.7 `GET/POST /api/config/import`
 
@@ -191,10 +206,18 @@ Cache-Control: no-store, no-cache, must-revalidate
 | `proxies` | — | 拉配置时依次尝试的 HTTP 代理 |
 
 成功响应：`{"ok":true,"imported":true,"url":"…","mode":"replace","sites":40,
-"totalSites":56,"skipped":[{"api":"csp_X","reason":"…"}],"depot":[],"dex2jvm":{},
+"configured":45,"totalSites":56,"skipped":[{"api":"csp_X","reason":"…"}],
+"pendingSites":[{"key":"X","name":"…","api":"csp_X","reason":"…"}],
+"jars":[{"spec":"…","ok":true,"md5Ok":true,"encrypted":false}],
+"hint":"已写入 45 站，当前只有 56 站可用（…）","depot":[],"dex2jvm":{},
 "diff":{"toAdd":[],"toUpdate":[],"conflicts":[],"unchanged":0,"removed":[],
 "total":40,"healthLost":[],"mode":"replace","onConflict":""},
 "backup":{"exists":true,"at":0,"bytes":0,"sites":0}}`。
+
+- `sites` 是**可用**站数；`configured` 是写进站点表的条数（含不可实现的）。
+- `pendingSites`（字段名不能叫 `pending`：`GET` 的同名字段是后台任务布尔）列出
+  未生效站与原因；`jars` 给每条外部 jar 的装载结果；`hint` 在「导入成功但一个站
+  都用不了」时给一句可行动的结论。
 
 `GET` 回最近一次摘要；从未导入 → `{"ok":true,"imported":false}`。
 坏 JSON / 缺 url / 非 http(s) → 400；拉取失败 / 非 JSON → 502。
@@ -540,7 +563,7 @@ id 由我们自己的 `/list` 或 `/search` 生成，不依赖上游临时地址
 | `GET/POST /api/library`、`GET /api/library/stream` | 片库配置、列目录、流 | `path` 是**相对库根**的路径，服务端拼接；`stream` 必须透传 Range |
 | `POST /api/webdav` | WebDAV 转发（PUT/GET/DELETE/MKCOL/PROPFIND） | **始终 200** + `{ok,status,body}`；传输失败 `ok:false,status:0,msg`；`PROPFIND` 默认 `Depth: 1`；body 截断 200KB |
 | `/api/cache*`（10 条） | 离线缓存：批次、状态、续传、导出 | `GET /api/cache` 带 `cacheDirReloadRequired`；导出格式由 `X-Meow-Export-Format`（mp4/ts）说明；`export-to` 仅回环可用 |
-| `POST/GET/DELETE /api/transcode` | MKV/HEVC 现转 HLS | 不带 `src` 回 `{available,bytes}`（探测 ffmpeg）；首次 `state=running` 且清单为空**不能判失败**；状态 JSON 含 `duration`（源真实总时长，秒，落盘 `.duration`）——转码未完成时 `video.duration` 只是已转出时长，不能用它当总长 |
+| `POST/GET/DELETE /api/transcode` | MKV/HEVC 现转 HLS | 不带 `src` 回 `{available,bytes}`（探测 ffmpeg）；首次 `state=running` 且清单为空**不能判失败**；状态 JSON 含 `duration`（源真实总时长，秒）/ `readySeconds`（已转出，含 `startOffset`，按清单 EXTINF 求和）/ `startOffset`；`start=N` 从源第 N 秒起转（参与幂等键，status/DELETE 必须带同一个值） |
 | `GET/POST/DELETE /api/scrape` | 刮削 | 缺 `groups` / `title` → 400 |
 | `GET/POST /api/cast` | DLNA 发现 / 控制 | POST 需 `device{controlUrl,…}`；投的 url 走宽松档 SSRF |
 | `GET /api/dns/resolve?host=&provider=` | DoH A 记录 | provider 默认 `ali`，缓存 5 分钟；失败也 200，`ip:""` + `msg` |

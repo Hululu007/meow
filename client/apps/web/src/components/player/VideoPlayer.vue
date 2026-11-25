@@ -18,6 +18,7 @@ import { isTvEnv } from '@/composables/useCardCols'
 import { isIosPhone } from '@/compat/ua'
 import { hasFinePointer, isIosShell, isTvShell } from '@/compat/shell'
 import { cleanDmTitle, epBadgeOf } from '@/utils/dmTitle'
+import { seekOutsideProduced } from '@/utils/transcodeSeek'
 import { panelMediaLine, type MediaSourceInfo } from '@/utils/mediaInfo'
 import { reportPlayerEvent } from '@/api/playerEvents'
 import { assToVtt, srtToVtt, subtitleFormat, type MiddleSegment, type SubTrack } from '@/api/playExtras'
@@ -103,6 +104,11 @@ const props = withDefaults(defineProps<{
   totalDuration?: number
   /** 已转出的秒数（可拖动上界）。0/不传 = 不限制。 */
   aheadSeconds?: number
+  /**
+   * 当前清单真实内容的起点（秒）。起点重转时前段是黑场填充，
+   * 拖到它之前要重新起转，而不是让用户看黑屏。
+   */
+  aheadStartSeconds?: number
   poster?: string
   danmakuUrl?: string
   title?: string
@@ -265,6 +271,13 @@ const emit = defineEmits<{
    * （AC3/E-AC3/DTS…），画面正常但永远无声。父组件据此落转码兜底。
    */
   (e: 'no-audio'): void
+  /**
+   * 用户 seek 到「还没转出来」的位置（issue #17）。
+   *
+   * <p>播放器自己不能处理：清单里没有对应分片。父组件据此让后端从目标点
+   * 重转（start=N），再把新清单换进来并 seek 到同一位置。
+   */
+  (e: 'seek-beyond', sec: number): void
 }>()
 
 /** 是否可切集（至少两集且知道当前位置） */
@@ -693,6 +706,26 @@ function seekTo(sec: number) {
   syncDm()
 }
 
+/**
+ * 用户主动 seek（进度条/热度条/手势/键盘/跳转弹框）。
+ *
+ * <p>与 {@link seekTo} 的区别：目标是"用户想去的地方"，超出已转出范围时
+ * **不静默夹回**（那是"拖了没反应/回弹"的根源），而是交给父组件从目标点
+ * 重转。程序性跳转（续播恢复、seekAt）仍走 seekTo —— 它们必须夹住。
+ */
+function userSeek(sec: number) {
+  const v = video.value
+  if (!v || !Number.isFinite(sec)) return
+  const d = v.duration
+  const target = Math.max(0, Number.isFinite(d) && d > 0 ? Math.min(sec, d - 0.1) : sec)
+  if (seekOutsideProduced(target, props.aheadSeconds || 0, props.aheadStartSeconds || 0)) {
+    emit('seek-beyond', target)
+    return
+  }
+  v.currentTime = target
+  syncDm()
+}
+
 // ---------------------------------------------------------------- 跳到指定时间
 /**
  * 底栏那行时间从"只显示"改成"可点跳转"（2026-11-12）。
@@ -741,7 +774,7 @@ function openSeekDialog() {
 function applySeekDialog() {
   const sec = parseClock(seekText.value)
   if (sec == null) return
-  seekTo(sec)
+  userSeek(sec)
   seekDialog.value = false
 }
 
@@ -2923,7 +2956,7 @@ function endHseek(commit: boolean) {
   // 长拖会超过 engage 时的 400ms 抑制窗，松手前必须再压一次 click
   suppressNextClick()
   if (Math.abs(delta) < 0.5) return
-  seekTo(hseek.target)
+  userSeek(hseek.target)
   // 与按键 seek 同款中央提示，松手后给一次"跳到了哪"的确认
   flashSeekHint(Math.round(delta))
 }
@@ -3597,10 +3630,7 @@ function onBarUp(e: PointerEvent) {
   dragTime.value = null
   hoverTime.value = null
   if (t == null) return
-  const v = video.value
-  if (!v) return
-  v.currentTime = Math.max(0, Math.min(t, (v.duration || t) - 0.1))
-  syncDm()
+  userSeek(t)
 }
 
 /**
@@ -3621,7 +3651,7 @@ function onHeatUp(e: PointerEvent) {
   const t = dragTime.value ?? timeFromEvent(e)
   dragTime.value = null
   hoverTime.value = null
-  if (t != null) seekTo(t)
+  if (t != null) userSeek(t)
 }
 
 /**
@@ -3632,7 +3662,7 @@ function onHeatUp(e: PointerEvent) {
 function onHeatClick(e: MouseEvent) {
   if (dragTime.value != null) return
   const t = timeFromEvent(e)
-  if (t != null) seekTo(t)
+  if (t != null) userSeek(t)
 }
 
 function onVolumeInput(e: Event) {
@@ -5261,11 +5291,7 @@ function onKey(e: KeyboardEvent) {
       stopKeyScan()
       {
         const step = takeSeekStep()
-        const cap = props.aheadSeconds && props.aheadSeconds > 0
-          ? Math.min(shownDur.value || Infinity, props.aheadSeconds - 2)
-          : shownDur.value
-        v.currentTime = Math.max(0, Math.min(cap || duration.value, v.currentTime + step))
-        currentTime.value = v.currentTime
+        userSeek(v.currentTime + step)
         flashSeekHint(step)
       }
       break

@@ -96,6 +96,9 @@ export interface CategoryResult {
 
 export interface DetailResult {
   list?: VodItem[]
+  /** 后端给的可读原因（code=-1 时），例如「加密接口，本构建不支持」 */
+  msg?: string
+  code?: number
 }
 
 export interface SearchResult {

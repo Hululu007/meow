@@ -138,6 +138,16 @@ const siteLabel = computed(() => {
   return s?.name || ''
 })
 
+/**
+ * 详情 500 时一键看日志（issue #18）。
+ *
+ * <p>错误页只显示一句中文原因；真实堆栈在日志页。带上站点名预筛，
+ * 用户/客服不必自己猜关键词。
+ */
+function openLogs() {
+  void router.push({ path: '/logs', query: { kw: siteLabel.value || site } })
+}
+
 // ---------------------------------------------------------------- 简介展开
 
 /** 简介默认折叠 4 行；真的放不下时才给「展开简介」 */
@@ -212,6 +222,15 @@ async function load() {
        * 跳转用 replace：详情页本身已经是死路，留在返回栈里只会让用户
        * 按返回时又回到空白页。
        */
+      /*
+       * 后端明确给了原因（code=-1 + msg）时**先显示它**：
+       * 「加密接口，本构建不支持」「该源缺少依赖类」比"未获取到详情"有用得多，
+       * 也是 issue #18 的验收口径。只有真的空 list（豆瓣这类）才走搜索兜底。
+       */
+      if (r.msg) {
+        error.value = r.msg
+        return
+      }
       const t = String(route.query.name || '').trim()
       if (t) {
         fallbackTitle.value = t
@@ -598,7 +617,23 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <EmptyState v-else-if="error && !item" icon="🎬" :title="error" hint="可以返回重试，或换个站点再搜" />
+    <div v-else-if="error && !item" class="flex flex-col items-center gap-4">
+      <EmptyState icon="🎬" :title="error" hint="可以返回重试，或换个站点再搜" />
+      <div class="flex flex-wrap items-center justify-center gap-2">
+        <button
+          class="rounded-md bg-white/10 px-4 py-2 text-sm transition hover:bg-white/16"
+          @click="router.back()"
+        >
+          返回
+        </button>
+        <button
+          class="rounded-md bg-accent/15 px-4 py-2 text-sm text-accent transition hover:bg-accent/25"
+          @click="openLogs"
+        >
+          查看日志
+        </button>
+      </div>
+    </div>
 
     <template v-else-if="item">
       <!--
