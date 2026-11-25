@@ -53,6 +53,18 @@ describe('强刷（refresh）贯通', () => {
     expect(view, 'watch 直接传了 run，会把搜索词当 force').not.toMatch(/watch\(\s*wd\s*,\s*run\s*,/)
     expect(view, '应改为箭头函数包一层').toMatch(/watch\(\s*wd\s*,\s*\(\)\s*=>\s*run\(\)/)
   })
+
+  it('搜索中可停止（全端）：前端调 cancelSearch，后端有取消端点', () => {
+    // 按钮：只在任务进行中显示；停止后保留已返回的结果
+    expect(view, '没有「停止搜索」入口').toContain('停止搜索')
+    expect(view, '停止按钮没接 stopSearch').toContain('@click="stopSearch"')
+    expect(view, '停止后要保留结果并标记').toContain('已停止搜索')
+    expect(api, 'api 没有 cancelSearch').toContain('export async function cancelSearch')
+    expect(api, 'cancelSearch 打错端点').toContain('/api/search/cancel')
+    expect(back, '后端没有 /api/search/cancel 路由').toContain('"/api/search/cancel".equals(path)')
+    expect(back, '任务没有取消标志').toContain('volatile boolean cancelled')
+    expect(back, '聚合循环没有检查取消标志').toContain('task.cancelled')
+  })
 })
 
 describe('缓存可管理', () => {
