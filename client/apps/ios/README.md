@@ -14,6 +14,7 @@
 | dex 形态 jar | ⚠️ 端上不转；用配置里的 `spiderJvm`/上游转成 class jar |
 | 带 native `.so`/JNI 的 jar（Guard 加密） | ❌ iOS 加载不了 Android ELF |
 | 转码（ffmpeg） | ❌ 端上没有 ffmpeg，路由会报不可用 |
+| js / py 源（drpy 脚本） | ❌ 未接：`policy.json` 里没有 `jsRuntime`，端内 Node 只跑弹幕聚合。设计与执行清单见 [iOS 运行时](../../site/docs/dev/ios-runtime.md) |
 | App Store | ❌ 侧载（GPL OpenJDK + 动态 jar）；不打算上架 |
 
 ## 架构

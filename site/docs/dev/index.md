@@ -23,6 +23,7 @@
 | [插件生态统一规范](./plugin-ecosystem.md) | 三端清单/状态/生命周期、迁移路线 |
 | [TV 接入与 Fongmi](./tv-integration.md) | `/config.json`、加载器、签名与分发 |
 | [iOS 端接入（IPA）](./ios-integration.md) | 与 TV 壳的形态对照、能力边界、IPA 发版 CI 与签名（**未实现**） |
+| [iOS 运行时（js / py 源）](./ios-runtime.md) | 端内 Node 跑 drpy + 内嵌 CPython 跑 py、一个地址服务 js+py 的设计与执行清单（**设计稿**） |
 | [数据与状态](./data-state.md) | 数据目录、policy.json、跨端通道 |
 | [Docker 部署](./docker.md) | 四容器、`.env`、排障、多架构 |
 | [公网部署与访问控制](./public-deployment.md) | 端口收口、令牌分层、三端影响、验收断言 |

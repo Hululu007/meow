@@ -79,6 +79,7 @@ const devSidebar = [
     items: [
       { text: 'TV 接入与 Fongmi', link: '/dev/tv-integration' },
       { text: 'iOS 端接入（IPA）', link: '/dev/ios-integration' },
+      { text: 'iOS 运行时（js / py 源）', link: '/dev/ios-runtime' },
     ],
   },
   {
