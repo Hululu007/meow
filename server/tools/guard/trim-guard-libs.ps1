@@ -56,10 +56,40 @@ function Get-JarList([string]$Jar) {
     & jar --list --file $Jar | ForEach-Object { $_.Trim() }
 }
 
+# keep 前缀必须各命中至少一个原生库文件；返回命中总数，缺项直接 throw。
+# 只数 .so/.dll/.dylib/.jnilib/.a —— keystone 等 jar 里还有 .gitkeep，不能拿它充数。
+function Get-KeepCount([string]$Jar, [string[]]$Keeps) {
+    $got = 0
+    foreach ($p in $Keeps) {
+        $n = @(Get-JarList $Jar | Where-Object {
+            $_.StartsWith($p) -and -not $_.EndsWith('/') -and ($nativeExt -contains [IO.Path]::GetExtension($_))
+        }).Count
+        if ($n -lt 1) { throw "$(Split-Path $Jar -Leaf) 缺少本平台原生库: $p（上游可能改了目录名）" }
+        $got += $n
+    }
+    return $got
+}
+
 function Trim-One([string]$Jar, [string[]]$Keeps) {
     $base = Split-Path $Jar -Leaf
     $before = (Get-Item $Jar).Length
     $clsBefore = @(Get-JarList $Jar | Where-Object { $_ -match '\.class$' }).Count
+
+    # 幂等短路：先看有没有要删的原生库。没有就只做断言、不重打 ——
+    # 重打包要重压缩整 jar，臂架构（QEMU）实测 ~50s；同一目录被重复 trim 很常见。
+    $need = $false
+    foreach ($e in @(Get-JarList $Jar | Where-Object {
+                -not $_.EndsWith('/') -and ($nativeExt -contains [IO.Path]::GetExtension($_)) })) {
+        $keep = $false
+        foreach ($p in $Keeps) { if ($e.StartsWith($p)) { $keep = $true; break } }
+        if (-not $keep) { $need = $true; break }
+    }
+    if (-not $need) {
+        $gotSkip = Get-KeepCount $Jar $Keeps
+        Write-Host ("  {0}: 已是目标平台的裁剪结果，跳过重打（原生库 {1} 个）" -f $base, $gotSkip) -ForegroundColor DarkGray
+        return
+    }
+
     $work = Join-Path ([IO.Path]::GetTempPath()) ('guard-trim-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $work -Force | Out-Null
     $out = "$work.jar"
@@ -92,15 +122,7 @@ function Trim-One([string]$Jar, [string[]]$Keeps) {
         $clsAfter = @(Get-JarList $out | Where-Object { $_ -match '\.class$' }).Count
         if ($clsBefore -ne $clsAfter) { throw "$base class 数量变了: $clsBefore -> $clsAfter" }
 
-        $got = 0
-        foreach ($p in $Keeps) {
-            # 只数原生库文件：keystone 等 jar 里还有 .gitkeep，不能拿它充数
-            $n = @(Get-JarList $out | Where-Object {
-                $_.StartsWith($p) -and -not $_.EndsWith('/') -and ($nativeExt -contains [IO.Path]::GetExtension($_))
-            }).Count
-            if ($n -lt 1) { throw "$base 缺少本平台原生库: $p（上游可能改了目录名）" }
-            $got += $n
-        }
+        $got = Get-KeepCount $out $Keeps
 
         Move-Item -Force $out $Jar
         $after = (Get-Item $Jar).Length

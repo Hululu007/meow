@@ -72,6 +72,24 @@ human() { awk -v b="$1" 'BEGIN { printf "%.1fMB", b/1048576 }'; }
 # Windows 上 jar.exe 输出 CRLF，删 \r 后再比较/计数
 list_jar() { jar --list --file "$1" | tr -d '\r'; }
 
+# keep 前缀必须各命中至少一个原生库文件；命中总数打到 stdout，缺项报错返回 1。
+# 只数 .so/.dll/.dylib/.jnilib/.a —— keystone 等 jar 里还有 .gitkeep，不能拿它充数。
+count_keep() {
+    _jar="$1"
+    _keepf="$2"
+    _got=0
+    while IFS= read -r _p; do
+        [ -n "$_p" ] || continue
+        _n=$(list_jar "$_jar" | grep -v '/$' | grep -E '\.(so|dll|dylib|jnilib|a)$' | grep -c "^$_p" || true)
+        if [ "$_n" -lt 1 ]; then
+            echo "[trim] $(basename "$_jar") 缺少本平台原生库: $_p（上游可能改了目录名）" >&2
+            return 1
+        fi
+        _got=$((_got + _n))
+    done < "$_keepf"
+    echo "$_got"
+}
+
 trim_one() {
     jar="$1"
     keep="$2"
@@ -84,6 +102,32 @@ trim_one() {
     # ★ 必须带换行：`printf '%s'` 不加 \n 时，sh 的 `read` 在 EOF 上返回非 0，
     #   while 循环会把最后一行丢掉 —— 实测（dash）会把所有原生库全删掉。
     printf '%s\n' "$keep" | tr '|' '\n' > "$keepf"
+
+    # 幂等短路：先看有没有要删的原生库。没有就只做断言、不重打 ——
+    # 在 QEMU 里重压 6 个 jar 实测 ~50s，而同一目录被重复 trim（本地二次构建、
+    # 后续把裁剪结果做缓存）很常见。
+    # ★ 用 for 而不是 `while read < 文件`：列表为空时 while 的退出码是 1，
+    #   set -e 会直接把脚本干掉（dash 实测，且不打印任何错误）。
+    need=0
+    for entry in $(list_jar "$jar" | grep -v '/$' | grep -E '\.(so|dll|dylib|jnilib|a)$'); do
+        kept=0
+        while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            case "$entry" in
+                "$p"*) kept=1 ;;
+            esac
+        done < "$keepf"
+        if [ "$kept" = 0 ]; then need=1; break; fi
+    done
+    if [ "$need" = 0 ]; then
+        if ! got=$(count_keep "$jar" "$keepf"); then
+            rm -f "$keepf" "$list"
+            exit 1
+        fi
+        rm -f "$keepf" "$list"
+        echo "  $base: 已是目标平台的裁剪结果，跳过重打（原生库 $got 个）"
+        return
+    fi
 
     work=$(mktemp -d)
     out="$work.jar"
@@ -116,19 +160,10 @@ trim_one() {
         exit 1
     fi
 
-    # keep 列表里每个非空前缀都必须命中至少一个原生库文件（防上游改目录名后静默发残缺包）。
-    # 只数 .so/.dll/.dylib/.jnilib/.a：keystone 等 jar 里还有 .gitkeep，不能拿它充数。
-    got=0
-    while IFS= read -r p; do
-        [ -n "$p" ] || continue
-        n=$(list_jar "$out" | grep -v '/$' | grep -E '\.(so|dll|dylib|jnilib|a)$' | grep -c "^$p" || true)
-        if [ "$n" -lt 1 ]; then
-            echo "[trim] $base 缺少本平台原生库: $p（上游可能改了目录名）" >&2
-            rm -rf "$work" "$out" "$keepf" "$list"
-            exit 1
-        fi
-        got=$((got + n))
-    done < "$keepf"
+    if ! got=$(count_keep "$out" "$keepf"); then
+        rm -rf "$work" "$out" "$keepf" "$list"
+        exit 1
+    fi
 
     mv -f "$out" "$jar"
     rm -rf "$work" "$keepf" "$list"

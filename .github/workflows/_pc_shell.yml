@@ -70,18 +70,19 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # 前端 dist 由 release.yml 的 web job 统一构建（同一次 run 的 artifact）。
-      # 手动 dispatch 没有 artifact → 本地兜底构建（依赖已在上一/两步装好）。
+      # 手动 dispatch 没有 artifact → 本地兜底构建（依赖已在上一步装好）。
+      # ★ 只有 dispatch 才兜底：发版链里 web job 失败必须硬失败，不能悄悄换成本地 dist。
       - name: 取前端 dist
         id: webdist
         if: ${{ !inputs.warm_only }}
-        continue-on-error: true
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/download-artifact@v4
         with:
           name: web-dist
           path: client/apps/web/dist
 
       - name: 兜底构建前端（手动 dispatch 没有 web-dist artifact）
-        if: ${{ !inputs.warm_only && steps.webdist.outcome != 'success' }}
+        if: ${{ !inputs.warm_only && github.event_name == 'workflow_dispatch' && steps.webdist.outcome != 'success' }}
         working-directory: client
         run: pnpm --filter @meow/web build
 

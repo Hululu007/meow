@@ -5,17 +5,23 @@ package jvm;
  *
  * 背景：guard-libs 会按目标平台裁掉别的平台的 .so/.dll/.dylib
  * （见 tools/guard/trim-guard-libs.sh|ps1）。裁剪规则依赖上游目录名，
- * 一旦 unidbg/jna 升级改了命名，只会在用户第一次用加密源时炸。
+ * 一旦 unidbg/jna/keystone/capstone 升级改了命名，只会在用户第一次用加密源时炸。
  * 探针把这一步提前到构建期。
  *
- * ★ 两条后端必须分开探（2026-11-25 实测）：
+ * ★ unicorn 两条后端必须分开探（2026-11-25 实测）：
  *   · GuardShellMain 只在 os.name 含 "linux" 时 addBackendFactory(Unicorn2Factory)，
  *     走 unidbg-unicorn2 的 natives/（libunicorn.so）；
  *   · 其余平台（Windows）用 builder 默认的 legacy 后端 → UnicornBackend，
  *     加载 unicorn-1.0.15.jar 里的 unicorn_java.dll。
- *   只探一条的话，另一种平台会放行"裁掉了自己那份 .so/.dll"的包 ——
- *   Windows 实测报 "native library not found: natives/windows_64/unicorn_java.dll"，
- *   Linux 侧 legacy 绑定根本加载不起来（undefined symbol），所以必须按平台分支。
+ *   这两个类由我们改过的 NativeLoader 加载，静态块失败会抛错，所以 Class.forName 够用。
+ *
+ * ★ keystone / capstone 不能靠它们的静态块（2026-11-25 实测）：
+ *   它们的 <clinit> 里 extract/load 失败会被内部吞掉/延后，Class.forName 照样返回
+ *   成功 —— 把 win32-x86-64/keystone.dll、capstone.dll 从 jar 里删掉后探针仍然是绿的。
+ *   所以这里直接用 JNA 的 NativeLibrary.getInstance(name)：它就是按
+ *   <jna 平台目录>/lib<name>.so|dll 找资源并 dlopen，缺文件直接 UnsatisfiedLinkError。
+ *
+ * demumble 不探：它只有 linux/osx 的原生库，且 DemanglerFactory 有 Java 兜底。
  *
  * 不参与业务，只被构建脚本以 `java -cp "guard-libs/*" jvm.GuardNativeProbe` 调用；
  * 成功输出 guard-native-ok，失败抛错（构建脚本按退出码拦截）。
@@ -31,7 +37,11 @@ public final class GuardNativeProbe {
             // Windows 产品路径：legacy（builder 默认），unicorn.Unicorn 的静态块加载 unicorn_java
             Class.forName("unicorn.Unicorn");
         }
-        // keystone / capstone 都走 JNA，触发 libjnidispatch 加载
+        // 壳的 native 例程会用到反汇编/汇编能力；这两个库是 JNA 到 C 的直接映射，
+        // 按 <jna 平台目录>/lib<name>.so|dll 从 classpath 取。缺文件在这里就炸。
+        com.sun.jna.NativeLibrary.getInstance("keystone");
+        com.sun.jna.NativeLibrary.getInstance("capstone");
+        // 兜底确认 libjnidispatch 本身可加载（上面两次 getInstance 已间接用到它）
         com.sun.jna.Native.getLastError();
         System.out.println("guard-native-ok");
     }

@@ -54,6 +54,12 @@ package.json”，`plugins-v*` / `tv-plugins-v*` 不校验；不要拿壳版本�
 | `tv-plugins-v*` | TV 运行时模块 ×3 ABI | ✅ draft |
 | `fpk-v*` | 另一 workflow：x86/arm 套件（补包用）；全量 `release-v*` 也调它构建，但包进主 Release | ✅ draft（仅单链） |
 
+**产物体积（1.2.22 实测）**：`apiserver-*.zip` ≈46MB；`meow_*_x86.fpk` ≈38MB、`arm` ≈37MB。
+体积比 1.2.21 之前那版小，不是漏打依赖 —— `server/host/guard-libs` 源目录 34MB（unidbg/
+unicorn/keystone 等），构建期按目标 CPU 平台裁剪到 15~16MB，规则与断言在
+`server/tools/guard/trim-guard-libs.sh|ps1`，裁剪后由 `jvm.GuardNativeProbe` 验证本平台
+原生库可加载（见该目录 README）。**不要把裁剪改回去**：加密源在四端仍完整可用。
+
 **`docker-v*` 单链只推镜像、不建 Release**（2026-11-12 补回）：重发镜像也可以走
 `workflow_dispatch`（勾 docker）或 `build-push-docker.ps1`；dispatch 不建 Release
 （`publish` 要求 push）。

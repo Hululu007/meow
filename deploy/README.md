@@ -387,6 +387,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/build-plugins
 | `workflow_dispatch`（release.yml） | tv/pc/**ios**/plugins 全跑（docker、tv_plugins 按勾选） | ❌ | — | 按勾选 |
 | `tv-verify-1.0.10` | 什么都不跑——前缀后不是数字 | ❌ | — | 0 |
 
+> **产物体积（1.2.22 实测；构建期按平台裁剪 guard-libs 后）**
+> `apiserver-*.zip` ≈46MB；`meow_*_x86.fpk` ≈38MB、`arm` ≈37MB；Docker apiserver 镜像的
+> 拉取体积比 1.2.21 少约 18MB。`server/host/guard-libs` 源目录 34MB（unidbg / unicorn /
+> keystone 等），构建时只保留目标 CPU 平台的原生库 → 15~16MB，规则与断言见
+> `server/tools/guard/trim-guard-libs.sh`（Windows 用同名 `.ps1`）。**不要因为这组数字
+> 变回去就判定"漏打依赖"**：加密源仍完整可用，四端真解密都验过。
+
 **预览验证期不推 latest**：仓库变量 `MEOW_PUSH_LATEST=false` 时，`docker` job 只推版本号镜像、
 不更新 `docker:latest`（Release 本身是 draft，也不会成为 GitHub Latest）。
 验证通过、正式发布前删掉该变量即可恢复默认（不设 = true）。
@@ -693,7 +700,8 @@ git tag release-v* / tv-v* / pc-v* / plugins-v* / tv-plugins-v*
 - [ ] `release/v<版本>/` 齐全：TV apk、PC setup.exe、裸 exe、插件目录
 - [ ] `sha256sum -c SHA256SUMS.txt` 全 OK
 - [ ] 插件 `index.json` 里的 sha256 与 zip 实际值一致
-- [ ] 体积合理（PC 安装包约 4.5MB，apiserver 插件约 37–39MB）
+- [ ] 体积合理（PC 安装包约 4.5MB；**apiserver 插件约 46MB**、fpk x86 ≈38MB / arm ≈37MB ——
+      1.2.22 起 guard-libs 按平台裁剪，34MB → 15~16MB；低于这组太多才要怀疑漏打依赖）
 
 ### 5.3 冒烟（不能只看"构建成功"）
 

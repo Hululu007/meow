@@ -24,9 +24,10 @@ sh server/tools/guard/build-guard-helper.sh
 ```
 
 产物：`server/host/guard-libs/guard-helper.jar`。
-`guard-libs/` 里是 unidbg 0.9.9 + **unidbg-unicorn2 0.9.9** + unicorn 1.0.15 + dex2jar 2.4 + ASM（约 34MB），**不要**
+`guard-libs/` 里是 unidbg 0.9.9 + **unidbg-unicorn2 0.9.9** + unicorn 1.0.15 + dex2jar 2.4 + ASM
+（源目录约 34MB，**构建期按目标平台裁剪到 15~16MB**，见下节），**不要**
 放进 `server/host/libs/`（宿主 javac 不需要）；PC 插件/Docker/fpk 构建脚本会自动
-把它复制到 `apiserver.jar` 同级的 `guard-libs/`，并按目标平台裁剪（见下节）。
+把它复制到 `apiserver.jar` 同级的 `guard-libs/`，并按目标平台裁剪。
 
 ## 按平台裁剪原生库（2026-11-25）
 
@@ -46,7 +47,8 @@ Windows 走默认 legacy（`unicorn_java.dll`）。这也是上面"Linux 必须�
 `undefined symbol: helper_div_i32`），把 unicorn2 的留在 Windows 上也没用。
 
 裁剪后必须跑 `jvm.GuardNativeProbe`（已接进三个打包脚本）：它按平台加载对应的
-unicorn + 触发 JNA，缺库时在构建期就红。规则改完先跑一次真解密（见「已验证」）。
+unicorn，并用 JNA `NativeLibrary.getInstance` 真正 dlopen `keystone` / `capstone`
+（静态块里的失败会被上游吞掉，不能只 `Class.forName`），缺任一库构建期即红。
 
 **Linux 必须用 unicorn2 后端**：`unicorn-1.0.15.jar` 的 `linux_64/libunicorn_java.so`
 是瘦身版（1.8MB，`AES_isbox`/`helper_div_i32` 未定义，`System.load` 直接失败）；
