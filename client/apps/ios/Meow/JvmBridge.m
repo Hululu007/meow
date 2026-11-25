@@ -217,7 +217,8 @@ static jboolean meowNativeDownload(JNIEnv *env, jclass cls, jstring jurl, jstrin
 #endif
 }
 
-+ (nullable NSString *)logTail {#if TARGET_OS_SIMULATOR
++ (nullable NSString *)logTail {
+#if TARGET_OS_SIMULATOR
     return nil;
 #else
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
