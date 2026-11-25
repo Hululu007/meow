@@ -985,7 +985,7 @@ html[data-shell='ios'] select {
 html[data-shell='ios'] {
   --header-h: calc(3.5rem + env(safe-area-inset-top));
   --tabbar-h: calc(6rem + env(safe-area-inset-bottom));
-  --tabbar-clear: calc(4.25rem + env(safe-area-inset-bottom));
+  --tabbar-clear: calc(4.5rem + env(safe-area-inset-bottom));
 }
 html[data-shell='ios'] .app-header {
   height: calc(3.5rem + env(safe-area-inset-top));
@@ -1779,10 +1779,10 @@ html[data-tv='1'] .cat-chips .meow-tv-focus {
   :root {
     --header-h: calc(3.5rem + env(safe-area-inset-top));
     --tabbar-h: calc(6rem + env(safe-area-inset-bottom));
-    /* 只让开标签栏本体（3.5rem + 离底 0.75rem）的高度。
+    /* 只让开标签栏本体（3.75rem + 离底 0.75rem = 4.5rem）的高度。
        满屏画面里（直播页）不需要 6rem —— 那是给页面内容留白用的，
-       多出来的 1.75rem 是中间 AI 球向上顶出的部分。 */
-    --tabbar-clear: calc(4.25rem + env(safe-area-inset-bottom));
+       多出来的 1.5rem 是中间 AI 球向上顶出的部分。 */
+    --tabbar-clear: calc(4.5rem + env(safe-area-inset-bottom));
   }
   /* 底部标签栏是 fixed 的，页面内容要自己让出这 56px */
   .has-tabbar {

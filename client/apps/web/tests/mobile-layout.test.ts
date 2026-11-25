@@ -155,6 +155,9 @@ describe('移动端导航：底部标签栏 + 顶栏搜索展开', () => {
     expect(tab).toContain('mtb-orb')
     expect(tab).toContain('top: -1.5rem')
     expect(tab).toContain('border-radius: 999px')
+    // 2026-11-25 用户：竖屏底栏偏矮，56px → 60px（--tabbar-clear 同步 4.5rem）
+    expect(tab).toContain('height: 3.75rem')
+    expect(tokens).toContain('--tabbar-clear: calc(4.5rem + env(safe-area-inset-bottom))')
   })
 
   it('只有播放页不显示标签栏；直播页保留（它是一级入口），内容给底栏留出 6rem', () => {

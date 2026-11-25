@@ -142,7 +142,8 @@ onBeforeUnmount(() => {
   /* 离底 12px + 安全区：全面屏不压手势条 */
   bottom: calc(0.75rem + env(safe-area-inset-bottom));
   z-index: 40;
-  height: 3.5rem;
+  /* 2026-11-25 用户：竖屏底栏偏矮，抬高 4px（56→60）。 */
+  height: 3.75rem;
   border-radius: 1.5rem;
   background: var(--color-card);
   border: 1px solid var(--color-line);
