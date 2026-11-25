@@ -1,5 +1,7 @@
 package com.meow.tv;
 
+import com.meow.tv.runtime.PythonService;
+import com.meow.tv.runtime.RuntimeModuleHost;
 import android.content.Context;
 
 import java.io.File;
@@ -569,6 +571,9 @@ public final class GatewayServer {
                  * 在非移动区多叠一份类对象（32 位 ART 的 MarkNonMoving 最敏感）。
                  */
                 LocalSpiderHost.clear(appCtx);
+                // 脚本可能换了内容（同 URL 改了实现），实例必须重建；
+                // 只在导入时失效，跑起来之后不重下（脚本是启动期一次性的成本）。
+                com.meow.tv.js.QuickJsRuntimeServer.invalidate();
                 android.util.Log.i(TAG, "导入后同步端上 jar 表：" + r.imported + "/" + r.total);
             } catch (Throwable t) {
                 android.util.Log.w(TAG, "导入后同步端上 jar 表失败", t);
@@ -577,6 +582,12 @@ public final class GatewayServer {
 
         syncConfigFile(appCtx);
         ensureDanmakuApi(appCtx);
+        // 内置 JS 运行时要在 ApiServer 起来之前把 jsRuntime 写进 policy：
+        // 后端是启动时读一次 policy 还是每次调用读一次不保证，早写早生效。
+        ensureLocalJsRuntime(appCtx);
+        // Python 运行时（若装了模块）：它起来后会把 jsRuntime 覆盖成自己的端口，
+        // 因为一个 pyrt 就能同时服务 .py（本地）与 .js（转发给上面那个 QuickJS）。
+        startPythonRuntime(appCtx);
         // OkHttp.dns() 是静态单例，进程重启后回到"只有系统 DNS"。
         // 这里按存下来的原始配置重放一次 hosts/doh（见 LocalDns 的实测数据：
         // 缺了它那 5 个站在污染网络下永远搜不到）。
@@ -952,6 +963,156 @@ public final class GatewayServer {
             android.util.Log.i(TAG, "danmakuApi -> " + api + " written=" + ok);
         } catch (Throwable t) {
             android.util.Log.w(TAG, "ensureDanmakuApi failed", t);
+        }
+    }
+
+    /**
+     * 起内置 QuickJS 运行时，并把 `jsRuntime` 指向它（仅当没配外部运行时）。
+     *
+     * <p><b>为什么要写 policy</b>：后端 `callScriptRuntime()` 的地址来源是
+     * policy.json 的 `jsRuntime`（其次才是 `MEOW_JS_RUNTIME` 环境变量）。
+     * TV 没有环境变量，policy 是唯一注入点——与 `ensureDanmakuApi` 同一套路。
+     *
+     * <p><b>三种情况分开处理</b>：
+     * <ul>
+     *   <li>空 → 写本机地址（内置引擎接管）</li>
+     *   <li>指向本机 + 端口在临时端口段（32768-60999）→ 覆盖。那是我们上次启动
+     *       写的，端口每次随机，不覆盖就会指到一个没人监听的端口（表现为
+     *       "jsRuntime Connection refused"）</li>
+     *   <li>其他 → 原样保留。包括用户显式配的 `127.0.0.1:19331`（adb reverse
+     *       到 PC 的 pyrt 就是这么用的）与局域网 NAS 地址——他配了就是要用那台，
+     *       算力/源都在那边，不能悄悄改成本地</li>
+     * </ul>
+     */
+    static void ensureLocalJsRuntime(Context ctx) {
+        try {
+            int p = com.meow.tv.js.QuickJsRuntimeServer.start();
+            if (p <= 0) {
+                android.util.Log.i(TAG, "jsRuntime: 内置 QuickJS 未启动（本机无对应 ABI 的 .so？）");
+                return;
+            }
+            String local = com.meow.tv.js.QuickJsRuntimeServer.baseUrl();
+            String cur = core.DataPaths.read("policy.json");
+            org.json.JSONObject obj = cur == null || cur.trim().isEmpty()
+                    ? new org.json.JSONObject() : new org.json.JSONObject(cur);
+            String old = obj.optString("jsRuntime", "");
+            if (!old.isEmpty() && !isOurEphemeral(old)) {
+                android.util.Log.i(TAG, "jsRuntime: 保留已配置的运行时 " + old);
+                return;
+            }
+            if (local.equals(old)) return;
+            obj.put("jsRuntime", local);
+            boolean ok = core.DataPaths.write("policy.json", obj.toString());
+            android.util.Log.i(TAG, "jsRuntime -> " + local + " written=" + ok);
+        } catch (Throwable t) {
+            android.util.Log.w(TAG, "ensureLocalJsRuntime failed", t);
+        }
+    }
+
+    /**
+     * 装了 Python 模块就拉起 {@code PythonService}（独立进程 {@code :py}）。
+     *
+     * <p>没装就什么都不做——TV 默认只有 QuickJS，`.py` 源由"连远端 pyrt"或
+     * "装 Python 模块"两条路解决，不在主包里塞 CPython。
+     */
+    static void startPythonRuntime(Context ctx) {
+        try {
+            if (!RuntimeModuleHost.pythonInstalled(ctx)) {
+                android.util.Log.i(TAG, "python: 运行时模块未安装，跳过");
+                return;
+            }
+            android.content.Intent i = new android.content.Intent(ctx, PythonService.class);
+            /*
+             * drpy 上游（本机 QuickJS）必须**随 Intent 传**：PythonService 在 :py
+             * 进程，shared 的 DataPaths 在那里 read() 同样拿不到（与 write 失败同因），
+             * 实测 PythonService 里读 policy 得到的是空串。
+             */
+            String qjs = com.meow.tv.js.QuickJsRuntimeServer.baseUrl();
+            if (!qjs.isEmpty()) i.putExtra("drpy", qjs);
+            ctx.startService(i);
+            android.util.Log.i(TAG, "python: startService 已发出");
+            /*
+             * Python 是异步就绪的（模块进程要起 CPython、pyrt 要 bind 端口），
+             * 这里轮询状态文件（最多 10 秒）。就绪后把 jsRuntime 改指它 ——
+             * 一个 pyrt 同时服务 .py（本地）与 .js（转发给上面那个 QuickJS），
+             * 比只指向 QuickJS 多一种能力。
+             *
+             * 写 policy 必须在本进程（:spider）：shared 的 DataPaths 在 :py
+             * 进程里 write() 返回 false（实测）。
+             */
+            new Thread(() -> {
+                for (int n = 0; n < 20; n++) {
+                    try {
+                        Thread.sleep(500);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    int p = pythonStatePort(ctx);
+                    if (p > 0) {
+                        takeoverJsRuntime(ctx, p);
+                        return;
+                    }
+                }
+                android.util.Log.i(TAG, "python: 10 秒内未就绪，jsRuntime 保持 QuickJS");
+            }, "meow-py-watch").start();
+        } catch (Throwable t) {
+            android.util.Log.w(TAG, "startPythonRuntime failed", t);
+        }
+    }
+
+    /** 读 Python 协调者写的状态文件，返回它就绪时的端口（未就绪 = 0）。 */
+    private static int pythonStatePort(Context ctx) {
+        try {
+            java.io.File f = new java.io.File(ctx.getFilesDir(), PythonService.STATE_FILE);
+            if (!f.isFile()) return 0;
+            String text = new String(java.nio.file.Files.readAllBytes(f.toPath()),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            org.json.JSONObject o = new org.json.JSONObject(text);
+            return o.optBoolean("running", false) ? o.optInt("port", 0) : 0;
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    /** 把 jsRuntime 改指 Python 端口（沿用"只在空/本机临时端口时覆盖"的规则）。 */
+    private static void takeoverJsRuntime(Context ctx, int port) {
+        try {
+            String cur = core.DataPaths.read("policy.json");
+            org.json.JSONObject o = cur == null || cur.trim().isEmpty()
+                    ? new org.json.JSONObject() : new org.json.JSONObject(cur);
+            String local = "http://127.0.0.1:" + port;
+            String old = o.optString("jsRuntime", "");
+            if (local.equals(old)) return;
+            if (!old.isEmpty() && !isOurEphemeral(old)) {
+                android.util.Log.i(TAG, "python: 保留已配置的运行时 " + old);
+                return;
+            }
+            o.put("jsRuntime", local);
+            boolean ok = core.DataPaths.write("policy.json", o.toString());
+            android.util.Log.i(TAG, "python: jsRuntime -> " + local + " written=" + ok);
+        } catch (Throwable t) {
+            android.util.Log.w(TAG, "takeoverJsRuntime failed", t);
+        }
+    }
+
+    /**
+     * 判"这个地址是不是我们上次启动写进去的临时端口"。
+     *
+     * <p>QuickJS 服务用 `ServerSocket(0)` 拿随机端口，落在内核的临时端口段
+     * （Linux/Android 默认 32768-60999）。用户手配的地址要么是不在这个段的固定端口
+     * （pyrt 默认 19331、drpy 9330），要么是局域网 IP——都不会命中这条。
+     * 用启发式而不是"留个标记文件"，是因为 policy 可能被用户/别的工具重写，
+     * 标记会失配；端口段是内核保证的，判错概率极低。
+     */
+    private static boolean isOurEphemeral(String addr) {
+        if (!addr.contains("127.0.0.1") && !addr.contains("localhost")) return false;
+        try {
+            java.net.URI u = java.net.URI.create(addr);
+            int port = u.getPort();
+            return port >= 32768 && port <= 60999;
+        } catch (Throwable t) {
+            return false;
         }
     }
 

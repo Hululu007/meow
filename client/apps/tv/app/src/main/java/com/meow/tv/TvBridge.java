@@ -104,6 +104,28 @@ public class TvBridge {
         InputTheme.save(activity, json);
     }
 
+    /**
+     * Python 运行时模块的状态（设置页「运行时」区块读）。
+     *
+     * <p>返回 PythonService 写的 py-runtime.json 原文；文件不存在返回 `{}`。
+     * 不在这里做解析——前端已经有 JSON.parse，多一层只会让字段名漂移。
+     *
+     * <p>为什么走桥而不是 HTTP：TV 的网关（ApiServer）是 shared 源码，
+     * 给它加 TV 专属端点会污染 JVM 端；而状态文件本来就在本进程的 filesDir。
+     */
+    @JavascriptInterface
+    public String pyRuntime() {
+        if (!trustedOrigin()) return "{}";
+        try {
+            java.io.File f = new java.io.File(activity.getFilesDir(), "py-runtime.json");
+            if (!f.isFile()) return "{}";
+            return new String(java.nio.file.Files.readAllBytes(f.toPath()),
+                    java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Throwable t) {
+            return "{}";
+        }
+    }
+
     /** 原生播放是否可用（有 ExoPlayer 且当前是 TV 构建） */
     @JavascriptInterface
     public boolean nativePlayerAvailable() {

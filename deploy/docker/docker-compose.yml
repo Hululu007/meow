@@ -42,7 +42,10 @@ services:
       MEOW_DATA: /data
       MEOW_PORT: "9979"
       # 用 `-` 而非 `:-`：显式写空串（MEOW_DANMAKU_API=）表示"不用聚合服务"，
-      MEOW_JS_RUNTIME: ${MEOW_JS_RUNTIME-http://drpy:9330}
+      # ★ 默认指向 pyrt：它能同时处理 .py（本地执行）与 .js（转发给 drpy）。
+      #   只指 drpy 时 .py 源一律报"jsRuntime 未配置"。要退回纯 drpy 就在
+      #   .env 里显式写 MEOW_JS_RUNTIME=http://drpy:9330。
+      MEOW_JS_RUNTIME: ${MEOW_JS_RUNTIME-http://pyrt:19331}
       # `:-` 会把空串当未设置，置空就失效了。
       MEOW_DANMAKU_API: ${MEOW_DANMAKU_API-http://danmu_api:9321}
       # 写操作令牌：保护收藏/进度/片库删除/缓存清理/配置导入等写端点。
@@ -102,6 +105,33 @@ services:
     environment:
       DRPY_PORT: "9330"
       DRPY_STRIP_REMOTE: "1"
+    restart: unless-stopped
+    networks: [meow]
+
+  pyrt:
+    # Python 源运行时：`.py` 本地执行，`.js` 转发给上面的 drpy。
+    #
+    # ★ 为什么 apiserver 的 jsRuntime 指向它而不是 drpy：pyrt 是"路由器"，
+    #   一个地址同时服务两种源。只指 drpy 时 .py 源会报 "jsRuntime 未配置"
+    #   （文案不准确，但至少能看出是运行时缺失而不是源站挂了）。
+    #
+    # ★ 它与 drpy 是**串联**（pyrt → drpy）。只起 pyrt 不起 drpy 时，.py 正常、
+    #   .js 报 "drpy forward: Connection refused"——可定位，不会静默返空。
+    #
+    # ★ 镜像单独一条版本线（与 drpy 同理，不跟 MEOW_VERSION 走）。
+    image: ${PYRT_IMAGE:-chrplus/meow-pyrt:${PYRT_VERSION:-latest}}
+    container_name: meow-pyrt
+    ports:
+      - "${PYRT_PORT:-30014}:19331"
+    volumes:
+      # 源脚本是私有内容，不进镜像。没挂这个卷时启动不报错，
+      # 但 .py 源会在调用时报 "py script not found"。
+      - ../../data/py-scripts:/data/py-scripts:ro
+    environment:
+      PYRT_PORT: "19331"
+      PYRT_BIND: "0.0.0.0"
+      PYRT_SCRIPTS: /data/py-scripts
+      PYRT_DRPY: http://drpy:9330
     restart: unless-stopped
     networks: [meow]
 

@@ -29,6 +29,7 @@
     -->
     <queries>
         <package android:name="com.meow.runtime.node" />
+        <package android:name="com.meow.runtime.python" />
     </queries>
 
 <application
@@ -132,6 +133,14 @@
         <service
             android:name=".runtime.NodeService"
             android:process=":node"
+            android:exported="false" />
+
+        <!-- Python 运行时（Chaquopy）。独立进程的理由与 :node 相同：
+             拖垮 Python 不该带走主界面；且 Chaquopy 的 Python 是进程级单例，
+             放主进程会与将来的其他嵌入冲突。 -->
+        <service
+            android:name=".runtime.PythonService"
+            android:process=":py"
             android:exported="false" />
 
         <service

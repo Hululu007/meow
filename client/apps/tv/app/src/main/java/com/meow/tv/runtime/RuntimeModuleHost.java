@@ -38,6 +38,64 @@ public final class RuntimeModuleHost {
     }
 
     /** 模块是否已安装。 */
+
+    // ── Python 运行时模块（Chaquopy）────────────────────────────────────
+
+    /** 模块包名（与 runtime-python/build.gradle 的 applicationId 一致）。 */
+    public static final String PYTHON_PACKAGE = "com.meow.runtime.python";
+    /** 模块入口类。 */
+    public static final String PYTHON_ENTRY = "com.meow.runtime.python.RuntimeEntry";
+
+    public static boolean pythonInstalled(Context ctx) {
+        try {
+            return ctx.getPackageManager().getPackageInfo(PYTHON_PACKAGE, 0) != null;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    public static String pythonVersion(Context ctx) {
+        try {
+            PackageInfo info = ctx.getPackageManager().getPackageInfo(PYTHON_PACKAGE, 0);
+            return info == null || info.versionName == null ? "" : info.versionName;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
+     * 取得 Python 模块入口；未安装/加载失败返回 null。
+     *
+     * <p>nativePath 仍写 {@code apk!/lib/abi}：Chaquopy 的
+     * {@code System.loadLibrary} 会用到它（模块里的 libpython3.10.so 与
+     * libchaquopy_java.so 都靠这条路径解析）。{@code AndroidPlatform} 另有一条
+     * 走 {@code nativeLibraryDir} 的路径，两条谁先用取决于 Chaquopy 版本；
+     * 两边都填上，哪条通都能起来。
+     */
+    public static com.meow.runtime.PythonRuntimeApi pythonEntry(Context ctx) {
+        try {
+            PackageInfo info = ctx.getPackageManager().getPackageInfo(PYTHON_PACKAGE, 0);
+            if (info == null || info.applicationInfo == null) return null;
+            String apk = info.applicationInfo.sourceDir;
+            String abi = primaryCpuAbi(info.applicationInfo);
+            if (abi == null || abi.isEmpty()) {
+                String[] abis = android.os.Build.SUPPORTED_ABIS;
+                abi = abis != null && abis.length > 0 ? abis[0] : "arm64-v8a";
+            }
+            File odex = new File(ctx.getCodeCacheDir(), "runtime-python");
+            if (!odex.isDirectory() && !odex.mkdirs() && !odex.isDirectory()) {
+                return null;
+            }
+            DexClassLoader loader = new DexClassLoader(
+                    apk, odex.getAbsolutePath(), apk + "!/lib/" + abi, ctx.getClassLoader());
+            Class<?> impl = Class.forName(PYTHON_ENTRY, true, loader);
+            return (com.meow.runtime.PythonRuntimeApi) impl.getConstructor().newInstance();
+        } catch (Throwable t) {
+            android.util.Log.w("MeowPyRt", "load module failed: " + t);
+            return null;
+        }
+    }
+
     public static boolean nodeInstalled(Context ctx) {
         try {
             return ctx.getPackageManager().getPackageInfo(NODE_PACKAGE, 0) != null;

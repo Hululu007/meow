@@ -76,6 +76,10 @@ pub struct Inject {
     pub target: String,
     pub key: String,
     pub value: String,
+    /// 声明"这个键归我管"：值为另一个**本机插件**地址时允许覆盖。
+    /// 用于 drpy 与 pyrt 都 inject `jsRuntime` 的场景（pyrt 能力是超集，该赢）。
+    #[serde(default)]
+    pub force: bool,
 }
 
 fn default_health_timeout() -> u64 {
@@ -359,7 +363,7 @@ pub async fn run_one(
                         // "自己上一轮写的值"：端口从 9321 协商到 9322 时要跟着改，
                         // 但用户手填的值永远不动
                         let own = injected.as_ref().map(|(_, _, v)| v.clone());
-                        match inject_value(&path, &inj.key, &value, own.as_deref()) {
+                        match inject_value(&path, &inj.key, &value, own.as_deref(), inj.force) {
                             Ok(true) => {
                                 injected = Some((path, inj.key.clone(), value));
                                 None
@@ -645,6 +649,17 @@ fn resolve_exec(m: &Manifest, dir: &Path, deps: &Deps) -> Result<PathBuf, String
                     return Ok(p);
                 }
             }
+            /*
+             * python 来自飞牛依赖 `python312`，路径是
+             * `/var/apps/python312/target/bin/python3`，同样不在 PATH 里。
+             * 插件 manifest 里 exec 写 `python`、fallback 写 `python3`，
+             * 两个名字都要落到同一条探测链（官方包只提供 python3）。
+             */
+            "python" | "python3" => {
+                if let Some(p) = deps.python_path() {
+                    return Ok(p);
+                }
+            }
             _ => {}
         }
         if let Some(p) = which(cand) {
@@ -835,6 +850,7 @@ fn inject_value(
     key: &str,
     value: &str,
     own: Option<&str>,
+    force: bool,
 ) -> Result<bool, String> {
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -851,7 +867,18 @@ fn inject_value(
     if let Some(existing) = obj.get(key).and_then(|v| v.as_str()) {
         let existing = existing.trim();
         if !existing.is_empty() && existing != value && Some(existing) != own {
-            return Ok(false);
+            /*
+             * force = 清单声明"这个键归我管"。只在**值指向另一个本机插件**时生效：
+             * drpy 与 pyrt 都 inject jsRuntime，而 pyrt 能转发 .js 给 drpy、
+             * 又能跑 .py，所以它该赢。用户手配的局域网地址必须保留。
+             */
+            let is_local_plugin = existing.starts_with("http://127.0.0.1:")
+                || existing.starts_with("http://localhost:")
+                || existing.starts_with("https://127.0.0.1:")
+                || existing.starts_with("https://localhost:");
+            if !(force && is_local_plugin) {
+                return Ok(false);
+            }
         }
     }
 
@@ -970,13 +997,13 @@ mod tests {
 
         // 用户手填远端地址：不覆盖（也没有"自己的旧值"）
         std::fs::write(&target, r#"{"danmakuApi":"http://192.168.1.9:9321"}"#).unwrap();
-        assert!(!inject_value(&target, "danmakuApi", "http://127.0.0.1:9321", None).unwrap());
+        assert!(!inject_value(&target, "danmakuApi", "http://127.0.0.1:9321", None, false).unwrap());
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap();
         assert_eq!(v["danmakuApi"], "http://192.168.1.9:9321");
 
         // 空值可以写；等于自己上一轮写的值可以更新（端口变化）
         std::fs::write(&target, r#"{"danmakuApi":""}"#).unwrap();
-        assert!(inject_value(&target, "danmakuApi", "http://127.0.0.1:9321", None).unwrap());
+        assert!(inject_value(&target, "danmakuApi", "http://127.0.0.1:9321", None, false).unwrap());
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap();
         assert_eq!(v["danmakuApi"], "http://127.0.0.1:9321");
         assert!(inject_value(

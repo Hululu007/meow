@@ -161,6 +161,29 @@ export interface FpkShellInfo {
   apiPort?: number
   /** `x86_64` / `aarch64` …（meowd 注入；老版本壳没有 */
   arch?: string
+  /** 运行时依赖探测（`meowd/deps.rs`；老版本壳没有这个键） */
+  deps?: FpkDeps
+}
+
+/**
+ * 单个运行时依赖的探测结果。
+ *
+ * <p>`ok:false` 不等于"应用坏了"——`java` 缺失时后端不启动，`node` / `python`
+ * 缺失只影响对应类型的源。所以 UI 要分开提示，不能用一句"环境异常"糊过去。
+ */
+export interface FpkDepInfo {
+  ok: boolean
+  /** 解析到的绝对路径；`source` 说明从哪一档命中（env/dep/varapp/path） */
+  path?: string | null
+  version?: string | null
+  source?: string | null
+}
+
+/** 飞牛官方三种运行时：java-21-openjdk / nodejs_v22 / python312。 */
+export interface FpkDeps {
+  java?: FpkDepInfo
+  node?: FpkDepInfo
+  python?: FpkDepInfo
 }
 
 export interface FpkPackageInfo {
@@ -214,8 +237,12 @@ let shellCache: Promise<FpkShellInfo | null> | null = null
  * <p>★ 不能只看这个端点：直接访问 `http://<NAS>:30010/` 时 meowd 也在服务，
  * 但 `/app-center/*` 是 5666 的网关才有的。所以调用方还要能打通 app-center。
  * 这里只负责"是不是 meowd 托管"，是不是 fpk 入口由 {@link detectFpkShell} 判。
+ *
+ * @param force 跳过缓存重取一次：运行时区块点「重新检测」和用户刚装完依赖时要用，
+ *              否则拿到的还是启动瞬间的旧 deps。
  */
-export function shellInfo(): Promise<FpkShellInfo | null> {
+export function shellInfo(force = false): Promise<FpkShellInfo | null> {
+  if (force) shellCache = null
   if (shellCache) return shellCache
   shellCache = (async () => {
     try {
@@ -231,6 +258,25 @@ export function shellInfo(): Promise<FpkShellInfo | null> {
     }
   })()
   return shellCache
+}
+
+/**
+ * 让 meowd 重扫运行时依赖，返回最新 deps。
+ *
+ * <p>与 {@link shellInfo} 分开是因为它**有副作用**（meowd 侧重跑探测），
+ * 只在用户点「重新检测」时调，不能混进每次读状态的路径。
+ */
+export async function rescanFpkDeps(): Promise<FpkDeps | null> {
+  const res = await fetch(`${apiBase()}/api/_shell/deps/rescan`, {
+    method: 'POST',
+    cache: 'no-store',
+    signal: AbortSignal.timeout(8000),
+  })
+  if (!res.ok) throw new Error(`重新检测失败（HTTP ${res.status}）`)
+  const body = (await res.json()) as { ok?: boolean; deps?: FpkDeps }
+  // meowd 刚重扫过，清掉 shellInfo 的缓存，避免别处读到旧值
+  shellCache = null
+  return body?.deps || null
 }
 
 /** 索引 URL + 解析结果（相对于哪个索引地址解析 download_url） */

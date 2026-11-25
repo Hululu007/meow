@@ -125,6 +125,26 @@ fi
 # 包内 app/ 的内容会落到 $TRIM_APPDEST
 mkdir -p "$PKG/app/bin" "$PKG/app/web" "$PKG/app/seed/apiserver" "$PKG/app/plugins"
 install -m 0755 "$OUT/meowd" "$PKG/app/bin/meowd"
+
+# ── 运行时插件载荷（drpy / pyrt）──
+#
+# ★ 只声明 install_dep_apps 是不够的：那给的是**运行时**（node/python 可执行文件），
+#   而加载器代码本身（host.js / worker.js / pyrt.py + node_modules / vendor）
+#   必须打进 app/plugins/。缺了它们的表现是"依赖齐全、deps 显示 ok、
+#   但所有 .js/.py 源一律搜不到"——实测 1.2.22 的 plugins/ 里只有 danmu-api，
+#   所以那一版 fpk 的 JS/PY 源全是死的。
+#
+# 载荷由 server/build-plugin-{drpy,pyrt}.ps1 产出到 server/build/plugins/<id>/。
+# CI 的 fpk.yml 必须在那之前先跑这两个脚本（本地 release.ps1 已包含）。
+for _p in drpy pyrt; do
+    _src="$SRC/server/build/plugins/$_p"
+    if [ -d "$_src" ]; then
+        cp -a "$_src" "$PKG/app/plugins/$_p"
+        echo "  plugins/$_p: $(du -sh "$PKG/app/plugins/$_p" | cut -f1)"
+    else
+        echo "  ::warning::缺 $_src（$_p 插件未构建）—— 该类型源在 fpk 上不可用" >&2
+    fi
+done
 # ★ /api/health 的 version 由 meowd **运行时**读这个文件（src/version.rs），不是编译期常量。
 #   这样做是为了让 Cargo.toml 的版本号不再参与编译：否则每发一版都要重编整个 crate
 #   （实测两腿各 33-35s），而版本号本质上只是元数据。
