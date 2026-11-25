@@ -52,6 +52,10 @@ class jar），要么把 `spider` 直接指向 class jar。
 | 配置支持 `spiderJvm` | **1.1.6** | 见上 |
 | JVM 导入期 dex→class（dex2jvm） | **1.1.7** | 源包只需 dex；旧 JVM 用 `config.jvm.json` |
 | 投屏（手机 / PC → TV / 投影） | **1.2.12** | 搜索同一局域网的 DLNA 设备，进度可回传 |
+| 加密源包（带 `.so` 的加固版） | **1.2.22** | 电脑 / Docker / 飞牛 / 电视可加载；iOS 不行 |
+| iOS 客户端（未签名 IPA） | **1.2.22** | 端内 JVM；需 Apple ID 自签安装 |
+| 倒计时电源动作（关机 / 休眠 / 退出） | **1.2.22** | 电视关机需 root，无 root 自动改为退出 |
+| 多仓保存与一键切换 | **1.2.22** | 仓库列表存在后端 `config.depot.json` |
 
 更早的能力没有逐版本记录，以实际界面为准。这张表只列能追溯到 CHANGELOG
 或代码里明确门槛的项。
@@ -66,12 +70,12 @@ class jar），要么把 `spider` 直接指向 class jar。
 | 飞牛 fnOS | 应用中心套件 | ✅ 官方包 |
 | NAS / 服务器 / Linux | Docker 四容器 + 浏览器 | ✅ 官方镜像（amd64 / arm64） |
 | macOS（Apple Silicon / Intel） | Docker 四容器 + 浏览器 | ⭕ 可用，无桌面应用 |
-| iPhone / iPad | Safari + 添加到主屏幕；IPA 在实验分支 | ⭕ 浏览器可用 · 🧪 IPA 未发布 |
+| iPhone / iPad | IPA（未签名，自签侧载）；也可 Safari | ✅ 官方包（未签名 IPA） |
 | 电视自带系统（Tizen / webOS） | — | ❌ 不支持 |
 
 ⭕ = 功能完整（搜索、播放、弹幕、片库、直播、AI、转码），只是没有原生壳。
-macOS 不发布原生包（没有官方验证条件）；iOS 的 IPA 在实验分支，未发布官方资产，
-边界与进度见 [应用计划](/reference/roadmap)。启动步骤见 [Web / Docker](/guide/web-docker)，
+iOS 的 IPA **未签名**：官方不发签名包，用 Apple ID 自签侧载，步骤见 [iPhone / iPad](/guide/ios)。
+macOS 不发布原生包（没有官方验证条件）。启动步骤见 [Web / Docker](/guide/web-docker)，
 平台限制见 [已知限制 → 在 iPhone 和 iPad 上](/reference/limits#在-iphone-和-ipad-上)。
 
 ## 怎么判断自己能不能用

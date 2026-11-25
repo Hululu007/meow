@@ -3,12 +3,12 @@ const features = [
   {
     tag: '架构',
     title: '宿主与源分离',
-    desc: '内容源以 jar 由第三方分发。项目只做一次宿主，Web、PC、TV 三端复用，仓库不附带任何站点配置。',
+    desc: '内容源以 jar 由第三方分发。项目只做一次宿主，Web、PC、Android、iOS 四端复用，仓库不附带任何站点配置。',
     icon: 'M3 6h7v12H3z M14 12h5 M16 9l3 3-3 3',
   },
   {
     tag: '前端',
-    title: '三端同一份前端',
+    title: '四端同一份前端',
     desc: '一套 Vue 3 + TypeScript 模板，浏览器、Tauri 桌面壳、Android WebView 壳各自套壳，交互与状态保持一致。',
     icon: 'M12 3l8 4-8 4-8-4 8-4z M4 12l8 4 8-4 M4 17l8 4 8-4',
   },

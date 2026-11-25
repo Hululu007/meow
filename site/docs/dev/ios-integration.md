@@ -1,7 +1,8 @@
 # iOS 端接入（IPA 形态与发版）
 
-::: warning 现状（2026-11-24）：iOS 工程**已合入 main**（实验性），真机已跑通本地网关
-`client/apps/ios/` 可出未签名 IPA，**未上架、未发官方包**。
+::: warning 现状（2026-11-25）：iOS 工程**已合入 main**，真机已跑通本地网关
+`client/apps/ios/` 出未签名 IPA，**已随 1.2.22 作为 `Meow-unsigned.ipa` 发布**；
+不上架 App Store，用户用 Apple ID 自签安装（见 [iPhone / iPad](/guide/ios)）。
 真机（LiveContainer 侧载）验证到：JVM 启动、`/api/health` ok、豆瓣首页出数据、源导入能写盘。
 本文的「落地契约」部分仍然有效；下面 §0 是与契约不一致的**已实现部分**，
 与契约冲突时以 §0 为准（其余章节保留原契约口径，标【待实现】= 代码还没写；
@@ -122,11 +123,9 @@ iOS 要对齐这条，拆成两问：
 
 ---
 
-::: warning 以下为「落地契约」原文
-仓库主分支当前**没有 iOS 工程**（`client/apps/ios/` 不存在），用户指南仍按
-「iPhone / iPad 用 Safari + 添加到主屏幕」写。
-本文定义**如果按 TV APK 的形态做 iOS 壳**：工程结构、能力边界、IPA 构建与发版 CI、
-签名与验收红线。标【待实现】= 代码还没写；标【待实测】= 没有 iPhone，无法验证。
+::: warning 以下为「落地契约」原文（2026-11-17 口径）
+写这份契约时仓库还没有 iOS 工程。**2026-11-24 起实现已进 main，以 §0 为准**；
+下文保留契约原文，供对照「当初怎么定的/哪些被推翻」，不要再按「无 iOS 工程」理解。
 :::
 
 TV 端已经有完整的一套「壳」：`client/apps/tv` 是 Android WebView 壳，
@@ -147,12 +146,15 @@ TV 端已经有完整的一套「壳」：`client/apps/tv` 是 Android WebView �
    **端内 dex2jar 库**解决（不能 fork/exec）。TV 的 Node 模块是 Android APK，
    搬不了；`danmu_api` 那部分见 §3.7 与 §0 的「仍然缺」。
 3. **真正的分水岭是签名**：没有 $99 账号，CI 只能产出**未签名 IPA**，用户必须用
-   自己的 Apple ID 在电脑上签（AltStore / Sideloadly，7 天有效）。
+   自己的 Apple ID 签（LiveContainer / SideStore / AltStore，免费账号 7 天有效）。
    所以 IPA **不是自更新通道**，`packages.json` 也不该收它。
-4. **定位（2026-11-17 用户定）**：iOS 作为独立应用，**弹幕在包内跑 `danmu_api`**；
-   源站与播放仍连后端（iOS 没有本地 ApiServer，见上一条）。
+4. **定位（2026-11-17 用户定，11-24 已落地）**：iOS 作为独立应用，
+   **弹幕在包内跑 `danmu_api`，源站与播放在端内 `ApiServer` 执行**（见 §0）。
 
 ### 1.1 形态对齐的五个维度
+
+> 下表是 2026-11-17 的初始契约；实际实现以 §0 为准（端内 JVM 与 Node 均已落地，
+> 下表「无网关 / 无 dex / 无 Node」已过时）。
 
 | 维度 | TV APK（现状） | iOS IPA（目标） |
 |---|---|---|

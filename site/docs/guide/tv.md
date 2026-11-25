@@ -6,8 +6,8 @@ Android TV 客户端是一个播放器壳 + 端上原生播放器 + 本地执行
 > 不确定装哪个？先看 [快速开始 · 路线选择](/guide/quick-start#路线选择)。
 
 ::: tip iPhone / iPad 装不了这个 APK
-iOS 没有客户端，也不上架。用 Safari 打开 Web 版即可，
-步骤见 [Web / Docker](/guide/web-docker#在-iphone-和-ipad-上)。
+iOS 有独立客户端（未签名 IPA，自签安装），见 [iPhone / iPad](/guide/ios)；
+不想装 App 就用 Safari 打开 Web 版，步骤见 [Web / Docker](/guide/web-docker#在-iphone-和-ipad-上)。
 :::
 
 ## 装好它
@@ -91,6 +91,15 @@ TV 的弹幕走运行时模块（Fongmi 形态的独立 APK，跑在单独的 `:
 组件说明、版本线与清单校验见 [TV 运行时模块](/ecosystem/runtime-module)。
 
 :::
+
+## 播不动 / 没声音
+
+电视的 WebView 只带基础解码器。遇到 MKV、AC3 / EAC3 / DTS 这类无声音轨，或提示「编码不支持」：
+
+1. 点错误页或控制栏的「用原生播放器打开」——页内原生播放器走系统解码，支持更多容器与音轨；
+2. 或者改用转码：要求后端带 ffmpeg（Docker 镜像与 PC 插件自带）。
+
+两种方式都失败时，多半是源站这一集本身有问题，换线路再试。
 
 ## 出问题
 

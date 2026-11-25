@@ -32,6 +32,16 @@ const platforms = [
     href: withBase('/guide/tv.html'),
     action: '安装与扫码',
   },
+  {
+    key: 'ios',
+    kicker: 'iOS · IPHONE / IPAD',
+    title: '端内跑完整后端',
+    desc: '同一份前端做成 IPA，端内用 OpenJDK Zero 起同一个 Java 宿主，不连别的设备也能出源。',
+    points: ['未签名 IPA，需 Apple ID 自签', '端内 JVM + 弹幕聚合', '无 ffmpeg，片库转码不可用'],
+    code: 'Meow-unsigned.ipa',
+    href: withBase('/guide/ios.html'),
+    action: '安装与自签',
+  },
 ]
 </script>
 
@@ -59,7 +69,7 @@ const platforms = [
 <style scoped>
 .mw-platforms {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 18px;
 }
 

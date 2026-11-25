@@ -3,7 +3,7 @@
 </script>
 
 <template>
-  <svg class="kw-diagram" viewBox="0 0 660 420" role="img" aria-label="Web、PC、TV 三端通过同一个宿主加载第三方源包">
+  <svg class="kw-diagram" viewBox="0 0 660 420" role="img" aria-label="Web、PC、Android、iOS 四种壳通过同一个宿主加载第三方源包">
     <defs>
       <filter id="kw-glow" x="-40%" y="-40%" width="180%" height="180%">
         <feGaussianBlur stdDeviation="7" result="blur" />
@@ -18,29 +18,35 @@
       </linearGradient>
     </defs>
 
-    <!-- 连接线：三端 → 宿主 → 源包 -->
+    <!-- 连接线：四种壳 → 宿主 → 源包 -->
     <g class="kw-wires" fill="none" stroke-linecap="round">
-      <path class="kw-wire kw-wire-web" d="M174 78 C 210 78, 212 210, 250 210" />
-      <path class="kw-wire kw-wire-pc" d="M174 220 C 200 220, 222 220, 250 220" />
-      <path class="kw-wire kw-wire-tv" d="M174 362 C 210 362, 212 230, 250 230" />
+      <path class="kw-wire kw-wire-web" d="M172 52 C 206 52, 212 198, 250 206" />
+      <path class="kw-wire kw-wire-pc" d="M172 154 C 200 154, 222 208, 250 214" />
+      <path class="kw-wire kw-wire-android" d="M172 256 C 200 256, 222 232, 250 228" />
+      <path class="kw-wire kw-wire-ios" d="M172 358 C 206 358, 212 240, 250 236" />
       <path class="kw-wire kw-wire-out" d="M430 220 C 464 220, 472 220, 508 220" />
     </g>
 
-    <!-- 三端 -->
+    <!-- 四种壳 -->
     <g class="kw-node kw-node-web">
-      <rect x="16" y="40" width="158" height="76" rx="12" />
-      <text x="95" y="72" class="kw-node-title" text-anchor="middle">Web</text>
-      <text x="95" y="94" class="kw-node-sub" text-anchor="middle">Docker 四容器</text>
+      <rect x="14" y="16" width="158" height="72" rx="12" />
+      <text x="93" y="46" class="kw-node-title" text-anchor="middle">Web</text>
+      <text x="93" y="68" class="kw-node-sub" text-anchor="middle">Docker 四容器</text>
     </g>
     <g class="kw-node kw-node-pc">
-      <rect x="16" y="182" width="158" height="76" rx="12" />
-      <text x="95" y="214" class="kw-node-title" text-anchor="middle">PC</text>
-      <text x="95" y="236" class="kw-node-sub" text-anchor="middle">Tauri 桌面壳</text>
+      <rect x="14" y="118" width="158" height="72" rx="12" />
+      <text x="93" y="148" class="kw-node-title" text-anchor="middle">PC</text>
+      <text x="93" y="170" class="kw-node-sub" text-anchor="middle">Tauri 桌面壳</text>
     </g>
-    <g class="kw-node kw-node-tv">
-      <rect x="16" y="324" width="158" height="76" rx="12" />
-      <text x="95" y="356" class="kw-node-title" text-anchor="middle">TV</text>
-      <text x="95" y="378" class="kw-node-sub" text-anchor="middle">端内网关</text>
+    <g class="kw-node kw-node-android">
+      <rect x="14" y="220" width="158" height="72" rx="12" />
+      <text x="93" y="250" class="kw-node-title" text-anchor="middle">Android</text>
+      <text x="93" y="272" class="kw-node-sub" text-anchor="middle">TV · 手机</text>
+    </g>
+    <g class="kw-node kw-node-ios">
+      <rect x="14" y="322" width="158" height="72" rx="12" />
+      <text x="93" y="352" class="kw-node-title" text-anchor="middle">iOS</text>
+      <text x="93" y="374" class="kw-node-sub" text-anchor="middle">IPA · 端内 JVM</text>
     </g>
 
     <!-- 宿主核心 -->

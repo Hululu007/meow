@@ -26,14 +26,14 @@
 | Docker 容器 / 端口 / `.env` 键 | `guide/web-docker.md`、`guide/quick-start.md`、`reference/downloads.md`、`dev/docker.md` |
 | PC 插件流程、端口回退、安装包形态 | `guide/pc.md`、`ecosystem/plugins.md` |
 | TV 安装、遥控、网关、运行时模块 | `guide/tv.md`、`ecosystem/runtime-module.md`、`dev/tv-integration.md` |
-| iOS 壳 / IPA 发版（签名、资产名、端支持） | `dev/ios-integration.md`、`reference/downloads.md`、`reference/compatibility.md`、`guide/faq.md`、`reference/roadmap.md` |
+| iOS 壳 / IPA 发版（签名、资产名、端支持） | `guide/ios.md`、`dev/ios-integration.md`、`reference/downloads.md`、`reference/compatibility.md`、`guide/faq.md`、`reference/roadmap.md` |
 | 投屏（DLNA / 应用内会话）| `guide/playback.md`、`dev/casting.md` |
 | config 字段（`spider` / `spiderJvm` / `sites` / `parses` …） | `ecosystem/source-format.md`、`guide/source-pack.md` |
 | 导入选项（`mode` / `onConflict` / `replaceSpider`） | `guide/source-pack.md` |
 | 插件清单字段（fnpack / manifest） | `ecosystem/plugin-manifest.md`、`ecosystem/plugin-source.md` |
 | Release 资产名、系统要求 | `reference/downloads.md`、`dev/build-release.md` |
 | 新增或移除用户可见能力 | 首页能力卡：`site/.vitepress/theme/components/FeatureGrid.vue` 的 `features` 数组（`index.md` 只挂 `<HomePage />`，不含文案）、指南能力卡：`CapabilityGrid.vue` 的 `items` 数组（`guide/what-is-meow.md` 里挂 `<CapabilityGrid />`） |
-| 支持的端 / 平台（新增或取消某端） | `reference/compatibility.md` 的「端支持」、`guide/quick-start.md` 路线表、`guide/web-docker.md`、`guide/faq.md` |
+| 支持的端 / 平台（新增或取消某端） | `reference/compatibility.md` 的「端支持」、`guide/quick-start.md` 路线表、`guide/web-docker.md`、`guide/ios.md`、`guide/faq.md`、`reference/roadmap.md` |
 | 鉴权范围 / 令牌语义（谁能调什么） | `dev/api-contract.md` §1.2、`dev/architecture.md` §6.1、`dev/public-deployment.md`、`dev/fnos-gateway-auth.md` |
 | MCP 工具、调试入口、AI skill | `guide/automation.md`、`dev/ai-assistant.md` §2.7、`dev/testing.md` |
 | 已知缺陷新增或修复 | `reference/limits.md`、`guide/faq.md` |

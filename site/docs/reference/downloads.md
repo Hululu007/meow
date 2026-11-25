@@ -10,11 +10,12 @@
 | Windows 电脑 | `meow-setup-<版本>.exe`（安装版）<br>`meow-bare-<版本>.exe`（免安装） | [PC](/guide/pc) |
 | 安卓电视 / 投影仪 / 手机 | `meow-TV-<版本>.apk` | [TV](/guide/tv) |
 | 飞牛 fnOS | `meow_<版本>_x86.fpk` / `meow_<版本>_arm.fpk` | [飞牛](/guide/fnos) |
-| NAS / 服务器 / Mac / iPhone | **不用下载**：Docker 起后端，浏览器打开 | [Docker](/guide/web-docker) |
+| iPhone / iPad | `Meow-unsigned.ipa`（未签名，要自己签） | [iPhone / iPad](/guide/ios) |
+| NAS / 服务器 / Mac | **不用下载**：Docker 起后端，浏览器打开 | [Docker](/guide/web-docker) |
 
 - 不确定该走哪条路：先看 [快速开始 · 路线选择](/guide/quick-start#路线选择)。
 - 已经装过、只是想升级：看 [升级与迁移](/guide/upgrade)，不用重新下。
-- iPhone / iPad 的 IPA **还没发**（实验分支里在做），现在用 Safari；进度见 [应用计划](/reference/roadmap)。
+- iPhone / iPad 的 IPA **没有签名**：要用自己的 Apple ID 自签一次（7 天有效），步骤见 [iPhone / iPad](/guide/ios)；不想签名就用 Safari。
 
 ## 去哪里下
 
@@ -22,7 +23,7 @@
 - 全部版本与历史资产：<https://github.com/upchr/meow/releases>
 
 打不开 GitHub 时：飞牛可以改走 [FnDepot 源](/guide/fnos)（源地址有 Gitee 镜像），
-Docker 直接拉镜像；Windows 与 TV 目前只有 GitHub 一个下载点，换网络或代理再试。
+Docker 直接拉镜像；Windows、TV 与 iOS 目前只有 GitHub 一个下载点，换网络或代理再试。
 
 ## 资产清单
 
@@ -31,6 +32,7 @@ Docker 直接拉镜像；Windows 与 TV 目前只有 GitHub 一个下载点，�
 | `meow-setup-<版本>.exe` | Windows | PC 安装版（NSIS），带开始菜单与卸载 |
 | `meow-bare-<版本>.exe` | Windows | PC 免安装版，解压即用 |
 | `meow-TV-<版本>.apk` | Android TV / 投影仪 / 安卓手机 | TV 壳，release 签名 |
+| `Meow-unsigned.ipa` | iPhone / iPad（iOS 15+） | 未签名，需 Apple ID 自签侧载；免费账号 7 天有效 |
 | `meow_<版本>_x86.fpk` | 飞牛 fnOS x86_64 | 原生套件 |
 | `meow_<版本>_arm.fpk` | 飞牛 fnOS arm64 | 原生套件 |
 | `tv-node-arm64-v8a-<node版本>.apk` | arm64-v8a | TV 运行时模块 |
@@ -104,6 +106,7 @@ Get-FileHash .\meow-setup-<版本>.exe -Algorithm SHA256
 | Web | Docker 24+ 与 Compose 插件；2 GB 可用内存（转码另算，机器弱时 4K 会卡） |
 | PC | Windows 10 1809 及以上 |
 | TV | Android 8.0（API 26）及以上；壳与运行时模块的 minSdk 相同 |
+| iOS | iOS 15 及以上；未签名 IPA，用 Apple ID 自签安装 |
 | fnOS | 飞牛系统；x86_64 或 arm64 |
 
 ## 历史版本

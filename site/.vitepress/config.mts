@@ -108,6 +108,7 @@ const guideSidebar = [
       { text: 'Web / Docker', link: '/guide/web-docker' },
       { text: 'PC 桌面端', link: '/guide/pc' },
       { text: 'TV / 投影仪 / 手机', link: '/guide/tv' },
+      { text: 'iPhone / iPad', link: '/guide/ios' },
       { text: '飞牛 fnOS', link: '/guide/fnos' },
     ],
   },
@@ -185,7 +186,7 @@ export default defineConfig({
   lang: 'zh-CN',
   title: '猫窝 Meow',
   description:
-    '跨端影视客户端：Web / PC / TV 一套内核，三个出口。同一套前端与源包格式，源包由用户自行导入。',
+    '跨端影视客户端：Web / PC / TV / iOS 一套内核。同一套前端与源包格式，源包由用户自行导入。',
   base: SITE_BASE,
   srcDir: './docs',
   lastUpdated: true,

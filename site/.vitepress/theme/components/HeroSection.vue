@@ -41,12 +41,12 @@ onMounted(() => {
 
         <h1 class="mw-hero-title">
           一套内核
-          <span class="mw-grad">三个出口</span>
+          <span class="mw-grad">四个出口</span>
         </h1>
 
         <p class="mw-hero-lede">
           同一套 JVM 宿主、同一份 spider jar、同一套配置语义，
-          同时服务浏览器、Windows 桌面端和 Android TV。
+          同时服务浏览器、Windows、Android（TV / 手机）与 iPhone / iPad。
           仓库只提供加载能力，源包由你导入。
         </p>
 
@@ -69,7 +69,8 @@ onMounted(() => {
         <ul class="mw-hero-tags">
           <li>Web</li>
           <li>Windows</li>
-          <li>Android TV</li>
+          <li>Android</li>
+          <li>iOS</li>
           <li>fnOS</li>
           <li class="mw-tag-muted">source-available</li>
         </ul>

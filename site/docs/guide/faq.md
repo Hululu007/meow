@@ -44,15 +44,16 @@ Web 端检查 `web` 容器能否连到 `apiserver`：页面能开但接口 503�
 
 ### Mac / iPhone 能用吗
 
-能，但两者都**没有原生客户端**，走浏览器：
+能。
 
-- **Mac（含 Apple Silicon）**：本机用 Docker 起一套（镜像有 `linux/arm64`，原生跑），浏览器开
-  `http://localhost:30010`；或者直接开家里 NAS 上已有的实例，Mac 上什么都不用装。
-- **iPhone / iPad**：Safari 打开 `http://<后端 IP>:30010`，用「分享 → 添加到主屏幕」当 App 用。
+- **Mac（含 Apple Silicon）**：没有桌面应用，本机用 Docker 起一套（镜像有 `linux/arm64`，原生跑），
+  浏览器开 `http://localhost:30010`；或者直接开家里 NAS 上已有的实例，Mac 上什么都不用装。
+- **iPhone / iPad**：有客户端了——`Meow-unsigned.ipa`，**未签名**，要用 Apple ID 自签装一次，
+  步骤与边界见 [iPhone / iPad](/guide/ios)。不想签名就用 Safari 打开 `http://<后端 IP>:30010`，
+  「分享 → 添加到主屏幕」当 App 用。
 
-没有 macOS 桌面应用（`.dmg`），也不打算做；**iOS 有 IPA 在实验分支**（未进主线、未发官方资产），
-进度与边界见 [应用计划](/reference/roadmap)。启动步骤见
-[Web / Docker](/guide/web-docker)，平台限制见 [已知限制](/reference/limits#在-iphone-和-ipad-上)。
+macOS 不打算做桌面应用（`.dmg`）；装不上、签名失败一类问题见 [iPhone / iPad](/guide/ios#出问题)，
+平台限制见 [已知限制](/reference/limits#在-iphone-和-ipad-上)。
 
 ## 源与配置
 
@@ -65,6 +66,8 @@ Web 端检查 `web` 容器能否连到 `apiserver`：页面能开但接口 503�
 3. **配置里的地址是 `127.0.0.1`**：在电视/手机/容器里，它指设备自己
 4. **爬虫包下载不到**：清单里写了校验值，包不匹配会被拒绝加载
 5. **缺少 JS 运行时**：`.js` 源需要 drpy 插件，没装就是「不可用」
+6. **加固版（加密源）版本不够**：带 `.so` 本地库的加固版从 **1.2.22** 起才在电脑 / Docker / 飞牛上能加载
+   （电视一直可以，iOS 不行）；旧版只有电视能用
 
 ### 报 `ClassNotFoundException` / `NoClassDefFoundError`
 

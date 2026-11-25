@@ -7,7 +7,7 @@ import RevealOnScroll from './RevealOnScroll.vue'
 
 const stats = [
   { value: '0', label: '内置内容源' },
-  { value: '3', label: '端形态' },
+  { value: '4', label: '端形态' },
   { value: '4', label: 'Docker 容器' },
   { value: '全量', label: 'TV 端内路由' },
 ]
@@ -42,7 +42,7 @@ const license = withBase('/reference/license.html')
     <section class="mw-section">
       <header class="mw-section-head">
         <div class="mw-sec-meta"><span class="mw-sec-index">01</span><span class="mw-eyebrow">CAPABILITIES</span></div>
-        <h2>一个后端，把三端该做的事都做了</h2>
+        <h2>一个后端，把四端该做的事都做了</h2>
         <p>
           搜索、详情、播放地址解析、弹幕聚合、代理与转码都收敛在同一套宿主里。
           客户端只负责呈现与交互。
@@ -56,7 +56,7 @@ const license = withBase('/reference/license.html')
     <section class="mw-section mw-section-alt">
       <header class="mw-section-head">
         <div class="mw-sec-meta"><span class="mw-sec-index">02</span><span class="mw-eyebrow">PLATFORMS</span></div>
-        <h2>三种形态，按你的设备选</h2>
+        <h2>四种形态，按你的设备选</h2>
         <p>同一份配置语义，不同的加载器与外壳。也可以只跑后端，把电视和手机当播放器。</p>
       </header>
       <RevealOnScroll :delay="80">

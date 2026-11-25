@@ -10,14 +10,14 @@
 | 只有 Windows 电脑 | [PC 桌面端](#二、pc-桌面端) | 3 分钟 |
 | 只有 Mac（含 Apple Silicon） | [Docker 四容器](#一、docker-最省事) | 5 分钟 |
 | 想在电视或安卓手机上装客户端 | [TV 客户端](#三、tv-客户端) | 5 分钟 |
-| 用 iPhone / iPad | [浏览器加到主屏](/guide/web-docker) | 2 分钟 |
+| 用 iPhone / iPad | [iOS 客户端（IPA 自签）](/guide/ios) | 5 分钟 |
 | 用飞牛 fnOS | [fnOS 套件](#四、飞牛-fnos) | 3 分钟 |
 
 已经有一台在跑后端（比如 NAS 上那套）：浏览器直接开它的 `30010`；PC / TV 装客户端后在「连接 → 后端地址」填它，要点见 [局域网访问与令牌](/guide/web-docker#局域网访问与令牌)。
 
-::: tip Mac 与 iPhone / iPad 没有原生客户端
-两者都走浏览器，功能与 Windows 桌面端一致（同一个后端、同一份源包）。
-启动步骤见 [Web / Docker](/guide/web-docker) 的「在 Mac 和 Linux 上」「在 iPhone 和 iPad 上」两节。
+::: tip Mac 仍走浏览器，iPhone / iPad 已有客户端
+Mac 没有桌面应用（`.dmg`），用 Docker + 浏览器；iPhone / iPad 有未签名 IPA，自签即装，
+步骤见 [iPhone / iPad](/guide/ios)。两者功能与 Windows 桌面端一致（同一份前端、同一套源包）。
 :::
 
 ## 一、Docker（最省事）

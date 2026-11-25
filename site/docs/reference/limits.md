@@ -39,8 +39,20 @@
 
 ### 在 iPhone 和 iPad 上
 
-官方路径只有 Safari（IPA 在实验分支，进度见 [应用计划](/reference/roadmap)）。
-以下四条是平台边界，不是 bug：
+两种用法：**IPA**（未签名，自签侧载，装法见 [iPhone / iPad](/guide/ios)）或 **Safari**。
+
+IPA 的边界（平台限制，不是 bug）：
+
+| 限制 | 表现 | 说明 |
+|---|---|---|
+| 转码 | 片库转码不可用 | 端内没有 ffmpeg |
+| 格式 | MKV / FLV / DTS 播不了 | 只有 WebKit + AVPlayer（HLS / mp4） |
+| 加密源 | 带 `.so` 的 Guard jar 加载不了 | iOS 不认 Android ELF |
+| 本地片库 | 没有系统目录可选 | 用 WebDAV / SMB |
+| 性能 | 搜索、详情比 PC 慢 | 端内 JVM 是解释器（OpenJDK Zero） |
+| 签名 | 免费 Apple ID 7 天过期 | 重签即可；付费账号可到 1 年 |
+
+Safari 方案的边界：
 
 | 限制 | 表现 | 说明 |
 |---|---|---|
@@ -53,8 +65,8 @@
 所以 `type: 0` 解析源这类安卓 WebView 才能做的事反而不适用（见上文）。
 局域网 `http://` 直连不受 ATS 限制——ATS 只管 App 内的 WKWebView。
 
-::: warning 尚未在真机逐项验证
-上表来自 Safari 的已知能力边界，四项都还需在真机上确认具体表现。
+::: warning Safari 那组尚未在真机逐项验证
+Safari 的四项来自已知能力边界，还需在真机上确认具体表现。
 遇到与表不符的情况请提 Issue 附机型与系统版本。
 :::
 

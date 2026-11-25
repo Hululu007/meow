@@ -94,7 +94,7 @@ function done() {
 
       <p class="mw-gate-kicker">跨端影视客户端</p>
       <h1 id="mw-gate-title" class="mw-gate-title">猫窝 Meow</h1>
-      <p class="mw-gate-sub">一套内核，三个出口</p>
+      <p class="mw-gate-sub">一套内核，四个出口</p>
 
       <div class="mw-gate-actions">
         <button class="mw-gate-enter" type="button" @click.stop="enter">

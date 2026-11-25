@@ -122,8 +122,10 @@ PC / TV 的填写位置见 [PC 桌面端 · 改用别人的后端](/guide/pc) �
 
 ### 在 iPhone 和 iPad 上
 
-**官方路径是 Safari**（IPA 工程在实验分支，进度与边界见 [应用计划](/reference/roadmap)、
-技术契约见 [iOS 端接入](/dev/ios-integration)）。
+**装了 App 就不用连后端**：官方有 iPhone / iPad 客户端（未签名 IPA，自签安装），
+端内自带后端，装法与边界见 [iPhone / iPad](/guide/ios)。
+
+不装 App 也能用 Safari 连这套 Docker 后端：
 用 **Safari** 打开 `http://<后端所在机器的 IP>:30010`（**别写 `localhost`**，那指手机自己），
 底部「分享」→「添加到主屏幕」→ 命名「猫窝」，以后从主屏图标进无地址栏全屏。
 
