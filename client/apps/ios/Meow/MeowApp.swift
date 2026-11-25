@@ -31,6 +31,8 @@ struct MeowApp: App {
                  *  3) audio session 被来电等打断后重设 category（不 setActive）。
                  */
                 .onChange(of: scenePhase) { phase in
+                    // 切前后台的全量状态流水：系统事件顺序不固定，排障只能靠它
+                    LaunchLog.write("scenePhase -> \(String(describing: phase))")
                     if phase == .active {
                         boot.appBecameActive()
                         ShellOrientation.reapplyOnActivate()

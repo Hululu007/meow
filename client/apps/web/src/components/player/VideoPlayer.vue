@@ -1917,6 +1917,11 @@ function setupSource(url: string) {
   clearStartupWatchdog()
   // 每次换源都允许"hls 判错 → 回退原生"各一次
   nativeSrcFallbackTried = false
+  // 换集/换线：上一集的播放位置绝不能带过来（否则切后台恢复会 seek 回前集）
+  lastGoodPos = 0
+  lastTickAt = 0
+  lastTickPos = 0
+  clearRestoreWindow()
   endedSent = false
   dropReported = false
   dropBaselineTotal = -1
@@ -2404,20 +2409,28 @@ function stopMedia() {
 function toggle() {
   const v = video.value
   if (!v) return
-  if (v.paused) {
-    userPausedAt = 0
-    safePlay(v)
-  } else {
+  /*
+   * ★ 不能只看 v.paused（2026-11-25 真机：首次从后台切回，双击暂停无效）。
+   * iOS 后台恢复后元素状态可能和实际出声不同步：paused=true 但 timeupdate
+   * 仍在推进。此时按"暂停"处理，否则 toggle 会去 play()，用户看到的就是
+   * "双击没反应"。
+   */
+  if (mediaLooksPlaying(v)) {
     // 用户主动暂停：取消还没执行的"补播"，否则 800ms 后会被自动播回去。
     autoPlayPending = false
     // ★ 回前台的续播重试同样要撤（2026-11-25 真机：切后台用系统播放条恢复，
-    //   回前台后双击暂停会被 250ms/1.2s 的重试拉回播放，表现成"双击不能暂停"）
+    //   回前台后双击暂停会被 250ms/1.2s 的重试拉回播放）
     userPausedAt = Date.now()
     bgKeepPlaying = false
     cancelResumeTimers()
     // 用户自己动了进度/播放状态：回前台恢复窗口立刻失效，别跟他抢
     clearRestoreWindow()
+    bgLog(`toggle→pause paused=${v.paused} ct=${v.currentTime.toFixed(1)} vis=${document.visibilityState}`)
     v.pause()
+  } else {
+    userPausedAt = 0
+    bgLog(`toggle→play paused=${v.paused} ct=${v.currentTime.toFixed(1)} vis=${document.visibilityState}`)
+    safePlay(v)
   }
 }
 
@@ -2554,6 +2567,12 @@ function onStageClick(e: MouseEvent) {
      *   不这样做时 iOS 永远走不到 onStageDblClick（WKWebView 不发）。
      */
     const now = Date.now()
+    if (isMobileForm()) {
+      bgLog(
+        `EV click touch x=${Math.round(e.clientX)} y=${Math.round(e.clientY)} ` +
+        `sinceLastTap=${lastTapAt ? now - lastTapAt : -1} locked=${locked.value}`,
+      )
+    }
     if (
       lastTapAt > 0 &&
       now - lastTapAt <= DOUBLE_TAP_MS &&
@@ -3536,6 +3555,11 @@ function onTimeUpdate() {
   const v = video.value
   if (!v) return
   currentTime.value = v.currentTime
+  // "事件说暂停但实际在走"的判据（见 mediaLooksPlaying）
+  lastTickAt = Date.now()
+  lastTickPos = v.currentTime
+  // 切后台要回到的位置：只认播放中推进过的值，避免后台被重置后读到 0
+  if (!v.paused && v.currentTime > lastGoodPos) lastGoodPos = v.currentTime
   // 回前台恢复窗口内持续校正进度（内核可能在我们判定"已到位"之后才把流重置）
   onRestoreTick()
   // 最后一次"确实在播"的时刻：切后台时 iOS 可能先暂停再发 visibilitychange，
@@ -6242,13 +6266,18 @@ onMounted(() => {
     if (Math.abs(v.playbackRate - rate.value) > 0.01) v.playbackRate = rate.value
   }
   v?.addEventListener('play', () => {
+    bgLog(
+      `EV play ct=${v.currentTime.toFixed(1)} vis=${document.visibilityState} ` +
+      `userPausedAgo=${userPausedAt ? Date.now() - userPausedAt : -1} bgWant=${bgKeepPlaying}`,
+    )
     /*
      * 用户刚按下暂停的 1.2s 内，任何来源的"又播起来"都立刻压回去：
      * 系统后台恢复、续播重试、内核异步回放都会派 play。首次切回后台的媒体
      * 状态最乱（2026-11-25 真机：首次切回双击暂停无效，后续正常），
      * 这一道兜在事件层，不依赖具体是哪条路径拉起的。
      */
-    if (userPausedAt && Date.now() - userPausedAt < 1200) {
+    if (userPausedAt && Date.now() - userPausedAt < 2500) {
+      bgLog('EV play suppressed (user just paused)')
       try {
         v.pause()
       } catch {
@@ -6268,6 +6297,12 @@ onMounted(() => {
     void noAudioCtx?.resume()
   })
   v?.addEventListener('pause', () => {
+    bgLog(
+      `EV pause ct=${v.currentTime.toFixed(1)} vis=${document.visibilityState} ` +
+      `userPausedAgo=${userPausedAt ? Date.now() - userPausedAt : -1} bgWant=${bgKeepPlaying}`,
+    )
+    // 暂停这一刻的位置最可信：记下来，切后台即使元素被重置也还能回到这里
+    if (v.currentTime > 0) lastGoodPos = v.currentTime
     playing.value = false
     dm.value?.pause()
     /*
@@ -6336,6 +6371,8 @@ onMounted(() => {
   v?.addEventListener('seeked', () => {
     // 主动 seek 是允许应用后台补全的安全点（用户预期画面会跳）
     onDanmakuSeeked()
+    // 用户拖到/跳到哪，哪就是"最后可信位置"（暂停时拖回去不会被旧值带回）
+    if (v.currentTime > 0) lastGoodPos = v.currentTime
     // 显式 seek 标志：不靠时间差猜，拖动多少都该清屏重建
     dm.value?.sync(v.currentTime, { seek: true })
     buffering.value = false
@@ -6773,6 +6810,53 @@ let lastPlayedAt = 0
  * 若后台一直在播（currentTime 已经更大），这里不会倒退。
  */
 let posBeforeHide = 0
+/**
+ * 最近一次"播放中"的有效位置（timeupdate 刷新）。
+ *
+ * <p>★ 为什么不能只读切后台那一刻的 `currentTime`：iOS 可能在派发
+ * visibilitychange 之前就把媒体管线重置了，那一刻读到的是 0 —— 于是
+ * "回前台恢复"根本不知道该回哪（2026-11-25 真机：进度始终带不回来）。
+ * 这里保留最后一次确认过的播放位置，切后台时取两者最大值。
+ */
+let lastGoodPos = 0
+/** 最近一次 timeupdate 的时间与位置：判断"事件说暂停但实际还在走" */
+let lastTickAt = 0
+let lastTickPos = 0
+
+/**
+ * 元素是不是"看起来在播"。
+ *
+ * <p>不能只信 `v.paused`：iOS 从后台恢复后，元素可能报 paused=true，
+ * 但 timeupdate 仍在推进（系统媒体会话自己恢复的）。此时用户双击要的是暂停，
+ * 按 paused 判断会去 play()，表现就是"双击没反应"（2026-11-25 真机首切回）。
+ */
+function mediaLooksPlaying(v: HTMLVideoElement): boolean {
+  if (!v.paused) return true
+  return Date.now() - lastTickAt < 800 && v.currentTime > lastTickPos + 0.03
+}
+
+/**
+ * 播放器状态流水（只记"状态迁移"，不记每帧）。
+ *
+ * <p>走 WKWebView 的 meowLog 通道写进 launch.log；同时留在
+ * `window.__meowBgLog` 里，PC/远程调试可以直接读。切前后台这一串系统事件
+ * 顺序不固定，没有流水只能靠猜（2026-11-25 用户要求加全量状态日志）。
+ */
+const bgLogRing: string[] = []
+function bgLog(msg: string) {
+  const line = `[player] ${msg}`
+  bgLogRing.push(`${new Date().toISOString().slice(11, 23)} ${msg}`)
+  if (bgLogRing.length > 40) bgLogRing.shift()
+  ;(window as unknown as { __meowBgLog?: string[] }).__meowBgLog = bgLogRing
+  try {
+    const bridge = (window as unknown as {
+      webkit?: { messageHandlers?: { meowLog?: { postMessage?: (s: string) => void } } }
+    }).webkit?.messageHandlers?.meowLog
+    if (bridge && typeof bridge.postMessage === 'function') bridge.postMessage(line.slice(0, 380))
+  } catch {
+    /* 日志失败不影响业务 */
+  }
+}
 
 /**
  * 用户最近一次**主动**暂停的时间戳（毫秒）。
@@ -6804,9 +6888,11 @@ function cancelResumeTimers() {
 function handleBackgroundPause() {
   if (!isMobileForm() || isTvShell()) return
   if (bgKeepPlaying && hiddenAt && Date.now() - hiddenAt < 3000) {
+    bgLog('bg-pause → replay (system pause at hide)')
     maybeKeepPlayingInBackground()
     return
   }
+  bgLog(`bg-pause → respect user pause (hiddenAgo=${hiddenAt ? Date.now() - hiddenAt : -1})`)
   bgKeepPlaying = false
   playingBeforeHide = false
   notifyIosPlaying(false)
@@ -6816,6 +6902,7 @@ function handleBackgroundPause() {
 function notifyIosPlaying(on: boolean) {
   const ios = (window as unknown as { meowIos?: { setPlaying?: (v: boolean) => void } }).meowIos
   if (!ios || typeof ios.setPlaying !== 'function') return
+  bgLog(`native setPlaying(${on})`)
   try {
     ios.setPlaying(on)
   } catch {
@@ -6837,7 +6924,7 @@ function maybeKeepPlayingInBackground() {
   if (!bgKeepPlaying) return
   // 只处理切后台头 3s 的系统暂停；之后用户用锁屏/播放条暂停的不要拉回
   if (!hiddenAt || Date.now() - hiddenAt > 3000) return
-  if (userPausedAt && Date.now() - userPausedAt < 1500) return
+  if (userPausedAt && Date.now() - userPausedAt < 2500) return
   const replay = (delay: number) => {
     const id = window.setTimeout(() => {
       const el = video.value
@@ -6851,10 +6938,12 @@ function maybeKeepPlayingInBackground() {
       if (posBeforeHide > 5 && el.currentTime < posBeforeHide - 5 && el.readyState >= 1) {
         try {
           el.currentTime = posBeforeHide
+          bgLog(`bg replay seek ${el.currentTime.toFixed(1)}→${posBeforeHide.toFixed(1)}`)
         } catch {
           /* seek 不了就照常播 */
         }
       }
+      bgLog(`bg replay(${delay}) ct=${el.currentTime.toFixed(1)} rd=${el.readyState}`)
       safePlay(el)
     }, delay)
     resumeTimers.push(id)
@@ -6878,36 +6967,46 @@ let restorePos = 0
 let restoreUntil = 0
 
 function clearRestoreWindow() {
+  if (restorePos) bgLog(`restore window closed pos=${restorePos.toFixed(1)}`)
   restorePos = 0
   restoreUntil = 0
 }
 
 /** 回前台（或原生 active 信号）时开恢复窗口 */
-function beginRestoreWindow() {
+function beginRestoreWindow(reason: string) {
   if (!isMobileForm() || isTvShell()) return
   if (posBeforeHide <= 5) return
   restorePos = posBeforeHide
   restoreUntil = Date.now() + 15_000
+  bgLog(`restore window open(${reason}) pos=${restorePos.toFixed(1)}`)
   const el = video.value
   if (el) applyRestoreSeek(el)
 }
 
-/** 窗口内每次触发都很便宜：位置已经正常就直接收窗 */
+/**
+ * 窗口内每次触发都很便宜。
+ *
+ * <p>★ 位置已经"正常"时**不能立刻收窗**（2026-11-25 真机两轮都没修好的根因）：
+ * 回前台那一刻 currentTime 常常还是旧值，内核一两秒后才重置成 0。
+ * 这里提前 return 把窗口关掉，后面的重置就没人管了。窗口只按时间过期，
+ * 或者用户自己动手（clearRestoreWindow）/播放结束才关。
+ */
 function applyRestoreSeek(el: HTMLVideoElement) {
   if (!restorePos) return
   if (Date.now() > restoreUntil || el.ended) {
     clearRestoreWindow()
     return
   }
-  if (el.currentTime >= restorePos - 5) {
-    clearRestoreWindow()
-    return
-  }
+  if (el.currentTime >= restorePos - 5) return
   /*
    * 元数据还没到（切回前台瞬间 WebView 可能正在重建 source）：
    * 此时写 currentTime 会被内核直接丢掉，等 loadedmetadata/canplay 再来。
    */
-  if (el.readyState < 1) return
+  if (el.readyState < 1) {
+    bgLog(`restore waiting metadata rd=${el.readyState} ct=${el.currentTime.toFixed(1)} want=${restorePos.toFixed(1)}`)
+    return
+  }
+  bgLog(`restore seek ct=${el.currentTime.toFixed(1)} → ${restorePos.toFixed(1)} rd=${el.readyState}`)
   try {
     el.currentTime = restorePos
   } catch {
@@ -6924,13 +7023,20 @@ function onRestoreTick() {
 function pauseMediaOnHide() {
   const v = video.value
   playingBeforeHide = !!(v && !v.paused && !v.ended)
-  posBeforeHide = v?.currentTime || 0
+  posBeforeHide = Math.max(v?.currentTime || 0, lastGoodPos)
+  bgLog(`hide(pause) paused=${v?.paused} ct=${(v?.currentTime || 0).toFixed(1)} pos=${posBeforeHide.toFixed(1)}`)
   flushProgress(true)
   pause()
 }
 
 function onVisibilityChange() {
   if (document.visibilityState !== 'hidden') {
+    const vv = video.value
+    bgLog(
+      `visible paused=${vv?.paused} ct=${(vv?.currentTime || 0).toFixed(1)} rd=${vv?.readyState} ` +
+      `posBeforeHide=${posBeforeHide.toFixed(1)} playingBeforeHide=${playingBeforeHide} ` +
+      `userPausedAgo=${userPausedAt ? Date.now() - userPausedAt : -1}`,
+    )
     bgKeepPlaying = false
     resumeAfterVisibility()
     /*
@@ -6964,10 +7070,19 @@ function onVisibilityChange() {
       !v.ended &&
       (!v.paused || Date.now() - lastPlayedAt < 3000)
     )
-    posBeforeHide = v?.currentTime || 0
+    /*
+     * ★ 取两者最大值：这时 currentTime 可能已经被内核重置成 0（iOS 先重置
+     * 再发 visibilitychange），只看元素会丢掉真实进度。
+     */
+    posBeforeHide = Math.max(v?.currentTime || 0, lastGoodPos)
     // 后台保播意图：只有"确实在播"才置位，用户自己暂停进后台的不要拉回来
     bgKeepPlaying = playingBeforeHide
     hiddenAt = Date.now()
+    bgLog(
+      `hidden paused=${v?.paused} ct=${(v?.currentTime || 0).toFixed(1)} ` +
+      `lastGood=${lastGoodPos.toFixed(1)} pos=${posBeforeHide.toFixed(1)} ` +
+      `rd=${v?.readyState} wantPlay=${bgKeepPlaying} userPausedAgo=${userPausedAt ? Date.now() - userPausedAt : -1}`,
+    )
     if (bgKeepPlaying) {
       notifyIosPlaying(true)
       /*
@@ -7007,8 +7122,13 @@ function reapplyMobileOrientation() {
  * 两次调用都幂等：`playingBeforeHide` 已复位、pseudoFs 已为真时直接返回。
  */
 function onIosActive() {
+  const vv = video.value
+  bgLog(
+    `ios-active paused=${vv?.paused} ct=${(vv?.currentTime || 0).toFixed(1)} ` +
+    `playingBeforeHide=${playingBeforeHide} userPausedAgo=${userPausedAt ? Date.now() - userPausedAt : -1}`,
+  )
   bgKeepPlaying = false
-  resumeAfterVisibility()
+  resumeAfterVisibility('ios-active')
   if (!isMobileForm()) return
   reapplyMobileOrientation()
   void restoreFsIntent()
@@ -7020,7 +7140,7 @@ function iosActiveBridge() {
 }
 
 /** 重新可见：把隐藏前正在播的续上（移动端后台保播 / TV 原生播放器返回） */
-function resumeAfterVisibility() {
+function resumeAfterVisibility(reason = 'visible') {
   const mobile = isMobileForm() && !isTvShell()
   if (!isTvEnv() && !mobile) return
   const v0 = video.value
@@ -7029,11 +7149,14 @@ function resumeAfterVisibility() {
    * 用户可能在后台用系统播放条暂停/恢复过，回前台进度同样不能丢
    *（2026-11-25 真机「进度无法带回」）。恢复窗口由 timeupdate 持续校正。
    */
-  if (v0 && !v0.ended) beginRestoreWindow()
+  if (v0 && !v0.ended) beginRestoreWindow(reason)
   if (!playingBeforeHide) return
   playingBeforeHide = false
   // 用户刚点过暂停：不要再替他播
-  if (userPausedAt && Date.now() - userPausedAt < 2000) return
+  if (userPausedAt && Date.now() - userPausedAt < 2500) {
+    bgLog('resume skipped: user paused recently')
+    return
+  }
   const v = video.value
   if (!v || v.ended) return
   // 系统暂停期间取流管线可能停在半路：先推 hls，再补 play
@@ -7046,7 +7169,10 @@ function resumeAfterVisibility() {
   }
   const retry = (delay: number) => {
     const id = window.setTimeout(() => {
-      if (userPausedAt && Date.now() - userPausedAt < 2000) return
+      if (userPausedAt && Date.now() - userPausedAt < 2500) {
+        bgLog(`resume retry(${delay}) skipped: user paused recently`)
+        return
+      }
       const el = video.value
       if (!el || el.ended) return
       /*
@@ -7054,6 +7180,7 @@ function resumeAfterVisibility() {
        * 这时拉回切后台时的位置；后台一直播的话 currentTime 已经更大，不会倒退。
        */
       if (isMobileForm() && !isTvShell()) applyRestoreSeek(el)
+      bgLog(`resume retry(${delay}) paused=${el.paused} ct=${el.currentTime.toFixed(1)} rd=${el.readyState}`)
       if (el.paused) safePlay(el)
     }, delay)
     resumeTimers.push(id)

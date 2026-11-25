@@ -58,25 +58,25 @@ describe('回前台续播 / 双击暂停', () => {
   })
 
   it('续播重试自身也要让位给刚发生的用户暂停', () => {
-    const fn = player.slice(player.indexOf('function resumeAfterVisibility()'))
-    expect(fn).toContain('Date.now() - userPausedAt < 2000')
+    const fn = player.slice(player.indexOf('function resumeAfterVisibility('))
+    expect(fn).toContain('Date.now() - userPausedAt < 2500')
     expect(fn).toContain('resumeTimers.push(id)')
   })
 
   it('进度兜底不依赖 playingBeforeHide（后台暂停过也要拉回）', () => {
-    const fn = player.slice(player.indexOf('function resumeAfterVisibility()'))
-    const restoreAt = fn.indexOf('beginRestoreWindow()')
+    const fn = player.slice(player.indexOf('function resumeAfterVisibility('))
+    const restoreAt = fn.indexOf('beginRestoreWindow(reason)')
     const earlyReturn = fn.indexOf('if (!playingBeforeHide) return')
     expect(restoreAt).toBeGreaterThan(-1)
     expect(earlyReturn).toBeGreaterThan(restoreAt)
   })
 
   it('回前台开 15s 恢复窗口，由 timeupdate/canplay 持续校正', () => {
-    expect(player).toContain('function beginRestoreWindow()')
+    expect(player).toContain('function beginRestoreWindow(')
     expect(player).toContain('restoreUntil = Date.now() + 15_000')
     expect(player).toContain('function applyRestoreSeek(')
     // 元数据没到不能 seek（会被内核丢掉）
-    expect(player).toContain('if (el.readyState < 1) return')
+    expect(player).toContain('if (el.readyState < 1) {')
     expect(player).toContain("addEventListener('loadedmetadata', onRestoreTick)")
     // onTimeUpdate 里也要跑（内核可能在我们判定"已到位"之后才重置）
     const tick = player.slice(player.indexOf('function onTimeUpdate()'))
@@ -87,13 +87,33 @@ describe('回前台续播 / 双击暂停', () => {
     expect(player).toContain('function clearRestoreWindow()')
     const down = player.slice(player.indexOf('function onStagePointerDown('))
     expect(down.slice(0, 300)).toContain('clearRestoreWindow()')
-    const toggle = player.slice(player.indexOf('function toggle()'), player.indexOf('function toggle()') + 1000)
+    const toggle = player.slice(player.indexOf('function toggle()'), player.indexOf('function toggle()') + 1300)
     expect(toggle).toContain('clearRestoreWindow()')
+  })
+
+  it('恢复窗口不因"当前位置看起来正常"提前关闭（内核会稍后才重置）', () => {
+    const fn = player.slice(player.indexOf('function applyRestoreSeek('), player.indexOf('function onRestoreTick()'))
+    const at = fn.indexOf('if (el.currentTime >= restorePos - 5)')
+    expect(at).toBeGreaterThan(-1)
+    // 这一支必须只 return，不能顺手关窗（否则内核稍后重置就没人管了）
+    const branch = fn.slice(at, at + 90)
+    expect(branch).not.toContain('clearRestoreWindow')
+  })
+
+  it('切后台的位置取 max(currentTime, lastGoodPos)：先重置再发 hidden 也能拿到', () => {
+    expect(player).toContain('posBeforeHide = Math.max(v?.currentTime || 0, lastGoodPos)')
+    expect(player).toContain('if (!v.paused && v.currentTime > lastGoodPos) lastGoodPos = v.currentTime')
+  })
+
+  it('双击暂停按"看起来在播"判断，不只信 paused', () => {
+    expect(player).toContain('function mediaLooksPlaying(')
+    const toggle = player.slice(player.indexOf('function toggle()'), player.indexOf('function toggle()') + 600)
+    expect(toggle).toContain('if (mediaLooksPlaying(v))')
   })
 
   it('用户刚暂停的 1.2s 内，任何 play 事件都被压回去（首次切回的媒体状态最乱）', () => {
     const play = player.slice(player.indexOf("addEventListener('play'"), player.indexOf("addEventListener('play'") + 900)
-    expect(play).toContain('Date.now() - userPausedAt < 1200')
+    expect(play).toContain('Date.now() - userPausedAt < 2500')
     expect(play).toContain('v.pause()')
   })
 })

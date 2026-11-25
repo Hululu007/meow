@@ -36,6 +36,7 @@ enum AudioSession {
 
     /// 页面播放状态。只记状态，不碰会话 —— 激活时机在 `appDidEnterBackground`。
     static func setPlaying(_ on: Bool) {
+        if wantPlayback != on { LaunchLog.write("audio setPlaying -> \(on)") }
         wantPlayback = on
     }
 
