@@ -121,6 +121,20 @@ iOS 要对齐这条，拆成两问：
 - **失败兜底**：载荷没打进包 / node 起不来 / 端口不通 → 只写日志，宿主继续用
   **内置弹幕源**（弹弹play 官方 + 6 个镜像）。弹幕功能不受影响。
 
+### 测试 IPA 直链（手动 dispatch）
+
+`_ios.yml` 的 `publish_test`（默认 false）勾选后，构建成功会把 IPA **覆盖上传**到独立的
+pre-release `ipa-test`，固定文件名、链接不变，可直接填进侧载商店：
+
+```
+https://github.com/upchr/meow/releases/download/ipa-test/Meow-unsigned-test.ipa
+```
+
+- 用 workflow 的 `GITHUB_TOKEN` 创建/更新 Release：该 token 触发的事件不会再生成工作流，
+  所以不会跑 sync-packages、不动 `packages.json`；
+- `nojvm` 变体与 `release-v*` 全量发版都不走这条通道，正式 Release 页不挂测试包；
+- 本地不需要下载再上传（省 144MB 往返）；需要深查再用 `gh run download`。
+
 ---
 
 ::: warning 以下为「落地契约」原文（2026-11-17 口径）
