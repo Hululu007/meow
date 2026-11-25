@@ -20,6 +20,29 @@ on:
         description: '版本号（留空读 client/package.json）'
         required: false
         type: string
+      # 手动入口按链勾选（2026-11-25 补）：以前 dispatch 写死 tv/pc/ios/plugins 全跑，
+      # 想单独验一条也做不到。默认 true = 保持原行为；全不勾会被 plan 判错。
+      # 不提供 fpk / release：fpk 走自己的 dispatch；建 Release 只允许 tag 触发。
+      tv:
+        description: 'TV APK'
+        required: false
+        type: boolean
+        default: true
+      pc:
+        description: 'PC 壳'
+        required: false
+        type: boolean
+        default: true
+      ios:
+        description: 'iOS IPA'
+        required: false
+        type: boolean
+        default: true
+      plugins:
+        description: 'PC 插件（4 个）'
+        required: false
+        type: boolean
+        default: true
       docker:
         description: '构建并推送 DockerHub 三镜像'
         required: false
@@ -95,9 +118,18 @@ jobs:
           set -euo pipefail
           set_out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            set_out tv true; set_out pc true; set_out ios true; set_out plugins true; set_out release false
+            set_out tv '${{ inputs.tv }}'; set_out pc '${{ inputs.pc }}'
+            set_out ios '${{ inputs.ios }}'; set_out plugins '${{ inputs.plugins }}'
+            set_out release false
             set_out plugins_only ''
             set_out docker '${{ inputs.docker }}'; set_out tvplugins '${{ inputs.tv_plugins }}'
+            # 全不勾 = 什么都没产出，直接判错，别让人等一个空 run
+            if [ '${{ inputs.tv }}' != "true" ] && [ '${{ inputs.pc }}' != "true" ] \
+               && [ '${{ inputs.ios }}' != "true" ] && [ '${{ inputs.plugins }}' != "true" ] \
+               && [ '${{ inputs.docker }}' != "true" ] && [ '${{ inputs.tv_plugins }}' != "true" ]; then
+              echo "::error::至少勾选一条链（tv / pc / ios / plugins / docker / tv_plugins）"
+              exit 1
+            fi
             exit 0
           fi
           TAG="${GITHUB_REF#refs/tags/}"
@@ -218,6 +250,9 @@ jobs:
     if: ${{ needs.plan.outputs.ios == 'true' }}
     uses: ./.github/workflows/_ios.yml
     with:
+      # 把 plan 解析出的版本传进去：IPA 的 CFBundleShortVersionString 以它为准
+      # （Info.plist 里那份由 bump-version 维护，双保险；漏 bump 也不会发错版本）
+      version: ${{ needs.plan.outputs.version }}
       sim: false
       nojvm: false
     secrets: inherit

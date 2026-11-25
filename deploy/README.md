@@ -384,7 +384,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/build-plugins
 | `plugins-v1.0.10`（示例） | plugins（**4 个 PC 插件**，Windows runner，无壳；tv-node 不在此链）；tag 可用插件批次版本 | ✅ draft | `plugins` | 5 min+ |
 | `docker-v1.0.10` | docker（三镜像推 Hub） | ❌ | — | 6 min |
 | `fpk-v1.0.10` | 另一 workflow：fpk plan + build(x86/arm) + **本 tag 的 draft Release**（补包用；全量 `release-v*` 会调它构建但包进主 Release） | ✅ draft（仅单链） | 不走 sync-packages；**Publish 后**写 FnDepot + fpk-updates | ~3m |
-| `workflow_dispatch`（release.yml） | tv/pc/**ios**/plugins 全跑（docker、tv_plugins 按勾选） | ❌ | — | 按勾选 |
+| `workflow_dispatch`（release.yml） | **按勾选**：tv / pc / ios / plugins / docker / tv_plugins（默认全 true；全不勾会被 plan 判错）。fpk 走自己的 dispatch，建 Release 只允许 tag | ❌ | — | 按勾选 |
 | `tv-verify-1.0.10` | 什么都不跑——前缀后不是数字 | ❌ | — | 0 |
 
 > **产物体积（1.2.22 实测；构建期按平台裁剪 guard-libs 后）**

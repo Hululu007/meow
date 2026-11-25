@@ -33,8 +33,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（必填，如 1.2.22）'
-        required: true
+        description: '版本号（留空读 client/package.json）'
+        required: false
         type: string
 
 jobs:
@@ -45,6 +45,21 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+
+      # 版本号统一在这里解析一次：workflow_call 必传；手动 dispatch 留空则读 package.json。
+      # 与 _docker / _pc_shell 的「解析版本」保持一致。
+      - name: 解析版本
+        id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          v='${{ inputs.version }}'
+          if [ -z "$v" ]; then
+            v=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' client/package.json | head -1)
+          fi
+          [ -n "$v" ] || { echo "读不到版本号" >&2; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "版本：$v"
 
       - uses: actions/setup-java@v4
         with:
@@ -154,7 +169,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          V="${{ inputs.version }}"
+          V="${{ steps.v.outputs.version }}"
           mkdir -p out
           cp client/apps/tv/app/build/outputs/apk/release/app-release.apk "out/meow-TV-$V.apk"
           ls -lh out/

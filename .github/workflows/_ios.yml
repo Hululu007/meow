@@ -10,6 +10,13 @@ name: _ios
 on:
   workflow_call:
     inputs:
+      # 可选覆盖 IPA 的 CFBundleShortVersionString（release.yml 传 plan 解析出的版本）。
+      # 留空 = 用 Info.plist 里由 bump-version 维护的版本。
+      version:
+        description: '版本号（留空用 Info.plist 里的 CFBundleShortVersionString）'
+        type: string
+        required: false
+        default: ''
       sim:
         description: 同时构建模拟器包并截图（约 +4 分钟）
         type: boolean
@@ -20,6 +27,11 @@ on:
         default: false
   workflow_dispatch:
     inputs:
+      version:
+        description: '版本号（留空用 Info.plist 里的 CFBundleShortVersionString）'
+        type: string
+        required: false
+        default: ''
       sim:
         description: 同时构建模拟器包并截图（约 +4 分钟）
         type: boolean
@@ -94,6 +106,18 @@ jobs:
             /usr/libexec/PlistBuddy -c "Set :MeowBuild $BUILD_ID" "$PLIST"
           /usr/libexec/PlistBuddy -c "Print :MeowBuild" "$PLIST"
           echo "$BUILD_ID" > client/apps/ios/build/build-id.txt
+
+      # 版本号与其它端同源：默认用 Info.plist 里的（bump-version 维护），
+      # release.yml 会把 plan 解析出的版本传进来 —— 这样即使漏 bump 了
+      # Info.plist，IPA 的 CFBundleShortVersionString 也跟 tag 一致。
+      - name: Stamp version into Info.plist
+        if: ${{ inputs.version != '' }}
+        run: |
+          set -euo pipefail
+          PLIST=client/apps/ios/Meow/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ inputs.version }}" "$PLIST"
+          echo -n "CFBundleShortVersionString="
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST"
 
       - name: Install XcodeGen
         run: brew install xcodegen

@@ -64,6 +64,12 @@ unicorn/keystone 等），构建期按目标 CPU 平台裁剪到 15~16MB，规�
 `workflow_dispatch`（勾 docker）或 `build-push-docker.ps1`；dispatch 不建 Release
 （`publish` 要求 push）。
 
+**`release.yml` 的手动 dispatch** 按六条链勾选（`tv` / `pc` / `ios` / `plugins` /
+`docker` / `tv_plugins`，默认全 true；全不勾会被 `plan` 直接判错）。它**不**提供
+`fpk`（走 `fpk.yml` 自己的 dispatch）和「建 Release」（只允许 tag 触发）。
+各子 CI 的 `version` 输入统一为「留空读 `client/package.json`」；`_ios` 传了 version
+时会覆盖 Info.plist 的 `CFBundleShortVersionString`。
+
 两条规则：**前缀后必须紧跟数字**（`tv-v[0-9]*`），`tv-verify-1.1.6` 不触发；**壳类 tag
 后缀必须等于 `client/package.json` 版本**，否则 `plan` 失败（`plugins-v*` / `tv-plugins-v*`
 例外）。
