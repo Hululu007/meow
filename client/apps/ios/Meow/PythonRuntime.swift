@@ -80,6 +80,7 @@ enum PythonRuntime {
         // C 扩展在 App.app/Frameworks/pyext（侧载器只对 Frameworks 递归签名；
         // 放 resources 里的 Mach-O 会因无签名 dlopen 失败）
         let pyext = Bundle.main.bundlePath + "/Frameworks/pyext"
+        let logPath = docs.appendingPathComponent("py.log")
         setenv("PYTHONHOME", home.path, 1)
         setenv("PYTHONPATH",
                pyext + ":"
@@ -92,10 +93,15 @@ enum PythonRuntime {
         setenv("PYRT_DRPY", "http://127.0.0.1:\(NodeBridge.drpyPort)", 1)
         setenv("PYRT_SCRIPTS", scripts.path, 1)
         setenv("PYTHONUNBUFFERED", "1", 1)
+        /*
+         * pyrt.py 用它兜底 sys.stdout/stderr：端内 CPython 默认不配置 C stdio，
+         * 流是 None 时第一次 print 就抛 AttributeError，且 traceback 无处可写。
+         * pyrt 的 __main__ 也会把致命异常直接写进这个文件。
+         */
+        setenv("MEOW_PY_LOG", logPath.path, 1)
         // 标记裁剪版运行时：pyrt 遇到 lxml/pyquery ImportError 时给出准确提示
         setenv("MEOW_PY_TRIM", "1", 1)
 
-        let logPath = docs.appendingPathComponent("py.log")
         // 每次启动保留上一轮的回溯（追加写），但别无限长：超过 64KB 直接重开
         if let attrs = try? fm.attributesOfItem(atPath: logPath.path),
            let sz = attrs[.size] as? NSNumber, sz.intValue > 64 * 1024 {

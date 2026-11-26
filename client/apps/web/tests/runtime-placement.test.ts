@@ -148,4 +148,18 @@ describe('设置页落点与横向溢出', () => {
     // 未知值只缓存 3 秒，不能让“启动时没探到”冻结 60 秒
     expect(api).toContain('RT_CAP_TTL_MS + 3_000L')
   })
+
+  it('端内 CPython 的流为空也不能让 pyrt 静默退出', () => {
+    const pyrt = read(join(ROOT, 'server', 'pyrt', 'pyrt.py'))
+    // Python-Apple-support 默认不配 C stdio：sys.stdout/stderr 可能是 None
+    expect(pyrt).toContain('_MEOW_PY_LOG')
+    expect(pyrt).toContain('if sys.stdout is None or sys.stderr is None')
+    expect(pyrt).toContain('[pyrt] fatal:')
+    expect(pyrt).toContain('except Exception:\n        pass')
+    // C 桥直接落异常类型/消息，不依赖 PyErr_Print
+    expect(cBridge).toContain('static void dump_py_error')
+    expect(cBridge).toContain('[meow-py] exception: %s: ')
+    expect(cBridge).toContain('dump_py_error(g_log)')
+    expect(pyRuntime).toContain('setenv("MEOW_PY_LOG"')
+  })
 })

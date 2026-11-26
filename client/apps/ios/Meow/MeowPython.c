@@ -17,6 +17,40 @@
 static char g_script[1024];
 static char g_log[1024];
 
+/*
+ * 把当前 Python 异常的类型/消息直接写到日志文件。
+ *
+ * 为什么不能只靠 PyErr_Print：端内 CPython 默认不配置 C stdio 时
+ * sys.stderr 是 None，PyErr_Print 什么都不写 —— 真机日志里只剩
+ * "[meow-py] pyrt exited with error"，完全看不到 ImportError 是哪一个。
+ * 这里用 PyErr_Fetch + PyObject_Str 自己取，写完再 Restore 让 PyErr_Print
+ * 照旧（stderr 可用时仍有完整 traceback）。
+ * 调用时 GIL 必须由当前线程持有（PyRun_FileExFlags 返回 FALSE 时满足）。
+ */
+static void dump_py_error(const char *path) {
+    if (!path || !*path) return;
+    PyObject *type = NULL, *value = NULL, *tb = NULL;
+    PyErr_Fetch(&type, &value, &tb);
+    PyErr_NormalizeException(&type, &value, &tb);
+    FILE *f = fopen(path, "a");
+    if (f) {
+        const char *tname = type ? ((PyTypeObject *) type)->tp_name : "?";
+        fprintf(f, "[meow-py] exception: %s: ", tname);
+        if (value) {
+            PyObject *s = PyObject_Str(value);
+            if (s) {
+                const char *msg = PyUnicode_AsUTF8(s);
+                if (msg) fprintf(f, "%s", msg);
+                Py_DECREF(s);
+            }
+        }
+        fprintf(f, "\n");
+        fflush(f);
+        fclose(f);
+    }
+    PyErr_Restore(type, value, tb);
+}
+
 static void *meow_py_thread(void *arg) {
     (void)arg;
     if (g_log[0]) {
@@ -46,7 +80,8 @@ static void *meow_py_thread(void *arg) {
     PyObject *res = PyRun_FileExFlags(fp, g_script, Py_file_input, globals, globals, 1, NULL);
     if (!res) {
         fprintf(stderr, "[meow-py] pyrt exited with error\n");
-        PyErr_Print(); // 已重定向到 g_log
+        dump_py_error(g_log); // stderr 为 None 时也能留下异常类型/消息
+        PyErr_Print();        // 已重定向到 g_log
     } else {
         Py_DECREF(res);
     }

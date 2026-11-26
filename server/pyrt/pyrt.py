@@ -22,7 +22,28 @@ import traceback
 import urllib.parse
 import urllib.request
 import warnings
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# ---------------------------------------------------------------------------
+# iOS 端内 CPython（Python-Apple-support）默认不配置 C stdio：sys.stdout /
+# sys.stderr 可能是 None。后果不是"日志少了"——第一次 print() 就抛
+# AttributeError，pyrt 起来即退出，而 PyErr_Print 也写不出任何东西
+# （真机实测 2026-11-26：py.log 里只有 "[meow-py] pyrt exited with error"，
+# 没有 traceback）。这里显式接到 MEOW_PY_LOG；其它端该变量为空且流本来可用，
+# 行为不变。
+# ---------------------------------------------------------------------------
+_MEOW_PY_LOG = os.environ.get("MEOW_PY_LOG", "")
+if sys.stdout is None or sys.stderr is None:
+    try:
+        _fallback_stream = open(_MEOW_PY_LOG or os.devnull, "a", buffering=1,
+                                 encoding="utf-8", errors="replace")
+    except Exception:
+        _fallback_stream = None
+    if sys.stdout is None:
+        sys.stdout = _fallback_stream
+    if sys.stderr is None:
+        sys.stderr = _fallback_stream if _fallback_stream is not None else sys.stdout
+
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: E402
 
 """
 vbox 客户端本身给 requests 打了「代理 + verify=False」补丁（上游逆向文档原文），
@@ -102,7 +123,11 @@ _seq = 0
 
 
 def log(*a):
-    print("[pyrt]", *a, flush=True)
+    # stdout 不可用时不要因为日志把服务本身带走（端内 CPython 的流是 None 的历史坑）
+    try:
+        print("[pyrt]", *a, flush=True)
+    except Exception:
+        pass
 
 
 def _fetch_remote(api):
@@ -534,4 +559,19 @@ def serve(port=None, scripts_dir=None, drpy_upstream=None):
 
 
 if __name__ == "__main__":
-    serve()
+    try:
+        serve()
+    except KeyboardInterrupt:
+        raise
+    except BaseException:
+        # 端内 CPython 的 stderr 可能不可用（见文件头的流兜底）；这里再直接
+        # 往 MEOW_PY_LOG 写一份 traceback，保证真机失败时一定留得下原因。
+        if _MEOW_PY_LOG:
+            try:
+                with open(_MEOW_PY_LOG, "a", encoding="utf-8", errors="replace") as _f:
+                    _f.write("[pyrt] fatal:\n")
+                    traceback.print_exc(file=_f)
+                    _f.flush()
+            except Exception:
+                pass
+        raise
