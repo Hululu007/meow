@@ -97,7 +97,7 @@ function Build-Entries([string]$Old, [string]$New, [int]$OldCode, [int]$NewCode)
     #    「维护 → 调试」显示的版本也跟着错）。
     $list += ,@('client\apps\ios\Meow\Info.plist', {
         param($t)
-        $t -replace ("(<key>CFBundleShortVersionString</key>\s*<string>)" + [regex]::Escape($script:Old) + "(</string>)"), "`$1$script:New`$2"
+        $t -replace ("(<key>CFBundleShortVersionString</key>\s*<string>)" + [regex]::Escape($script:Old) + "(</string>)"), ('${1}' + $script:New + '${2}')
     })
     return $list
 }
