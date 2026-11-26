@@ -73,7 +73,10 @@ jobs:
       pc: ${{ steps.scope.outputs.pc }}
       ios: ${{ steps.scope.outputs.ios }}
       plugins: ${{ steps.scope.outputs.plugins }}
-      plugins_only: ${{ steps.scope.outputs.plugins_only }}
+      # release 全量走 buildset（apiserver + 有改动的插件）；单链沿用 scope 的值
+      plugins_only: ${{ steps.buildset.outputs.plugins_only || steps.scope.outputs.plugins_only }}
+      # 本次实际构建的插件（守卫 id），供 publish 的版本守卫使用
+      guard: ${{ steps.buildset.outputs.guard }}
       docker: ${{ steps.scope.outputs.docker }}
       tvplugins: ${{ steps.scope.outputs.tvplugins }}
       release: ${{ steps.scope.outputs.release }}
@@ -143,6 +146,57 @@ jobs:
             docker-v[0-9]*)     set_out tv false; set_out pc false; set_out ios false; set_out plugins false; set_out docker true;  set_out tvplugins false; set_out release false; set_out plugins_only '' ;;
             *) echo "::error::无法识别的 tag：$TAG"; exit 1 ;;
           esac
+
+      # ★ release 全量只构建「后端 + 有源码改动的插件」，未改动的从上一版 Release 继承
+      #   （2026-11-26 用户口径：插件/模块基本不变更，不该每版重发 150MB）。
+      #   继承源缺失（如新插件 pyrt 从未进过任何 Release）时自动加入构建，保证自包含。
+      - name: 计算构建范围（release 全量）
+        id: buildset
+        if: startsWith(github.ref, 'refs/tags/release-v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          OUT="$(./deploy/scripts/detect-changed-plugins.sh "$GITHUB_REF_NAME")"
+          CHANGED="$(printf '%s\n' "$OUT" | sed -n 's/^changed=//p')"
+          PREV="$(printf '%s\n' "$OUT" | sed -n 's/^prev=//p')"
+          # PC 插件链（tv-node / tv-python 归 tv-plugins 链，不在这里构建）
+          PCS=""
+          for id in $(echo "$CHANGED" | tr ',' ' '); do
+            case "$id" in tv-node|tv-python) continue ;; esac
+            case ",$PCS," in *",$id,"*) continue ;; esac
+            PCS="${PCS:+$PCS,}$id"
+          done
+          # 继承源检查：上一版正式 Release 里没有该插件资产 → 必须本次构建
+          ASSETS=""
+          if [ -n "$PREV" ]; then
+            ASSETS="$(gh release view "$PREV" --json assets -q '.assets[].name' 2>/dev/null || true)"
+          fi
+          asset_prefix() {
+            case "$1" in
+              danmu) echo danmu-api ;;
+              *)     echo "$1" ;;
+            esac
+          }
+          for id in danmu drpy ffmpeg pyrt; do
+            case ",$PCS," in *",$id,"*) continue ;; esac
+            p="$(asset_prefix "$id")"
+            if [ -n "$ASSETS" ] && printf '%s\n' "$ASSETS" | grep -q "^${p}-"; then continue; fi
+            echo "::notice::${id} 在 ${PREV:-上一版} 里没有资产，本次强制构建"
+            PCS="${PCS:+$PCS,}$id"
+          done
+          ONLY="apiserver${PCS:+,$PCS}"
+          # 守卫只看本次真的构建的插件（apiserver 版本跟壳走，守卫内会跳过）
+          GUARD=""
+          for id in $(echo "$ONLY" | tr ',' ' '); do
+            [ "$id" = apiserver ] && continue
+            g="$id"; [ "$id" = danmu ] && g="danmu-api"
+            GUARD="${GUARD:+$GUARD,}$g"
+          done
+          echo "plugins_only=$ONLY" >> "$GITHUB_OUTPUT"
+          echo "guard=$GUARD" >> "$GITHUB_OUTPUT"
+          echo "构建范围：$ONLY（自 ${PREV:-无} 起改动：${CHANGED:-无}）"
 
   web:
     name: Web dist
@@ -348,6 +402,47 @@ jobs:
           if find upload -type f \( -name 'spider*.jar' -o -name 'config.sites.json' -o -name 'node-payload-danmu.zip' \) | grep -q .; then
             echo "::error::公开 Release 里出现源包文件"; exit 1
           fi
+      # ★ 继承上一版资产（2026-11-26）：release 全量只构建壳 + 后端 + 有改动的插件，
+      #   未改动的插件/运行时模块从上一个正式 Release 原样复制，保证 Release 自包含。
+      #   判断按「资产前缀」：upload/ 里已有同前缀 = 本次构建过，不覆盖
+      #   （版本号不同，文件名不会同名；同前缀不同版本时保留本次的新文件）。
+      - name: 继承上一版资产（本次未构建的插件/模块）
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PREV=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            -q '[.[] | select(.draft == false and .prerelease == false and (.tag_name|startswith("release-v")))]
+                | sort_by(.created_at) | .[-1].tag_name' 2>/dev/null || true)
+          if [ -z "${PREV:-}" ]; then echo "::warning::找不到上一版正式 Release，跳过继承"; exit 0; fi
+          echo "继承源：$PREV"
+          prefix_of() {
+            case "$1" in
+              tv-node-*)   echo tv-node ;;
+              tv-python-*) echo tv-python ;;
+              danmu-api-*) echo danmu-api ;;
+              apiserver-*) echo apiserver ;;
+              drpy-*)      echo drpy ;;
+              ffmpeg-*)    echo ffmpeg ;;
+              pyrt-*)      echo pyrt ;;
+              node-*)      echo node ;;
+              *)           echo "" ;;
+            esac
+          }
+          while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            p="$(prefix_of "$name")"
+            [ -n "$p" ] || continue
+            if compgen -G "upload/${p}-*" >/dev/null 2>&1; then
+              echo "本次已构建 ${p}，跳过 $name"
+              continue
+            fi
+            echo "继承 $name"
+            gh release download "$PREV" -p "$name" -D upload/ --clobber
+          done < <(gh release view "$PREV" --json assets -q '.assets[].name')
+          ls -la upload
+
       - name: 生成 SHA256
         shell: bash
         working-directory: upload
@@ -410,7 +505,7 @@ jobs:
         shell: pwsh
         run: |
           ./deploy/scripts/check-plugin-versions.ps1 `
-            -ChangedIds '${{ steps.changed.outputs.changed }}' `
+            -ChangedIds '${{ needs.plan.outputs.guard }}' `
             -Version '${{ needs.plan.outputs.version }}' `
             -BaselinePath 'baseline-packages.json'
 

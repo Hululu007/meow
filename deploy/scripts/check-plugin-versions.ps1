@@ -81,6 +81,13 @@ function Get-CurrentUnitVersion([string]$id) {
                 if ($m.Success) { return $m.Groups[1].Value }
             }
         }
+        'pyrt' {
+            # 2026-11-26 补：pyrt 首次进 Release 后才有基线条目，之后改 pyrt 必须升版本
+            $p = Join-Path $root 'server\plugin-manifests\pyrt.manifest.json'
+            if (Test-Path $p) {
+                return [string](([IO.File]::ReadAllText($p, [Text.Encoding]::UTF8) | ConvertFrom-Json).version)
+            }
+        }
     }
     return ''
 }
