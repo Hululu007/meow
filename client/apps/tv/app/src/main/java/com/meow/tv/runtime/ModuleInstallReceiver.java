@@ -26,6 +26,30 @@ public class ModuleInstallReceiver extends BroadcastReceiver {
         try {
             String pkg = intent.getData() == null
                     ? "" : intent.getData().getSchemeSpecificPart();
+
+            /*
+             * Python 模块装/卸：重启 PythonService 让它重跑 boot。
+             *
+             * 不需要提前解绑：PythonService 没绑定（主进程只用它），而且
+             * boot 里会自己 bind 模块侧的 PyService。装之前 boot 早就因为
+             * "运行时模块未安装"退出了，这里 startService 会让 ensureWorker
+             * 重开线程、这次能真正拉起 pyrt。
+             */
+            if (RuntimeModuleHost.PYTHON_PACKAGE.equals(pkg)) {
+                android.util.Log.i("MeowPy", "module " + intent.getAction()
+                        + ", restarting PythonService");
+                final Context pyApp = ctx.getApplicationContext();
+                pyApp.stopService(new Intent(pyApp, PythonService.class));
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    try {
+                        com.meow.tv.GatewayServer.startPythonRuntime(pyApp);
+                    } catch (Throwable t) {
+                        android.util.Log.w("MeowPy", "restart after install failed: " + t);
+                    }
+                }, 1500);
+                return;
+            }
+
             if (!RuntimeModuleHost.NODE_PACKAGE.equals(pkg)) return;
             android.util.Log.i("MeowNode", "module " + intent.getAction() + ", restarting :node");
 

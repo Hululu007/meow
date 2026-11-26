@@ -580,6 +580,48 @@ if (($scope -contains 'meow-tv') -or ($scope -contains 'tv-module')) {
         $packages[$id] = $entry
         Write-Host "  $id  <- $($a.name)" -ForegroundColor Green
     }
+
+    # ---------------------------------------------------------------- TV Python 模块
+    #
+    # 资产名 tv-python-<flavor>-<ver>.apk，flavor 是 Chaquopy 的变体名
+    # （arm64 / v7a），**不是完整 ABI**。而 platform 必须写完整 ABI
+    # （android-arm64-v8a / android-armeabi-v7a）—— 客户端按
+    # Build.SUPPORTED_ABIS 硬匹配，写成 flavor 名一条都选不中。
+    #
+    # 没有 x86_64：Chaquopy 只给了 arm64/v7a 两个 flavor。x86_64 设备
+    # （MuMu 等）靠 abilist 里的 arm64-v8a 走 ARM 翻译，所以只发这两条。
+    #
+    # 版本是三段 semver（0.1.0），与 tv-node 的四段不同，正则分开写。
+    foreach ($pair in @(@('arm64', 'arm64-v8a'), @('v7a', 'armeabi-v7a'))) {
+        $flavor = $pair[0]
+        $abi = $pair[1]
+        $id = "tv-python-$abi"
+        $a = Find-Asset "tv-python-$flavor-*.apk"
+        if (-not $a) {
+            Write-Host "  · $id：本次无资产，保留原条目" -ForegroundColor DarkGray
+            continue
+        }
+        $v = if ($a.name -match "tv-python-$flavor-(\d+\.\d+\.\d+)\.apk") {
+            $Matches[1]
+        } elseif ($existing -and $existing.packages.$id) {
+            $existing.packages.$id.version
+        } else { '0.0.0' }
+
+        $entry = New-Entry $a $v @("android-$abi") $id -Notes "TV Python 运行时 $abi $v"
+        $entry.display_name = 'Python 运行时'
+        $entry.min_app_version = '1.1.0'
+        $entry.min_sdk = 26
+        # 只有真需要 .py 源的人会装它（~20MB），默认在设置页折叠区可见但不强推
+        $entry.hidden = $false
+        if ($existing -and $existing.packages.$id) {
+            $old = $existing.packages.$id
+            if ($null -ne $old.hidden) { $entry.hidden = $old.hidden }
+            if ($old.display_name) { $entry.display_name = $old.display_name }
+            if ($old.desc) { $entry.desc = $old.desc }
+        }
+        $packages[$id] = $entry
+        Write-Host "  $id  <- $($a.name)" -ForegroundColor Green
+    }
 }
 
 # ---------------------------------------------------------------- 清单自检
