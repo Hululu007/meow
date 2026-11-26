@@ -1480,9 +1480,23 @@ function onStagePointerMove(e: PointerEvent) {
   e.preventDefault()
 }
 
+/**
+ * 音量手势期间临时接管音量 UI（见播放页同名函数：常驻挂会把系统音量条也压掉）。
+ */
+let volHudTimer: number | undefined
+function pulseVolumeHud() {
+  setIosVolumeHud(true)
+  if (volHudTimer) clearTimeout(volHudTimer)
+  volHudTimer = window.setTimeout(() => {
+    volHudTimer = undefined
+    setIosVolumeHud(false)
+  }, 1200)
+}
+
 /** 把当前手势值写进系统（拿不到系统接口时退回元素音量 / 遮罩压暗） */
 function applySwipe(kind: 'volume' | 'brightness', pct: number) {
   if (kind === 'volume') {
+    pulseVolumeHud()
     const ok = setSystemVolume(pct)
     if (!ok) {
       // 浏览器/PC：退回元素音量（至少能调，只是不影响系统）
@@ -2415,8 +2429,6 @@ onMounted(() => {
   void load()
   // iOS：直播页关掉原生边缘返回手势（横滑/全屏手势会抢），离开时恢复
   setIosNavGesture(false)
-  // 直播页竖滑调音量：同样接管音量 UI（离开时摘掉，恢复系统 HUD）
-  setIosVolumeHud(true)
   // ★ 挂载就把「5 秒后收起控制栏」的计时排上（2026-11-12）：
   //   原来只有 wake() 被调用过才计时，冷启动进直播页 showCtrl 一直是 true，
   //   底栏和左上角返回键都常驻在画面上。
@@ -2459,6 +2471,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   // 恢复原生边缘返回手势（直播页里是关掉的）
   setIosNavGesture(true)
+  if (volHudTimer) clearTimeout(volHudTimer)
   setIosVolumeHud(false)
   // 先停媒体再拆 hls（见 stopMedia 的说明）
   if (bufWatchdogTimer) { clearInterval(bufWatchdogTimer); bufWatchdogTimer = undefined }
