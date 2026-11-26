@@ -459,7 +459,10 @@ class Handler(BaseHTTPRequestHandler):
                 "py": True,
                 "js": bool(os.environ.get("PYRT_DRPY", "").strip()),
             }
-            self._send(200, json.dumps(caps).encode("utf-8"))
+            # ★ 必须紧凑分隔符：插件健康检查是按 contains('"ok":true') 判活的，
+            #   json.dumps 默认带空格（"ok": true）会判死 → 启动 20s 超时后回滚
+            #   （2026-11-26 实测：pyrt 插件装上就「启动失败」，手跑却正常）。
+            self._send(200, json.dumps(caps, separators=(",", ":")).encode("utf-8"))
         else:
             self._send(404, b'{"code":-1,"msg":"not found"}')
 

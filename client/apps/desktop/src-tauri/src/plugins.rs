@@ -423,10 +423,18 @@ impl PluginManager {
         };
 
         let mut cmd = Command::new(&exe);
+        // ★ stderr 落盘（2026-11-26）：以前是 NUL，插件启动失败时一点线索都没有
+        //   （pyrt「启动超时」只能靠手跑猜、猜了半小时）。文件在插件目录下 <id>.stderr.log。
+        let stderr_sink = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join(format!("{}.stderr.log", manifest.id)))
+            .map(std::process::Stdio::from)
+            .unwrap_or_else(|_| std::process::Stdio::null());
         cmd.args(&args)
             .current_dir(&work_dir)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stderr(stderr_sink);
         // 环境变量同样支持占位。danmu_api 的端口走 DANMU_API_PORT 而不是命令行。
         for (k, v) in &manifest.env {
             let val = v
