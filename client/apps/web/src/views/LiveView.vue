@@ -151,7 +151,8 @@ const video = ref<HTMLVideoElement | null>(null)
 const hls = shallowRef<Hls | null>(null)
 /** 播放器容器（全屏对象是它，不是 video —— 控制栏要一起进全屏） */
 const stage = ref<HTMLElement | null>(null)
-const fullscreen = ref(false)
+/** 初值读一次 document：可能进这一页时全屏已经在（与 VideoPlayer 同一个坑） */
+const fullscreen = ref(typeof document !== 'undefined' && !!document.fullscreenElement)
 /** 真全屏 API 不可用时的兜底：容器撑满视口 */
 const pseudoFs = ref(false)
 /**
@@ -249,6 +250,23 @@ async function tryLandscape() {
     shellSetOrientation('landscape')
   }
   await lockLandscapeQuietly()
+}
+
+/**
+ * 竖屏提示上的「全屏观看」：一步到位（真全屏 + 锁横屏），与点播播放器同款。
+ *
+ * <p>原来这里只调 `tryLandscape()`，在支持元素全屏的 WebView（飞牛 App 的
+ * flutter_inappwebview）里只转了方向、App 自绘的标题栏还在，用户点完仍觉得
+ * "没全屏"（2026-11-26 MuMu 实测 `fullscreenEnabled === true`）。已在伪全屏时
+ * 保留原来的转方向行为。
+ */
+async function enterFullscreenFromHint() {
+  dismissPortraitHint()
+  if (document.fullscreenElement || pseudoFs.value) {
+    await tryLandscape()
+    return
+  }
+  await toggleFullscreen()
 }
 
 /** 竖屏提示（横屏锁定失败时的兜底，与点播同文案） */
@@ -2945,9 +2963,9 @@ onBeforeUnmount(() => {
               <div class="mt-5 flex items-center justify-center gap-2">
                 <button
                   class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent transition hover:bg-accent-dim"
-                  @click="tryLandscape(); portraitHint = false"
+                  @click="enterFullscreenFromHint"
                 >
-                  尝试横屏
+                  全屏观看
                 </button>
                 <button
                   class="rounded-md bg-white/10 px-4 py-2 text-sm text-ink-2 transition hover:bg-white/16"

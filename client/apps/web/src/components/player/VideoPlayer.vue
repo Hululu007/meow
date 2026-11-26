@@ -644,7 +644,13 @@ const showCtrl = ref(true)
 /** TV 返回键的两段提示（第一次只弹提示不暂停，2.5 秒内再按才真的退出） */
 const backHint = ref('')
 let backHintTimer: number | undefined
-const fullscreen = ref(false)
+/*
+ * ★ 初值必须读一次 document —— 本页可能是"详情页点播放时就已经进了全屏"
+ * （飞牛 App 里 `DetailView.play()` 就是这么做的）。只写 `ref(false)` 的话，
+ * 进来时全屏已经在 document 上，`fullscreenchange` 不会为这个实例再触发，
+ * 于是按钮显示"进入全屏"、CSS 伪横屏（rotFs）也不生效 —— 2026-11-26 实测踩过。
+ */
+const fullscreen = ref(typeof document !== 'undefined' && !!document.fullscreenElement)
 const errorMsg = ref('')
 const rate = ref(getPrefs().rate || 1)
 /** 首次载入中（用于避免一进来就显示"已暂停"的浮层） */
@@ -4303,6 +4309,38 @@ const isFsUi = computed(
 )
 
 /**
+ * 竖屏视口里把播放器硬转 90°（CSS 伪横屏）。
+ *
+ * <p><b>为什么需要</b>：飞牛 App 的 `MainActivity` 被 App 自己锁成竖屏
+ * （2026-11-26 `dumpsys activity` 读到 `requestedOrientation=SCREEN_ORIENTATION_PORTRAIT`），
+ * 所以 `screen.orientation.lock('landscape')` 必然失败、用户转手机也不会转。
+ * 全屏后画面只能在竖屏里居中留黑边，只能把容器转 90° 才铺满。
+ *
+ * <p><b>为什么是转元素而不是换算坐标</b>：浏览器按变换后的矩阵做命中测试，
+ * 控件、拖动、点击全部自动正确；弹幕 canvas 用 `container.clientWidth`
+ * （布局尺寸，不受 transform 影响）取宽高，转完拿到的就是"横过来的"尺寸，
+ * 不需要改绘制代码。
+ */
+const rotFs = computed(
+  () => isFnosAppWebView() && (fullscreen.value || pseudoFs.value) && !landscapeViewport.value,
+)
+const rotStyle = computed<Record<string, string> | undefined>(() =>
+  rotFs.value
+    ? {
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        width: '100vh',
+        height: '100vw',
+        transformOrigin: 'top left',
+        // 业界通用写法：先转 90°，再沿自身 Y 轴把盒子推回可视区
+        transform: 'rotate(90deg) translateY(-100%)',
+        zIndex: '100',
+      }
+    : undefined,
+)
+
+/**
  * 全屏播放的空闲光标：3 秒不动就隐藏，任何指针活动立刻恢复。
  *
  * <p>为什么不能只靠 CSS `cursor: none`：WebView2 的全屏合成场景里样式层
@@ -7631,6 +7669,7 @@ defineExpose({
     ref="wrap"
     class="meow-player-root group relative h-full w-full select-none overflow-hidden bg-black"
     :class="pseudoFs ? 'fixed inset-0 z-[100] h-full w-full' : ''"
+    :style="rotStyle"
     @mousemove="wake"
     @pointermove.passive="noteCursorActivity"
     @pointerdown.passive="noteCursorActivity"
