@@ -12762,8 +12762,21 @@ public class ApiServer {
             }
 
             String baseUrl = current.substring(0, current.lastIndexOf('/') + 1);
-            // 分片改写必须带外部可达的绝对前缀，否则播放器会把它拼到源站域名上
-            String selfBase = baseUrlFor(ex);
+            /*
+             * 子清单/分片一律改写成「以 / 开头的路径」，由播放器按清单自身 URL 解析。
+             *
+             * 不能拼外部绝对基址：基址只能靠 Host/Referer/X-Forwarded-Proto 猜，而飞牛
+             * App 走外网访问中继时三者互相矛盾——实测 Host 被改写成内网 IP
+             * （192.168.1.20）、X-Forwarded-Proto 写 http，Referer 却还是
+             * https://office.xxx:58223/。猜错的结果是 http://192.168.1.20/app/meow/…
+             * 打到 80 端口（无人监听），症状是 master 200、子清单/分片一条都不发
+             * （hls.js levelLoadError），PC 浏览器走局域网 http 却正常。
+             *
+             * 只取网关注入的 X-Forwarded-Prefix：直连 30010 → /api/proxy/stream?…，
+             * 网关 → /app/meow/api/proxy/stream?…；协议/域名/端口全继承清单 URL，
+             * https 页面也就不会再拿到 http 子地址。
+             */
+            String selfBase = forwardedPrefix(ex);
 
             PlaylistOut po = buildProxiedPlaylist(text, baseUrl, referer, ua, selfBase,
                     extraHeaders, null);
@@ -13223,9 +13236,23 @@ public class ApiServer {
             applyProbeHeaders(c, header);
             int code = c.getResponseCode();
             long ms = System.currentTimeMillis() - t0;
-            boolean ok = code >= 200 && code < 400;
+            // 416 = 资源在、只是 Range 起点过了文件尾，照样算活着
+            boolean ok = (code >= 200 && code < 400) || code == 416;
             out.put("ok", ok).put("state", ok ? "ok" : "dead")
                     .put("status", code).put("ms", ms);
+            sendJson(ex, 200, out.toString());
+        } catch (java.net.SocketTimeoutException te) {
+            /*
+             * 超时 ≠ 死链（2026-11-26 .34 实测：同源偶尔 20% 起播失败）。
+             *
+             * 日志里 `/api/line/probe` 有 7–8 秒的样本：移动网络/并发拉分片时，
+             * 2 秒的 connect/read 超时会被**本来可用**的线路撞上。判 dead 就会
+             * 触发"线路不可用，已切换"，几条线同时慢就是全灭 —— 用户感知是
+             * "同一个源偶尔播不了"。判 unknown，前端照常播放，真死了让播放器报错。
+             */
+            long ms = System.currentTimeMillis() - t0;
+            out.put("ok", true).put("state", "unknown").put("ms", ms)
+                    .put("reason", "timeout");
             sendJson(ex, 200, out.toString());
         } catch (Exception e) {
             long ms = System.currentTimeMillis() - t0;
