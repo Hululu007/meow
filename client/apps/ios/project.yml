@@ -52,8 +52,9 @@ targets:
       # C 扩展模块必须进 Frameworks（侧载器只给它递归签名），见 prepare 脚本
       - path: build/python/extensions
         type: folder
-        buildPhase: copyFiles
-        destination: frameworks
+        buildPhase:
+          copyFiles:
+            destination: frameworks
       - path: build/config.sites.example.json
         buildPhase: resources
     dependencies:
