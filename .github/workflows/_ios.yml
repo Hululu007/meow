@@ -155,6 +155,60 @@ jobs:
       - name: Prepare OpenJDK 9 Zero + libOpenJDK.a
         run: bash client/apps/ios/scripts/prepare-runtime.sh
 
+      # Phase 1：裁掉运行期不用的工具链/CORBA/WS/JAXB 模块（modules 133→91MB）。
+      # 必须用 JDK 9 的 jlink 读 iOS bundle 里的 jmods；runner 是 arm64 时
+      # 用系统自带的 Rosetta 跑 Zulu 9 x64（jlink 是普通 Java 程序，只做打包）。
+      - name: Cache JDK 9 (jlink)
+        uses: actions/cache@v4
+        with:
+          path: client/apps/ios/build/jdk9
+          key: ios-jdk9-zulu-macos-x64-v1
+
+      - name: Trim OpenJDK modules (Phase 1)
+        run: |
+          set -euo pipefail
+          JDKROOT=client/apps/ios/build/jdk9
+          if [ ! -d "$JDKROOT" ] || ! find "$JDKROOT" -path '*/Contents/Home/bin/jlink' | grep -q .; then
+            rm -rf "$JDKROOT"; mkdir -p "$JDKROOT"
+            curl -fL --retry 3 --retry-delay 3 \
+              -o /tmp/zulu9.tgz \
+              "https://cdn.azul.com/zulu/bin/zulu9.0.7.1-ca-jdk9.0.7-macosx_x64.tar.gz"
+            tar xzf /tmp/zulu9.tgz -C "$JDKROOT" --strip-components=1
+          fi
+          JLINK_REAL="$(find "$JDKROOT" -path '*/Contents/Home/bin/jlink' | head -1)"
+          [ -x "$JLINK_REAL" ] || { echo "JDK9 jlink 缺失" >&2; exit 1; }
+
+          BIN=/tmp/jdk9x; mkdir -p "$BIN"
+          if [ "$(uname -m)" = "arm64" ]; then
+            printf '#!/bin/sh\nexec arch -x86_64 "%s" "$@"\n' "$JLINK_REAL" > "$BIN/jlink"
+            printf '#!/bin/sh\nexec arch -x86_64 "%s" "$@"\n' "$(dirname "$JLINK_REAL")/jimage" > "$BIN/jimage"
+          else
+            ln -sf "$JLINK_REAL" "$BIN/jlink"
+            ln -sf "$(dirname "$JLINK_REAL")/jimage" "$BIN/jimage"
+          fi
+          chmod +x "$BIN/jlink" "$BIN/jimage"
+
+          TAR=client/apps/ios/build/cache/openjdk9-ios.tar.gz
+          [ -f "$TAR" ] || { echo "缺 $TAR（prepare-runtime 未跑）" >&2; exit 1; }
+          OUT=/tmp/openjdk-trim
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          bash client/apps/ios/scripts/trim-java-modules.sh "$TAR" "$BIN/jlink" "$OUT/modules"
+          cp "$OUT/modules" client/apps/ios/build/openjdk/lib/modules
+          echo "[trim] applied $(du -h client/apps/ios/build/openjdk/lib/modules | cut -f1)"
+
+          # 门禁：模块数 + 关键模块 + 体积。用 runner 的 jimage（17 能读 9 的 jimage）
+          M=client/apps/ios/build/openjdk/lib/modules
+          JIMAGE="$(dirname "$(command -v java)")/jimage"
+          "$JIMAGE" list "$M" > /tmp/mods.txt
+          N=$(grep -c '^Module: ' /tmp/mods.txt)
+          [ "$N" -eq 56 ] || { echo "模块数 $N != 56" >&2; exit 1; }
+          for m in java.base java.logging java.xml java.security.jgss jdk.httpserver \
+                   java.sql java.naming java.scripting java.desktop jdk.localedata \
+                   jdk.crypto.ec jdk.charsets jdk.zipfs jdk.unsupported; do
+            grep -qx "Module: $m" /tmp/mods.txt || { echo "缺模块 $m" >&2; exit 1; }
+          done
+          [ "$(stat -f%z "$M")" -lt 110000000 ] || { echo "modules 仍然过大" >&2; exit 1; }
+
       # 端内 Node 运行时（nodejs-mobile，52MB 动态库）+ 弹幕载荷（danmu_api，~40MB）
       # + JS 源载荷（drpy，裁后 ~7.4MB）
       - name: Cache node runtime + payloads
@@ -292,6 +346,14 @@ jobs:
             echo "ERROR: pyext 的 ad-hoc 签名在打包后失效" >&2
             exit 1
           fi
+          # Phase 1 裁减后的 modules 必须 <110MB（原版 133MB）。防止 trim 步骤被跳过/
+          # 产物没覆盖进 App，却仍然发了一个“以为裁过”的包。
+          MOD_BYTES=$(stat -f%z "$APP/openjdk/lib/modules")
+          if [ "$MOD_BYTES" -ge 110000000 ]; then
+            echo "ERROR: openjdk/lib/modules 仍是完整版（$MOD_BYTES B），trim 没生效" >&2
+            exit 1
+          fi
+          echo "openjdk modules: $MOD_BYTES bytes"
           echo "ipa bytes: $(stat -f%z "$GITHUB_WORKSPACE/artifacts/$IPA_NAME")"
           # 包里到底装了什么：条目数 / 体积 / 构建标识，闪退排查时先对这三个数
           echo "== bundle inventory =="

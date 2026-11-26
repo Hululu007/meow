@@ -109,6 +109,12 @@ bash scripts/trim-java-modules.sh \
 IPA 回滚直接重装 `ipa-test` 上的完整包（`Meow-unsigned-test.ipa`，发布记录里带 sha256）。
 裁减产物（90MB）不入库，只由脚本生成。
 
+**CI 接线**：`_ios.yml` 的 `Trim OpenJDK modules (Phase 1)` 在 `prepare-runtime.sh` 之后运行。
+runner 是 arm64 时用系统 Rosetta 跑 Zulu 9 x64 的 `jlink`（缓存 key `ios-jdk9-zulu-macos-x64-v1`），
+生成后覆盖 `build/openjdk/lib/modules`，并做门禁：模块数必须 56、关键模块必须在、
+raw size < 110MB；IPA 打包后再检查一次 `openjdk/lib/modules` 体积。
+trim 步骤失败会让 CI 红，不会静默发完整包。恢复=删除该 step（或整段 JDK9 cache/run）。
+
 ## 已知风险 / 待验证
 
 1. **JDK 9 静态库是 2020 年的构建**（Oct4Pie/lib-openjdk-9-ios）。它能在
