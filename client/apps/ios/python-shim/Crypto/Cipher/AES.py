@@ -168,3 +168,113 @@ def new(key, mode, iv=None, nonce=None, **kwargs):
     if nonce is not None:
         raise NotImplementedError('AES nonce/CTR/GCM is not available on iOS (use remote pyrt)')
     return _AESCipher(key, mode, iv)
+
+
+# ---------------------------------------------------------------- GCM / CTR
+MODE_CFB = 3
+MODE_OFB = 5
+MODE_CTR = 6
+MODE_GCM = 11
+
+
+def _xor(a, b):
+    return bytes(x ^ y for x, y in zip(a, b))
+
+
+def _ghash_mul(x, y):
+    """GF(2^128) 乘法（GCM 的 GHASH），按位实现，数据量小足够用。"""
+    z = 0
+    v = y
+    r = 0xE1 << 120
+    for i in range(127, -1, -1):
+        if (x >> i) & 1:
+            z ^= v
+        if v & 1:
+            v = (v >> 1) ^ r
+        else:
+            v >>= 1
+    return z
+
+
+def _ghash(h, data):
+    y = 0
+    for i in range(0, len(data), 16):
+        blk = data[i:i + 16].ljust(16, b'\x00')
+        y = _ghash_mul(y ^ int.from_bytes(blk, 'big'), h)
+    return y
+
+
+class _GCM(object):
+    """pycryptodome 风格的 GCM 子集：update / encrypt_and_digest / decrypt_and_verify。"""
+    block_size = 16
+
+    def __init__(self, key, nonce=None):
+        self.key = bytes(key)
+        self.nonce = bytes(nonce) if nonce else __import__('os').urandom(12)
+        self._rk, self._nr = _expand_key(self.key)
+        h = int.from_bytes(_encrypt_block(b'\x00' * 16, self._rk, self._nr), 'big')
+        self._h = h
+        # J0：nonce 不是 12 字节时按 SP800-38D 处理
+        if len(self.nonce) == 12:
+            self._j0 = int.from_bytes(self.nonce + b'\x00\x00\x00\x01', 'big')
+        else:
+            s = (16 - (len(self.nonce) % 16)) % 16
+            padded = self.nonce + b'\x00' * s
+            lens = (len(self.nonce) * 8).to_bytes(8, 'big') * 1 + (0).to_bytes(8, 'big')
+            self._j0 = _ghash(h, padded + lens)
+        self._aad = b''
+        self._ct = b''
+        self._tag = None
+
+    def update(self, data):
+        self._aad += bytes(data)
+
+    def _keystream(self, start, n):
+        out = bytearray()
+        ctr = start
+        while len(out) < n:
+            out += _encrypt_block(ctr.to_bytes(16, 'big'), self._rk, self._nr)
+            ctr = (ctr & ~0xFFFFFFFF) | ((ctr + 1) & 0xFFFFFFFF)
+        return bytes(out[:n])
+
+    def _tag_of(self, ct):
+        aad = self._aad
+        alen = (len(aad) * 8).to_bytes(8, 'big')
+        clen = (len(ct) * 8).to_bytes(8, 'big')
+        pad_a = (16 - len(aad) % 16) % 16
+        pad_c = (16 - len(ct) % 16) % 16
+        s = _ghash(self._h, aad + b'\x00' * pad_a + ct + b'\x00' * pad_c + alen + clen)
+        ek = int.from_bytes(_encrypt_block(self._j0.to_bytes(16, 'big'), self._rk, self._nr), 'big')
+        return (s ^ ek).to_bytes(16, 'big')
+
+    def encrypt(self, data):
+        data = bytes(data)
+        stream = self._keystream((self._j0 + 1) & ((1 << 128) - 1), len(data))
+        self._ct += _xor(data, stream)
+        return self._ct[-len(data):] if data else b''
+
+    def decrypt(self, data):
+        data = bytes(data)
+        self._ct += data  # 记住密文，finalize 时校验 tag
+        stream = self._keystream((self._j0 + 1) & ((1 << 128) - 1), len(data))
+        return _xor(data, stream)
+
+    def encrypt_and_digest(self, data):
+        ct = self.encrypt(data)
+        return ct, self._tag_of(ct)
+
+    def decrypt_and_verify(self, data, tag):
+        ct = bytes(data)
+        if self._tag_of(ct) != bytes(tag):
+            raise ValueError('MAC check failed')
+        return self.decrypt(ct)
+
+
+# 把 GCM 接进 new()
+_orig_new = new
+
+
+def new(key, mode, iv=None, nonce=None, **kwargs):
+    if mode == MODE_GCM:
+        return _GCM(key, nonce=nonce if nonce is not None else iv)
+    return _orig_new(key, mode, iv=iv, nonce=nonce, **kwargs)

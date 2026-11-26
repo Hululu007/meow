@@ -98,6 +98,12 @@ for w in sorted(wheels.glob('*.whl')):
 PY
 # 纯 Python 的 Crypto 兼容层（AES/Hash）覆盖 pycryptodome 的常用子集
 cp -R "$ROOT/python-shim/Crypto" "$SITE/Crypto"
+# cryptography 兼容层（19 个源里的 16 个只用 AES-CBC/Fernet，见 shim 注释）
+cp -R "$ROOT/python-shim/cryptography" "$SITE/cryptography"
+# pyaes 只有 sdist（pip 只取 wheel 装不到），源码直接 vendor（1.6.1，MIT）
+cp -R "$ROOT/python-shim/pyaes" "$SITE/pyaes"
+# host 上跑过 shim 自测会留 3.10 的 pycache，带进 3.12 只会占体积/干扰排查
+find "$SITE" -name __pycache__ -type d -prune -exec rm -rf {} +
 
 cp "$ROOT/../../../server/pyrt/pyrt.py" "$RT/pyrt.py"
 # 版本标记：App 按它判断要不要重拷（运行时本身在 bundle，主要给日志/自检）

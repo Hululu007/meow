@@ -36,9 +36,35 @@ describe('载荷组装', () => {
 
   it('第三方只带纯 Python wheel，AES/Hash 用 shim', () => {
     expect(prep).toContain('requests urllib3 certifi idna charset-normalizer beautifulsoup4 soupsieve')
+    expect(prep).toContain('--only-binary=:all:')
     expect(prep).toContain('python-shim/Crypto')
     expect(existsSync(join(IOS, 'python-shim', 'Crypto', 'Cipher', 'AES.py'))).toBe(true)
     expect(existsSync(join(IOS, 'python-shim', 'Crypto', 'Util', 'Padding.py'))).toBe(true)
+  })
+
+  it('加密兼容层覆盖到实际源用到的库（pyaes/cryptography/GCM/ARC4）', () => {
+    // 110 个 py 源实测：Crypto 48（CBC 34/ECB 5/GCM 2/ARC4 1）、cryptography 19、pyaes 9
+    expect(prep).toContain('python-shim/pyaes')
+    expect(prep).toContain('python-shim/cryptography')
+    for (const f of [
+      ['Crypto', 'Cipher', 'ARC4.py'],
+      ['Crypto', 'Cipher', 'AES.py'],
+      ['cryptography', '__init__.py'],
+      ['cryptography', 'fernet.py'],
+      ['cryptography', 'hazmat', 'primitives', 'ciphers', '__init__.py'],
+      ['pyaes', '__init__.py'],
+      ['pyaes', 'LICENSE.txt'],
+    ]) {
+      expect(existsSync(join(IOS, 'python-shim', ...f))).toBe(true)
+    }
+    const aes = read(join(IOS, 'python-shim', 'Crypto', 'Cipher', 'AES.py'))
+    expect(aes).toContain('MODE_GCM')
+    expect(aes).toContain('class _GCM')
+    // 非对称/序列化只给明确报错，不假装支持
+    expect(read(join(IOS, 'python-shim', 'cryptography', 'hazmat', 'primitives',
+      'asymmetric', '__init__.py'))).toContain('NotImplementedError')
+    // 自测留下的 pycache 不许进包
+    expect(prep).toContain('__pycache__')
   })
 
   it('pyrt.py 随 runtime 一起打包', () => {

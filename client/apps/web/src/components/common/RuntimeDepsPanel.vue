@@ -241,8 +241,7 @@ onBeforeUnmount(() => {
         <span class="text-ink-3/70">· .py 源</span>
       </div>
       <p class="ml-3.5 mt-0.5 text-[length:var(--fs-mini)] text-ink-3">
-        端内裁剪版：含 requests/bs4 与 AES-ECB/CBC；<span class="text-hot">不含 lxml/pyquery</span>，
-        复杂加解密模式也不含。
+        端内裁剪版：含 requests/bs4/pyaes、AES-ECB/CBC/GCM、ARC4 与常用 Hash（另有 cryptography 的 AES/Fernet 兼容层）；<span class="text-hot">不含 lxml/pyquery/PIL/RSA</span>。
       </p>
 
       <div class="mt-2 rounded-md bg-white/5 px-2.5 py-2 text-[length:var(--fs-mini)] text-ink-3">
