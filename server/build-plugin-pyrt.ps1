@@ -39,10 +39,29 @@ if (Test-Path $mf) { Copy-Item $mf (Join-Path $out 'manifest.json') -Force }
 Write-Host "  安装依赖（requests / bs4 / lxml / pyquery / pycryptodome）…"
 $vendor = Join-Path $out 'vendor'
 New-Item -ItemType Directory -Force -Path $vendor | Out-Null
+
+# ★ 不能裸调 `python`：CI 的 windows runner 上它可能是 Microsoft Store 别名
+#   （调用即失败，且报错指向商店而不是缺 Python），也可能只有 `py -3`。
+#   这条脚本在 units.json 里是 required:false —— 失败会被 build-plugins.ps1
+#   静默跳过，Release 里就没有 pyrt-*.zip，而应用内只是"看不到这个插件"，
+#   完全没有线索。所以这里逐个探一遍，探不到就明确抛错。
+$pyExe = $null; $pyPre = @()
+foreach ($cand in @(@('python'), @('py', '-3'), @('python3'))) {
+    $exe = $cand[0]
+    $pre = @($cand | Select-Object -Skip 1)
+    if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { continue }
+    $ver = & $exe @pre -c "import sys;print(sys.version_info[0])" 2>$null
+    if ($LASTEXITCODE -eq 0 -and "$ver".Trim() -eq '3') { $pyExe = $exe; $pyPre = $pre; break }
+}
+if (-not $pyExe) {
+    throw "找不到可用的 Python 3（试过 python / py -3 / python3）。装了 Python 3 再跑，否则 pyrt 插件不会出现在 Release 里。"
+}
+Write-Host "  使用 $pyExe $($pyPre -join ' ')" -ForegroundColor DarkGray
+
 Push-Location $out
 try {
     # --target 装到 vendor：pyrt.py 启动时把 vendor 插到 sys.path 最前
-    python -m pip install --no-compile --target "$vendor" -r requirements.txt -q
+    & $pyExe @pyPre -m pip install --no-compile --target "$vendor" -r requirements.txt -q
     if ($LASTEXITCODE -ne 0) { throw "pip install 失败（exit $LASTEXITCODE）" }
 } finally {
     Pop-Location
