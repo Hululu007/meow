@@ -5208,7 +5208,11 @@ function stickyTopOffset(): number {
   const navH = nav && nav.getBoundingClientRect().height > 0 && nav.offsetParent !== null
     ? nav.getBoundingClientRect().height
     : 0
-  return header + navH + 8
+  /*
+   * +20 而不是 +8（2026-11-26 用户：落点再往上一点点时，分区标题会被吸顶胶囊
+   * 正好盖住）。8 只够贴边，留 20 才能让标题完整露出来。
+   */
+  return header + navH + 20
 }
 
 /**

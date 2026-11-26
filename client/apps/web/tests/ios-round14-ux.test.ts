@@ -16,6 +16,12 @@ const settings = read(join(WEB, 'src', 'views', 'SettingsView.vue'))
 const homeCss = read(join(WEB, 'src', 'styles', 'tokens.css'))
 const live = read(join(WEB, 'src', 'views', 'LiveView.vue'))
 
+describe('直播底栏入口（非 TV）', () => {
+  it('手机横屏也显示底栏（进页面先有控制栏，频道按钮开面板）', () => {
+    expect(live).toContain("v-if=\"(!landscape || !isTvEnv()) && !showGuide\"")
+  })
+})
+
 describe('设置页胶囊跳转', () => {
   it('跳转用瞬时滚动，不再有 smooth 动画被打断', () => {
     const fn = settings.slice(settings.indexOf('function jumpToEl('),
@@ -24,6 +30,8 @@ describe('设置页胶囊跳转', () => {
     expect(fn).not.toContain("behavior: 'smooth'")
     expect(fn).toContain('requestAnimationFrame(apply)')
     expect(fn).toContain('window.setTimeout(apply, 260)')
+    // 落点再让 20px：分区标题不被吸顶胶囊盖住
+    expect(settings).toContain('return header + navH + 20')
   })
 })
 
@@ -39,12 +47,18 @@ describe('首页胶囊吸顶（iOS/iPad）', () => {
 describe('直播默认源', () => {
   it('没有上次记录时优先内置「公共直播源（每日更新）」', () => {
     expect(live).toContain('function orderedLives(')
-    const fn = live.slice(live.indexOf('function orderedLives('),
+    const fn = live.slice(live.indexOf('function isBuiltinSource('),
       live.indexOf('/** 上次用的那条源'))
     expect(fn).toContain('公共直播源')
     expect(fn).toContain('guovin')
+    // 有成功记录时按源得分排序
+    expect(live).toContain('function srcScoreOf(')
+    expect(live).toContain('bumpSrcScore(currentLineSrc(), 1)')
+    expect(live).toContain('bumpSrcScore(currentLineSrc(), -1)')
     // 合并时按这个顺序组装（线路顺序 = 源顺序）
     const merged = live.slice(live.indexOf('async function refreshMerged('))
     expect(merged.slice(0, 300)).toContain('orderedLives(playlists.value.slice())')
+    // 死线路少等：看门狗 6s → 4.5s
+    expect(live).toContain('const BAD_CHANNEL_MS = 4500')
   })
 })
