@@ -54,6 +54,8 @@ enum PythonRuntime {
         setenv("PYRT_DRPY", "http://127.0.0.1:\(NodeBridge.drpyPort)", 1)
         setenv("PYRT_SCRIPTS", scripts.path, 1)
         setenv("PYTHONUNBUFFERED", "1", 1)
+        // 标记裁剪版运行时：pyrt 遇到 lxml/pyquery ImportError 时给出准确提示
+        setenv("MEOW_PY_TRIM", "1", 1)
 
         started = meow_py_start(script.path) == 0
         LaunchLog.write("[py] start \(started ? "ok" : "failed") home=\(home.lastPathComponent)")

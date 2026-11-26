@@ -71,6 +71,26 @@ describe('Xcode 工程 / CI', () => {
   })
 })
 
+describe('运行时状态与裁剪提示', () => {
+  const settings = read(join(WEB, 'src', 'views', 'SettingsView.vue'))
+  const pyrtPy = read(join(ROOT, 'server', 'pyrt', 'pyrt.py'))
+
+  it('设置页显示运行时类型与 JS/Python 健康', () => {
+    expect(settings).toContain('async function refreshRuntimeStatus()')
+    expect(settings).toContain("request<{")
+    expect(settings).toContain('jsRuntimePy')
+    expect(settings).toContain('端内 CPython + drpy')
+    expect(settings).toContain('端内 Node（仅 JS）')
+    expect(settings).toContain('refreshRuntimeStatus')
+  })
+
+  it('裁剪版运行时对 lxml/pyquery 缺失给准确提示', () => {
+    expect(pyrtPy).toContain('MEOW_PY_TRIM')
+    expect(pyrtPy).toContain('未包含 lxml/pyquery')
+    expect(pyrt).toContain('setenv("MEOW_PY_TRIM", "1", 1)')
+  })
+})
+
 describe('启动链路', () => {
   it('C 桥在后台线程 Py_Initialize 并执行 pyrt', () => {
     expect(cbridge).toContain('Py_Initialize()')

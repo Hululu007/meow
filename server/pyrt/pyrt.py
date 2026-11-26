@@ -491,7 +491,12 @@ class Handler(BaseHTTPRequestHandler):
             tb = traceback.format_exc(limit=2)
             log("ERR", action, api, type(e).__name__, str(e)[:160])
             log(tb.replace("\n", " | ")[:400])
-            text = json.dumps({"code": -1, "msg": "%s: %s" % (type(e).__name__, e)},
+            msg = "%s: %s" % (type(e).__name__, e)
+            # iOS 端内运行时是裁剪版（无 lxml/pyquery）；把"依赖缺失"与"源坏了"区分开
+            if os.environ.get("MEOW_PY_TRIM"):
+                if "lxml" in msg or "pyquery" in msg:
+                    msg += "（iOS 端内运行时未包含 lxml/pyquery；可改用远端 pyrt）"
+            text = json.dumps({"code": -1, "msg": msg},
                               ensure_ascii=False)
         self._send(200, text.encode("utf-8"))
 
