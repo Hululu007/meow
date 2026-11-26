@@ -75,13 +75,15 @@ describe('运行时状态与裁剪提示', () => {
   const settings = read(join(WEB, 'src', 'views', 'SettingsView.vue'))
   const pyrtPy = read(join(ROOT, 'server', 'pyrt', 'pyrt.py'))
 
-  it('设置页显示运行时类型与 JS/Python 健康', () => {
-    expect(settings).toContain('async function refreshRuntimeStatus()')
-    expect(settings).toContain("request<{")
-    expect(settings).toContain('jsRuntimePy')
-    expect(settings).toContain('端内 CPython + drpy')
-    expect(settings).toContain('端内 Node（仅 JS）')
-    expect(settings).toContain('refreshRuntimeStatus')
+  it('运行时面板（RuntimeDepsPanel）覆盖 iOS：类型/健康/能力引导', () => {
+    const panel = read(join(WEB, 'src', 'components', 'common', 'RuntimeDepsPanel.vue'))
+    expect(panel).toContain("mode.value = 'ios'")
+    expect(panel).toContain('jsRuntimePy')
+    expect(panel).toContain('端内 CPython + drpy')
+    expect(panel).toContain('端内 Node（仅 JS）')
+    expect(panel).toContain('不含 lxml/pyquery')
+    // 面板由设置页渲染
+    expect(settings).toContain('<RuntimeDepsPanel')
   })
 
   it('裁剪版运行时对 lxml/pyquery 缺失给准确提示', () => {

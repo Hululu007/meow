@@ -78,7 +78,6 @@ import {
   importConfig,
   probeConfigDepot,
   removeLiveSource,
-  request,
   resetBuiltinLives,
   restoreConfigBackup,
   tauriInvoke,
@@ -2594,57 +2593,10 @@ const advBusy = ref(false)
 const advMsg = ref('')
 let advTimer: number | undefined
 
-/**
- * 运行时健康（/api/health）：JS 是否熔断、端内/远端能力是否含 Python。
- *
- * <p>iOS 端内是 pyrt（CPython + drpy 转发），PC/TV 也可能是远端 pyrt 或纯 drpy；
- * 用户改完地址最关心的就是「现在到底能不能跑 .js / .py」，所以把宿主探测结果
- * 直接显示出来，而不是只留一个输入框。
- */
-const rtStatus = ref<{ js: string; py: string; fails: number } | null>(null)
-const rtStatusBusy = ref(false)
-
-async function refreshRuntimeStatus() {
-  rtStatusBusy.value = true
-  try {
-    const h = await request<{
-      jsRuntimeBreaker?: string
-      jsRuntimePy?: string
-      jsRuntimeFails?: number
-    }>('/api/health', { timeout: 8000 })
-    rtStatus.value = {
-      js: String(h.jsRuntimeBreaker || 'unknown'),
-      py: String(h.jsRuntimePy || 'unknown'),
-      fails: Number(h.jsRuntimeFails || 0),
-    }
-  } catch {
-    rtStatus.value = null
-  } finally {
-    rtStatusBusy.value = false
-  }
-}
-
-const rtKind = computed(() => {
-  const u = jsRuntime.value
-  if (!u) return '未配置'
-  if (u.includes('127.0.0.1:19331')) return '端内 CPython + drpy'
-  if (u.includes('127.0.0.1:19330')) return '端内 Node（仅 JS）'
-  return '远端运行时'
-})
-
-const rtLabel = computed(() => {
-  const s = rtStatus.value
-  if (!s) return '状态未知'
-  const js = s.js === 'open' ? '不可用（熔断）' : s.js === 'closed' ? '可用' : '未知'
-  const py = s.py === 'yes' ? '可用' : s.py === 'no' ? '不可用' : '未知'
-  return `JS ${js} · Python ${py}`
-})
-
 async function loadAdvanced() {
   const p = await fetchPolicy()
   jsRuntime.value = String(p.jsRuntime || '')
   filterAds.value = p.filterAds === true
-  void refreshRuntimeStatus()
 }
 void loadAdvanced()
 
@@ -2653,7 +2605,6 @@ async function saveAdvanced() {
   try {
     await savePolicy({ jsRuntime: jsRuntime.value.trim(), filterAds: filterAds.value })
     advMsg.value = '已保存'
-    void refreshRuntimeStatus()
   } catch (e: any) {
     advMsg.value = '保存失败：' + (e?.message || String(e))
   } finally {
@@ -6914,19 +6865,6 @@ onBeforeUnmount(() => {
           保存
         </button>
       </div>
-      <!-- 运行时状态：地址之外还要能看出"现在能不能跑 .js/.py" -->
-      <p class="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-ink-3">
-        <span>{{ rtKind }}</span>
-        <span class="opacity-40">·</span>
-        <span>{{ rtLabel }}</span>
-        <button
-          class="rounded px-1.5 py-0.5 text-[11px] text-ink-3 transition hover:bg-white/10 hover:text-ink disabled:opacity-40"
-          :disabled="rtStatusBusy"
-          @click="refreshRuntimeStatus"
-        >
-          {{ rtStatusBusy ? '读取中…' : '刷新状态' }}
-        </button>
-      </p>
       <div class="set-grid mt-2">
         <!--
           ★ 必须自己保存（2026-10-30 审计）：原来只改本地 ref，
