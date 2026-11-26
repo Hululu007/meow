@@ -15030,13 +15030,18 @@ public class ApiServer {
                 return o;
             }
             java.util.Set<String> known = jarSpiderClasses();
-            int csp = 0, inJar = 0, dir = 0, script = 0;
+            int csp = 0, inJar = 0, dir = 0, script = 0, scriptPy = 0;
             for (int i = 0; i < sites.length(); i++) {
                 JSONObject s = sites.optJSONObject(i);
                 if (s == null) continue;
                 String api = s.optString("api", "").trim();
                 String apiLow = api.toLowerCase();
-                if (apiLow.endsWith(".py") || apiLow.endsWith(".js")) {
+                if (apiLow.endsWith(".py")) {
+                    script++;
+                    scriptPy++;
+                    continue;
+                }
+                if (apiLow.endsWith(".js")) {
                     /*
                      * 脚本源（py/js）不走类加载，能不能用取决于**脚本运行时**
                      * （pyrt / drpy）。以前这里既不进 inJar 也不进 dir，于是
@@ -15074,14 +15079,28 @@ public class ApiServer {
             o.put("jarKnown", known != null);
             o.put("direct", dir);
             o.put("script", script);
+            o.put("scriptPy", scriptPy);
             boolean rtUp = script > 0 && scriptRuntimeUsable();
+            /*
+             * 活着 ≠ 能跑 py。TV 的内置 QuickJS / iOS 的 drpy 只跑 .js，
+             * /health 的 caps.py=false；把它们当成"py 也能跑"会让一个
+             * 110 py + 14 js 的仓显示"全部可用"，用户点 py 站才发现全错。
+             */
+            boolean rtPy = rtUp && scriptPy > 0 && runtimeSupportsPy();
             o.put("runtime", rtUp ? "up" : (script > 0 ? "down" : "na"));
-            int usable = inJar + dir + (rtUp ? script : 0);
+            o.put("runtimePy", rtUp ? (rtPy ? "yes" : "no") : "unknown");
+            int scriptUsable = rtUp ? (script - scriptPy) + (rtPy ? scriptPy : 0) : 0;
+            int usable = inJar + dir + scriptUsable;
             /*
              * 给人看的一句话。用户不需要知道 csp_ 是什么，只需要知道
              * "这个仓导进去有多少站真能用"。
              */
-            if (script > 0 && !rtUp) {
+            int needPy = rtUp ? (rtPy ? 0 : scriptPy) : scriptPy;
+            if (rtUp && needPy > 0) {
+                // 有运行时但跑不了 py：说清楚是"缺 Python"，不是"仓坏了"
+                o.put("hint", "可用 " + usable + " 站；另有 " + needPy
+                        + " 站需要 Python 运行时（当前运行时只支持 js）");
+            } else if (script > 0 && !rtUp) {
                 // 脚本仓 + 运行时没起：给可执行的指引，而不是一个像"坏仓"的数字
                 o.put("hint", usable > 0
                         ? ("可用 " + usable + " 站；另有 " + script + " 站需要脚本运行时（未配置）")

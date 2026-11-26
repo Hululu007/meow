@@ -169,6 +169,27 @@ public final class QuickJsRuntimeServer {
             }
             String bodyText = new String(bodyBytes, 0, read, StandardCharsets.UTF_8);
 
+            /*
+             * GET /health：宿主 scriptRuntimeUsable() 的探活点。
+             *
+             * ★ 以前这里只有 POST，GET 一律 405。而宿主探活要求 **200**，
+             *   于是内置 QuickJS 永远被判定 "runtime=down" —— probe 显示
+             *   "124 站需要脚本运行时（未配置）"，但实际 js 站能搜出 40+ 条。
+             *   （2026-11-26 在 .76 上实测：js_袋鼠影视 45 条，probe 同时报 down。）
+             *
+             * caps 与 pyrt/drpy 对齐：js=true、py=false。宿主据此判定
+             * ".py 交给这个运行时没意义"，而不是把 .py 当 JS 去解析。
+             */
+            if ("GET".equalsIgnoreCase(method) && (path.equals("/health") || path.equals("/"))) {
+                /*
+                 * 顶层 `py` 是宿主 runtimeSupportsPy() 的判据（它读 o.optBoolean("py")），
+                 * caps 只是给人看的；两处都给，避免嵌套结构读不到 → 默认 true
+                 * → 110 个 .py 站被误报"可用"。
+                 */
+                write(s, 200, "{\"ok\":true,\"service\":\"quickjs\",\"py\":false,"
+                        + "\"caps\":{\"js\":true,\"py\":false}}");
+                return;
+            }
             if (!"POST".equalsIgnoreCase(method)) {
                 write(s, 405, "{\"code\":-1,\"msg\":\"use POST /{site}/{action}\"}");
                 return;

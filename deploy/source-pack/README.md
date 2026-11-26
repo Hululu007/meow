@@ -280,3 +280,85 @@ python3 deploy/source-pack/validate.py --dir /vol2/1000/meow-sources \
 javap -p -c -cp . com.github.catvod.spider.AppDrama | grep -c "new .*java/lang/Object"
 ```
 
+## 11. 多仓（depot）
+
+一个源包里装多个"仓"，用户导入一次拿到仓列表，按需切换。
+
+### 11.1 格式
+
+根 `config.all.json` 不再是站点表，而是**多仓索引**：
+
+```json
+{
+  "urls": [
+    { "name": "肥猫+Jable", "url": "http://host:18080/packs/fatcat/config.all.json" },
+    { "name": "脚本源",     "url": "http://host:18080/packs/scripts/config.all.json" }
+  ]
+}
+```
+
+这是 Fongmi 的 `VodConfig.parseDepot` 格式（裸字符串数组也兼容）。
+**导入时只加载第一个仓**，其余存成列表供用户手动切仓 —— 多仓是"收藏夹"，
+不是聚合。聚合会让同名站互相覆盖、搜索目标翻几倍，与真实客户端行为也不一致。
+
+### 11.2 目录
+
+```text
+sources/
+├── config.all.json            # 多仓索引（jvm/tv 两个 profile 同内容）
+├── source-pack.json           # artifacts 指向 packs/<id>/*，另含 depot 段
+└── packs/
+    ├── fatcat/                # 仓1：jar 站，自包含（含 4 个 jar）
+    │   ├── config.all.json
+    │   └── spider-dex.jar …
+    └── scripts/               # 仓2：脚本站（py/js），自包含
+        ├── config.all.json
+        ├── py/*.py
+        └── js/*.js
+```
+
+**每个仓自包含**：仓1 的 jar 也搬进 `packs/fatcat/`，不留在根。这样任何仓的
+URL 只依赖自己目录，搬仓/单独更新不牵动别的仓。
+
+### 11.3 生成
+
+```bash
+python3 deploy/source-pack/build-depot.py \
+    --root deploy/docker/default-sources \
+    --scripts-src <含 config.all.json + py/ + js/ 的目录>
+```
+
+幂等工具：jar 搬进仓1、脚本 api 改成 `__SOURCE_BASE__/packs/<id>/{py,js}/<name>`、
+脚本仓的 `spider`/`spiderJvm` 复用仓1 的完整值（含 `;md5;`，手拼容易漏）。
+已改造过的目录会拒绝重跑（jar 已搬走，重跑会丢）。
+
+### 11.4 两个必须注意的点
+
+1. **`__SOURCE_BASE__` 要递归替换**。`entrypoint.sh` 用
+   `find "$HTML" -name 'config*.json' -exec sed …` —— 只 sed 根配置的话，
+   仓内 URL 会留成字面量，导入时报 `must be http(s) absolute`。
+2. **脚本仓需要脚本运行时**。`.js` 要 drpy / TV 内置 QuickJS，`.py` 要 pyrt /
+   TV 的 Chaquopy 模块。没有运行时站点表照样能导（probe 会提示
+   "N 站需要 Python 运行时"），但搜索会失败。能力靠 `/health` 的**顶层 `py` 字段**
+   区分：drpy 与 QuickJS 返回 `py:false`，pyrt 不返回（视为支持）。
+
+### 11.5 切仓
+
+换 URL 再导一次（`POST /api/config/import`，`mode=replace`）。
+保留两边同名站用 `onConflict=both`（生成 `key#N`）。
+
+### 11.6 镜像
+
+`chrplus/meow-sources` 是**多架构**（linux/amd64 + linux/arm64），
+NAS 多为 arm64，构建时必须用 buildx 一次推两架构：
+
+```bash
+docker buildx build --builder meow-multiarch \
+    --platform linux/amd64,linux/arm64 \
+    -f Dockerfile.sources \
+    -t chrplus/meow-sources:<ver> -t chrplus/meow-sources:latest --push .
+```
+
+只 build 本地单架构再 push 会让 arm 设备拉到错误架构（或拉不到）。
+
+
