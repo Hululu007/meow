@@ -123,7 +123,29 @@ describe('设置页落点与横向溢出', () => {
   it('长串断行 + 内容列裁剪，页面不横向拖动', () => {
     expect(tokens).toContain('overflow-wrap: anywhere')
     expect(settings).toContain('overflow-x-hidden')
+    /*
+     * 裁剪必须带出血位：卡片铺满内容宽度时，闪框 outline（offset 2 + 2px）
+     * 整条在裁剪区外 → 真机看到“聚焦时两侧圆环被裁”。
+     */
+    expect(settings).toContain('-m-2 flex min-w-0 flex-col gap-4 overflow-x-hidden p-2')
     // 插件源的 URL 行必须能给 flex 子项收缩
     expect(settings).toContain('min-w-0 flex-1 truncate font-mono')
+  })
+
+  it('后台挂起不能算进 CPython 探活时间', () => {
+    // 启动后立刻切后台：墙钟计时会把“还没调度”误判成失败
+    expect(pyRuntime).toContain('UIApplication.shared.applicationState == .background')
+    expect(pyRuntime).toContain('scheduleOnForeground()')
+    expect(pyRuntime).toContain('UIApplication.didBecomeActiveNotification')
+    expect(pyRuntime).toContain('waited += Date().timeIntervalSince(began) + 0.4')
+    // py.log 尾巴要从本轮标记开始截，否则只剩后续 NSLog
+    expect(pyRuntime).toContain('options: .backwards')
+    expect(pyRuntime).toContain('没有 [meow-py] 记录')
+  })
+
+  it('drpy 的 /health 没有 caps 也不能当成支持 .py', () => {
+    expect(api).toContain('"meow-drpy".equals(o.optString("service", ""))')
+    // 未知值只缓存 3 秒，不能让“启动时没探到”冻结 60 秒
+    expect(api).toContain('RT_CAP_TTL_MS + 3_000L')
   })
 })

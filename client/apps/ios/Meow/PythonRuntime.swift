@@ -1,5 +1,6 @@
 #if !targetEnvironment(simulator)
 import Foundation
+import UIKit
 
 /// 端内 CPython（Python 3.12）+ pyrt：让 `.py` 源完全离线，和 PC/Docker 同构。
 ///
@@ -22,6 +23,25 @@ enum PythonRuntime {
 
     private static var started = false
     private static let lock = NSLock()
+    /** 后台启动被推迟时挂的回前台观察者（只挂一次） */
+    private static var foregroundObserver: NSObjectProtocol?
+
+    /// 后台时把启动推迟到回前台（见 startIfPossible 的注释）。
+    private static func scheduleOnForeground() {
+        guard foregroundObserver == nil else { return }
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main,
+        ) { _ in
+            if let ob = foregroundObserver {
+                NotificationCenter.default.removeObserver(ob)
+                foregroundObserver = nil
+            }
+            startIfPossible()
+        }
+        LaunchLog.write("[py] start deferred until foreground")
+    }
 
     /// 启动一次（幂等）。由 NodeBridge 在 drpy 起来后调用。
     static func startIfPossible() {
@@ -41,6 +61,18 @@ enum PythonRuntime {
             return
         }
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        /*
+         * ★ 后台不启动：App 一进后台，整个进程被系统挂起，25 秒探活窗口会被
+         *   墙钟耗光；回前台时 Python 线程甚至还没拿到 CPU，这里就先记成
+         *   failed 并把 jsRuntime 永久留在 drpy（2026-11-26 真机实测：
+         *   13:23:36 node 就绪、13:23:39 切后台，py.log 里连
+         *   "[meow-py] start" 都还没出现）。改为回前台再起。
+         */
+        if UIApplication.shared.applicationState == .background {
+            record("pending", "等回前台再启动（后台挂起会耗光初始化窗口）")
+            scheduleOnForeground()
+            return
+        }
         let scripts = docs.appendingPathComponent("py-scripts", isDirectory: true)
         try? fm.createDirectory(at: scripts, withIntermediateDirectories: true)
         try? fm.createDirectory(at: scripts.appendingPathComponent("py"), withIntermediateDirectories: true)
@@ -78,11 +110,19 @@ enum PythonRuntime {
     }
 
     /// 探活：GET /health 返回 200 即就绪。结果同时写回 policy.pyRuntime。
+    ///
+    /// <p>★ 只累计**前台时间**：App 在后台时进程被挂起，墙钟照样走但 Python
+    /// 线程一步也跑不了。按墙钟计时会把「刚启动就切后台」误判成启动失败。
     static func waitHealthy(timeout: TimeInterval) -> Bool {
         guard started else { return false }
-        let deadline = Date().addingTimeInterval(timeout)
         let url = URL(string: "http://127.0.0.1:\(port)/health")!
-        while Date() < deadline {
+        var waited: TimeInterval = 0
+        while waited < timeout {
+            if UIApplication.shared.applicationState == .background {
+                Thread.sleep(forTimeInterval: 0.5)
+                continue
+            }
+            let began = Date()
             var ok = false
             var req = URLRequest(url: url)
             req.timeoutInterval = 2
@@ -96,10 +136,11 @@ enum PythonRuntime {
                 record("running", "")
                 return true
             }
+            waited += Date().timeIntervalSince(began) + 0.4
             Thread.sleep(forTimeInterval: 0.4)
         }
         let tail = logTail()
-        record("failed", tail.isEmpty ? "25 秒内 /health 未就绪（Documents/py.log 为空）" : tail)
+        record("failed", tail.isEmpty ? "\(Int(timeout)) 秒内 /health 未就绪（Documents/py.log 为空）" : tail)
         LaunchLog.write("[py] log tail: \(tail.suffix(300))")
         return false
     }
@@ -121,8 +162,12 @@ enum PythonRuntime {
             "at": Int(Date().timeIntervalSince1970),
         ]
         if !error.isEmpty {
-            // 面板只展示前 400 字；更长的回溯在 Documents/py.log
-            st["error"] = String(error.suffix(400))
+            /*
+             * 面板只展示最后几行，但**存**要留够：上一版只存 400 字，结果把
+             * `[meow-py] start` / traceback 全截掉了，只剩后续 NSLog，白瞎一次
+             * 真机验证（2026-11-26）。
+             */
+            st["error"] = String(error.suffix(1600))
         }
         obj["pyRuntime"] = st
         if let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]) {
@@ -132,14 +177,23 @@ enum PythonRuntime {
         }
     }
 
-    /// 读 py.log 尾部（启动失败的 traceback 通常就在最后几行）。
+    /// 读 py.log 里**本轮 Python 启动**那一段。
+    ///
+    /// <p>py.log 是进程级 stderr 重定向，LaunchLog 的 NSLog 也会混进来。
+    /// 直接取文件尾巴会只剩后面的日志；从最后一个 `[meow-py]` 标记开始截，
+    /// 才能拿到 `start` / `initialized` / traceback。没有标记说明 C 线程
+    /// 一步都没跑（后台挂起或线程创建后未调度），要显式说出来。
     private static func logTail() -> String {
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let f = docs.appendingPathComponent("py.log")
         guard let data = try? Data(contentsOf: f), !data.isEmpty else { return "" }
         let text = String(decoding: data, as: UTF8.self)
-        return String(text.suffix(800))
+        if let r = text.range(of: "[meow-py]", options: .backwards) {
+            return String(text[r.lowerBound...].suffix(1600))
+        }
+        return "（py.log 里没有 [meow-py] 记录：Python 线程尚未执行，通常是启动后立刻切后台）\n"
+            + String(text.suffix(600))
     }
 }
 #endif

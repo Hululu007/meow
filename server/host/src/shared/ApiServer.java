@@ -4703,6 +4703,7 @@ public class ApiServer {
             return false;
         }
         boolean py = true;
+        boolean known = false;
         try {
             java.net.HttpURLConnection c = (java.net.HttpURLConnection)
                     new java.net.URL(base.replaceAll("/$", "") + "/health").openConnection();
@@ -4713,8 +4714,18 @@ public class ApiServer {
                 String body = read(c.getInputStream());
                 try {
                     org.json.JSONObject o = new org.json.JSONObject(body);
-                    // 老运行时没有 caps：视为支持（保持既有行为）
-                    if (o.has("py")) py = o.optBoolean("py", true);
+                    if (o.has("py")) {
+                        py = o.optBoolean("py", true);
+                        known = true;
+                    } else if ("meow-drpy".equals(o.optString("service", ""))) {
+                        // 老版 drpy 没写 caps 字段：它是纯 JS 运行时，不能当成支持 .py
+                        py = false;
+                        known = true;
+                    } else {
+                        // 老运行时（pyrt / 第三方）没有 caps：视为支持，保持既有行为
+                        py = true;
+                        known = true;
+                    }
                 } catch (Throwable ignore) {
                     py = true;
                 }
@@ -4724,6 +4735,13 @@ public class ApiServer {
             py = true;
         }
         rtPyCap = py;
+        /*
+         * ★ 探测失败/非 200 时不要把 true 缓存满 60 秒。
+         *   踩过（2026-11-26 真机）：宿主启动时 drpy 还没监听，探活失败被缓存成
+         *   “支持 .py”，于是设置页 `/api/runtime/status` 报 py=yes、.py 请求全
+         *   打给只跑 JS 的 drpy。已知值才用长 TTL，未知值 3 秒后重探。
+         */
+        if (!known) rtCapAt.set(System.currentTimeMillis() - RT_CAP_TTL_MS + 3_000L);
         if (!py) {
             core.LogBuffer.info("search", "jsRuntime 不支持 .py（只跑 JS）→ .py 源将直接给出原因");
         }

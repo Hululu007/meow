@@ -297,14 +297,20 @@ onBeforeUnmount(() => {
               ? '可用'
               : iosPy === 'no'
                 ? '不可用'
-                : iosInfo.url.includes('19330')
-                  ? '未启用（回退 Node）'
-                  : '未知'
+                : iosPyState === 'pending'
+                  ? '等待前台启动…'
+                  : iosInfo.url.includes('19330')
+                    ? '未启用（回退 Node）'
+                    : '未知'
           }}
         </span>
         <span class="text-ink-3/70">· .py 源</span>
       </div>
-      <p v-if="iosPyError" class="ml-3.5 mt-0.5 whitespace-pre-wrap break-all text-[length:var(--fs-mini)] text-hot/90">
+      <p
+        v-if="iosPyError"
+        class="ml-3.5 mt-0.5 whitespace-pre-wrap break-all text-[length:var(--fs-mini)]"
+        :class="iosPyState === 'pending' ? 'text-ink-3' : 'text-hot/90'"
+      >
         {{ iosPyError }}
       </p>
       <p class="ml-3.5 mt-0.5 text-[length:var(--fs-mini)] text-ink-3">

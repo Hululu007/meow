@@ -5583,8 +5583,14 @@ onBeforeUnmount(() => {
       </button>
     </nav>
 
+    <!--
+      ★ -m-2 p-2 是给「跳转闪框」留的出血位（2026-11-26 真机：聚焦分区时
+      圆环左右被裁）。overflow-x-hidden 会按 padding box 裁剪，卡片正好铺满
+      内容宽度时，outline（offset 2 + 2px）整条落在裁剪区外。负 margin +
+      等量 padding 让盒子的裁剪边界外扩 8px，内容宽度与位置都不变。
+    -->
     <div
-      class="flex min-w-0 flex-col gap-4 overflow-x-hidden max-sm:mt-3 wide:grid wide:min-h-0 wide:flex-1 wide:grid-cols-[200px_minmax(0,1fr)] wide:grid-rows-[minmax(0,1fr)] wide:gap-6"
+      class="-m-2 flex min-w-0 flex-col gap-4 overflow-x-hidden p-2 max-sm:mt-3 wide:grid wide:min-h-0 wide:flex-1 wide:grid-cols-[200px_minmax(0,1fr)] wide:grid-rows-[minmax(0,1fr)] wide:gap-6"
     >
       <!-- ── 左侧导航（宽屏时定高不滚） ── -->
       <aside
