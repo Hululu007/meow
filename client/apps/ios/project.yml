@@ -44,12 +44,22 @@ targets:
       - path: build/drpy
         type: folder
         buildPhase: resources
+      # .py 源载荷（端内 CPython + pyrt）：备料 scripts/prepare-python-payload.sh。
+      # 只把 runtime 目录当资源（framework 走 dependencies embed，否则重复 8MB）。
+      - path: build/python/runtime
+        type: folder
+        buildPhase: resources
       - path: build/config.sites.example.json
         buildPhase: resources
     dependencies:
       # 端内 Node 运行时（nodejs-mobile，V8 关 JIT）。是**动态库**（CI 里 file 确认
       # 过 "dynamically linked shared library"），必须 embed，否则启动时 dyld 找不到。
       - framework: build/node/NodeMobile.framework
+        embed: true
+        codeSign: false
+      # 端内 CPython（Python-Apple-support 3.12-b13，动态库）。embed 后
+      # PythonRuntime 在后台线程 Py_Initialize 并执行 runtime/pyrt.py。
+      - framework: build/python/Python.framework
         embed: true
         codeSign: false
     # F 变体：静态链接 + -no_pie。
@@ -70,6 +80,7 @@ targets:
         HEADER_SEARCH_PATHS:
           - "$(SRCROOT)/build/jni/include"
           - "$(SRCROOT)/build/jni/include/ios"
+          - "$(SRCROOT)/build/python/Python.framework/Headers"
         # F: 静态链 + 固定基址（-no_pie）
         # J: 把 __TEXT,__const 改到 __DATA,__const —— .ips 证明 NativeCallStack::EMPTY_STACK
         # 被放在只读的 __TEXT,__const 里，而它的构造函数要写这个对象（SIGBUS）。
@@ -91,6 +102,9 @@ targets:
       - path: Meow
         excludes:
           - Info.plist
+          # 模拟器包不带 CPython（framework 只有真机切片）；桥与调用在 Swift 侧
+          # 用 targetEnvironment(simulator) 排除
+          - MeowPython.c
       - path: build/web
         type: folder
         buildPhase: resources

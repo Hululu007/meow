@@ -29,7 +29,7 @@ enum NodeBridge {
 
     /// JS 源运行时（drpy）端口。与弹幕端口分开：宿主用 `GET {jsRuntime}/health`
     /// 探活（见 ApiServer 的 scriptRuntimeUsable），不能和弹幕的根路径混用。
-    private static let drpyPort = 19330
+    static let drpyPort = 19330
 
     /// 在后台起 node；只生效一次。
     static func startIfPossible() {
@@ -111,7 +111,6 @@ enum NodeBridge {
             setenv("MEOW_DRPY_DIR", drpy.path, 1)
             setenv("DRPY_PORT", "\(drpyPort)", 1)
             setenv("DRPY_BIND", "127.0.0.1", 1)
-            writeJsRuntimeIfAbsent()
         }
         let script = dir.appendingPathComponent("danmu_api/server.js").path
         guard FileManager.default.fileExists(atPath: script) else {
@@ -291,11 +290,13 @@ enum NodeBridge {
         }
     }
 
-    /// 把端内 drpy 地址写进 `policy.json` 的 `jsRuntime`（宿主只认这个键）。
+    /// 把端内运行时地址写进 `policy.json` 的 `jsRuntime`（宿主只认这个键）。
     ///
-    /// ★ 只在键为空时写：用户手配的远端 pyrt/drpy 不能被端内地址盖掉；
-    ///   也绝不整文件覆盖 —— policy.json 还有 authToken / corsOrigins / 缓存配额。
-    private static func writeJsRuntimeIfAbsent() {
+    /// <p>规则：
+    ///  - 用户手配的地址（非 127.0.0.1）永远保留 —— 不能被端内地址盖掉；
+    ///  - 端内 loopback 地址允许升级（drpy 19330 → pyrt 19331），老用户不用清配置；
+    ///  - 绝不整文件覆盖：policy.json 还有 authToken / corsOrigins / 缓存配额。
+    private static func writeJsRuntime(url: String) {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let f = docs.appendingPathComponent("gateway/policy.json")
         var obj: [String: Any] = [:]
@@ -303,15 +304,23 @@ enum NodeBridge {
            let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
             obj = j
         }
-        if let cur = obj["jsRuntime"] as? String, !cur.trimmingCharacters(in: .whitespaces).isEmpty {
-            LaunchLog.write("[node] jsRuntime already set; keep \(cur)")
-            return
+        if let cur = obj["jsRuntime"] as? String {
+            let t = cur.trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty {
+                if !t.hasPrefix("http://127.0.0.1:") {
+                    LaunchLog.write("[node] jsRuntime custom; keep \(t)")
+                    return
+                }
+                if t == url {
+                    return
+                }
+            }
         }
-        obj["jsRuntime"] = "http://127.0.0.1:\(drpyPort)"
+        obj["jsRuntime"] = url
         do {
             let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: f, options: .atomic)
-            LaunchLog.write("[node] jsRuntime injected (drpy \(drpyPort))")
+            LaunchLog.write("[node] jsRuntime injected -> \(url)")
         } catch {
             LaunchLog.write("[node] write policy.json failed: \(error.localizedDescription)")
         }
@@ -336,6 +345,23 @@ enum NodeBridge {
         while Date() < deadline {
             if httpAlive(probe) {
                 writeHostFile()
+                /*
+                 * .py 源：drpy 就绪后拉起端内 CPython + pyrt（19331）。
+                 * pyrt 自己把 .js 转发给 drpy，所以宿主只需要一个 jsRuntime。
+                 * Python 起不来（老包/裁剪过度）就退回 drpy：.js 照常，.py 报清晰原因。
+                 */
+                // 先写 drpy：JS 源立刻可用，不用等 Python 初始化
+                writeJsRuntime(url: "http://127.0.0.1:\(drpyPort)")
+                #if !targetEnvironment(simulator)
+                PythonRuntime.startIfPossible()
+                if PythonRuntime.waitHealthy(timeout: 25) {
+                    LaunchLog.write("[py] healthy; jsRuntime -> pyrt \(PythonRuntime.port)")
+                    // 升级到 pyrt：.py 本地执行，.js 由 pyrt 转发给 drpy
+                    writeJsRuntime(url: "http://127.0.0.1:\(PythonRuntime.port)")
+                } else {
+                    LaunchLog.write("[py] not ready; jsRuntime stays on drpy")
+                }
+                #endif
                 return
             }
             Thread.sleep(forTimeInterval: 3)

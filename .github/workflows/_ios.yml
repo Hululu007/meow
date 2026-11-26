@@ -184,6 +184,29 @@ jobs:
           test -f client/apps/ios/build/drpy/node_modules/undici/index.js || { echo "drpy undici stub missing"; exit 1; }
           du -sh client/apps/ios/build/node/NodeMobile.framework client/apps/ios/build/danmu-api client/apps/ios/build/drpy
 
+      # 端内 CPython（Python-Apple-support 3.12-b13，裁后 framework 8MB + runtime 25MB，
+      # zip 后约 9MB）。缓存整包：下载 32MB + 组装 1~2 分钟。
+      - name: Cache CPython payload
+        id: pypayload
+        uses: actions/cache@v4
+        with:
+          path: |
+            client/apps/ios/build/pycache
+            client/apps/ios/build/python
+          key: ios-python-3.12-b13-${{ hashFiles('client/apps/ios/scripts/prepare-python-payload.sh', 'client/apps/ios/python-shim/**', 'server/pyrt/pyrt.py') }}
+
+      - name: Prepare CPython payload
+        if: steps.pypayload.outputs.cache-hit != 'true'
+        run: bash client/apps/ios/scripts/prepare-python-payload.sh
+
+      - name: Verify CPython staged
+        run: |
+          set -euo pipefail
+          test -f client/apps/ios/build/python/runtime/pyrt.py || { echo "pyrt.py missing"; exit 1; }
+          test -f client/apps/ios/build/python/Python.framework/Python || { echo "Python.framework missing"; exit 1; }
+          test -f client/apps/ios/build/python/runtime/lib/python3.12/lib-dynload/_ssl.cpython-312-iphoneos.so || { echo "_ssl missing"; exit 1; }
+          du -sh client/apps/ios/build/python/Python.framework client/apps/ios/build/python/runtime
+
       - name: Generate Xcode project
         run: |
           set -euo pipefail
