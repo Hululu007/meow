@@ -92,6 +92,11 @@ export interface MeowState {
   logTags?: string[]
   /** 日志不可用的原因（旧后端无 /api/logs 时给出） */
   logHint?: string
+  /**
+   * 进程内存（iOS 壳的 /api/health 带 rssMB/memAvailMB 时才出现）。
+   * availMB < 200 时优先怀疑内存压力导致的后台被杀，而不是运行时坏了。
+   */
+  memory?: { rssMB: number; availMB: number }
   route: string
 }
 
@@ -158,6 +163,11 @@ export async function meowState(): Promise<ToolResult<MeowState>> {
       logs && logs.state === 'unsupported'
         ? '后端版本较旧，无 /api/logs（meow_logs 也不可用）'
         : undefined
+    // iOS 壳由 MemoryProbe 每 30s 写 gateway/mem.json，宿主并进 /api/health
+    const memory =
+      Number(health.rssMB) >= 0
+        ? { rssMB: Number(health.rssMB), availMB: Number(health.memAvailMB ?? -1) }
+        : undefined
     return ok(
       {
         version: String(health.version || ''),
@@ -170,6 +180,7 @@ export async function meowState(): Promise<ToolResult<MeowState>> {
         logCounts,
         logTags,
         logHint,
+        memory,
         route: location.hash || '',
       },
       `后端 ${health.version}，${health.sites} 源，${degradedList.length} 个降级`

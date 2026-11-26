@@ -23,6 +23,10 @@ const tokens = read(join(WEB, 'src', 'styles', 'tokens.css'))
 const ci = read(join(ROOT, '.github', 'workflows', '_ios.yml'))
 const pyRuntime = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'PythonRuntime.swift'))
 const cBridge = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'MeowPython.c'))
+const bootstrap = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'Bootstrap.swift'))
+const memC = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'MeowMemory.c'))
+const memSwift = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'MemoryProbe.swift'))
+const aiTools = read(join(WEB, 'src', 'ai', 'tools.ts'))
 
 describe('导入：.py 站点保留', () => {
   it('脚本分支接受 .py，只有 node:/py: 内联被拒绝', () => {
@@ -102,7 +106,7 @@ describe('iOS CPython 可诊断', () => {
     expect(pyRuntime).toContain('record("failed"')
     expect(pyRuntime).toContain('logTail()')
     // 生产调用必须传日志路径
-    expect(pyRuntime).toContain('meow_py_start(script.path, logPath.path)')
+    expect(pyRuntime).toContain('meow_py_start(script.path, pyLogPath.path)')
   })
 })
 
@@ -166,5 +170,37 @@ describe('设置页落点与横向溢出', () => {
      */
     expect(cBridge).toContain('PyDict_SetItemString(globals, "__file__", dunsel)')
     expect(pyRuntime).toContain('setenv("MEOW_PY_LOG"')
+  })
+
+  it('pyrt 看门狗 + 按需启动（对齐 node ensureServing）', () => {
+    // 回前台/20s 定时器：探活失败就在已初始化的解释器里重跑 pyrt
+    expect(pyRuntime).toContain('static func ensureRunning()')
+    expect(pyRuntime).toContain('health dead after resume; rerun pyrt')
+    expect(pyRuntime).toContain('NodeBridge.writeJsRuntime(url:')
+    // 配置里没有 .py 站点不起解释器（省 30~50MB 常驻）
+    expect(pyRuntime).toContain('guard hasPySites() else')
+    expect(pyRuntime).toContain('record("disabled"')
+    expect(pyRuntime).toContain('bare.hasSuffix(".py") || bare.hasPrefix("py:")')
+    expect(bootstrap).toContain('PythonRuntime.ensureRunning()')
+    expect(bootstrap).toContain('startPythonWatchdog()')
+    expect(bootstrap).toContain('withTimeInterval: 20')
+  })
+
+  it('内存诊断进 health / 日志 / AI 工具', () => {
+    // Swift 侧：mach task_info + os_proc_available_memory → gateway/mem.json
+    expect(memC).toContain('MACH_TASK_BASIC_INFO')
+    expect(memC).toContain('os_proc_available_memory')
+    expect(memSwift).toContain('gateway/mem.json')
+    expect(memSwift).toContain('low available memory')
+    expect(bootstrap).toContain('MemoryProbe.start()')
+    // 宿主并进 /api/health（iOS 才有文件）
+    expect(api).toContain('core.DataPaths.read("mem.json")')
+    expect(api).toContain('o.put("rssMB"')
+    expect(api).toContain('o.put("memAvailMB"')
+    // AI 的 meow_state 直接拿到内存，不用再教模型调别的
+    expect(aiTools).toContain('memory?: { rssMB: number; availMB: number }')
+    expect(aiTools).toContain('availMB < 200')
+    // 设置页运行时面板也显示
+    expect(panel).toContain('进程内存 RSS')
   })
 })

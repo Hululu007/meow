@@ -50,6 +50,9 @@ interface IoRuntimeInfo {
   pyCap: string
   breaker: string
   py: PyRuntimeState | null
+  /** 进程内存（iOS 壳才有；-1 = 未知） */
+  rssMB: number
+  availMB: number
 }
 const iosInfo = ref<IoRuntimeInfo | null>(null)
 
@@ -167,9 +170,12 @@ async function refresh(): Promise<void> {
       mode.value = 'ios'
       const [p, h, st] = await Promise.all([
         fetchPolicy().catch(() => ({ jsRuntime: '' } as { jsRuntime?: string })),
-        request<{ jsRuntimeBreaker?: string; jsRuntimePy?: string }>('/api/health', {
-          timeout: 8000,
-        }).catch(() => null),
+        request<{
+          jsRuntimeBreaker?: string
+          jsRuntimePy?: string
+          rssMB?: number
+          memAvailMB?: number
+        }>('/api/health', { timeout: 8000 }).catch(() => null),
         request<{ url?: string; ok?: boolean; py?: string; breaker?: string }>(
           '/api/runtime/status',
           { timeout: 8000 },
@@ -182,6 +188,8 @@ async function refresh(): Promise<void> {
         pyCap: String(st?.py || h?.jsRuntimePy || 'unknown'),
         breaker: String(st?.breaker || h?.jsRuntimeBreaker || 'unknown'),
         py: pr,
+        rssMB: Number(h?.rssMB ?? -1),
+        availMB: Number(h?.memAvailMB ?? -1),
       }
       return
     }
@@ -312,6 +320,10 @@ onBeforeUnmount(() => {
         :class="iosPyState === 'pending' ? 'text-ink-3' : 'text-hot/90'"
       >
         {{ iosPyError }}
+      </p>
+      <p v-if="iosInfo.rssMB >= 0" class="ml-3.5 mt-0.5 text-[length:var(--fs-mini)] text-ink-3">
+        进程内存 RSS {{ iosInfo.rssMB }} MB · 系统余量
+        {{ iosInfo.availMB >= 0 ? `${iosInfo.availMB} MB` : '未知' }}
       </p>
       <p class="ml-3.5 mt-0.5 text-[length:var(--fs-mini)] text-ink-3">
         端内裁剪版：含 requests/bs4/pyaes、AES-ECB/CBC/GCM、ARC4 与常用 Hash（另有 cryptography 的 AES/Fernet 兼容层）；<span class="text-hot">不含 lxml/pyquery/PIL/RSA</span>。

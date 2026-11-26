@@ -2340,6 +2340,22 @@ public class ApiServer {
             // null=还没探测过；不发网络请求（health 必须毫秒级）
             o.put("jsRuntimePy", rtPyCap == null ? "unknown" : ((Boolean) rtPyCap ? "yes" : "no"));
             o.put("jsRuntimeFails", scriptRuntimeFails.get());
+            /*
+             * 进程内存（iOS 壳由 MemoryProbe 每 30s 写 gateway/mem.json）。
+             * iOS 没有 /proc，Java 侧拿不到本进程 RSS；这两个数是判断
+             * “切后台回来进程没了”到底是不是内存压力的唯一依据。
+             * 文件不存在时整组字段不出现（Web/PC/TV 不受影响）。
+             */
+            try {
+                String mem = core.DataPaths.read("mem.json");
+                if (mem != null && !mem.trim().isEmpty()) {
+                    org.json.JSONObject m = new org.json.JSONObject(mem);
+                    o.put("rssMB", m.optInt("rssMB", -1));
+                    o.put("memAvailMB", m.optInt("availMB", -1));
+                    o.put("memAt", m.optLong("at", 0));
+                }
+            } catch (Throwable ignored) {
+            }
         } catch (Throwable t) {
             // 兜底也要能编译：android-json 的 put 抛受检异常
             try {

@@ -296,7 +296,7 @@ enum NodeBridge {
     ///  - 用户手配的地址（非 127.0.0.1）永远保留 —— 不能被端内地址盖掉；
     ///  - 端内 loopback 地址允许升级（drpy 19330 → pyrt 19331），老用户不用清配置；
     ///  - 绝不整文件覆盖：policy.json 还有 authToken / corsOrigins / 缓存配额。
-    private static func writeJsRuntime(url: String) {
+    static func writeJsRuntime(url: String) {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let f = docs.appendingPathComponent("gateway/policy.json")
         var obj: [String: Any] = [:]

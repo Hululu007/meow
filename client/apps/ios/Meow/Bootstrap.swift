@@ -21,6 +21,8 @@ final class Bootstrap: ObservableObject {
     private let staticServer = StaticServer()
     private var started = false
     private var staticWatchdog: Timer?
+    /** Python/pyrt 看门狗（有 .py 站点时保活；与 node 的 ensureServing 对齐） */
+    private var pyWatchdog: Timer?
     /// 静态服务重启后自动重试加载过没有（限次，防循环）
     private var autoRetriedAfterRestart = false
 
@@ -129,6 +131,8 @@ final class Bootstrap: ObservableObject {
         webURL = URL(string: "http://127.0.0.1:9979/")
         LaunchLog.write("web url set (base=\(base.isEmpty ? "none" : base))")
         startStaticWatchdog()
+        // 内存诊断：写 gateway/mem.json，宿主 /api/health 与 AI 工具直接读
+        MemoryProbe.start()
 
         #if !targetEnvironment(simulator)
         /*
@@ -136,6 +140,7 @@ final class Bootstrap: ObservableObject {
          * 起不来只写日志 —— JVM 宿主会继续用内置弹幕源。
          */
         NodeBridge.startIfPossible()
+        startPythonWatchdog()
         #endif
     }
 
@@ -152,6 +157,16 @@ final class Bootstrap: ObservableObject {
         }
     }
 
+    /// Python 看门狗：20s 一次。没有 `.py` 站点时 ensureRunning 直接返回，
+    /// 因此「只用 jar/js 的用户」不会被强行拉起源码解释器；导入含 py 的配置后
+    /// 下一次 tick 就会启动，不需要重启 App。
+    private func startPythonWatchdog() {
+        pyWatchdog?.invalidate()
+        pyWatchdog = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { _ in
+            PythonRuntime.ensureRunning()
+        }
+    }
+
     /// 回前台：立刻补一次静态服务探活 + 唤醒 Java 看门狗 + node 弹幕服务探活。
     func appBecameActive() {
         LaunchLog.write("scene active; ensure static server + kick watchdog")
@@ -159,6 +174,11 @@ final class Bootstrap: ObservableObject {
         // node 的监听 socket 也会被挂起回收：探活失败就摘掉 danmaku-host.txt，
         // 让后端回退内置弹幕源（见 NodeBridge.ensureServing 的注释）。
         NodeBridge.ensureServing()
+        // pyrt 同理：挂起会回收监听 socket/线程，探活失败就在已初始化的
+        // 解释器里重跑 pyrt.py；配置里没有 .py 站点时这里直接返回。
+        #if !targetEnvironment(simulator)
+        PythonRuntime.ensureRunning()
+        #endif
         Task {
             await staticServer.ensureServing()
             /*

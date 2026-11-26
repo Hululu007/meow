@@ -25,6 +25,11 @@ enum PythonRuntime {
     private static let lock = NSLock()
     /** 后台启动被推迟时挂的回前台观察者（只挂一次） */
     private static var foregroundObserver: NSObjectProtocol?
+    /** 最近一次启动用的脚本/日志路径：看门狗重跑 pyrt 要用 */
+    private static var scriptPath = ""
+    private static var logPath = ""
+    /** ensureRunning 节流（回前台 + 20s 定时器都会打它） */
+    private static var lastEnsureAt: TimeInterval = 0
 
     /// 后台时把启动推迟到回前台（见 startIfPossible 的注释）。
     private static func scheduleOnForeground() {
@@ -62,6 +67,17 @@ enum PythonRuntime {
         }
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         /*
+         * 按需启动：配置里没有 .py 站点时不起 CPython。
+         * 常驻一套解释器（framework + stdlib + pyext）在老设备上占 30~50MB，
+         * 只用 jar/js 的用户没必要为它承担 jetsam 风险。导入含 py 的配置后，
+         * Bootstrap 的 20s 看门狗会调 ensureRunning() 补起来。
+         */
+        guard hasPySites() else {
+            record("disabled", "配置里没有 .py 站点，未启动内嵌 CPython")
+            LaunchLog.write("[py] no .py sites; skip start")
+            return
+        }
+        /*
          * ★ 后台不启动：App 一进后台，整个进程被系统挂起，25 秒探活窗口会被
          *   墙钟耗光；回前台时 Python 线程甚至还没拿到 CPU，这里就先记成
          *   failed 并把 jsRuntime 永久留在 drpy（2026-11-26 真机实测：
@@ -80,7 +96,7 @@ enum PythonRuntime {
         // C 扩展在 App.app/Frameworks/pyext（侧载器只对 Frameworks 递归签名；
         // 放 resources 里的 Mach-O 会因无签名 dlopen 失败）
         let pyext = Bundle.main.bundlePath + "/Frameworks/pyext"
-        let logPath = docs.appendingPathComponent("py.log")
+        let pyLogPath = docs.appendingPathComponent("py.log")
         setenv("PYTHONHOME", home.path, 1)
         setenv("PYTHONPATH",
                pyext + ":"
@@ -98,17 +114,19 @@ enum PythonRuntime {
          * 流是 None 时第一次 print 就抛 AttributeError，且 traceback 无处可写。
          * pyrt 的 __main__ 也会把致命异常直接写进这个文件。
          */
-        setenv("MEOW_PY_LOG", logPath.path, 1)
+        setenv("MEOW_PY_LOG", pyLogPath.path, 1)
         // 标记裁剪版运行时：pyrt 遇到 lxml/pyquery ImportError 时给出准确提示
         setenv("MEOW_PY_TRIM", "1", 1)
 
         // 每次启动保留上一轮的回溯（追加写），但别无限长：超过 64KB 直接重开
-        if let attrs = try? fm.attributesOfItem(atPath: logPath.path),
+        if let attrs = try? fm.attributesOfItem(atPath: pyLogPath.path),
            let sz = attrs[.size] as? NSNumber, sz.intValue > 64 * 1024 {
-            try? fm.removeItem(at: logPath)
+            try? fm.removeItem(at: pyLogPath)
         }
         record("starting", "")
-        started = meow_py_start(script.path, logPath.path) == 0
+        scriptPath = script.path
+        Self.logPath = pyLogPath.path
+        started = meow_py_start(script.path, pyLogPath.path) == 0
         LaunchLog.write("[py] start \(started ? "ok" : "failed") home=\(home.lastPathComponent)")
         if !started {
             record("failed", "pthread 创建失败（日志见 Documents/py.log）")
@@ -148,6 +166,72 @@ enum PythonRuntime {
         let tail = logTail()
         record("failed", tail.isEmpty ? "\(Int(timeout)) 秒内 /health 未就绪（Documents/py.log 为空）" : tail)
         LaunchLog.write("[py] log tail: \(tail.suffix(300))")
+        return false
+    }
+
+    /// 回前台 / 20s 定时看门狗：有 `.py` 站点时保证 pyrt 活着。
+    ///
+    /// <p>与 Node 的 `ensureServing` 对齐。iOS 挂起会回收监听 socket 与线程，
+    /// 原实现只在启动时拉起一次 —— 之后死了没有任何恢复路径，表现是
+    /// 「后台放一会儿回来，.py 源全报 jsRuntime 错」。
+    static func ensureRunning() {
+        let now = Date().timeIntervalSince1970
+        guard now - lastEnsureAt > 8 else { return }
+        lastEnsureAt = now
+        DispatchQueue.global(qos: .utility).async {
+            guard hasPySites() else { return }
+            lock.lock()
+            let running = started
+            let sp = scriptPath
+            let lp = logPath
+            lock.unlock()
+            if !running {
+                startIfPossible()
+                if waitHealthy(timeout: 12) {
+                    NodeBridge.writeJsRuntime(url: "http://127.0.0.1:\(port)")
+                }
+                return
+            }
+            if healthOK(timeout: 3) { return }
+            guard !sp.isEmpty, !lp.isEmpty else { return }
+            LaunchLog.write("[py] health dead after resume; rerun pyrt")
+            if meow_py_start(sp, lp) == 0, waitHealthy(timeout: 15) {
+                NodeBridge.writeJsRuntime(url: "http://127.0.0.1:\(port)")
+            }
+        }
+    }
+
+    /// 不写 policy 的轻量探活（看门狗用；避免每次前台探测都改 pyRuntime.at）。
+    private static func healthOK(timeout: TimeInterval) -> Bool {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/health") else { return false }
+        var ok = false
+        var req = URLRequest(url: url)
+        req.timeoutInterval = timeout
+        let sem = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: req) { _, resp, _ in
+            if let http = resp as? HTTPURLResponse { ok = http.statusCode == 200 }
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + timeout + 1)
+        return ok
+    }
+
+    /// 当前配置里有没有 `.py` 站点（决定要不要启动/保活 CPython）。
+    ///
+    /// <p>直接读 `gateway/config.sites.json`：导入写的就是这个文件，
+    /// 比问宿主再解析一遍省一次 HTTP，也能在宿主还没起来时使用。
+    private static func hasPySites() -> Bool {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let f = docs.appendingPathComponent("gateway/config.sites.json")
+        guard let data = try? Data(contentsOf: f),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let sites = root["sites"] as? [[String: Any]]
+        else { return false }
+        for s in sites {
+            let api = String(describing: s["api"] ?? "")
+            let bare = api.split(separator: "?").first.map(String.init) ?? api
+            if bare.hasSuffix(".py") || bare.hasPrefix("py:") { return true }
+        }
         return false
     }
 
