@@ -416,8 +416,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # ★ 含 pre-release（2026-11-26）：预发版的资产也要能被下一版继承，
+          #   否则「先放 Pre-release」带的新插件（如 pyrt）每次都要重建。
           PREV=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            -q '[.[] | select(.draft == false and .prerelease == false and (.tag_name|startswith("release-v")))]
+            -q '[.[] | select(.draft == false and (.tag_name|startswith("release-v")))]
                 | sort_by(.created_at) | .[-1].tag_name' 2>/dev/null || true)
           if [ -z "${PREV:-}" ]; then echo "::warning::找不到上一版正式 Release，跳过继承"; exit 0; fi
           echo "继承源：$PREV"

@@ -82,7 +82,7 @@ jobs:
           #   会出现"改了裁剪清单却复用旧 zip"——和上面 manifests 那次同款事故。
           # ★ pyrt（2026-11-26 补）：产物是「pyrt.py + vendor/ 里 pip 装好的依赖」，
           #   这两个输入都不在旧键里 → 改了 pyrt.py / requirements.txt 会复用旧 zip。
-          key: plugins-${{ runner.os }}-${{ inputs.plugins_only || 'all' }}-${{ hashFiles('client/package.json', 'deploy/units.json', 'server/build-plugin.ps1', 'server/build-plugin-danmu.ps1', 'server/build-plugin-drpy.ps1', 'server/build-plugin-ffmpeg.ps1', 'server/build-plugin-pyrt.ps1', 'server/pyrt/**', 'server/plugin-manifests/**', 'server/host/src/**', 'server/host/guard-libs/**', 'server/tools/guard/**', 'server/drpy/**') }}
+          key: plugins-${{ runner.os }}-${{ replace(inputs.plugins_only || 'all', ',', '-') }}-${{ hashFiles('client/package.json', 'deploy/units.json', 'server/build-plugin.ps1', 'server/build-plugin-danmu.ps1', 'server/build-plugin-drpy.ps1', 'server/build-plugin-ffmpeg.ps1', 'server/build-plugin-pyrt.ps1', 'server/pyrt/**', 'server/plugin-manifests/**', 'server/host/src/**', 'server/host/guard-libs/**', 'server/tools/guard/**', 'server/drpy/**') }}
 
       # ── 静态载荷缓存（2026-11-13 新增）────────────────────────────────
       # 有两类"与代码无关、却每版都重新下载/重建"的东西，实测占本 job 一半：
