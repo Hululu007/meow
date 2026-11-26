@@ -50,7 +50,7 @@ targets:
         type: folder
         buildPhase: resources
       # C 扩展模块必须进 Frameworks（侧载器只给它递归签名），见 prepare 脚本
-      - path: build/python/extensions
+      - path: build/python/pyext
         type: folder
         buildPhase:
           copyFiles:

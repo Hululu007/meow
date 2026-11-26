@@ -204,7 +204,7 @@ jobs:
           set -euo pipefail
           test -f client/apps/ios/build/python/runtime/pyrt.py || { echo "pyrt.py missing"; exit 1; }
           test -f client/apps/ios/build/python/Python.framework/Python || { echo "Python.framework missing"; exit 1; }
-          test -f client/apps/ios/build/python/extensions/_ssl.cpython-312-iphoneos.so || { echo "_ssl missing"; exit 1; }
+          test -f client/apps/ios/build/python/pyext/_ssl.cpython-312-iphoneos.so || { echo "_ssl missing"; exit 1; }
           du -sh client/apps/ios/build/python/Python.framework client/apps/ios/build/python/runtime
 
       - name: Generate Xcode project

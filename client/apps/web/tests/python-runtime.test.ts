@@ -47,8 +47,8 @@ describe('载荷组装', () => {
   })
 
   it('C 扩展进 Frameworks/pyext（侧载器只递归签名 Frameworks）', () => {
-    expect(prep).toContain('DYN="$OUT/extensions"')
-    expect(project).toContain('build/python/extensions')
+    expect(prep).toContain('DYN="$OUT/pyext"')
+    expect(project).toContain('build/python/pyext')
     expect(project).toContain('destination: frameworks')
     expect(pyrt).toContain('Frameworks/pyext')
   })
