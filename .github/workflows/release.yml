@@ -436,14 +436,24 @@ jobs:
               *)           echo "" ;;
             esac
           }
+          # ★ 先算出「本次构建过的前缀集合」再判断，不能边下边 compgen：
+          #   同一前缀可能对应多个资产（tv-node 三个 ABI），下载第一个后 compgen
+          #   就命中，后两个会被误判「本次已构建」跳过（2026-11-26 实测只剩 arm64）。
+          BUILT=""
+          for f in upload/*; do
+            [ -e "$f" ] || continue
+            bp="$(prefix_of "$(basename "$f")")"
+            [ -n "$bp" ] && BUILT="$BUILT $bp"
+          done
+          BUILT=" $(echo $BUILT | tr ' ' '\n' | sort -u | tr '\n' ' ') "
+
           while IFS= read -r name; do
             [ -z "$name" ] && continue
             p="$(prefix_of "$name")"
             [ -n "$p" ] || continue
-            if compgen -G "upload/${p}-*" >/dev/null 2>&1; then
-              echo "本次已构建 ${p}，跳过 $name"
-              continue
-            fi
+            case "$BUILT" in
+              *" $p "*) echo "本次已构建 ${p}，跳过 $name"; continue ;;
+            esac
             echo "继承 $name"
             gh release download "$PREV" -p "$name" -D upload/ --clobber
           done < <(gh release view "$PREV" --json assets -q '.assets[].name')
@@ -545,6 +555,22 @@ jobs:
             echo "$NOTES"
             echo "MEOW_EOF"
           } >> "$GITHUB_OUTPUT"
+      # ★ 清掉同名旧 draft（2026-11-26）：draft 按 tag 复用，早期失败轮上传的
+      #   旧版本插件（实测 apiserver-1.2.22.zip / drpy-0.1.1.zip）会残留进最终 Release。
+      - name: 清理同名旧 draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          IS_DRAFT=$(gh release view "$GITHUB_REF_NAME" --json isDraft -q '.isDraft' 2>/dev/null || echo missing)
+          if [ "$IS_DRAFT" = "true" ]; then
+            gh release delete "$GITHUB_REF_NAME" --yes
+            echo "已删除旧 draft：$GITHUB_REF_NAME"
+          else
+            echo "没有可清理的旧 draft（状态：$IS_DRAFT）"
+          fi
+
       - name: 建 Release
         uses: softprops/action-gh-release@v2
         with:
