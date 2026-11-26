@@ -49,6 +49,7 @@ import { addLiveSource, fetchLive, fetchLivePlaylist, proxyStream, type LiveChan
 import { isTvEnv } from '@/composables/useCardCols'
 import {
   setIosNavGesture,
+  setIosVolumeHud,
   setSystemBrightness,
   setSystemVolume,
   systemBrightness,
@@ -1479,9 +1480,23 @@ function onStagePointerMove(e: PointerEvent) {
   e.preventDefault()
 }
 
+/**
+ * 音量手势期间临时接管音量 UI（见播放页同名函数：常驻挂会把系统音量条也压掉）。
+ */
+let volHudTimer: number | undefined
+function pulseVolumeHud() {
+  setIosVolumeHud(true)
+  if (volHudTimer) clearTimeout(volHudTimer)
+  volHudTimer = window.setTimeout(() => {
+    volHudTimer = undefined
+    setIosVolumeHud(false)
+  }, 1200)
+}
+
 /** 把当前手势值写进系统（拿不到系统接口时退回元素音量 / 遮罩压暗） */
 function applySwipe(kind: 'volume' | 'brightness', pct: number) {
   if (kind === 'volume') {
+    pulseVolumeHud()
     const ok = setSystemVolume(pct)
     if (!ok) {
       // 浏览器/PC：退回元素音量（至少能调，只是不影响系统）
@@ -2456,6 +2471,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   // 恢复原生边缘返回手势（直播页里是关掉的）
   setIosNavGesture(true)
+  if (volHudTimer) clearTimeout(volHudTimer)
+  setIosVolumeHud(false)
   // 先停媒体再拆 hls（见 stopMedia 的说明）
   if (bufWatchdogTimer) { clearInterval(bufWatchdogTimer); bufWatchdogTimer = undefined }
   stopMedia()

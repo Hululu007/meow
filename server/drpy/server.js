@@ -277,6 +277,9 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, {
       ok: true,
       service: 'meow-drpy',
+      // caps：本运行时只执行 .js；.py 需要 pyrt（宿主据此给准确错误）
+      py: false,
+      js: true,
       // ★ 这个接口必须在**主线程**回答且不查任何源状态。
       // 改前它在主线程里等 spider 缓存，而 spider 一旦卡在 sync-fetch 上，
       // 连健康检查都超时 → 容器报 unhealthy 但 CPU 只有 2%（实测 OECT）。

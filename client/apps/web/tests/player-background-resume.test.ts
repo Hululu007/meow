@@ -182,12 +182,14 @@ describe('原生音频会话时机', () => {
     expect(live).toContain('grid h-9 w-9 place-items-center rounded-full')
   })
 
-  it('侧键改音量：KVO 回传页面弹浮层（MPVolumeView 会抑制系统 HUD）', () => {
+  it('音量 UI 按需接管：只在手势期间挂 MPVolumeView，平时系统 HUD 正常', () => {
     const vol = read(join(ROOT, 'client', 'apps', 'ios', 'Meow', 'SystemVolume.swift'))
-    expect(vol).toContain('"outputVolume"')
-    expect(vol).toContain('__meowVolumeChanged')
-    expect(player).toContain('__meowVolumeChanged =')
-    expect(player).toContain('function onIosVolumeChanged(')
+    // 不再做 KVO 浮层（真机上不触发），改为手势期间临时 attach
+    expect(vol).not.toContain('outputVolume"')
+    expect(player).toContain('function pulseVolumeHud()')
+    expect(player).toContain('pulseVolumeHud()')
+    expect(player).toContain('setIosVolumeHud(true)')
+    expect(player).toContain('setIosVolumeHud(false)')
   })
 
   it('暂停浮层中央播放按钮在双击暂停后有静默期', () => {

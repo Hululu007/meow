@@ -32,6 +32,7 @@ import {
   setSystemVolume,
   restoreSystemBrightness,
   setIosNavGesture,
+  setIosVolumeHud,
   iosPowerTimer,
   tvCancelPowerTimer,
   tvPowerTimerState,
@@ -342,13 +343,38 @@ const showHelp = ref(false)
 const sleepAt = ref(0)
 let sleepTimer: number | undefined
 const sleepMenu = ref(false)
+/** 分钟选项容器：展开后滚进可视区（2026-11-26 用户：需要自己上滑才看得到） */
+const sleepMinEl = ref<HTMLElement | null>(null)
+
+function toggleSleepMenu() {
+  sleepMenu.value = !sleepMenu.value
+  if (!sleepMenu.value) return
+  void nextTick(() => {
+    try {
+      sleepMinEl.value?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    } catch {
+      /* 老内核不支持 options 就退化成瞬时 */
+      sleepMinEl.value?.scrollIntoView()
+    }
+  })
+}
 
 /** 剩余分钟（用于菜单里显示"还剩 X 分钟"） */
 const sleepLeft = ref(0)
 
 /** 当前端能做到的动作与预选项 */
 const powerOptions = powerActionsFor(resolvePowerCaps())
-const powerAction = ref<PowerAction>(currentDefaultPowerAction())
+/**
+ * 预选动作必须落在 powerOptions 里（2026-11-26 真机：iOS 偶尔显示"倒计时 xx 退出"）。
+ *
+ * <p>`currentDefaultPowerAction()` 按形态给手机/平板选 `quit`，但 iOS 壳能力表里
+ * quit=false —— 菜单只有「仅暂停」，预选值却是退出应用。用户不点动作直接点分钟，
+ * 就带着 quit 走：浮层写"将在 N 分钟后退出应用"，到点 desktopQuit 是空操作，
+ * 实际只暂停。
+ */
+const powerAction = ref<PowerAction>(
+  powerOptions.includes(currentDefaultPowerAction()) ? currentDefaultPowerAction() : 'pause',
+)
 
 /** 本端到点执行（PC / Web；TV 由原生层回调 onPowerFire） */
 function firePowerLocally(action: PowerAction) {
@@ -398,6 +424,8 @@ function setPower(action: PowerAction, minutes: number) {
   }
 
   let act = action
+  // 能力表里没有的动作一律降级为"仅暂停"（见 powerAction 初始化处的真机说明）
+  if (!powerOptions.includes(act)) act = 'pause'
 
   // TV：原生层计时。关机先探测 root，失败当场降级。
   if (isTvShell()) {
@@ -3159,8 +3187,27 @@ function scheduleSwipeHintHide(ms = 900) {
 }
 
 /** 把当前手势值写进系统（拿不到系统接口时退回元素音量 / 只提示） */
+/**
+ * 音量手势期间临时接管音量 UI。
+ *
+ * ★ 2026-11-26 真机第二轮：常驻挂 MPVolumeView 会连播放页的系统音量条也压掉，
+ *   而 KVO 回传在真机上没触发（按侧键依然什么都没有）。改成只在竖滑/底栏滑条
+ *   操作时挂 1.2s，随手势结束摘掉 —— 侧键/控制中心走系统原生 HUD，不再被抑制。
+ */
+let volHudTimer: number | undefined
+function pulseVolumeHud() {
+  if (!isIosShell()) return
+  setIosVolumeHud(true)
+  if (volHudTimer) clearTimeout(volHudTimer)
+  volHudTimer = window.setTimeout(() => {
+    volHudTimer = undefined
+    setIosVolumeHud(false)
+  }, 1200)
+}
+
 function applySwipe(kind: 'volume' | 'brightness', pct: number) {
   if (kind === 'volume') {
+    pulseVolumeHud()
     const ok = hasSystemVolume()
     if (!ok && IPHONE_NO_VOLUME) {
       /*
@@ -4028,25 +4075,6 @@ function onHeatClick(e: MouseEvent) {
  * <p>必须有系统桥时写系统音量（TV 的 AudioManager / iOS 的 MPVolumeView）：
  * iPhone 上 `video.volume = x` 是静默无效的，只改元素音量等于假控件。
  */
-/** 最近一次"应用主动设系统音量"的时间（KVO 回调去重用） */
-let lastVolumeSetAt = 0
-
-/**
- * 侧键/控制中心改音量时的浮层。
- *
- * <p>为什么需要：iOS 上窗口里挂了 MPVolumeView（我们用它写系统音量）后，
- * 系统音量 HUD 就不弹了；用户按侧键"音量变了但没有任何提示"（2026-11-25 真机）。
- * 原生侧 KVO AVAudioSession.outputVolume，变化时调这里，弹播放页自己的浮层。
- */
-function onIosVolumeChanged(pct: number) {
-  if (!isMobileForm() || isTvShell()) return
-  // 应用自己滑出来的变化已经有浮层了，别重置计时
-  if (Date.now() - lastVolumeSetAt < 900) return
-  const p = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)))
-  swipeHint.value = { kind: 'volume', pct: p, system: true }
-  scheduleSwipeHintHide()
-}
-
 function applyVolumePct(pct: number, opts: { save?: boolean } = {}) {
   const p = Math.max(0, Math.min(100, Math.round(pct)))
   volume.value = p / 100
@@ -4062,11 +4090,7 @@ function applyVolumePct(pct: number, opts: { save?: boolean } = {}) {
     v.muted = p === 0
   }
   muted.value = p === 0
-  if (sys) {
-    setSystemVolume(p)
-    // 标记"这次是应用自己调的"：KVO 回调别再弹一次浮层
-    lastVolumeSetAt = Date.now()
-  }
+  if (sys) setSystemVolume(p)
   if (opts.save !== false) {
     // 高频项：静默落盘，不广播事件（否则会刷屏 WebDAV 同步）
     savePrefs({ volume: volume.value, muted: muted.value }, { silent: true })
@@ -4075,6 +4099,7 @@ function applyVolumePct(pct: number, opts: { save?: boolean } = {}) {
 }
 
 function onVolumeInput(e: Event) {
+  pulseVolumeHud()
   applyVolumePct(Number((e.target as HTMLInputElement).value))
 }
 
@@ -6804,12 +6829,6 @@ onMounted(() => {
    * 离开时在 onUnmounted 里恢复。
    */
   setIosNavGesture(false)
-  /*
-   * 侧键/控制中心改系统音量：MPVolumeView 挂在窗口上会把系统音量 HUD 抑制掉，
-   * 所以由原生 KVO 回调这里，弹播放页自己的音量浮层（对齐主流 App）。
-   */
-  ;(window as unknown as { __meowVolumeChanged?: (pct: number) => void }).__meowVolumeChanged =
-    onIosVolumeChanged
   document.addEventListener('fullscreenchange', onFullscreenChange)
   window.addEventListener('resize', () => {
     dm.value?.resize()
@@ -6960,10 +6979,9 @@ onBeforeUnmount(() => {
   restoreSystemBrightness()
   // 恢复原生边缘返回手势（播放页里是关掉的）
   setIosNavGesture(true)
-  {
-    const w = window as unknown as { __meowVolumeChanged?: (pct: number) => void }
-    if (w.__meowVolumeChanged === onIosVolumeChanged) w.__meowVolumeChanged = undefined
-  }
+  // 摘掉 MPVolumeView：把系统音量 HUD 还给其它页面
+  if (volHudTimer) clearTimeout(volHudTimer)
+  setIosVolumeHud(false)
   {
     const w = window as unknown as { __meowIosActive?: () => void }
     if (w.__meowIosActive === iosActiveBridge) w.__meowIosActive = undefined
@@ -8836,7 +8854,7 @@ defineExpose({
       </button>
       <div class="my-1 h-px bg-white/10" />
       <!-- 定时电源动作：关机 / 休眠 / 退出应用 / 仅暂停 -->
-      <button class="menu-item" @click.stop="sleepMenu = !sleepMenu">
+      <button class="menu-item" @click.stop="toggleSleepMenu">
         <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
         </svg>
@@ -8854,15 +8872,18 @@ defineExpose({
           {{ POWER_ACTION_LABEL[a] }}{{ a === 'shutdown' ? '（需要 root）' : '' }}
         </button>
         <div class="my-1 h-px bg-white/10" />
-        <button
-          v-for="m in POWER_TIMER_MINUTES"
-          :key="m"
-          class="block w-full rounded px-2 py-1 text-left text-[11px] transition hover:bg-white/10"
-          :class="(m === 0 && !sleepAt) || (m > 0 && sleepLeft === m) ? 'text-accent' : 'text-ink-2'"
-          @click="setPower(powerAction, m); sleepMenu = false"
-        >
-          {{ m === 0 ? '关闭定时' : `${m} 分钟后${POWER_ACTION_LABEL[powerAction]}` }}
-        </button>
+        <!-- 分钟选项：展开后自动滚进可视区（见 toggleSleepMenu） -->
+        <div ref="sleepMinEl">
+          <button
+            v-for="m in POWER_TIMER_MINUTES"
+            :key="m"
+            class="block w-full rounded px-2 py-1 text-left text-[11px] transition hover:bg-white/10"
+            :class="(m === 0 && !sleepAt) || (m > 0 && sleepLeft === m) ? 'text-accent' : 'text-ink-2'"
+            @click="setPower(powerAction, m); sleepMenu = false"
+          >
+            {{ m === 0 ? '关闭定时' : `${m} 分钟后${POWER_ACTION_LABEL[powerAction]}` }}
+          </button>
+        </div>
       </div>
 
       <!-- 快捷键说明：十几条快捷键此前没有任何入口 -->

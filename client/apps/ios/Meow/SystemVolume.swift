@@ -24,12 +24,7 @@ enum SystemVolume {
         frame: CGRect(x: -2000, y: -2000, width: 40, height: 40)
     )
     private static var retryCount = 0
-    /// 应用主动设置音量的时刻：KVO 回调据此去重（不要自己弹两次浮层）
-    static var lastProgrammaticAt: TimeInterval = 0
-
     static func attach() {
-        // 侧键/控制中心改音量也要有反馈（见 VolumeObserver）
-        VolumeObserver.shared.start()
         guard volumeView.superview == nil else { return }
         volumeView.alpha = 0.01
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
@@ -70,44 +65,9 @@ enum SystemVolume {
             LaunchLog.write("system volume: slider missing (write \(pct))")
             return
         }
-        lastProgrammaticAt = Date().timeIntervalSince1970
         s.value = Float(max(0, min(100, pct))) / 100
         // 两个事件都发：不同 iOS 版本上 MPVolumeView 只认其中一个
         s.sendActions(for: .valueChanged)
         s.sendActions(for: .touchUpInside)
-    }
-}
-
-/// 系统音量变化观察者（侧键 / 控制中心 / 应用内设置都会触发）。
-///
-/// <p>窗口里挂了 MPVolumeView 之后，iOS 就不再弹系统音量 HUD（业界已知行为），
-/// 用户按侧键会"音量变了但没有任何提示"。这里 KVO AVAudioSession.outputVolume，
-/// 把变化回传给页面，由播放页弹自己的音量浮层。
-private final class VolumeObserver: NSObject {
-    static let shared = VolumeObserver()
-    private var started = false
-
-    func start() {
-        guard !started else { return }
-        started = true
-        AVAudioSession.sharedInstance().addObserver(
-            self, forKeyPath: "outputVolume", options: [.new], context: nil
-        )
-    }
-
-    override func observeValue(forKeyPath keyPath: String?,
-                               of object: Any?,
-                               change: [NSKeyValueChangeKey: Any]?,
-                               context: UnsafeMutableRawPointer?) {
-        guard keyPath == "outputVolume" else { return }
-        // 应用自己 set() 触发的（手势/底栏滑条）：页面已有浮层，不重复回调
-        if Date().timeIntervalSince1970 - SystemVolume.lastProgrammaticAt < 0.8 { return }
-        let pct = Int((AVAudioSession.sharedInstance().outputVolume * 100).rounded())
-        LaunchLog.write("system volume changed -> \(pct)")
-        DispatchQueue.main.async {
-            WebViewRegistry.view?.evaluateJavaScript(
-                "window.__meowVolumeChanged&&window.__meowVolumeChanged(\(pct))",
-                completionHandler: nil)
-        }
     }
 }
