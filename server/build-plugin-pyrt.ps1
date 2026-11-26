@@ -46,12 +46,23 @@ New-Item -ItemType Directory -Force -Path $vendor | Out-Null
 #   静默跳过，Release 里就没有 pyrt-*.zip，而应用内只是"看不到这个插件"，
 #   完全没有线索。所以这里逐个探一遍，探不到就明确抛错。
 $pyExe = $null; $pyPre = @()
+
+# 显式覆盖：vendor 里的 C 扩展绑**次版本号**，本地用 3.10 打、发行用 3.12 打，
+# 会得到两个互不兼容的包。要对齐发行版就设 PYRT_PYTHON=py -3.12 再跑。
+if ($env:PYRT_PYTHON) {
+    $parts = $env:PYRT_PYTHON -split '\s+'
+    $pyExe = $parts[0]
+    $pyPre = @($parts | Select-Object -Skip 1)
+    Write-Host "  使用 PYRT_PYTHON=$env:PYRT_PYTHON" -ForegroundColor DarkGray
+}
+if (-not $pyExe) {
 foreach ($cand in @(@('python'), @('py', '-3'), @('python3'))) {
     $exe = $cand[0]
     $pre = @($cand | Select-Object -Skip 1)
     if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { continue }
     $ver = & $exe @pre -c "import sys;print(sys.version_info[0])" 2>$null
     if ($LASTEXITCODE -eq 0 -and "$ver".Trim() -eq '3') { $pyExe = $exe; $pyPre = $pre; break }
+}
 }
 if (-not $pyExe) {
     throw "找不到可用的 Python 3（试过 python / py -3 / python3）。装了 Python 3 再跑，否则 pyrt 插件不会出现在 Release 里。"

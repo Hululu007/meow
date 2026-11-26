@@ -1,5 +1,5 @@
 {
-  "_comment": "Python 源侧车：.py 本地执行、.js 转发给本机 drpy。协议与 drpy 同形（POST /{site}/{action} + X-DRPY-Api），所以宿主 callScriptRuntime 一行都不用改。脚本放在 <appData>/py-scripts（私有内容，不入公开库）。",
+  "_comment": "Python 源侧车：.py 本地执行、.js 转发给本机 drpy。协议与 drpy 同形（POST /{site}/{action} + X-DRPY-Api），所以宿主 callScriptRuntime 一行都不用改。脚本放在 <appData>/py-scripts（私有内容，不入公开库）。★ 用户机器的 Python 次版本必须与打包时一致（CI 钉 3.12）：vendor 里的 lxml / charset_normalizer / pycryptodome 是带次版本号的 C 扩展（*.cp312-win_amd64.pyd），版本不符会 ImportError。",
   "id": "pyrt",
   "name": "Python 脚本运行时",
   "capability": "runtime",

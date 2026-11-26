@@ -80,7 +80,9 @@ jobs:
           # ★ guard-libs / tools/guard（2026-11-25 补）：apiserver 插件会按平台裁剪
           #   guard-libs（正则清单在 trim 脚本里、helper 源码在 tools/guard），漏进键里
           #   会出现"改了裁剪清单却复用旧 zip"——和上面 manifests 那次同款事故。
-          key: plugins-${{ runner.os }}-${{ inputs.plugins_only || 'all' }}-${{ hashFiles('client/package.json', 'deploy/units.json', 'server/build-plugin.ps1', 'server/build-plugin-danmu.ps1', 'server/build-plugin-drpy.ps1', 'server/build-plugin-ffmpeg.ps1', 'server/plugin-manifests/**', 'server/host/src/**', 'server/host/guard-libs/**', 'server/tools/guard/**', 'server/drpy/**') }}
+          # ★ pyrt（2026-11-26 补）：产物是「pyrt.py + vendor/ 里 pip 装好的依赖」，
+          #   这两个输入都不在旧键里 → 改了 pyrt.py / requirements.txt 会复用旧 zip。
+          key: plugins-${{ runner.os }}-${{ inputs.plugins_only || 'all' }}-${{ hashFiles('client/package.json', 'deploy/units.json', 'server/build-plugin.ps1', 'server/build-plugin-danmu.ps1', 'server/build-plugin-drpy.ps1', 'server/build-plugin-ffmpeg.ps1', 'server/build-plugin-pyrt.ps1', 'server/pyrt/**', 'server/plugin-manifests/**', 'server/host/src/**', 'server/host/guard-libs/**', 'server/tools/guard/**', 'server/drpy/**') }}
 
       # ── 静态载荷缓存（2026-11-13 新增）────────────────────────────────
       # 有两类"与代码无关、却每版都重新下载/重建"的东西，实测占本 job 一半：
@@ -136,6 +138,17 @@ jobs:
         with:
           path: server/tools/dex2jar
           key: dex2jar-${{ runner.os }}-${{ hashFiles('deploy/scripts/fetch-dex2jar.ps1') }}
+
+      # ★ pyrt 的 vendor 里 lxml / charset_normalizer / pycryptodome 都是**带次版本号
+      #   的 C 扩展**（实测本机产出 `_elementpath.cp310-win_amd64.pyd`）：构建机 Python
+      #   的次版本直接决定用户机器能不能 import。runner 预装的 python 随镜像轮换
+      #   （3.9 / 3.12 都出现过），不钉死就会打出「装上了但 ImportError」的包 ——
+      #   这一点和 node 插件自带 node.exe 的确定性完全不同。
+      #   改了这里的版本，必须同步改 build-release.ps1 里 pyrt 的 Desc 和
+      #   server/plugin-manifests/pyrt.manifest.json 的说明。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       # 插件列表读 deploy/units.json（唯一真源），不在这里写死脚本名。
       - name: 构建插件

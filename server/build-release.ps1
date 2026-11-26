@@ -193,11 +193,16 @@ Add-Plugin -Id 'drpy' `
 # 所以**不能**写 Requires —— 清单里没有 id 为 python 的插件，写了装不上。
 # Python 依赖（requests/lxml/pyquery/pycryptodome）已在打包时进 vendor/，
 # 用户不需要 pip install。
+#
+# ★ 但 Python **次版本必须对得上**：vendor 里 lxml / charset_normalizer /
+#   pycryptodome 都是带次版本号的 C 扩展（*.cp312-win_amd64.pyd）。构建机是 3.12，
+#   用户机器就得是 3.12 —— 3.10/3.13 会 ImportError，症状是"插件装上了但源跑不了"。
+#   CI 用 actions/setup-python 钉 3.12，Desc 也要把这条写给用户。
 Add-Plugin -Id 'pyrt' `
     -Dir (Join-Path $pluginsRoot 'pyrt') `
     -Version (Get-ManifestVersion 'pyrt') `
     -DisplayName 'Python 脚本运行时' `
-    -Desc '执行 .py 源（已内置 requests/lxml/pyquery/pycryptodome），需要系统 Python 3'
+    -Desc '执行 .py 源（已内置 requests/lxml/pyquery/pycryptodome），需要系统 Python 3.12（C 扩展按次版本编译）'
 
 # ffmpeg：浏览器内核没有 HEVC 解码器，用户的 MKV（H.265）在 PC/Web 端要靠它转码。
 # tool 型插件，装好后应用会把 {pluginDir}/ffmpeg.exe 写进 policy.json 的
