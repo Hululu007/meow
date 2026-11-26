@@ -3441,6 +3441,88 @@ const modState = ref<Record<string, any>>({})
 const modMsg = ref('')
 const modBusy = ref(false)
 
+// ---------------------------------------------------------------- Python 模块（TV）
+//
+// 与 node 模块完全独立：另一个 APK（com.meow.runtime.python）、另一条版本线，
+// 只有真需要 .py 源的人才装（约 20MB）。逻辑刻意比 node 版精简：不做候选线路
+// 逐个试（Python 模块在国内也走同一份 GitHub 加速，失败会明确报错）。
+const pyModState = ref<Record<string, any>>({})
+const pyModMsg = ref('')
+const pyModBusy = ref(false)
+
+function refreshPyModule() {
+  const b = bridge()
+  if (!b || typeof (b as any).pyModuleState !== 'function') return
+  try {
+    pyModState.value = JSON.parse((b as any).pyModuleState())
+  } catch {
+    /* 桥坏了就当没有 */
+  }
+}
+if (tvMode && tvModule) refreshPyModule()
+
+/**
+ * 检查 → 下载 → 交给系统安装器。
+ *
+ * 下载沿用 AppUpdater 的状态机（idle|downloading|verifying|ready|failed|cancelled），
+ * 和 node 模块同一套轮询节奏：700ms 一次、最多约 3 分钟。
+ */
+async function pyModInstall() {
+  const b = bridge() as any
+  if (!b || pyModBusy.value || typeof b.pyModuleCheck !== 'function') return
+  pyModBusy.value = true
+  pyModMsg.value = '检查清单…'
+  try {
+    const src = (await getUpdateSource()) || ''
+    const tok = getUpdateToken()
+    let chk: Record<string, any> = {}
+    try {
+      chk = JSON.parse(String(b.pyModuleCheck(src, tok) || '{}'))
+    } catch {
+      chk = { ok: false, error: '检查失败' }
+    }
+    if (chk.ok === false) {
+      pyModMsg.value = '检查失败：' + (chk.error || '未知错误')
+      return
+    }
+    const curVer = String(pyModState.value.version || '')
+    const latestVer = String(chk.version || '')
+    if (curVer && latestVer && !isNewer(latestVer, curVer)) {
+      pyModMsg.value = `已是最新（v${curVer}）`
+      return
+    }
+    if (!chk.url) {
+      pyModMsg.value = '检查失败：清单缺下载地址'
+      return
+    }
+    if (typeof b.pyModuleDownloadCandidates !== 'function') {
+      pyModMsg.value = '当前版本不支持安装 Python 模块'
+      return
+    }
+    pyModMsg.value = `下载中（${fmtSize(Number(chk.size) || 0)}，${chk.abi}）…`
+    const assetCands = downloadCandidates(String(chk.url)).join('|')
+    b.pyModuleDownloadCandidates(src, tok, assetCands)
+    for (let i = 0; i < 260; i++) {
+      await new Promise((r) => setTimeout(r, 700))
+      const st = JSON.parse(b.appUpdateState())
+      if (st.state === 'ready') {
+        pyModMsg.value = '下载完成，请在系统弹窗确认安装'
+        return
+      }
+      if (st.state === 'failed' || st.state === 'cancelled') {
+        pyModMsg.value = '下载失败：' + (st.error || st.state)
+        return
+      }
+    }
+    pyModMsg.value = '下载超时'
+  } catch (e) {
+    pyModMsg.value = '安装失败：' + String(e)
+  } finally {
+    pyModBusy.value = false
+    setTimeout(refreshPyModule, 3000)
+  }
+}
+
 function refreshModule() {
   const b = bridge()
   if (!b) return
@@ -6397,6 +6479,40 @@ onBeforeUnmount(() => {
       <p class="mt-2 text-[11px] leading-relaxed text-ink-3">
         关闭后弹幕改用内置聚合站（境外源可能不可用），播放不受影响。
       </p>
+
+      <!-- Python 运行时（.py 源用）：独立 APK，与 node 模块互不影响 -->
+      <div class="mt-3 border-t border-line pt-3" data-py-runtime>
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span class="text-xs font-medium text-ink-2">Python 运行时</span>
+          <span class="text-[11px] text-ink-3">
+            {{
+              pyModState.installed
+                ? pyModState.running
+                  ? `运行中 · 端口 ${pyModState.port}`
+                  : `已安装 v${pyModState.version || '-'}`
+                : '未安装'
+            }}
+          </span>
+        </div>
+        <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+          约 20MB。装它之前 <code>.py</code> 源会提示「需要 Python 运行时」；
+          装好后本机网关会把它接管为脚本运行时（同时继续服务 <code>.js</code>）。
+          仅 arm64 / armeabi-v7a 设备可用。
+        </p>
+        <p v-if="pyModState.error" class="mt-1.5 text-[11px] text-ink-3">
+          最近错误：{{ pyModState.error }}
+        </p>
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-dim"
+            :disabled="pyModBusy"
+            @click="pyModInstall()"
+          >
+            {{ pyModState.installed ? '检查更新' : '下载并安装' }}
+          </button>
+          <span v-if="pyModMsg" class="text-[11px] text-accent">{{ pyModMsg }}</span>
+        </div>
+      </div>
 
       <!-- 弹幕载荷（danmu_api）：与运行时模块分开装、分开升版本 -->
       <div class="mt-3 border-t border-line pt-3" data-danmu-payload>

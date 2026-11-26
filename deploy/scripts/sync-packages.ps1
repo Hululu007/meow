@@ -485,7 +485,7 @@ if ($scope -contains 'plugins') {
     # 插件 zip：apiserver-<ver>.zip / drpy-0.1.0.zip / ...
     # 它们的版本号各自独立（drpy 0.1.0、danmu 1.0.0），不能套用应用版本，
     # 所以从 zip 资产里按名字前缀匹配，版本从现有条目沿用（首次则从 manifest 读）。
-    $pluginIds = @('apiserver', 'danmu-api', 'drpy', 'ffmpeg', 'node')
+    $pluginIds = @('apiserver', 'danmu-api', 'drpy', 'ffmpeg', 'node', 'pyrt')
     foreach ($pid2 in $pluginIds) {
         $a = Find-Asset "$pid2-*.zip"
         if (-not $a) {
@@ -509,6 +509,13 @@ if ($scope -contains 'plugins') {
         #   之前"沿用旧值"让它们从 1.1.x 起全是 hidden=true，
         #   全新 PC 的「本机插件」列表因此是空的（找不到影视后端）。
         $entry.hidden = $false
+        # 首次发布没有旧条目可沿用，display_name 会空着 —— 插件列表里只剩一个 id。
+        # pyrt 尤其要写清楚：它**不自带** python，靠系统的（manifest 的 execFallback
+        # 依次试 ../python/python.exe → python3 → python.exe），装了没 python 会静默起不来。
+        if ($pid2 -eq 'pyrt') {
+            $entry.display_name = 'Python 运行时'
+            $entry.desc = '让 .py 源在本机执行（需系统已装 Python 3.10+）；.js 源由它转发给 drpy'
+        }
         # 其余字段沿用原值（requires / display_name / desc 是人工维护的）
         if ($existing -and $existing.packages.$pid2) {
             $old = $existing.packages.$pid2
@@ -571,6 +578,48 @@ if (($scope -contains 'meow-tv') -or ($scope -contains 'tv-module')) {
         #   min_sdk = 26（模块 APK 的 minSdk，低于它装不上）。
         $entry.min_app_version = '1.1.0'
         $entry.min_sdk = 26
+        if ($existing -and $existing.packages.$id) {
+            $old = $existing.packages.$id
+            if ($null -ne $old.hidden) { $entry.hidden = $old.hidden }
+            if ($old.display_name) { $entry.display_name = $old.display_name }
+            if ($old.desc) { $entry.desc = $old.desc }
+        }
+        $packages[$id] = $entry
+        Write-Host "  $id  <- $($a.name)" -ForegroundColor Green
+    }
+
+    # ---------------------------------------------------------------- TV Python 模块
+    #
+    # 资产名 tv-python-<flavor>-<ver>.apk，flavor 是 Chaquopy 的变体名
+    # （arm64 / v7a），**不是完整 ABI**。而 platform 必须写完整 ABI
+    # （android-arm64-v8a / android-armeabi-v7a）—— 客户端按
+    # Build.SUPPORTED_ABIS 硬匹配，写成 flavor 名一条都选不中。
+    #
+    # 没有 x86_64：Chaquopy 只给了 arm64/v7a 两个 flavor。x86_64 设备
+    # （MuMu 等）靠 abilist 里的 arm64-v8a 走 ARM 翻译，所以只发这两条。
+    #
+    # 版本是三段 semver（0.1.0），与 tv-node 的四段不同，正则分开写。
+    foreach ($pair in @(@('arm64', 'arm64-v8a'), @('v7a', 'armeabi-v7a'))) {
+        $flavor = $pair[0]
+        $abi = $pair[1]
+        $id = "tv-python-$abi"
+        $a = Find-Asset "tv-python-$flavor-*.apk"
+        if (-not $a) {
+            Write-Host "  · $id：本次无资产，保留原条目" -ForegroundColor DarkGray
+            continue
+        }
+        $v = if ($a.name -match "tv-python-$flavor-(\d+\.\d+\.\d+)\.apk") {
+            $Matches[1]
+        } elseif ($existing -and $existing.packages.$id) {
+            $existing.packages.$id.version
+        } else { '0.0.0' }
+
+        $entry = New-Entry $a $v @("android-$abi") $id -Notes "TV Python 运行时 $abi $v"
+        $entry.display_name = 'Python 运行时'
+        $entry.min_app_version = '1.1.0'
+        $entry.min_sdk = 26
+        # 只有真需要 .py 源的人会装它（~20MB），默认在设置页折叠区可见但不强推
+        $entry.hidden = $false
         if ($existing -and $existing.packages.$id) {
             $old = $existing.packages.$id
             if ($null -ne $old.hidden) { $entry.hidden = $old.hidden }

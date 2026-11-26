@@ -22,6 +22,7 @@ from pathlib import Path
 MD5_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 SPIDER_PREFIX = "com/github/catvod/spider/"
+PLACEHOLDER = "__SOURCE_BASE__"
 
 
 class Report:
@@ -84,6 +85,13 @@ def check_url(url: str, what: str, rep: Report, allow_php: bool = True) -> urlli
         return None
     if md5 and not MD5_RE.match(md5):
         rep.error(f"{what} 的 md5 不是 32 位 hex：{md5}")
+    # 占位符前缀是镜像内置源的正常形态：entrypoint.sh 启动时替换成
+    # MEOW_SOURCES_BASE。离线校验按模板放过，但仍检查 md5 段与后缀。
+    if base.startswith(PLACEHOLDER):
+        tail = base[len(PLACEHOLDER):]
+        if not tail.startswith("/"):
+            rep.error(f"{what} 的占位符后必须紧跟 /：{url}")
+        return urllib.parse.urlparse("http://placeholder" + tail)
     u = urllib.parse.urlparse(base)
     if u.scheme not in ("http", "https"):
         rep.error(f"{what} 必须是 http(s) 绝对地址：{url}")
@@ -108,6 +116,11 @@ def local_file_for(url: str, root: Path, base_url: str) -> Path | None:
     base, _ = split_md5(url)
     u = urllib.parse.urlparse(base)
     path = urllib.parse.unquote(u.path)
+    # 多仓：仓内 URL 是 __SOURCE_BASE__/packs/<id>/xxx，占位符后就是相对路径
+    if base.startswith(PLACEHOLDER):
+        rel = base[len(PLACEHOLDER):].split("?", 1)[0].lstrip("/")
+        if rel:
+            return root / rel
     if base_url:
         b = base_url.rstrip("/") + "/"
         if base.startswith(b):
@@ -310,6 +323,51 @@ def check_config(
         print(f"[OK]   {label}: {len(sites)} 站，spider={'ok' if spider else 'missing'}")
 
 
+def check_depot(cfg: dict, root: Path, base_url: str, rep: Report,
+                label: str) -> list[str]:
+    """校验多仓索引 {"urls":[{name,url}]}，返回各仓配置的相对路径。
+
+    与 Fongmi 语义一致：导入只加载第一个仓，其余是切换列表。所以这里只校验
+    "每个仓的地址合法且本地存在"，不要求索引本身带 sites。
+    """
+    urls = cfg.get("urls")
+    if not isinstance(urls, list) or not urls:
+        rep.error(f"{label} 的 urls 必须是非空数组")
+        return []
+    out: list[str] = []
+    for i, item in enumerate(urls):
+        # 兼容裸字符串写法（饭太硬 / 影视仓生态两种都有）
+        if isinstance(item, str):
+            repo_url, name = item, ""
+        elif isinstance(item, dict):
+            repo_url, name = str(item.get("url") or ""), str(item.get("name") or "")
+        else:
+            rep.error(f"{label}.urls[{i}] 既不是对象也不是字符串")
+            continue
+        if not repo_url:
+            rep.error(f"{label}.urls[{i}] 缺少 url")
+            continue
+        base, _ = split_md5(repo_url)
+        if not base.startswith(("http://", "https://", PLACEHOLDER)):
+            rep.error(f"{label}.urls[{i}]（{name or '?'}）必须是 http(s) 绝对地址"
+                      f"或 {PLACEHOLDER} 前缀：{base}")
+            continue
+        if "127.0.0.1" in base or "localhost" in base:
+            rep.error(f"{label}.urls[{i}]（{name or '?'}）不允许指向回环地址：{base}")
+            continue
+        p = local_file_for(repo_url, root, base_url)
+        if p is None:
+            rep.warn(f"{label}.urls[{i}]（{name or '?'}）无法映射本地文件，跳过内容校验")
+            continue
+        if not p.is_file():
+            rep.error(f"{label}.urls[{i}]（{name or '?'}）的配置不存在：{p.relative_to(root)}")
+            continue
+        rel = p.relative_to(root).as_posix()
+        print(f"[OK]   仓 {name or i}: {rel}")
+        out.append(rel)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="校验 meow-source-pack/1 源包")
     ap.add_argument("--dir", default=".", help="源包目录")
@@ -333,7 +391,16 @@ def main() -> int:
         entry = "config.all.json"
 
     cfg = load_json(root / entry, entry, rep)
-    if cfg is not None:
+    if cfg is not None and isinstance(cfg.get("urls"), list):
+        # 多仓索引：校验索引本身 + 递归校验每个仓的配置
+        rels = check_depot(cfg, root, args.base_url, rep, entry)
+        for rel in rels:
+            sub = load_json(root / rel, rel, rep)
+            if sub is not None:
+                want = "class" if rel.endswith("config.jvm.json") else "dex"
+                check_config(sub, root, args.base_url, rep, rel, "repo",
+                             spider_want=want, site_want=want)
+    elif cfg is not None:
         check_config(cfg, root, args.base_url, rep, entry, "all")
         # 兼容 profile：存在就做基本检查，但不强制
         for name, want in (("config.jvm.json", "class"), ("config.tv.json", "dex")):

@@ -1426,6 +1426,130 @@ public class TvBridge {
 
 
     /**
+     * Python 模块状态。与 moduleState 分开：两者是独立 APK、独立版本线。
+     *
+     * <p>运行状态读 PythonService 写的状态文件（py-runtime.json）——
+     * 模块进程与主进程共享 DataPaths 不可靠，那个文件是唯一的跨进程通道。
+     */
+    @JavascriptInterface
+    public String pyModuleState() {
+        try {
+            android.content.Context ctx = activity.getApplicationContext();
+            boolean installed = com.meow.tv.runtime.RuntimeModuleHost.pythonInstalled(ctx);
+            org.json.JSONObject out = new org.json.JSONObject();
+            out.put("installed", installed);
+            out.put("version", installed
+                    ? com.meow.tv.runtime.RuntimeModuleHost.pythonVersion(ctx) : "");
+            out.put("abi", com.meow.tv.runtime.RuntimeModuleCatalog.abi());
+            out.put("running", false);
+            out.put("port", 0);
+            out.put("error", "");
+            try {
+                java.io.File f = new java.io.File(ctx.getFilesDir(),
+                        com.meow.tv.runtime.PythonService.STATE_FILE);
+                if (f.isFile()) {
+                    String txt = new String(java.nio.file.Files.readAllBytes(f.toPath()),
+                            java.nio.charset.StandardCharsets.UTF_8);
+                    org.json.JSONObject st = new org.json.JSONObject(txt);
+                    out.put("running", st.optBoolean("running", false));
+                    out.put("port", st.optInt("port", 0));
+                    out.put("error", st.optString("error", ""));
+                    if (!installed) out.put("version", st.optString("version", ""));
+                }
+            } catch (Throwable ignored) {
+            }
+            return out.toString();
+        } catch (Throwable t) {
+            return "{\"installed\":false,\"error\":\""
+                    + AppUpdater.escape(t.getClass().getSimpleName()) + "\"}";
+        }
+    }
+
+    /*
+     * ---------------------------------------------------------------- Python 模块
+     *
+     * 与 node 三个方法一一对应，唯一差别是 pick 的前缀与下载文件名。
+     * WebView 桥不支持同名重载，所以另起 py* 名字。
+     */
+
+    @JavascriptInterface
+    public String pyModuleCheck(String source, String token) {
+        try {
+            if (!moduleCatalogJson.isEmpty() && moduleCatalogJson.contains("\"packages\"")) {
+                org.json.JSONObject pick = com.meow.tv.runtime.RuntimeModuleCatalog
+                        .pick(moduleCatalogJson, "tv-python");
+                org.json.JSONObject out = new org.json.JSONObject(pick.toString());
+                out.put("ok", true);
+                return out.toString();
+            }
+        } catch (Throwable ignored) {
+        }
+        return pyModuleCheckFromText(moduleCatalogJson);
+    }
+
+    @JavascriptInterface
+    public String pyModuleCheckFromText(String text) {
+        try {
+            if (text == null || !text.contains("\"packages\"")) {
+                return "{\"ok\":false,\"error\":\"清单内容不完整\"}";
+            }
+            org.json.JSONObject pick = com.meow.tv.runtime.RuntimeModuleCatalog
+                    .pick(text, "tv-python");
+            org.json.JSONObject out = new org.json.JSONObject(pick.toString());
+            out.put("ok", true);
+            out.put("source", "netjob");
+            return out.toString();
+        } catch (Throwable t) {
+            // x86_64 设备常见：Chaquopy 只编了 arm64/v7a，清单里没有匹配项
+            String m = t.getMessage() == null ? "" : t.getMessage();
+            if (m.contains("没有适配")) {
+                m = "本机 ABI 没有对应的 Python 模块（仅 arm64 / armeabi-v7a）";
+            }
+            return "{\"ok\":false,\"error\":\"" + AppUpdater.escape(m) + "\"}";
+        }
+    }
+
+    @JavascriptInterface
+    public String pyModuleDownloadCandidates(String source, String token, String urlsPipe) {
+        try {
+            String check = pyModuleCheck(source, token);
+            if (check.contains("\"ok\":false")) return check;
+            org.json.JSONObject pick = new org.json.JSONObject(check);
+            String url = pick.optString("url", "");
+            String sha = pick.optString("sha256", "");
+            String abi = pick.optString("abi", com.meow.tv.runtime.RuntimeModuleCatalog.abi());
+            if (url.isEmpty() || sha.isEmpty()) {
+                return "{\"ok\":false,\"error\":\"清单缺 url/sha256\"}";
+            }
+            int minSdk = pick.optInt("min_sdk", 0);
+            if (minSdk > 0 && android.os.Build.VERSION.SDK_INT < minSdk) {
+                return "{\"ok\":false,\"error\":\"系统版本过低（需要 Android " + minSdk + "+）\"}";
+            }
+            String fileName = "meow-python-" + abi + ".apk";
+            String tk2 = token == null ? "" : token;
+            String real = moduleAssetUrl(url, tk2);
+            String pipe = urlsPipe == null ? "" : urlsPipe.trim();
+            if (!pipe.isEmpty() && tk2.trim().isEmpty()) {
+                StringBuilder ok = new StringBuilder();
+                for (String raw : pipe.split("\\|")) {
+                    String c = raw == null ? "" : raw.trim();
+                    if (c.isEmpty()) continue;
+                    if (!c.startsWith("http://") && !c.startsWith("https://")) continue;
+                    if (!c.contains(real)) continue;
+                    if (ok.length() > 0) ok.append('|');
+                    ok.append(c);
+                }
+                if (ok.length() > 0) {
+                    return AppUpdater.start(activity, ok.toString(), sha, tk2, fileName);
+                }
+            }
+            return AppUpdater.start(activity, real, sha, tk2, fileName);
+        } catch (Throwable t) {
+            return "{\"ok\":false,\"error\":\"" + AppUpdater.escape(t.getMessage()) + "\"}";
+        }
+    }
+
+    /**
      * 把 `github.com/.../releases/(latest|download/<tag>)/download/<name>` 解析成
      * `api.github.com/.../releases/assets/<id>`。
      *

@@ -15102,11 +15102,27 @@ public class ApiServer {
                 return o;
             }
             java.util.Set<String> known = jarSpiderClasses();
-            int csp = 0, inJar = 0, dir = 0;
+            int csp = 0, inJar = 0, dir = 0, script = 0, scriptPy = 0;
             for (int i = 0; i < sites.length(); i++) {
                 JSONObject s = sites.optJSONObject(i);
                 if (s == null) continue;
                 String api = s.optString("api", "").trim();
+                String apiLow = api.toLowerCase();
+                if (apiLow.endsWith(".py")) {
+                    script++;
+                    scriptPy++;
+                    continue;
+                }
+                if (apiLow.endsWith(".js")) {
+                    /*
+                     * 脚本源（py/js）不走类加载，能不能用取决于**脚本运行时**
+                     * （pyrt / drpy）。以前这里既不进 inJar 也不进 dir，于是
+                     * "可用 N 站" 把整仓脚本源算成 0 —— 一个 136 站的脚本仓
+                     * 会显示"可用 12 站"，用户会以为仓坏了，其实只差一个运行时。
+                     */
+                    script++;
+                    continue;
+                }
                 if (api.startsWith("csp_")) {
                     csp++;
                     String cls = api.substring(4);
@@ -15134,18 +15150,42 @@ public class ApiServer {
             // false = 本机没有内置 jar，无法判断这些 csp 类能不能加载
             o.put("jarKnown", known != null);
             o.put("direct", dir);
+            o.put("script", script);
+            o.put("scriptPy", scriptPy);
+            boolean rtUp = script > 0 && scriptRuntimeUsable();
+            /*
+             * 活着 ≠ 能跑 py。TV 的内置 QuickJS / iOS 的 drpy 只跑 .js，
+             * /health 的 caps.py=false；把它们当成"py 也能跑"会让一个
+             * 110 py + 14 js 的仓显示"全部可用"，用户点 py 站才发现全错。
+             */
+            boolean rtPy = rtUp && scriptPy > 0 && runtimeSupportsPy();
+            o.put("runtime", rtUp ? "up" : (script > 0 ? "down" : "na"));
+            o.put("runtimePy", rtUp ? (rtPy ? "yes" : "no") : "unknown");
+            int scriptUsable = rtUp ? (script - scriptPy) + (rtPy ? scriptPy : 0) : 0;
+            int usable = inJar + dir + scriptUsable;
             /*
              * 给人看的一句话。用户不需要知道 csp_ 是什么，只需要知道
              * "这个仓导进去有多少站真能用"。
              */
-            if (known == null && csp > 0 && dir == 0) {
+            int needPy = rtUp ? (rtPy ? 0 : scriptPy) : scriptPy;
+            if (rtUp && needPy > 0) {
+                // 有运行时但跑不了 py：说清楚是"缺 Python"，不是"仓坏了"
+                o.put("hint", "可用 " + usable + " 站；另有 " + needPy
+                        + " 站需要 Python 运行时（当前运行时只支持 js）");
+            } else if (script > 0 && !rtUp) {
+                // 脚本仓 + 运行时没起：给可执行的指引，而不是一个像"坏仓"的数字
+                o.put("hint", usable > 0
+                        ? ("可用 " + usable + " 站；另有 " + script + " 站需要脚本运行时（未配置）")
+                        : (script + " 站都需要脚本运行时（jsRuntime 未配置）"));
+            } else if (known == null && csp > 0 && dir == 0 && script == 0) {
                 o.put("hint", "无法判断（本机没有内置 jar）");
-            } else if (inJar == 0 && dir == 0) {
+            } else if (usable == 0) {
                 o.put("hint", "这个仓的站点我们一个都加载不了");
-            } else if (inJar + dir < 5) {
+            } else if (usable < 5) {
                 o.put("hint", "只能用到很少几站");
             } else {
-                o.put("hint", "可用 " + (inJar + dir) + " 站");
+                o.put("hint", "可用 " + usable + " 站"
+                        + (script > 0 ? "（含 " + script + " 个脚本站）" : ""));
             }
             return o;
         } catch (Throwable t) {
@@ -15499,8 +15539,10 @@ public class ApiServer {
                     api = resolveUrl(configBase, rel);
                 }
             } else if (api.startsWith("node:")) {
+                // node: 是 TV 的 node 模块语法，JVM/脚本运行时都没有对应实现
                 reason = "运行时不支持（node: 内联脚本没有对应运行时）";
             } else if (api.startsWith("py:")) {
+                // 内联 py: 不是文件路径，pyrt 的 load_spider 会当相对路径找不到
                 reason = "运行时不支持（py: 内联脚本没有对应运行时）";
             } else if (api.startsWith("csp_")) {
                 String cls = api.substring(4);

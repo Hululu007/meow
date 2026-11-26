@@ -97,6 +97,32 @@ services:
     restart: unless-stopped
     networks: [meow]
 
+  # pyrt 运行时（.py 源 + .js 转发）：apiserver 的 MEOW_JS_RUNTIME 默认指向它。
+  #
+  # ★ 本地构建链一直漏了这一段（2026-11-26 查）：docker-compose.yml 里有 pyrt 服务
+  #   但镜像 chrplus/meow-pyrt 从没推到 Docker Hub（Hub 上 404），而这份 build 版
+  #   连服务定义都没有 —— 两条路都起不来 pyrt。表现是 apiserver 的 jsRuntime 指向
+  #   一个不存在的容器，.py 与 .js 源全部报 Connection refused。
+  pyrt:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.pyrt
+    image: ${PYRT_IMAGE:-chrplus/meow-pyrt:${PYRT_VERSION:-0.1.0}}
+    container_name: meow-pyrt
+    ports:
+      - "${PYRT_PORT:-30014}:19331"
+    volumes:
+      # 源脚本不在镜像里（私有内容）。不能加 :ro —— pyrt 要把远程 api 脚本
+      # 落一份副本到 py/ 下，只读会退到容器临时目录（能跑但不跨重启缓存）。
+      - ../../data/py-scripts:/data/py-scripts
+    environment:
+      PYRT_PORT: "19331"
+      PYRT_BIND: "0.0.0.0"
+      PYRT_SCRIPTS: /data/py-scripts
+      PYRT_DRPY: http://drpy:9330
+    restart: unless-stopped
+    networks: [meow]
+
   danmu_api:
     # 官方镜像，不从本仓库构建（上游源码不在此仓库）。
     # 版本固定不用 latest，保证可复现。

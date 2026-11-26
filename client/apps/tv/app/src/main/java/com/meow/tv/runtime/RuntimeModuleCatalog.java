@@ -42,12 +42,31 @@ public final class RuntimeModuleCatalog {
      * 表现为"装上了但 .so 加载不了"，比不装更难查）。
      */
     public static JSONObject pick(String packagesJson) throws Exception {
+        return pick(packagesJson, "tv-node");
+    }
+
+    /**
+     * 按 id 前缀挑模块包：`tv-node` / `tv-python` 各自独立。
+     *
+     * <p>以前这里写死 {@code id.startsWith("tv-node")} —— 清单里就算有
+     * tv-python 条目也永远选不中，TV 侧等于没有 Python 模块的安装入口。
+     */
+    public static JSONObject pick(String packagesJson, String idPrefix) throws Exception {
         JSONObject root = new JSONObject(packagesJson);
         JSONObject pkgs = root.optJSONObject("packages");
         if (pkgs == null) throw new Exception("清单里没有 packages");
 
         String[] abis = Build.SUPPORTED_ABIS;
         if (abis == null || abis.length == 0) throw new Exception("设备没有报告支持的 ABI");
+
+        /*
+         * 「清单里压根没有这个模块」和「有模块但没这个 ABI」必须分开报。
+         * 合成一句会在发布空档期误导人：tv-python 的 CI 链路（构建 + 自检 +
+         * upload-artifact）早就通了，但**只有发版后** packages.json 里才会出现
+         * tv-python-*；这期间报「本机 ABI 不支持」会让 arm64 用户以为自己的
+         * 设备不行，实际是还没有包可下（2026-11-26 在 .76 上实测到这句误导）。
+         */
+        boolean anyOfPrefix = false;
 
         for (String abi : abis) {
             String want = "android-" + abi;
@@ -57,7 +76,8 @@ public final class RuntimeModuleCatalog {
                 JSONObject o = pkgs.optJSONObject(id);
                 if (o == null) continue;
                 // 只认本模块的包（id 前缀），避免误挑到别的插件
-                if (!id.startsWith("tv-node")) continue;
+                if (!id.startsWith(idPrefix)) continue;
+                anyOfPrefix = true;
                 if (!hasPlatform(o, want)) continue;
                 String url = o.optString("url", "");
                 String sha = o.optString("sha256", "");
@@ -67,6 +87,9 @@ public final class RuntimeModuleCatalog {
                 out.put("abi", abi);
                 return out;
             }
+        }
+        if (!anyOfPrefix) {
+            throw new Exception("清单里还没有 " + idPrefix + " 模块（要等发版后才有）");
         }
         throw new Exception("清单里没有适配 " + abi() + " 的模块包");
     }

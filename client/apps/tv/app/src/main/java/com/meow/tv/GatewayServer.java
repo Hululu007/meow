@@ -1072,7 +1072,7 @@ public final class GatewayServer {
         nodeBound = false;
     }
 
-    static void startPythonRuntime(Context ctx) {
+    public static void startPythonRuntime(Context ctx) {
         try {
             if (!RuntimeModuleHost.pythonInstalled(ctx)) {
                 android.util.Log.i(TAG, "python: 运行时模块未安装，跳过");
