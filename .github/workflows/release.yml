@@ -158,7 +158,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          OUT="$(./deploy/scripts/detect-changed-plugins.sh "$GITHUB_REF_NAME")"
+          OUT="$(bash ./deploy/scripts/detect-changed-plugins.sh "$GITHUB_REF_NAME")"
           CHANGED="$(printf '%s\n' "$OUT" | sed -n 's/^changed=//p')"
           PREV="$(printf '%s\n' "$OUT" | sed -n 's/^prev=//p')"
           # PC 插件链（tv-node / tv-python 归 tv-plugins 链，不在这里构建）
