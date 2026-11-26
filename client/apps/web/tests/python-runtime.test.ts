@@ -45,6 +45,13 @@ describe('载荷组装', () => {
     expect(prep).toContain('server/pyrt/pyrt.py')
     expect(prep).toContain('"$RT/pyrt.py"')
   })
+
+  it('C 扩展进 Frameworks/pyext（侧载器只递归签名 Frameworks）', () => {
+    expect(prep).toContain('DYN="$OUT/extensions"')
+    expect(project).toContain('build/python/extensions')
+    expect(project).toContain('destination: frameworks')
+    expect(pyrt).toContain('Frameworks/pyext')
+  })
 })
 
 describe('Xcode 工程 / CI', () => {

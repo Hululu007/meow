@@ -64,8 +64,11 @@ for d in test idlelib tkinter turtledemo ensurepip lib2to3 pydoc_data venv unitt
 done
 rm -f "$STDLIB/turtle.py" "$STDLIB/antigravity.py" "$STDLIB/this.py"
 
-# lib-dynload：去掉测试/桌面/无用模块
-DYN="$STDLIB/lib-dynload"
+# 扩展模块（C .so）：**不能**放在 resources 里 —— 侧载器只给 Frameworks 递归签名，
+# 资源目录里的 Mach-O 会因无签名无法 dlopen。这里单独放 build/python/extensions，
+# project.yml 用 copyFiles(destination: frameworks) 拷进 App.app/Frameworks/pyext，
+# PythonRuntime 再把它加进 PYTHONPATH。
+DYN="$OUT/extensions"
 mkdir -p "$DYN"
 cp -R "$STAGE/Python.xcframework/ios-arm64/lib-arm64/python3.12/lib-dynload/." "$DYN/"
 find "$DYN" -type f \( \
@@ -101,9 +104,9 @@ cp "$ROOT/../../../server/pyrt/pyrt.py" "$RT/pyrt.py"
 echo "${PV}-${PB}-1" > "$OUT/.payload-version"
 
 echo "[py] sizes:"
-du -sh "$OUT/Python.framework" "$RT/lib/python${PV}" "$RT/pyrt.py" | sed 's/^/[py]   /'
+du -sh "$OUT/Python.framework" "$OUT/extensions" "$RT/lib/python${PV}" "$RT/pyrt.py" | sed 's/^/[py]   /'
 du -sh "$OUT" | sed 's/^/[py] total /'
 [ -f "$RT/pyrt.py" ] || { echo "[py] pyrt.py missing" >&2; exit 1; }
 [ -d "$STDLIB/encodings" ] || { echo "[py] stdlib missing" >&2; exit 1; }
-[ -f "$STDLIB/lib-dynload/_ssl.cpython-312-iphoneos.so" ] || { echo "[py] _ssl missing" >&2; exit 1; }
+[ -f "$OUT/extensions/_ssl.cpython-312-iphoneos.so" ] || { echo "[py] _ssl missing" >&2; exit 1; }
 echo "[py] ok"

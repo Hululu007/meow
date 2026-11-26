@@ -39,9 +39,13 @@ enum PythonRuntime {
         try? fm.createDirectory(at: scripts, withIntermediateDirectories: true)
         try? fm.createDirectory(at: scripts.appendingPathComponent("py"), withIntermediateDirectories: true)
 
+        // C 扩展在 App.app/Frameworks/pyext（侧载器只对 Frameworks 递归签名；
+        // 放 resources 里的 Mach-O 会因无签名 dlopen 失败）
+        let pyext = Bundle.main.bundlePath + "/Frameworks/pyext"
         setenv("PYTHONHOME", home.path, 1)
         setenv("PYTHONPATH",
-               home.appendingPathComponent("lib/python3.12").path + ":"
+               pyext + ":"
+               + home.appendingPathComponent("lib/python3.12").path + ":"
                + home.appendingPathComponent("lib/python3.12/site-packages").path, 1)
         // bundle 只读：不写 __pycache__（否则每次启动都在只读卷上失败刷日志）
         setenv("PYTHONDONTWRITEBYTECODE", "1", 1)

@@ -204,7 +204,7 @@ jobs:
           set -euo pipefail
           test -f client/apps/ios/build/python/runtime/pyrt.py || { echo "pyrt.py missing"; exit 1; }
           test -f client/apps/ios/build/python/Python.framework/Python || { echo "Python.framework missing"; exit 1; }
-          test -f client/apps/ios/build/python/runtime/lib/python3.12/lib-dynload/_ssl.cpython-312-iphoneos.so || { echo "_ssl missing"; exit 1; }
+          test -f client/apps/ios/build/python/extensions/_ssl.cpython-312-iphoneos.so || { echo "_ssl missing"; exit 1; }
           du -sh client/apps/ios/build/python/Python.framework client/apps/ios/build/python/runtime
 
       - name: Generate Xcode project
@@ -253,11 +253,25 @@ jobs:
             echo "ERROR: openjdk/lib/src.zip 又被打进 IPA 了（应剔除，约 61MB）" >&2
             exit 1
           fi
+          # ★ 门禁：端内 CPython / pyrt 必须在包里（否则 .py 源静默退回远端）
+          if ! unzip -l "$GITHUB_WORKSPACE/artifacts/$IPA_NAME" | grep -q 'Payload/Meow.app/runtime/pyrt.py'; then
+            echo "ERROR: runtime/pyrt.py 没打进 IPA" >&2
+            exit 1
+          fi
+          if ! unzip -l "$GITHUB_WORKSPACE/artifacts/$IPA_NAME" | grep -q 'Frameworks/Python.framework/Python'; then
+            echo "ERROR: Python.framework 没 embed 进 IPA" >&2
+            exit 1
+          fi
+          if ! unzip -l "$GITHUB_WORKSPACE/artifacts/$IPA_NAME" | grep -q 'Frameworks/pyext/_ssl.cpython-312-iphoneos.so'; then
+            echo "ERROR: Frameworks/pyext 缺失（C 扩展无法加载）" >&2
+            exit 1
+          fi
           echo "ipa bytes: $(stat -f%z "$GITHUB_WORKSPACE/artifacts/$IPA_NAME")"
           # 包里到底装了什么：条目数 / 体积 / 构建标识，闪退排查时先对这三个数
           echo "== bundle inventory =="
           find "$APP" -type f | wc -l
           du -sh "$APP"
+          du -sh "$APP/runtime" "$APP/Frameworks/Python.framework" "$APP/Frameworks/pyext" || true
           /usr/libexec/PlistBuddy -c "Print :MeowBuild" "$APP/Info.plist" || true
           ls "$APP/jvm" "$APP/jvm/libs" | head -40
           echo "== frameworks =="
