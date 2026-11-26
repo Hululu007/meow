@@ -15030,11 +15030,22 @@ public class ApiServer {
                 return o;
             }
             java.util.Set<String> known = jarSpiderClasses();
-            int csp = 0, inJar = 0, dir = 0;
+            int csp = 0, inJar = 0, dir = 0, script = 0;
             for (int i = 0; i < sites.length(); i++) {
                 JSONObject s = sites.optJSONObject(i);
                 if (s == null) continue;
                 String api = s.optString("api", "").trim();
+                String apiLow = api.toLowerCase();
+                if (apiLow.endsWith(".py") || apiLow.endsWith(".js")) {
+                    /*
+                     * 脚本源（py/js）不走类加载，能不能用取决于**脚本运行时**
+                     * （pyrt / drpy）。以前这里既不进 inJar 也不进 dir，于是
+                     * "可用 N 站" 把整仓脚本源算成 0 —— 一个 136 站的脚本仓
+                     * 会显示"可用 12 站"，用户会以为仓坏了，其实只差一个运行时。
+                     */
+                    script++;
+                    continue;
+                }
                 if (api.startsWith("csp_")) {
                     csp++;
                     String cls = api.substring(4);
@@ -15062,18 +15073,28 @@ public class ApiServer {
             // false = 本机没有内置 jar，无法判断这些 csp 类能不能加载
             o.put("jarKnown", known != null);
             o.put("direct", dir);
+            o.put("script", script);
+            boolean rtUp = script > 0 && scriptRuntimeUsable();
+            o.put("runtime", rtUp ? "up" : (script > 0 ? "down" : "na"));
+            int usable = inJar + dir + (rtUp ? script : 0);
             /*
              * 给人看的一句话。用户不需要知道 csp_ 是什么，只需要知道
              * "这个仓导进去有多少站真能用"。
              */
-            if (known == null && csp > 0 && dir == 0) {
+            if (script > 0 && !rtUp) {
+                // 脚本仓 + 运行时没起：给可执行的指引，而不是一个像"坏仓"的数字
+                o.put("hint", usable > 0
+                        ? ("可用 " + usable + " 站；另有 " + script + " 站需要脚本运行时（未配置）")
+                        : (script + " 站都需要脚本运行时（jsRuntime 未配置）"));
+            } else if (known == null && csp > 0 && dir == 0 && script == 0) {
                 o.put("hint", "无法判断（本机没有内置 jar）");
-            } else if (inJar == 0 && dir == 0) {
+            } else if (usable == 0) {
                 o.put("hint", "这个仓的站点我们一个都加载不了");
-            } else if (inJar + dir < 5) {
+            } else if (usable < 5) {
                 o.put("hint", "只能用到很少几站");
             } else {
-                o.put("hint", "可用 " + (inJar + dir) + " 站");
+                o.put("hint", "可用 " + usable + " 站"
+                        + (script > 0 ? "（含 " + script + " 个脚本站）" : ""));
             }
             return o;
         } catch (Throwable t) {
@@ -15418,7 +15439,16 @@ public class ApiServer {
                     String rel = api.startsWith("./") ? api.substring(2) : api;
                     api = resolveUrl(configBase, rel);
                 }
-            } else if (api.startsWith("node:") || api.endsWith(".py")) {
+            } else if (api.startsWith("node:")) {
+                /*
+                 * ★ 只丢 node:（TV 的 node 模块语法，JVM 端没有对应运行时）。
+                 *
+                 * 以前这里把 `api.endsWith(".py")` 也一起丢了，理由是"运行时不支持"，
+                 * 那是 pyrt 出现之前的写法。现在 JVM 走 callScriptRuntime 把脚本地址
+                 * **原样**传给 jsRuntime（pyrt），由 pyrt 按后缀分流（.py 本地执行、
+                 * .js 转给 drpy）。继续丢会让整仓 .py 源在导入阶段就消失 ——
+                 * 实测一个 136 站的脚本仓导进来只剩 26 站（12 CMS + 14 js）。
+                 */
                 reason = "运行时不支持";
             } else if (api.startsWith("csp_")) {
                 String cls = api.substring(4);
