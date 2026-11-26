@@ -34,6 +34,10 @@ param(
     # 跟着走会让新机器 compose up 报 manifest unknown（详见 compose 里的注释）。
     [string]$DrpyVersion,
 
+    # pyrt 运行时的 tag。同样**独立版本线**，默认读 .env.example 的 PYRT_VERSION。
+    # 它只在 pyrt.py / 依赖变化时才需要重打，跟主版本号走会让每次发版都白构建一次。
+    [string]$PyrtVersion,
+
     [switch]$NoLatest,
     [switch]$DryRun,
     [switch]$SkipBuild,
@@ -52,7 +56,10 @@ param(
     [string]$Cache = '',
 
     # drpy 镜像已存在时强制重建（默认跳过：drpy 走独立版本线，多数发版内容不变）
-    [switch]$RebuildDrpy
+    [switch]$RebuildDrpy,
+
+    # 同上；pyrt 也是独立版本线
+    [switch]$RebuildPyrt
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,21 +84,39 @@ if (-not $DrpyVersion) {
     if (-not $DrpyVersion) { $DrpyVersion = '0.9.23' }
 }
 
+# pyrt 同 drpy：独立版本线。★ 它此前**从没被这条脚本构建过** —— Docker Hub 上
+# meow-drpy / meow-apiserver 都有，只有 meow-pyrt 404，而 compose 的 jsRuntime
+# 默认就指向它（2026-11-26 查实）。
+#
+# .env.example 里的 PYRT_VERSION 是给用户 **pull** 的（写的 latest）；构建 tag
+# 不能是 latest —— 那样「已存在就跳过」永远命中，改了 pyrt.py 也发不出去。
+# 所以读到 latest 时退回 manifest 里的具体版本。
+if (-not $PyrtVersion) {
+    $envEx = Join-Path $root 'deploy\docker\.env.example'
+    if (Test-Path $envEx) {
+        $line = (Get-Content $envEx | Where-Object { $_ -match '^\s*PYRT_VERSION\s*=' } | Select-Object -First 1)
+        if ($line) { $PyrtVersion = ($line -split '=', 2)[1].Trim() }
+    }
+}
+if (-not $PyrtVersion -or $PyrtVersion -eq 'latest') { $PyrtVersion = '0.1.0' }
+
 $webImage = "$User/${RepoPrefix}web"
 $apiImage = "$User/${RepoPrefix}apiserver"
 $drpyImage = "$User/${RepoPrefix}drpy"
+$pyrtImage = "$User/${RepoPrefix}pyrt"
 
 Write-Host ""
 Write-Host "镜像：" -ForegroundColor Cyan
 Write-Host "  $webImage`:$Version"
 Write-Host "  $apiImage`:$Version"
 Write-Host "  $drpyImage`:$DrpyVersion  （独立版本线）"
+Write-Host "  $pyrtImage`:$PyrtVersion  （独立版本线）"
 Write-Host "架构：$Platforms"
 Write-Host "模式：$(if ($DryRun) { '仅构建（不推送）' } else { '构建并推送' })"
 Write-Host ""
 
 # ── 检查 ──────────────────────────────────────────────────
-Write-Host "[1/4] 检查环境..." -ForegroundColor Yellow
+Write-Host "[1/5] 检查环境..." -ForegroundColor Yellow
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw "找不到 docker" }
 
@@ -198,19 +223,19 @@ function Build-Push {
 
 # ── 构建 ──────────────────────────────────────────────────
 if (-not $SkipBuild) {
-    Write-Host "[2/4] 前端镜像..." -ForegroundColor Yellow
+    Write-Host "[2/5] 前端镜像..." -ForegroundColor Yellow
     $webTarget = if ($WebFromDist) { 'runtime-dist' } else { '' }
     if ($WebFromDist) { Write-Host "  使用宿主预构建 dist（--target runtime-dist）" -ForegroundColor DarkGray }
     Build-Push -Dockerfile (Join-Path $root 'deploy/docker/Dockerfile.web') -Image $webImage -Label 'web' -Target $webTarget
 
-    Write-Host "[3/4] 后端镜像..." -ForegroundColor Yellow
+    Write-Host "[3/5] 后端镜像..." -ForegroundColor Yellow
     Build-Push -Dockerfile (Join-Path $root 'deploy/docker/Dockerfile.apiserver') -Image $apiImage -Label 'apiserver'
 
     # drpy 运行时：没有它，配置里 200+ 个 .js 源在容器部署下全判不可用
     # ★ drpy 走独立版本线（$DrpyVersion），与主版本无关 → 大多数发版它内容不变。
     #   已存在的 tag 直接跳过：省掉 1/3 的镜像构建时间。改了 Dockerfile.drpy 或
     #   drpy 源码时要**升 DrpyVersion**（这是本仓库既有约定），否则会被这里跳过。
-    Write-Host "[4/4] drpy 镜像..." -ForegroundColor Yellow
+    Write-Host "[4/5] drpy 镜像..." -ForegroundColor Yellow
     $drpyTag = "$drpyImage`:$DrpyVersion"
     $drpyExists = $false
     if (-not $RebuildDrpy) {
@@ -223,10 +248,27 @@ if (-not $SkipBuild) {
     else {
         Build-Push -Dockerfile (Join-Path $root 'deploy/docker/Dockerfile.drpy') -Image $drpyImage -Label 'drpy' -Tag $DrpyVersion
     }
+
+    # pyrt 运行时：.py 源本地执行 + .js 转发给 drpy。没有它 apiserver 的
+    # jsRuntime 指向一个不存在的容器，两种脚本源一律 Connection refused。
+    # 与 drpy 同样走独立版本线 + 已存在则跳过（升 PyrtVersion 才重打）。
+    Write-Host "[5/5] pyrt 镜像..." -ForegroundColor Yellow
+    $pyrtTag = "$pyrtImage`:$PyrtVersion"
+    $pyrtExists = $false
+    if (-not $RebuildPyrt) {
+        & docker buildx imagetools inspect $pyrtTag *> $null
+        $pyrtExists = ($LASTEXITCODE -eq 0)
+    }
+    if ($pyrtExists) {
+        Write-Host "  $pyrtTag 已存在，跳过构建（要强制重建加 -RebuildPyrt）" -ForegroundColor DarkGray
+    }
+    else {
+        Build-Push -Dockerfile (Join-Path $root 'deploy/docker/Dockerfile.pyrt') -Image $pyrtImage -Label 'pyrt' -Tag $PyrtVersion
+    }
 }
 
 # ── 结果 ──────────────────────────────────────────────────
-Write-Host "[4/4] 完成" -ForegroundColor Yellow
+Write-Host "[5/5] 完成" -ForegroundColor Yellow
 
 if ($DryRun) {
     Write-Host ""
@@ -241,7 +283,7 @@ Write-Host "已推送：" -ForegroundColor Green
 # 下会直接抛异常，而这里只想知道"能不能读到"。
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
-foreach ($pair in @(@($webImage, $Version), @($apiImage, $Version), @($drpyImage, $DrpyVersion))) {
+foreach ($pair in @(@($webImage, $Version), @($apiImage, $Version), @($drpyImage, $DrpyVersion), @($pyrtImage, $PyrtVersion))) {
     $img = $pair[0]; $tag = $pair[1]
     Write-Host "  $img`:$tag"
     $inspect = docker buildx imagetools inspect "$img`:$tag" 2>&1 | Out-String
