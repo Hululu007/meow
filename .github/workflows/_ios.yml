@@ -164,21 +164,22 @@ jobs:
           path: client/apps/ios/build/jdk9
           key: ios-jdk9-zulu-macos-x64-v1
 
-      - name: Trim OpenJDK modules (Phase 1)
+      - name: Prepare JDK 9 jlink
         run: |
           set -euo pipefail
+          echo "runner arch: $(uname -m)"
           JDKROOT=client/apps/ios/build/jdk9
-          if [ ! -d "$JDKROOT" ] || ! find "$JDKROOT" -path '*/Contents/Home/bin/jlink' | grep -q .; then
+          if ! find "$JDKROOT" -path '*/Contents/Home/bin/jlink' 2>/dev/null | grep -q .; then
             rm -rf "$JDKROOT"; mkdir -p "$JDKROOT"
+            echo "downloading Zulu 9 x64…"
             curl -fL --retry 3 --retry-delay 3 \
               -o /tmp/zulu9.tgz \
               "https://cdn.azul.com/zulu/bin/zulu9.0.7.1-ca-jdk9.0.7-macosx_x64.tar.gz"
             tar xzf /tmp/zulu9.tgz -C "$JDKROOT" --strip-components=1
           fi
           JLINK_REAL="$(find "$JDKROOT" -path '*/Contents/Home/bin/jlink' | head -1)"
-          [ -x "$JLINK_REAL" ] || { echo "JDK9 jlink 缺失" >&2; exit 1; }
-
-          BIN=/tmp/jdk9x; mkdir -p "$BIN"
+          [ -x "$JLINK_REAL" ] || { echo "::error title=jlink9::找不到 JDK9 jlink"; exit 1; }
+          BIN=/tmp/jdk9x; rm -rf "$BIN"; mkdir -p "$BIN"
           if [ "$(uname -m)" = "arm64" ]; then
             printf '#!/bin/sh\nexec arch -x86_64 "%s" "$@"\n' "$JLINK_REAL" > "$BIN/jlink"
             printf '#!/bin/sh\nexec arch -x86_64 "%s" "$@"\n' "$(dirname "$JLINK_REAL")/jimage" > "$BIN/jimage"
@@ -187,12 +188,17 @@ jobs:
             ln -sf "$(dirname "$JLINK_REAL")/jimage" "$BIN/jimage"
           fi
           chmod +x "$BIN/jlink" "$BIN/jimage"
+          "$BIN/jlink" --version
 
+      - name: Trim OpenJDK modules (Phase 1)
+        run: |
+          set -euo pipefail
+          trap 'rc=$?; echo "::error title=trim-failed::line $LINENO rc=$rc cmd=$BASH_COMMAND"' ERR
           TAR=client/apps/ios/build/cache/openjdk9-ios.tar.gz
-          [ -f "$TAR" ] || { echo "缺 $TAR（prepare-runtime 未跑）" >&2; exit 1; }
+          [ -f "$TAR" ] || { echo "::error title=trim-failed::缺 $TAR"; exit 1; }
           OUT=/tmp/openjdk-trim
           rm -rf "$OUT"; mkdir -p "$OUT"
-          bash client/apps/ios/scripts/trim-java-modules.sh "$TAR" "$BIN/jlink" "$OUT/modules"
+          bash client/apps/ios/scripts/trim-java-modules.sh "$TAR" /tmp/jdk9x/jlink "$OUT/modules"
           cp "$OUT/modules" client/apps/ios/build/openjdk/lib/modules
           echo "[trim] applied $(du -h client/apps/ios/build/openjdk/lib/modules | cut -f1)"
 
@@ -201,13 +207,13 @@ jobs:
           JIMAGE="$(dirname "$(command -v java)")/jimage"
           "$JIMAGE" list "$M" > /tmp/mods.txt
           N=$(grep -c '^Module: ' /tmp/mods.txt)
-          [ "$N" -eq 56 ] || { echo "模块数 $N != 56" >&2; exit 1; }
+          [ "$N" -eq 56 ] || { echo "::error title=trim-failed::模块数 $N != 56"; exit 1; }
           for m in java.base java.logging java.xml java.security.jgss jdk.httpserver \
                    java.sql java.naming java.scripting java.desktop jdk.localedata \
                    jdk.crypto.ec jdk.charsets jdk.zipfs jdk.unsupported; do
-            grep -qx "Module: $m" /tmp/mods.txt || { echo "缺模块 $m" >&2; exit 1; }
+            grep -qx "Module: $m" /tmp/mods.txt || { echo "::error title=trim-failed::缺模块 $m"; exit 1; }
           done
-          [ "$(stat -f%z "$M")" -lt 110000000 ] || { echo "modules 仍然过大" >&2; exit 1; }
+          [ "$(stat -f%z "$M")" -lt 110000000 ] || { echo "::error title=trim-failed::modules 仍然过大"; exit 1; }
 
       # 端内 Node 运行时（nodejs-mobile，52MB 动态库）+ 弹幕载荷（danmu_api，~40MB）
       # + JS 源载荷（drpy，裁后 ~7.4MB）
