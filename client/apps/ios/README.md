@@ -71,6 +71,44 @@ xcrun simctl launch <udid> com.meow.player.ios.sim --api-base=http://127.0.0.1:9
 CI：`.github/workflows/_ios.yml`（推 `feat/ios-jvm` 触发）——构建模拟器包、启动
 macOS 宿主、截图、出未签名 IPA、上传 artifacts。
 
+## OpenJDK modules 裁减（Phase 1，2026-11-26）
+
+`openjdk/lib/modules` 压缩后 44MB，占整包 44%，是唯一能一次砍十几 MB 的地方。
+Phase 1 只删**运行期绝不使用**的工具链 / CORBA / JAX-WS / JAXB 模块：
+
+```
+jdk.compiler jdk.javadoc jdk.jshell jdk.jdi jdk.jdeps jdk.jlink jdk.jconsole
+jdk.rmic jdk.internal.vm.ci java.corba java.xml.ws jdk.xml.ws java.xml.bind
+jdk.xml.bind java.se java.se.ee
+```
+
+`java.se` / `java.se.ee` 是聚合模块，不删会把 corba/ws/bind 当依赖重新拉回来。
+
+生成方式（**必须 JDK 9 的 jlink**；JDK 17 会报 `版本 17.0 与目标 9.0 不匹配`）：
+
+```bash
+bash scripts/trim-java-modules.sh \
+  <openjdk-9_ios-arm64_bundle.tar.gz> <jdk9>/bin/jlink \
+  build/openjdk-trim/lib/modules
+```
+
+实测：modules 133.35MB → 90.84MB（zip 43.97 → 33.24MB），IPA 100,147,348 →
+**88,335,877 B**；模块数 72 → 56，`jimage` 校验关键模块都在、被删模块没被依赖拉回。
+宿主在同一模块集下（`java --limit-modules <list>`）启动、`/api/health`、导入配置均通过。
+
+**不能删**（删了不是少功能，是起不来/全站 TLS 失败）：
+`java.base`、`java.logging`、`java.xml`、`java.security.jgss`、`jdk.httpserver`、
+`java.sql`（Gson 内部引用）、`java.naming`（bcprov 引用）、`java.scripting`、
+`jdk.charsets`（GBK）、`jdk.crypto.ec`（TLS）、`jdk.zipfs`、`jdk.unsupported`。
+
+**Phase 2 未做**：`java.desktop`（21.2MB，Kotlin jar 的 `java.beans`、imageio/awt 会用到）、
+`jdk.localedata`（15.9MB，只影响本地化日期格式）、`jdk.scripting.nashorn`（4.5MB，
+`javax.script` 引擎）。删这三个到 ~72–75MB，但要先用实际 jar 源扫 class 引用并真机回归。
+
+**恢复原版**：`prepare-runtime.sh` 每次都会重新下载完整 bundle，不跑 trim 即原版；
+IPA 回滚直接重装 `ipa-test` 上的完整包（`Meow-unsigned-test.ipa`，发布记录里带 sha256）。
+裁减产物（90MB）不入库，只由脚本生成。
+
 ## 已知风险 / 待验证
 
 1. **JDK 9 静态库是 2020 年的构建**（Oct4Pie/lib-openjdk-9-ios）。它能在
