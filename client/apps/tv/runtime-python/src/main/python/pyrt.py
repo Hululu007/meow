@@ -13,8 +13,11 @@
 import importlib.util
 import json
 import os
+import shutil
 import sys
+import tempfile
 import threading
+import time
 import traceback
 import urllib.parse
 import urllib.request
@@ -60,6 +63,17 @@ SCRIPTS_DIR = os.environ.get("PYRT_SCRIPTS") or os.path.join(HERE, "scripts")
 PY_DIR = os.path.join(SCRIPTS_DIR, "py")
 BASE_DIR = SCRIPTS_DIR
 
+"""远程脚本落盘后的复用时长（秒）。
+
+源包规范要求站点 api 是**绝对 URL**（脚本由源服务托管，壳子只管加载），
+所以 pyrt 必须能自己把脚本取下来。取下来的副本复用一天：源站换了实现
+隔天能跟上，又不至于每次搜索都拉一遍。
+"""
+_REMOTE_TTL = 86400
+
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
 sys.path.insert(0, BASE_DIR)
 sys.path.insert(0, PY_DIR)
 """
@@ -91,10 +105,79 @@ def log(*a):
     print("[pyrt]", *a, flush=True)
 
 
+def _fetch_remote(api):
+    """把 http(s) 上的源脚本按需落盘到 PY_DIR，返回本地路径。
+
+    为什么要有这个：源包规范写死了"站点 api 必须是绝对 http(s) URL"
+    （脚本由源服务托管，不归壳子维护），而 pyrt 只能 import 本地文件。
+    没有这一步，PC / fpk / TV 上的 .py 源一律 `FileNotFoundError`。
+
+    落在 PY_DIR 而不是独立缓存目录：这样三端的脚本目录天然一致，都由
+    PYRT_SCRIPTS 决定，不需要各端导入流程各写一份"把 py 落盘"的逻辑。
+
+    只读挂载（Docker 常见：`py-scripts:/data/py-scripts:ro`）写不进去时
+    退到临时目录 —— 本次进程内照样能跑，只是不跨重启缓存。
+    """
+    name = os.path.basename(urllib.parse.urlparse(api).path) or "spider.py"
+    if not name.endswith(".py"):
+        name += ".py"
+
+    def download(dst_dir, tag):
+        os.makedirs(dst_dir, exist_ok=True)
+        dst = os.path.join(dst_dir, name)
+        tmp = dst + ".part"
+        req = urllib.request.Request(api, headers={"User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=45) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
+        os.replace(tmp, dst)
+        log("fetched" + tag, name, "<-", api[:90])
+        return dst
+
+    local = os.path.join(PY_DIR, name)
+    try:
+        if os.path.exists(local) and (time.time() - os.path.getmtime(local)) < _REMOTE_TTL:
+            return local
+    except OSError:
+        pass
+    # 先探可写性再下载，不能靠 `except OSError` 兜底判断只读：
+    # urllib.error.URLError 是 OSError 的子类，网络不通会被误判成"目录只读"，
+    # 日志把排查方向指错（实测 Docker 里踩到：明明只是容器连不上宿主）。
+    if _can_write(PY_DIR):
+        return download(PY_DIR, "")
+    log("cache dir not writable, falling back to temp:", PY_DIR)
+    return download(tempfile.mkdtemp(prefix="pyrt-remote-"), "(temp)")
+
+
+def _can_write(d):
+    """目录能不能写（真正建个文件试，别靠 stat 猜）。"""
+    try:
+        os.makedirs(d, exist_ok=True)
+        probe = os.path.join(d, ".write-probe")
+        with open(probe, "wb"):
+            pass
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
 def load_spider(api, ext):
-    """按 (脚本路径, ext) 缓存实例；ext 变了要重新 init。"""
-    if not os.path.isabs(api):
+    """按 (脚本路径, ext) 缓存实例；ext 变了要重新 init。
+
+    三种坏 api 都要给明确错误：`spec_from_file_location` 对空串（拼成目录）和
+    未知扩展名都返回 None，随后 `module_from_spec(None)` 抛
+    `AttributeError: 'NoneType' object has no attribute 'loader'` —— 这个报错
+    完全不指向真正原因（漏发请求头），实测排查了两轮才定位。
+    """
+    if not api:
+        raise ValueError("missing X-DRPY-Api header（只有路径段不够，pyrt 靠这个头找脚本）")
+    if api.startswith(("http://", "https://")):
+        # 源包规范下的正常形态：脚本由源服务托管，本地只留副本
+        api = _fetch_remote(api)
+    elif not os.path.isabs(api):
         api = os.path.join(PY_DIR, api)
+    if os.path.isdir(api):
+        raise IsADirectoryError("api 是目录而不是脚本: " + api)
     if not os.path.exists(api):
         raise FileNotFoundError("py script not found: " + api)
     key = api + "|" + (ext or "")
@@ -112,6 +195,15 @@ def load_spider(api, ext):
     if cls is None:
         raise RuntimeError("no Spider class in " + api)
     sp = cls()
+    # 注入代理基址：源脚本的 _proxy_base() 先调 getProxyUrl(True)，拿不到才兜底
+    # 127.0.0.1:18080（vbox 客户端的约定）。不注入的后果是"能搜、封面裂、播不了"——
+    # vod_pic 与 m3u8 全指向一个不存在的服务，而搜索接口本身完全正常。
+    try:
+        _pkey = getattr(sp, "PLATFORM_KEY", "") or os.path.splitext(os.path.basename(api))[0]
+        _pbase = "http://127.0.0.1:%d/proxy?do=py&key=%s" % (PORT, _pkey)
+        sp.getProxyUrl = lambda *a, **k: _pbase
+    except Exception:
+        pass
     init = getattr(sp, "init", None)
     if callable(init):
         try:
@@ -282,7 +374,58 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _serve_proxy(self):
+        """图片/流代理（vbox 同形：?do=py&key=<site>&type=img|video&u=<url>&r=<referer>）。
+
+        为什么必须有：源脚本的 getProxyUrl() 拿不到壳注入的方法时会兜底到
+        127.0.0.1:18080/proxy（vbox 客户端的约定）。缺这个端点时 vod_pic 与
+        播放地址全指向一个不存在的服务——表现为"能搜、封面裂、播不了"，
+        而搜索接口本身完全正常，很容易漏掉。
+
+        Range 必须透传：视频拖动、部分播放器起播都靠 206。
+        """
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        target = (qs.get("u") or [""])[0]
+        referer = (qs.get("r") or [""])[0]
+        if not target:
+            self._send(400, b'{"code":-1,"msg":"missing u"}')
+            return
+        try:
+            hdrs = {
+                "User-Agent": self.headers.get("User-Agent")
+                or "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 Chrome/87 Mobile Safari/537.36",
+                "Accept": "*/*",
+            }
+            if referer:
+                hdrs["Referer"] = referer
+            rng = self.headers.get("Range")
+            if rng:
+                hdrs["Range"] = rng
+            up = urllib.request.Request(target, headers=hdrs)
+            with urllib.request.urlopen(up, timeout=45) as r:
+                self.send_response(r.status)
+                self.send_header("Content-Type", r.headers.get("Content-Type") or "application/octet-stream")
+                for h in ("Content-Length", "Content-Range", "Accept-Ranges", "Last-Modified", "ETag"):
+                    v = r.headers.get(h)
+                    if v:
+                        self.send_header(h, v)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except urllib.error.HTTPError as e:
+            self._send(e.code, json.dumps({"code": -1, "msg": "upstream %d" % e.code}).encode())
+        except Exception as e:
+            self._send(502, json.dumps({"code": -1, "msg": "proxy: %s" % e}).encode())
+
     def do_GET(self):
+        # 图片/视频流走 GET（源站的 <img src> 与 m3u8 分片都是 GET）
+        _p = urllib.parse.urlparse(self.path).path
+        if _p == "/proxy":
+            return self._serve_proxy()
         if self.path in ("/", "/health"):
             self._send(200, b'{"ok":true,"service":"pyrt"}')
         else:
@@ -308,6 +451,9 @@ class Handler(BaseHTTPRequestHandler):
         # ── 脚本注入端点（跨进程/跨 uid 用）──
         # 模块跑在独立进程时，宿主的 filesDir 它读不到；容器场景同理。
         # 宿主把这些脚本 POST 过来，这里落到本进程可写的 PY_DIR。
+        if path == "/proxy" or path.startswith("/proxy?"):
+            return self._serve_proxy()
+
         if path.startswith("/_put/"):
             name = os.path.basename(urllib.parse.unquote(path[len("/_put/"):]))
             try:

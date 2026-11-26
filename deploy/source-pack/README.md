@@ -147,6 +147,25 @@ compose 分工：
 
 ## 7. 更新流程
 
+### 7.0 先标掉"搜索是桩"的站
+
+`.py` 源的搜索有没有实现，只有脚本自己知道（`validate.py` 只看 jar 与 URL）。
+桩站不标 `searchable: 0` 的后果：用户点"全选搜索"时挨个超时。
+
+```bash
+# 只看名单
+python3 deploy/source-pack/scan-stubs.py --dir /data/py-scripts/py
+
+# 直接写进配置
+python3 deploy/source-pack/scan-stubs.py --dir /data/py-scripts/py \
+    --config config.all.json --write
+```
+
+判据只认静态可证的（函数体只剩 `pass` / `return []` / `return {"list": []}`），
+有真实逻辑的一律不动 —— 误标会让能用的站从搜索里消失，比漏标严重。
+
+### 7.1 替换 jar 与清单
+
 ```bash
 # 1. 替换 dex jar
 cp new-spider-dex.jar sources/spider-dex.jar

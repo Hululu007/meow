@@ -48,20 +48,43 @@ public class PythonService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null) {
-            String d = intent.getStringExtra("drpy");
-            if (d != null) drpyUpstream = d;
-        }
+        applyIntent(intent);
+        ensureWorker();
+        return START_NOT_STICKY;
+    }
+
+    /**
+     * 必须返回真 Binder：返回 null 的 Service 绑定会被系统立即取消并 stop，
+     * 客户端就拿不到"有活跃绑定"的 oomAdj 加成。
+     *
+     * <p>为什么要绑定而不是 startService：Android 12+ 的 cached-app freezer
+     * 会把没有前台组件、也没有活跃 binder 连接的进程直接冻住。实测 .77 上
+     * `com.meow.tv:py` 长期停在 `do_freezer_trap`，19351 端口还在 LISTEN 但
+     * 请求全部超时、堆了 4 条 CLOSE_WAIT —— 服务"在"但完全不可用。
+     * 主进程持有绑定后该进程 importance 提升，前台使用期不会被冻结。
+     *
+     * <p>返回裸 {@code Binder} 而不是 LocalBinder：这是个跨进程绑定
+     * （{@code com.meow.tv} → {@code com.meow.tv:py}），LocalBinder 到对端
+     * 只剩 BinderProxy，强转必炸。这里只需要"连接存在"这件事本身。
+     */
+    @Override
+    public IBinder onBind(Intent intent) {
+        applyIntent(intent);
+        ensureWorker();
+        return new android.os.Binder();
+    }
+
+    private void applyIntent(Intent intent) {
+        if (intent == null) return;
+        String d = intent.getStringExtra("drpy");
+        if (d != null) drpyUpstream = d;
+    }
+
+    private void ensureWorker() {
         if (worker == null || !worker.isAlive()) {
             worker = new Thread(this::boot, "meow-py");
             worker.start();
         }
-        return START_NOT_STICKY;
-    }
-
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null;
     }
 
     private void boot() {

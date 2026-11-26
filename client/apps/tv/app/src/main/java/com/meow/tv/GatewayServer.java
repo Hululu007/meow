@@ -520,12 +520,7 @@ public final class GatewayServer {
         if (com.meow.tv.runtime.RuntimeModuleHost.nodeInstalled(appCtx)
                 && com.meow.tv.runtime.RuntimeModuleState.enabled(appCtx)) {
             // 网关可能比 MainActivity 先起（自动化路径），这里再请求一次（幂等）
-            try {
-                appCtx.startService(new android.content.Intent(appCtx,
-                        com.meow.tv.runtime.NodeService.class));
-            } catch (Throwable t) {
-                android.util.Log.w(TAG, "start NodeService failed: " + t);
-            }
+            bindNodeRuntime(appCtx);
         }
         // 上一个进程（很可能是被 ART abort 掉的）留下的 GC/状态时间线，先读进日志
         replayGcProbeLog(appCtx);
@@ -1015,6 +1010,68 @@ public final class GatewayServer {
      * <p>没装就什么都不做——TV 默认只有 QuickJS，`.py` 源由"连远端 pyrt"或
      * "装 Python 模块"两条路解决，不在主包里塞 CPython。
      */
+    /** python 服务的进程级绑定：持有它才让 :py 进程有活跃 binder 连接，不被冻结。 */
+    private static android.content.ServiceConnection pyConn;
+    /** 已绑定标记：bindService 重复调用会让 unbind 次数对不上，只绑一次。 */
+    private static volatile boolean pyBound;
+    /** node 服务的进程级绑定，理由同 pyConn。 */
+    private static android.content.ServiceConnection nodeConn;
+    private static volatile boolean nodeBound;
+
+    /**
+     * 绑定 node 运行时（进程级，永不 unbind）。
+     *
+     * <p>与 {@link #startPythonRuntime} 同一个原因：`com.meow.tv:node` 是独立进程，
+     * startService 之后没有活跃 binder 连接，Android 12+ 会把它冻在
+     * `do_freezer_trap`——端口还在 LISTEN 但一切请求不处理。绑定一次就让
+     * 进程 importance 提升，前台使用期足够用。
+     */
+    public static void bindNodeRuntime(Context ctx) {
+        if (nodeBound) return;
+        if (nodeConn == null) {
+            nodeConn = new android.content.ServiceConnection() {
+                @Override
+                public void onServiceConnected(android.content.ComponentName n, android.os.IBinder b) {
+                    android.util.Log.i(TAG, "node: 已绑定 " + n.flattenToShortString());
+                }
+
+                @Override
+                public void onServiceDisconnected(android.content.ComponentName n) {
+                    android.util.Log.w(TAG, "node: 绑定断开 " + n.flattenToShortString());
+                }
+            };
+        }
+        try {
+            nodeBound = ctx.bindService(new android.content.Intent(ctx,
+                            com.meow.tv.runtime.NodeService.class),
+                    nodeConn, android.content.Context.BIND_AUTO_CREATE);
+        } catch (Throwable t) {
+            android.util.Log.w(TAG, "node: bindService 抛错", t);
+        }
+        if (!nodeBound) {
+            try {
+                ctx.startService(new android.content.Intent(ctx,
+                        com.meow.tv.runtime.NodeService.class));
+            } catch (Throwable t) {
+                android.util.Log.w(TAG, "start NodeService failed: " + t);
+            }
+        }
+    }
+
+    /**
+     * 解绑 node。模块装/卸后要重启服务时必须先解绑：已绑定的 Service 对
+     * `stopService` 免疫（系统按"还有客户端绑定"继续保活），不先解绑就重启不了。
+     */
+    public static void unbindNodeRuntime(Context ctx) {
+        if (!nodeBound || nodeConn == null) return;
+        try {
+            ctx.unbindService(nodeConn);
+        } catch (Throwable t) {
+            android.util.Log.w(TAG, "node: unbindService 失败", t);
+        }
+        nodeBound = false;
+    }
+
     static void startPythonRuntime(Context ctx) {
         try {
             if (!RuntimeModuleHost.pythonInstalled(ctx)) {
@@ -1029,8 +1086,42 @@ public final class GatewayServer {
              */
             String qjs = com.meow.tv.js.QuickJsRuntimeServer.baseUrl();
             if (!qjs.isEmpty()) i.putExtra("drpy", qjs);
-            ctx.startService(i);
-            android.util.Log.i(TAG, "python: startService 已发出");
+            /*
+             * ★ bindService 而不是 startService：Android 12+ 的 cached-app
+             * freezer 会冻住"没有前台组件、也没有活跃 binder 连接"的进程。
+             * 实测 .77 上 `com.meow.tv:py` 长期 `do_freezer_trap`：19351 还在
+             * LISTEN，但请求全超时、堆了 4 条 CLOSE_WAIT —— Service 对象活着、
+             * 进程被冻，等于不可用。主进程持有绑定后该进程 importance 提升。
+             *
+             * 绑定持有后不解开（进程级）：unbind 会让 :py 退回可冻结状态。
+             * bind 失败才退回 startService（至少让状态文件能被写出来）。
+             */
+            if (!pyBound) {
+                if (pyConn == null) {
+                    pyConn = new android.content.ServiceConnection() {
+                        @Override
+                        public void onServiceConnected(android.content.ComponentName n, android.os.IBinder b) {
+                            android.util.Log.i(TAG, "python: 已绑定 " + n.flattenToShortString());
+                        }
+
+                        @Override
+                        public void onServiceDisconnected(android.content.ComponentName n) {
+                            android.util.Log.w(TAG, "python: 绑定断开 " + n.flattenToShortString());
+                        }
+                    };
+                }
+                try {
+                    pyBound = ctx.bindService(i, pyConn, android.content.Context.BIND_AUTO_CREATE);
+                } catch (Throwable t) {
+                    android.util.Log.w(TAG, "python: bindService 抛错，退回 startService", t);
+                }
+            }
+            if (pyBound) {
+                android.util.Log.i(TAG, "python: 已 bindService（保活）");
+            } else {
+                ctx.startService(i);
+                android.util.Log.i(TAG, "python: bind 未成功，已 startService");
+            }
             /*
              * Python 是异步就绪的（模块进程要起 CPython、pyrt 要 bind 端口），
              * 这里轮询状态文件（最多 10 秒）。就绪后把 jsRuntime 改指它 ——

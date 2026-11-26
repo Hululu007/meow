@@ -1181,11 +1181,13 @@ public class TvBridge {
             android.content.Context ctx = activity.getApplicationContext();
             com.meow.tv.runtime.RuntimeModuleState.put(ctx, "enabled", enabled);
             if (enabled) {
-                ctx.startService(new android.content.Intent(ctx,
-                        com.meow.tv.runtime.NodeService.class));
+                com.meow.tv.GatewayServer.bindNodeRuntime(ctx);
             } else {
-                // 先标停：node 是被 JNI 阻塞住的，stopService 会回收进程
+                // 先标停：node 是被 JNI 阻塞住的，stopService 会回收进程。
+                // 必须先解绑 —— 有客户端绑定的 Service 对 stopService 免疫，
+                // 不先解绑这个"关闭"按钮按下去等于没反应。
                 com.meow.tv.runtime.RuntimeModuleState.put(ctx, "running", false);
+                com.meow.tv.GatewayServer.unbindNodeRuntime(ctx);
                 ctx.stopService(new android.content.Intent(ctx,
                         com.meow.tv.runtime.NodeService.class));
             }
@@ -1617,17 +1619,19 @@ public class TvBridge {
         }
     }
 
-    /** 载荷切换后重启 :node：stop → 1.5s → start（与模块安装后的做法一致）。 */
+    /** 载荷切换后重启 :node：解绑 → stop → 1.5s → 重新绑定。 */
     private void restartNodeService() {
         try {
             final android.content.Context ctx = activity.getApplicationContext();
+            // 有客户端绑定的 Service 对 stopService 免疫，必须先解绑
+            com.meow.tv.GatewayServer.unbindNodeRuntime(ctx);
             ctx.stopService(new android.content.Intent(ctx, com.meow.tv.runtime.NodeService.class));
             new Thread(() -> {
                 try { Thread.sleep(1500); } catch (InterruptedException ignored) { }
                 try {
                     if (com.meow.tv.runtime.RuntimeModuleState.enabled(ctx)) {
-                        ctx.startService(new android.content.Intent(
-                                ctx, com.meow.tv.runtime.NodeService.class));
+                        com.meow.tv.GatewayServer.bindNodeRuntime(ctx);
+                        android.util.Log.i("MeowTv", "node rebound after payload switch");
                     }
                 } catch (Throwable t) {
                     android.util.Log.w("MeowTv", "restart node failed: " + t);
@@ -1690,15 +1694,16 @@ public class TvBridge {
         }
     }
 
-    /** 重启模块：停再起（换端口/刚装完新版本时用）。 */
+    /** 重启模块：解绑 → 停 → 重新绑定（换端口/刚装完新版本时用）。 */
     @JavascriptInterface
     public String moduleRestart() {
         try {
             android.content.Context ctx = activity.getApplicationContext();
+            // 绑定的 Service 对 stopService 免疫，两步之间必须解绑
+            com.meow.tv.GatewayServer.unbindNodeRuntime(ctx);
             ctx.stopService(new android.content.Intent(ctx,
                     com.meow.tv.runtime.NodeService.class));
-            ctx.startService(new android.content.Intent(ctx,
-                    com.meow.tv.runtime.NodeService.class));
+            com.meow.tv.GatewayServer.bindNodeRuntime(ctx);
         } catch (Throwable t) {
             android.util.Log.w("MeowTv", "moduleRestart failed: " + t);
         }

@@ -33,6 +33,16 @@ $gradle = if (Test-Path 'C:\Android\gradle-8.9\bin\gradle.bat') {
     'C:\Android\gradle-8.9\bin\gradle.bat'
 } else { 'gradle' }
 
+# ★ pyrt.py 只有一份真源（server/pyrt/pyrt.py），每次构建前覆盖过来。
+#   两份各自维护必然漂：2026-11-25 实测 TV 副本落后 162 行（缺"URL 脚本落盘"、
+#   缺 tempfile/URLError 修复），而 APK 里跑的就是那份旧的 —— "PC 上好了、
+#   TV 上没好"这类问题排查起来极费时间。
+$pyrtSrc = Join-Path $repoRoot 'server\pyrt\pyrt.py'
+$pyrtDst = Join-Path $here 'src\main\python\pyrt.py'
+if (-not (Test-Path $pyrtSrc)) { throw "找不到 pyrt 真源：$pyrtSrc" }
+Copy-Item $pyrtSrc $pyrtDst -Force
+Write-Host "同步 pyrt.py <- server/pyrt/pyrt.py" -ForegroundColor DarkCyan
+
 foreach ($f in $Flavors) {
     $task = ":runtime-python:assemble$($f.Substring(0,1).ToUpper() + $f.Substring(1))Release"
     Write-Host "== $f -> $task ==" -ForegroundColor Cyan
