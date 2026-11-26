@@ -407,6 +407,10 @@ jobs:
       #   判断按「资产前缀」：upload/ 里已有同前缀 = 本次构建过，不覆盖
       #   （版本号不同，文件名不会同名；同前缀不同版本时保留本次的新文件）。
       - name: 继承上一版资产（本次未构建的插件/模块）
+        # ★ 只在全量 release-v* 跑：单链（tv-v*/pc-v*/plugins-v*/tv-plugins-v*）同样会建
+        #   Release，但产物只有本链一两件；继承全量资产会把单链 Release 塞满
+        #   （2026-11-26 核对发版规律时补的门槛）。
+        if: startsWith(github.ref, 'refs/tags/release-v')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
