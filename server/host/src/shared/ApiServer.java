@@ -2328,6 +2328,8 @@ public class ApiServer {
              * 这里能直接看到是熔断开了（容器挂了）还是源站本身没内容。
              */
             o.put("jsRuntimeBreaker", scriptRuntimeBreakerOpen() ? "open" : "closed");
+            // null=还没探测过；不发网络请求（health 必须毫秒级）
+            o.put("jsRuntimePy", rtPyCap == null ? "unknown" : ((Boolean) rtPyCap ? "yes" : "no"));
             o.put("jsRuntimeFails", scriptRuntimeFails.get());
         } catch (Throwable t) {
             // 兜底也要能编译：android-json 的 put 抛受检异常
@@ -4658,6 +4660,68 @@ public class ApiServer {
     }
 
     /**
+     * 当前运行时是否支持 .py（/health 的 caps.py）。
+     *
+     * <p>为什么需要：iOS 端内只有 drpy（只跑 .js）。用户配置里带 .py 源时，
+     * 宿主会把 .py 的 api 也投给 jsRuntime —— drpy 当 JS 去解析，报的是
+     * 语法错误（"Unexpected token" 一类），完全看不出"这个运行时没有 Python"。
+     * /health 带 caps 后，这里先判一次，直接给准确原因。
+     *
+     * <p>老运行时没有 caps 字段：按"支持"处理，不改变既有行为。
+     */
+    private static final java.util.concurrent.atomic.AtomicLong rtCapAt =
+            new java.util.concurrent.atomic.AtomicLong(0);
+    private static volatile Object rtPyCap = null; // null=未知, Boolean
+    private static final long RT_CAP_TTL_MS = 60_000L;
+
+    private static boolean isPyApi(String api) {
+        if (api == null) return false;
+        String a = api.trim();
+        return a.startsWith("py:") || a.endsWith(".py") || a.contains(".py?");
+    }
+
+    private static boolean runtimeSupportsPy() {
+        long now = System.currentTimeMillis();
+        long last = rtCapAt.get();
+        if (now - last < RT_CAP_TTL_MS && rtPyCap != null) return (Boolean) rtPyCap;
+        if (!rtCapAt.compareAndSet(last, now)) {
+            return rtPyCap == null || (Boolean) rtPyCap;
+        }
+        String base = loadPolicy().optString("jsRuntime", "");
+        if (base.isEmpty()) base = System.getenv().getOrDefault("MEOW_JS_RUNTIME", "");
+        if (base.isEmpty()) {
+            rtPyCap = Boolean.FALSE;
+            return false;
+        }
+        boolean py = true;
+        try {
+            java.net.HttpURLConnection c = (java.net.HttpURLConnection)
+                    new java.net.URL(base.replaceAll("/$", "") + "/health").openConnection();
+            c.setConnectTimeout(800);
+            c.setReadTimeout(800);
+            c.setRequestMethod("GET");
+            if (c.getResponseCode() == 200) {
+                String body = read(c.getInputStream());
+                try {
+                    org.json.JSONObject o = new org.json.JSONObject(body);
+                    // 老运行时没有 caps：视为支持（保持既有行为）
+                    if (o.has("py")) py = o.optBoolean("py", true);
+                } catch (Throwable ignore) {
+                    py = true;
+                }
+            }
+        } catch (Throwable ignore) {
+            // 探不到就当支持：让运行时用真实错误回答，不要在这里武断拒绝
+            py = true;
+        }
+        rtPyCap = py;
+        if (!py) {
+            core.LogBuffer.info("search", "jsRuntime 不支持 .py（只跑 JS）→ .py 源将直接给出原因");
+        }
+        return py;
+    }
+
+    /**
      * 单个脚本源最近一次"卡满超时"的时间戳。
      *
      * <p><b>为什么按源记，而不只是全局熔断</b>：容器可能只是"某几个源的
@@ -4749,6 +4813,10 @@ public class ApiServer {
         if (base.isEmpty()) base = System.getenv().getOrDefault("MEOW_JS_RUNTIME", "");
         if (base.isEmpty()) {
             return "{\"code\":-1,\"msg\":\"jsRuntime 未配置：该源是 drpy 脚本，需要先启动 JS 运行时插件\"}";
+        }
+        // .py 源 + 纯 JS 运行时：直接给准确原因（否则 drpy 会报语法错误）
+        if (isPyApi(api) && !runtimeSupportsPy()) {
+            return "{\"code\":-1,\"msg\":\"jsRuntime 只支持 .js：.py 源需要 pyrt 或内嵌 CPython（当前运行时 /health 报告 py=false）\"}";
         }
         String url = base.replaceAll("/$", "") + "/" + URLEncoder.encode(site, "UTF-8")
                 + "/" + URLEncoder.encode(action, "UTF-8");

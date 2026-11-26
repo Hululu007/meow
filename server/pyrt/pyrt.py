@@ -427,7 +427,14 @@ class Handler(BaseHTTPRequestHandler):
         if _p == "/proxy":
             return self._serve_proxy()
         if self.path in ("/", "/health"):
-            self._send(200, b'{"ok":true,"service":"pyrt"}')
+            # caps：宿主据此判断该运行时能不能执行 .py（iOS 端内只有 drpy）
+            caps = {
+                "ok": True,
+                "service": "pyrt",
+                "py": True,
+                "js": bool(os.environ.get("PYRT_DRPY", "").strip()),
+            }
+            self._send(200, json.dumps(caps).encode("utf-8"))
         else:
             self._send(404, b'{"code":-1,"msg":"not found"}')
 
