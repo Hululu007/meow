@@ -1,0 +1,6 @@
+# 源包镜像的 build context 只需要 nginx 配置、默认源和启动脚本。
+*
+!Dockerfile.sources
+!nginx.sources.conf
+!entrypoint.sh
+!default-sources/
