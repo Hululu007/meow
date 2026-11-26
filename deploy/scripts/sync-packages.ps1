@@ -485,7 +485,7 @@ if ($scope -contains 'plugins') {
     # 插件 zip：apiserver-<ver>.zip / drpy-0.1.0.zip / ...
     # 它们的版本号各自独立（drpy 0.1.0、danmu 1.0.0），不能套用应用版本，
     # 所以从 zip 资产里按名字前缀匹配，版本从现有条目沿用（首次则从 manifest 读）。
-    $pluginIds = @('apiserver', 'danmu-api', 'drpy', 'ffmpeg', 'node')
+    $pluginIds = @('apiserver', 'danmu-api', 'drpy', 'ffmpeg', 'node', 'pyrt')
     foreach ($pid2 in $pluginIds) {
         $a = Find-Asset "$pid2-*.zip"
         if (-not $a) {
@@ -509,6 +509,13 @@ if ($scope -contains 'plugins') {
         #   之前"沿用旧值"让它们从 1.1.x 起全是 hidden=true，
         #   全新 PC 的「本机插件」列表因此是空的（找不到影视后端）。
         $entry.hidden = $false
+        # 首次发布没有旧条目可沿用，display_name 会空着 —— 插件列表里只剩一个 id。
+        # pyrt 尤其要写清楚：它**不自带** python，靠系统的（manifest 的 execFallback
+        # 依次试 ../python/python.exe → python3 → python.exe），装了没 python 会静默起不来。
+        if ($pid2 -eq 'pyrt') {
+            $entry.display_name = 'Python 运行时'
+            $entry.desc = '让 .py 源在本机执行（需系统已装 Python 3.10+）；.js 源由它转发给 drpy'
+        }
         # 其余字段沿用原值（requires / display_name / desc 是人工维护的）
         if ($existing -and $existing.packages.$pid2) {
             $old = $existing.packages.$pid2
