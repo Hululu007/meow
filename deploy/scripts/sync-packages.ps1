@@ -590,25 +590,27 @@ if (($scope -contains 'meow-tv') -or ($scope -contains 'tv-module')) {
 
     # ---------------------------------------------------------------- TV Python 模块
     #
-    # 资产名 tv-python-<flavor>-<ver>.apk，flavor 是 Chaquopy 的变体名
-    # （arm64 / v7a），**不是完整 ABI**。而 platform 必须写完整 ABI
-    # （android-arm64-v8a / android-armeabi-v7a）—— 客户端按
-    # Build.SUPPORTED_ABIS 硬匹配，写成 flavor 名一条都选不中。
+    # 资产名 tv-python-<abi>-<ver>.apk（2026-11-26 起与 tv-node 同一套命名；
+    # 旧版是 Chaquopy 变体名 arm64 / v7a，保留回退以免读旧 Release 时断）。
+    # platform 必须写完整 ABI（android-arm64-v8a / android-armeabi-v7a /
+    # android-x86_64）—— 客户端按 Build.SUPPORTED_ABIS 硬匹配，flavor 名一条都选不中。
     #
-    # 没有 x86_64：Chaquopy 只给了 arm64/v7a 两个 flavor。x86_64 设备
-    # （MuMu 等）靠 abilist 里的 arm64-v8a 走 ARM 翻译，所以只发这两条。
+    # x86_64（2026-11-26 补）：Chaquopy 支持该 ABI；模拟器（MuMu/AVD）都是 x86_64，
+    # 之前只有两个 flavor，那些设备装不上 Python 模块。
     #
-    # 版本是三段 semver（0.1.0），与 tv-node 的四段不同，正则分开写。
-    foreach ($pair in @(@('arm64', 'arm64-v8a'), @('v7a', 'armeabi-v7a'))) {
-        $flavor = $pair[0]
-        $abi = $pair[1]
+    # 版本是三段 semver（0.1.x），与 tv-node 的四段不同，正则分开写。
+    foreach ($pair in @(@('arm64-v8a', 'arm64'), @('armeabi-v7a', 'v7a'), @('x86_64', 'x86_64'))) {
+        $abi = $pair[0]
+        $flavor = $pair[1]
         $id = "tv-python-$abi"
-        $a = Find-Asset "tv-python-$flavor-*.apk"
+        $a = Find-Asset "tv-python-$abi-*.apk"
+        if (-not $a) { $a = Find-Asset "tv-python-$flavor-*.apk" }
         if (-not $a) {
             Write-Host "  · $id：本次无资产，保留原条目" -ForegroundColor DarkGray
             continue
         }
-        $v = if ($a.name -match "tv-python-$flavor-(\d+\.\d+\.\d+)\.apk") {
+        $pat = "tv-python-(?:$([regex]::Escape($abi))|$([regex]::Escape($flavor)))-(\d+\.\d+\.\d+)\.apk"
+        $v = if ($a.name -match $pat) {
             $Matches[1]
         } elseif ($existing -and $existing.packages.$id) {
             $existing.packages.$id.version

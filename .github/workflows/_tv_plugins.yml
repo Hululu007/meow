@@ -168,11 +168,15 @@ jobs:
           # 目录名带版本（0.1.0 / 0.1.<壳补丁>），按 glob 取最新
           D=$(ls -d release/runtime-python-* 2>/dev/null | tail -1)
           [ -n "$D" ] || { echo "::error::没有 release/runtime-python-* 产物目录"; exit 1; }
-          for abi in arm64-v8a armeabi-v7a; do
-            apk=$(ls "$D"/tv-python-*-*.apk 2>/dev/null | grep -- "$abi" | head -1 || true)
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            # 新命名直接带 ABI（tv-python-arm64-v8a-*）；保留 flavor 名回退兼容旧产物
+            apk=$(ls "$D"/tv-python-"$abi"-*.apk 2>/dev/null | head -1 || true)
             if [ -z "$apk" ]; then
-              # 产物名用的是 flavor（arm64/v7a），不是完整 abi 名
-              flavor=$([ "$abi" = "arm64-v8a" ] && echo arm64 || echo v7a)
+              case "$abi" in
+                arm64-v8a)   flavor=arm64 ;;
+                armeabi-v7a) flavor=v7a ;;
+                *)           flavor="$abi" ;;
+              esac
               apk=$(ls "$D"/tv-python-"$flavor"-*.apk 2>/dev/null | head -1 || true)
             fi
             if [ -z "$apk" ] || [ ! -f "$apk" ]; then

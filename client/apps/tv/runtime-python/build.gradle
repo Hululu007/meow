@@ -43,6 +43,12 @@ android {
             dimension 'abi'
             ndk { abiFilters "armeabi-v7a" }
         }
+        // ★ x86_64（2026-11-26 补）：对齐 tv-node 的三 ABI；模拟器（MuMu/AVD）都是
+        //   x86_64，缺这个 flavor 时那些设备连模块都装不上（.76/.78 实测）。
+        x86_64 {
+            dimension 'abi'
+            ndk { abiFilters "x86_64" }
+        }
     }
 
     /*
@@ -86,9 +92,14 @@ android {
  * outputFileName 已是只读 String，调 .set() 会报 "No signature of method"）。
  */
 androidComponents {
+    // ★ flavor → 标准 ABI 名（2026-11-26 修）：以前直接用 flavorName，产物叫
+    //   tv-python-arm64-*.apk / tv-python-v7a-*.apk，与 tv-node 的
+    //   tv-node-arm64-v8a-*.apk / -armeabi-v7a-* 对不上（用户一眼看出不一致）。
+    def abiOf = [arm64: 'arm64-v8a', v7a: 'armeabi-v7a', x86_64: 'x86_64']
     onVariants(selector().all()) { v ->
         v.outputs.each { o ->
-            o.outputFileName.set("tv-python-${v.flavorName}-${o.versionName.get()}.apk")
+            def abi = abiOf[v.flavorName] ?: v.flavorName
+            o.outputFileName.set("tv-python-${abi}-${o.versionName.get()}.apk")
         }
     }
 }

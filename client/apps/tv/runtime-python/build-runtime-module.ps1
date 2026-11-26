@@ -19,7 +19,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string[]]$Flavors = @('arm64', 'v7a'),
+    [string[]]$Flavors = @('arm64', 'v7a', 'x86_64'),
     [string]$OutDir,
     # ★ 显式补丁号（2026-11-26）：CI 全量发版传壳补丁号（1.2.23 → 23），
     #   版本变成 0.1.23，客户端才会按版本号更新；留空时保持 0.1.0。
