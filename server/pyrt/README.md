@@ -26,11 +26,15 @@ Body:       {"wd": "...", "quick": false, "pg": "1"} 等
 
 ### 1. PC 插件
 
-`server/plugin-manifests/pyrt.manifest.json`，与 drpy 并列。要求本机有 Python 3.9+。
+`server/plugin-manifests/pyrt.manifest.json`，与 drpy 并列。
 
-```bash
-pip install -r server/pyrt/requirements.txt
-```
+**不需要用户预装 Python**：`build-plugin-pyrt.ps1` 把官方 embeddable 3.12 打进插件的
+`python/` 子目录，manifest 的 `exec` 直接指向 `python/python.exe`；依赖
+（requests/lxml/pyquery/pycryptodome）在 `vendor/`，`pyrt.py` 启动时插进 `sys.path`。
+与 node 插件自带 `node.exe` 同一套路。
+
+为什么必须内嵌：`vendor` 里的 C 扩展带次版本号（`*.cp312-win_amd64.pyd`），
+靠用户自己装 Python 就得赌他的次版本 —— 3.10 / 3.13 全是 `ImportError`。
 
 插件启动时把 `jsRuntime` 写进 policy.json。
 
