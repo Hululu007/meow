@@ -22,7 +22,8 @@ struct MeowApp: App {
             RootView(boot: boot)
                 .onAppear {
                     LaunchLog.write("ui appear")
-                    // 不再启动即挂 MPVolumeView：会全局抑制系统音量 HUD（见 Bootstrap）
+                    // 窗口此时一定存在：再挂一次 MPVolumeView（启动早期那次可能没窗口）
+                    SystemVolume.attach()
                     boot.start()
                 }
                 /*

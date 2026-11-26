@@ -56,29 +56,12 @@ enum SystemVolume {
     }
 
     /// 当前系统媒体音量 0–100；读不到返回 -1。
-    ///
-    /// <p>★ 读音量**不能**走 slider getter：那个会触发 attach，把 MPVolumeView
-    /// 挂进窗口（启动时读一次快照就全局抑制系统音量 HUD，2026-11-26 用户报
-    /// 「任意页面按音量键都没有系统音量条」）。会话的 outputVolume 不依赖视图。
     static func current() -> Int {
-        let v = AVAudioSession.sharedInstance().outputVolume
-        if v > 0 { return Int((v * 100).rounded()) }
-        // 会话未激活时读数是 0：只有已经挂载才读 slider（绝不在这里 attach）
-        if volumeView.superview != nil,
-           let s = volumeView.subviews.compactMap({ $0 as? UISlider }).first {
-            return Int((s.value * 100).rounded())
+        guard let s = slider else {
+            LaunchLog.write("system volume: slider missing (read)")
+            return -1
         }
-        return 0
-    }
-
-    /// 离开播放页：把 MPVolumeView 摘掉，恢复系统音量 HUD 与系统悬浮层。
-    ///
-    /// <p>MPVolumeView 只要在窗口层级里，iOS 就会把系统音量 HUD 全局压掉
-    /// （业界已知行为）。播放页自己的百分比浮层够用；其它页面应该让系统接管。
-    static func detach() {
-        guard volumeView.superview != nil else { return }
-        volumeView.removeFromSuperview()
-        LaunchLog.write("system volume detached (hud restored)")
+        return Int((s.value * 100).rounded())
     }
 
     /// 设系统媒体音量 0–100。slider 不存在（极少见）时静默失败。
