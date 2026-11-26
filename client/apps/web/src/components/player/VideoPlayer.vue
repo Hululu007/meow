@@ -16,7 +16,7 @@ import {
 import { getSkipMarks, setSkipMark, type SkipMarks } from '@/stores/skipMarks'
 import { isTvEnv } from '@/composables/useCardCols'
 import { isIosPhone } from '@/compat/ua'
-import { hasFinePointer, isIosShell, isTvShell } from '@/compat/shell'
+import { hasFinePointer, isFnosAppWebView, isIosShell, isTvShell } from '@/compat/shell'
 import { cleanDmTitle, epBadgeOf } from '@/utils/dmTitle'
 import { seekOutsideProduced } from '@/utils/transcodeSeek'
 import { panelMediaLine, type MediaSourceInfo } from '@/utils/mediaInfo'
@@ -3483,6 +3483,25 @@ async function tryLandscape() {
     shellSetOrientation('landscape')
   }
   await lockLandscapeQuietly()
+}
+
+/**
+ * 竖屏提示上的「全屏观看」：一步到位（真全屏 + 锁横屏）。
+ *
+ * <p>原来这个按钮只调 `tryLandscape()`。在**支持元素全屏的 WebView**（飞牛 App
+ * 的 flutter_inappwebview 就是）里那只转了方向，App 自绘的标题栏和状态栏还在，
+ * 用户点完仍觉得"没全屏"（2026-11-26 MuMu 实测：`document.fullscreenEnabled === true`，
+ * `requestFullscreen()` → RESOLVED / ENTERED，标题栏与状态栏一起消失）。
+ * 所以这里直接走 `toggleFullscreen()` —— 它内部已经是"真全屏，失败降级伪全屏"，
+ * 成功后还会补一次 `lockLandscapeQuietly()`（规范只允许在全屏上下文里锁方向）。
+ */
+async function enterFullscreenFromHint() {
+  dismissPortraitHint()
+  if (document.fullscreenElement || pseudoFs.value) {
+    await tryLandscape()
+    return
+  }
+  await toggleFullscreen()
 }
 
 /**
@@ -8182,9 +8201,9 @@ defineExpose({
         <div class="mt-5 flex items-center justify-center gap-2">
           <button
             class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent transition hover:bg-accent-dim"
-            @click="tryLandscape(); portraitHint = false"
+            @click="enterFullscreenFromHint"
           >
-            尝试横屏
+            全屏观看
           </button>
           <button
             class="rounded-md bg-white/10 px-4 py-2 text-sm text-ink-2 transition hover:bg-white/16"

@@ -17,6 +17,7 @@ import { useAppStore } from '@/stores/app'
 import PosterImage from '@/components/common/PosterImage.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import { cleanIntro, cleanLine } from '@/utils/introText'
+import { isFnosAppWebView } from '@/compat/shell'
 
 const route = useRoute()
 const router = useRouter()
@@ -334,6 +335,19 @@ function maybePrefetchFirstDanmaku(name: string) {
 
 function play(ep: { name: string; url: string }) {
   const line = lines.value[activeLine.value]
+  /*
+   * 飞牛 App：点播放就顺手进全屏，进播放页后 App 自绘的标题栏/状态栏已经没了
+   * （对齐影视"点开即全屏"的观感）。
+   *
+   * 为什么必须在**这里**：`requestFullscreen()` 要求 user activation，等播放页
+   * 挂载时手势早用完了，那时调必然 NotAllowedError。点击 → 全屏 → router.push
+   * 都在同一次手势链里，全屏状态挂在 document 上，跨路由不会丢。
+   * 判据与实测见 `compat/shell.ts` 的 `isFnosAppWebView()`。
+   * 失败一律沉默：拿不到全屏还有播放页自己的伪全屏兜底。
+   */
+  if (isFnosAppWebView() && !document.fullscreenElement) {
+    void document.documentElement.requestFullscreen().catch(() => {})
+  }
   router.push({
     name: 'play',
     params: { site },

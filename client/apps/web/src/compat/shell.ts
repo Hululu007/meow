@@ -40,6 +40,23 @@ export function isTauriRuntime(): boolean {
 }
 
 /**
+ * 飞牛移动 App（com.trim.app）内置的 WebView。
+ *
+ * <p><b>为什么单独判</b>：它既不是 `fpk`（那是"页面部署在飞牛上"，浏览器也算），
+ * 也没有桥对象可探测 —— 但它有一样别处没有的能力：`document.fullscreenEnabled === true`
+ * （装的是 flutter_inappwebview，`isElementFullscreenEnabled` 开着）。真全屏能让
+ * App 自绘的标题栏与状态栏一起消失，伪全屏只能铺满 WebView 的可见区。
+ *
+ * <p>判据取 UA 里的 `FNOS/` 与 `FNAppType/`（2026-11-26 在 App 1.38.2 实测）：
+ * `... Chrome/110.0.5481.154 Mobile Safari/537.36 FNOS/1.2.1000 FNAppType/Android FNAppVer/1.38.2`。
+ * ★ 不能拿 UA 里的 `; wv)` 判 —— TV / 安卓壳的 WebView 同样带。
+ */
+export function isFnosAppWebView(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return /FNAppType\/|FNOS\//.test(navigator.userAgent)
+}
+
+/**
  * TV 壳注入的桥对象。
  *
  * 旧 WebView 在没有该接口时**访问属性本身**就可能抛异常，所以必须 try/catch。
