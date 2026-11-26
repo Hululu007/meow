@@ -793,6 +793,22 @@ export function setIosNavGesture(on: boolean): void {
   }
 }
 
+/**
+ * iOS 音量 HUD 接管开关。
+ *
+ * <p>true = 当前页接管（挂 MPVolumeView，系统音量 HUD 被抑制，页面自己弹浮层）；
+ * false = 摘掉，让系统音量条/系统悬浮层恢复（2026-11-26 用户要求：
+ * 任意页面按音量键都要能看到系统音量条）。
+ */
+export function setIosVolumeHud(on: boolean): void {
+  try {
+    const b = (window as unknown as { meowIos?: { volumeHud?: (v: boolean) => void } }).meowIos
+    if (b && typeof b.volumeHud === 'function') b.volumeHud(on)
+  } catch {
+    /* 旧壳没有这个桥：忽略 */
+  }
+}
+
 /** iOS 原生倒计时（秒；0 = 取消）。返回是否交给了原生层。 */
 export function iosPowerTimer(seconds: number): boolean {
   try {

@@ -509,11 +509,30 @@ function updateChipsFade(): void {
 
 // 分类换站后数量会变；等 DOM 更新完再量一次
 watch(classes, () => void nextTick(updateChipsFade))
+
+/**
+ * 转屏/窗口尺寸变化：重新量渐隐，并把当前分类胶囊拉回可视区。
+ *
+ * <p>2026-11-26 用户报「横屏时显示、切竖屏就不显示，切页面再回来又正常」：
+ * 横屏时胶囊条可能被横向滚到过右侧，转竖屏后容器变窄，scrollLeft 还停在
+ * 旧值 → 可视区落在整行右侧的空白/末端，看起来像"胶囊没了"。这里在 resize
+ * 后把激活项重新居中；元素不在（还没渲染）就等下一帧。
+ */
+function onChipsResize() {
+  updateChipsFade()
+  void nextTick(() => {
+    const box = chipsEl.value
+    if (!box) return
+    const active = box.querySelector<HTMLElement>('[data-chip-active="1"]')
+    if (active) centerChip(active, 'auto')
+  })
+}
+
 onMounted(() => {
-  window.addEventListener('resize', updateChipsFade)
+  window.addEventListener('resize', onChipsResize)
   void nextTick(updateChipsFade)
 })
-onBeforeUnmount(() => window.removeEventListener('resize', updateChipsFade))
+onBeforeUnmount(() => window.removeEventListener('resize', onChipsResize))
 
 /**
  * 聚焦的胶囊居中（2026-11-06 用户报：右键后靠右的胶囊聚焦会出界）。
@@ -642,7 +661,15 @@ function remember(item: VodItem) {
 
 watch(
   () => store.current,
-  () => {
+  (cur, prev) => {
+    /*
+     * ★ 站点没变就别 reset（2026-11-26：转屏后分类胶囊消失，切页回来又正常）。
+     *   store.current 在壳刷新/形态变化时可能给出新对象，但站点是同一个；
+     *   无脑 reset 会先把 classes 清空，重新拉取失败/变慢的那几秒整个分类
+     *   胶囊行就没了。
+     */
+    // store.current 是站点 key（string）
+    if (prev && cur && cur === prev) return
     reset()
     loadHome()
   },
@@ -690,6 +717,7 @@ watch(
       <button
         v-for="c in classes"
         :key="c.type_id"
+        :data-chip-active="c.type_id === activeTid ? '1' : undefined"
         class="shrink-0 rounded-full px-4 py-1.5 text-sm transition"
         :class="
           c.type_id === activeTid

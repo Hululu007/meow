@@ -5131,12 +5131,25 @@ async function scrollToSec(id: string) {
   if (id === 'maint') void loadSearchCacheStats()
   // 直播源同理：点到这一栏才拉（见 ensureLives 的注释）
   if (id === 'live') void ensureLives()
-  // 锁 700ms：等平滑滚动结束（或降级后的瞬时跳转）再恢复 scroll spy，
-  // 否则滚动过程中高亮会被 spy 抢走。
-  navLock = Date.now() + 700
+  /*
+   * ★ 锁到滚动 + 二次校正都结束（2026-11-26 真机：点「9 AI」先到 9，
+   *   随后高亮/落点自己跑到「7 存储」）。原来只锁 700ms，而 jumpToEl 在
+   *   480ms 还有一次校正、平滑滚动本身也可能超过 700ms —— spy 在中途
+   *   解锁就按当时可见分区改写了高亮，用户看到"跳错地方"。
+   */
+  navLock = Date.now() + 1800
   // 立刻闪：目标是"确认落点"，早一点开始用户才不会觉得"点了没反应"
   flashSection(el)
   jumpToEl(el)
+  // 校正结束后把高亮/选中再钉回目标（spy 在锁内本来就不写，这里防抖动）
+  for (const at of [900, 1500]) {
+    window.setTimeout(() => {
+      if (Date.now() < navLock) {
+        activeSec.value = id
+        lastNavSec.value = id
+      }
+    }, at)
+  }
 }
 
 /**
@@ -5220,7 +5233,7 @@ async function gotoSelector(sel: string) {
     lastNavSec.value = id
   }
   await nextTick()
-  navLock = Date.now() + 700
+  navLock = Date.now() + 1800
   flashSection(el)
   jumpToEl(el)
 }

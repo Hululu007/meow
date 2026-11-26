@@ -52,8 +52,12 @@ final class Bootstrap: ObservableObject {
 
     private func boot() async {
         LaunchLog.write("boot start")
-        // MPVolumeView 必须先挂进窗口，才能拿到内部的 UISlider（系统音量桥）
-        SystemVolume.attach()
+        /*
+         * ★ 启动时**不挂** MPVolumeView（2026-11-26 用户报「任意页面按音量键
+         * 都没有系统音量条」）：MPVolumeView 只要在窗口层级里就会全局抑制
+         * 系统音量 HUD。现在由播放页/直播页通过 meowIos.volumeHud(true) 挂载，
+         * 离开时摘掉，其它页面恢复系统音量条。
+         */
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dataDir = docs.appendingPathComponent("gateway", isDirectory: true)
@@ -224,6 +228,13 @@ final class Bootstrap: ObservableObject {
          * 系统亮度桥：竖滑右区（iOS 是左区亮度）调真实屏幕亮度。
          * 传 -1 表示还原进入播放页前的亮度（页面销毁时调）。
          */
+        /*
+         * 音量 HUD 接管开关：播放/直播页挂 MPVolumeView（自己的浮层显示百分比，
+         * 系统 HUD 被抑制）；离开时摘掉，把系统音量条还给其它页面。
+         */
+        js.append("window.meowIos.volumeHud=function(on){try{"
+                  + "window.webkit.messageHandlers.meowIos.postMessage({op:'volumeHud',value:!!on})"
+                  + "}catch(e){}}")
         js.append("window.meowIos.brightness=\(SystemBrightness.current())")
         js.append("window.meowIos.getBrightness=function(){return window.meowIos.brightness||0}")
         js.append("window.meowIos.setBrightness=function(v){try{"
