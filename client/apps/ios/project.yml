@@ -39,6 +39,11 @@ targets:
       - path: build/danmu-api
         type: folder
         buildPhase: resources
+      # JS 源载荷（drpy）：iOS 用真 Node 跑 .js 源，与 PC/Docker 同一份源码。
+      # 备料 scripts/prepare-drpy-payload.sh（未裁 19MB → 裁后 7.4MB）。
+      - path: build/drpy
+        type: folder
+        buildPhase: resources
       - path: build/config.sites.example.json
         buildPhase: resources
     dependencies:
