@@ -1,37 +1,57 @@
 <script setup lang="ts">
 /**
- * fnOS「运行时」区块：只展示 + 引导，不负责安装。
+ * 设置页「运行时」区块（各端共用一套展示，不负责安装）。
  *
- * <p>为什么只做展示：`install_dep_apps` 是 manifest 静态声明，装依赖时应用中心
- * 会一并装；但用户可能**后补**依赖（先装应用、发现 JS/PY 源不可用、再去应用中心），
- * 也可能是命令行安装（依赖没被自动处理）。这一区块解决的就是"到底缺什么"。
+ * <p>为什么放在设置页而不是「搜索与源」里：运行时是**执行环境**，不是源。
+ * 用户的问题是「.js/.py 源为什么跑不起来」，答案在运行时；TV 的「运行时模块」、
+ * PC 的「本机插件」、fpk 的 java/node/python、iOS 的端内 drpy/CPython 本质是
+ * 同一个问题在不同端的形态。
  *
- * <p>★ 不在这里做自动安装：应用中心的安装需要网关权限（5666），
- * 而本页可能从 30010 直连进来；跨端口 POST 会被 CORS/网关拦掉。
- * 所以只给包名 + 应用中心链接，安装动作交给用户。
+ * <p>各端形态：
+ *   - TV：独立安装的 Python 模块（`py-runtime.json`）+ 内置 QuickJS
+ *   - PC：插件型（drpy / pyrt），由「本机插件」安装与启停
+ *   - fpk：meowd 探测到的 java/node/python 可执行文件
+ *   - iOS：端内 nodejs-mobile（drpy）+ 内嵌 CPython；启动状态写在 policy.pyRuntime
  *
- * <p>三项的缺失后果不同，文案必须分开写：
- *   - java 缺失 → 影视后端不启动（整站不可用）
- *   - node 缺失 → 弹幕与 .js 源不可用
- *   - python 缺失 → .py 源不可用
+ * <p>★ 只展示 + 引导，不做安装：fpk 装依赖要网关权限（5666），
+ * PC 插件要走插件管理器，TV 模块要下载 60MB APK —— 跨端口/跨层的安装动作
+ * 一律交给各自的既有入口。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { rescanFpkDeps, shellInfo, type FpkDepInfo, type FpkDeps } from '@/api/fpkUpgrade'
-import { isIosShell, isTvShell } from '@/compat/shell'
+import { isDesktopShell, isIosShell, isTvShell } from '@/compat/shell'
 import { tvPyRuntime } from '@/api/nativeBridge'
-import { fetchPolicy, request } from '@/api'
+import { fetchPolicy, request, type PluginInfo } from '@/api'
 
-const visible = ref(false)
+const props = defineProps<{
+  /** PC：由设置页传进来的插件列表（boot_info），用于显示 drpy/pyrt 状态 */
+  plugins?: PluginInfo[]
+}>()
+const emit = defineEmits<{ (e: 'goto', selector: string): void }>()
+
 const loading = ref(false)
 const error = ref('')
 const deps = ref<FpkDeps | null>(null)
-/** 'fpk' = 飞牛（java/node/python 三件套）；'tv' = TV 壳的 Python 模块；
- *  'ios' = IPA（端内 CPython + drpy）；null = 不显示 */
-const mode = ref<'fpk' | 'tv' | 'ios' | null>(null)
+/** 'fpk' = 飞牛（java/node/python 三件套）；'tv' = TV 的 Python 模块；
+ *  'ios' = IPA（端内 CPython + drpy）；'desktop' = PC 插件型运行时；null = 不显示 */
+const mode = ref<'fpk' | 'tv' | 'ios' | 'desktop' | null>(null)
 /** TV 的 Python 模块状态（py-runtime.json） */
 const pyState = ref<Record<string, unknown> | null>(null)
-/** iOS：运行时地址 + 宿主探测结果（/api/health） */
-const iosInfo = ref<{ url: string; js: string; py: string } | null>(null)
+/** iOS：运行时地址 + 宿主探测 + 端内 Python 启动状态（policy.pyRuntime） */
+interface PyRuntimeState {
+  state?: string
+  port?: number
+  error?: string
+  at?: number
+}
+interface IoRuntimeInfo {
+  url: string
+  ok: boolean
+  pyCap: string
+  breaker: string
+  py: PyRuntimeState | null
+}
+const iosInfo = ref<IoRuntimeInfo | null>(null)
 
 const iosKind = computed(() => {
   const u = iosInfo.value?.url || ''
@@ -40,8 +60,18 @@ const iosKind = computed(() => {
   if (u.includes('127.0.0.1:19330')) return '端内 Node（仅 JS）'
   return '远端运行时'
 })
-const iosJsOk = computed(() => iosInfo.value?.js === 'closed')
-const iosPy = computed(() => iosInfo.value?.py || 'unknown')
+/** Node（drpy）是否可用：/api/runtime/status 的活体探测，不再拿熔断状态冒充 */
+const iosJsOk = computed(() => !!iosInfo.value?.ok)
+const iosPyState = computed(() => iosInfo.value?.py?.state || '')
+const iosPy = computed(() => {
+  if (iosPyState.value === 'running') return 'yes'
+  if (iosPyState.value === 'failed' || iosPyState.value === 'unavailable') return 'no'
+  // 没有 pyRuntime 记录时退回宿主 caps（首次调用 .py 后才有）
+  if (iosInfo.value?.pyCap === 'yes') return 'yes'
+  if (iosInfo.value?.pyCap === 'no') return 'no'
+  return 'unknown'
+})
+const iosPyError = computed(() => (iosInfo.value?.py?.error || '').split('\n').slice(-3).join('\n'))
 
 let disposed = false
 
@@ -111,23 +141,47 @@ function sourceLabel(s?: string | null): string {
   return s
 }
 
+/** PC：drpy / pyrt 两个插件行的状态文案 */
+const desktopRows = computed(() => {
+  const pick = (id: string) => (props.plugins || []).find((p) => p.id === id)
+  return [
+    { id: 'drpy', title: 'drpy', serves: 'JS 源（.js）', p: pick('drpy') },
+    { id: 'pyrt', title: 'pyrt', serves: 'Python 源（.py）', p: pick('pyrt') },
+  ]
+})
+
+function pluginText(p?: PluginInfo): string {
+  if (!p || !p.installed) return '未安装'
+  if (p.phase === 'ready') return `运行中 · ${p.base || `端口 ${p.port}`}`
+  if (p.phase === 'starting') return '启动中…'
+  if (p.phase === 'failed') return `启动失败：${p.error || '未知原因'}`
+  return p.enabled ? '已启用，未运行' : '已安装，未启用'
+}
+
 async function refresh(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    // iOS：端内运行时 + 宿主探测（policy 给地址，/api/health 给健康/能力）
+    // iOS：端内运行时 + 宿主探测（地址来自 policy，活体/能力来自 runtime status）
     if (isIosShell() && !isTvShell()) {
       mode.value = 'ios'
-      const [p, h] = await Promise.all([
+      const [p, h, st] = await Promise.all([
         fetchPolicy().catch(() => ({ jsRuntime: '' } as { jsRuntime?: string })),
         request<{ jsRuntimeBreaker?: string; jsRuntimePy?: string }>('/api/health', {
           timeout: 8000,
         }).catch(() => null),
+        request<{ url?: string; ok?: boolean; py?: string; breaker?: string }>(
+          '/api/runtime/status',
+          { timeout: 8000 },
+        ).catch(() => null),
       ])
+      const pr = (p as { pyRuntime?: PyRuntimeState }).pyRuntime || null
       iosInfo.value = {
-        url: String(p.jsRuntime || ''),
-        js: String(h?.jsRuntimeBreaker || 'unknown'),
-        py: String(h?.jsRuntimePy || 'unknown'),
+        url: String(st?.url || p.jsRuntime || ''),
+        ok: st ? !!st.ok : h?.jsRuntimeBreaker === 'closed',
+        pyCap: String(st?.py || h?.jsRuntimePy || 'unknown'),
+        breaker: String(st?.breaker || h?.jsRuntimeBreaker || 'unknown'),
+        py: pr,
       }
       return
     }
@@ -142,22 +196,25 @@ async function refresh(): Promise<void> {
       }
       return
     }
+    // PC：运行时就是插件，状态由设置页的 boot_info 提供（不重复发请求）
+    if (isDesktopShell()) {
+      mode.value = 'desktop'
+      return
+    }
     /*
-     * ★ 不要求 capability === 'fpk'：运行时状态只依赖 meowd 的 /api/_shell/info
-     * （它由 meowd 自己答，不需要飞牛网关）。网关只在"安装更新"时才必需 ——
-     * 那是 FpkUpgradePanel 的事，不该牵连到这里。
+     * fpk：状态只依赖 meowd 的 /api/_shell/info（它由 meowd 自己答，
+     * 不需要飞牛网关）。网关只在"安装更新"时才必需 —— 那是 FpkUpgradePanel 的事。
      * 判据放错位置的后果：用户直接访问 http://<NAS>:30010/ 时这个区块整块消失，
      * 而 deps 明明拿得到。
      */
-    const info = await shellInfo(true)
+    const shell = await shellInfo(true)
     if (disposed) return
-    if (!info || !info.deps) {
+    if (!shell || !shell.deps) {
       mode.value = null
       return
     }
     mode.value = 'fpk'
-    deps.value = info.deps
-    visible.value = true
+    deps.value = shell.deps
   } catch (e) {
     error.value = (e as Error)?.message || '探测失败'
   } finally {
@@ -165,12 +222,11 @@ async function refresh(): Promise<void> {
   }
 }
 
-
 async function rescan(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    if (mode.value === 'ios') {
+    if (mode.value === 'ios' || mode.value === 'desktop') {
       await refresh()
       return
     }
@@ -202,8 +258,8 @@ onBeforeUnmount(() => {
 <template>
   <!-- ── iOS：端内运行时（drpy + CPython），状态与能力引导 ── -->
   <template v-if="mode === 'ios' && iosInfo">
-    <div class="set-sub mt-3 border-t border-line pt-3" data-runtime-deps>
-      <span class="font-medium text-ink-2">运行时</span>
+    <div class="set-sub" data-runtime-deps>
+      <span class="font-medium text-ink-2">本机运行时</span>
       <span class="text-[length:var(--fs-mini)] text-ink-3">
         {{ iosKind }}
       </span>
@@ -222,11 +278,11 @@ onBeforeUnmount(() => {
               :class="iosJsOk ? 'bg-ok' : 'bg-hot'" />
         <span class="font-medium text-ink">Node（drpy）</span>
         <span :class="iosJsOk ? 'text-ok' : 'text-hot'">
-          {{ iosInfo.js === 'closed' ? '可用' : iosInfo.js === 'open' ? '不可用（熔断）' : '未知' }}
+          {{ iosInfo.ok ? '可用' : iosInfo.breaker === 'open' ? '不可用（熔断）' : '不可用' }}
         </span>
         <span class="text-ink-3/70">· 弹幕 · .js 源</span>
       </div>
-      <p class="ml-3.5 mt-0.5 text-[length:var(--fs-mini)] text-ink-3">
+      <p class="ml-3.5 mt-0.5 break-all text-[length:var(--fs-mini)] text-ink-3">
         端内 nodejs-mobile（V8 关闭 JIT）；地址
         <code class="select-all">{{ iosInfo.url || '未配置' }}</code>
       </p>
@@ -236,30 +292,45 @@ onBeforeUnmount(() => {
               :class="iosPy === 'yes' ? 'bg-ok' : iosPy === 'no' ? 'bg-hot' : 'bg-white/30'" />
         <span class="font-medium text-ink">CPython 3.12</span>
         <span :class="iosPy === 'yes' ? 'text-ok' : iosPy === 'no' ? 'text-hot' : 'text-ink-3'">
-          {{ iosPy === 'yes' ? '可用' : iosPy === 'no' ? '不可用' : '未知（首次调用 .py 源后探测）' }}
+          {{
+            iosPy === 'yes'
+              ? '可用'
+              : iosPy === 'no'
+                ? '不可用'
+                : iosInfo.url.includes('19330')
+                  ? '未启用（回退 Node）'
+                  : '未知'
+          }}
         </span>
         <span class="text-ink-3/70">· .py 源</span>
       </div>
+      <p v-if="iosPyError" class="ml-3.5 mt-0.5 whitespace-pre-wrap break-all text-[length:var(--fs-mini)] text-hot/90">
+        {{ iosPyError }}
+      </p>
       <p class="ml-3.5 mt-0.5 text-[length:var(--fs-mini)] text-ink-3">
         端内裁剪版：含 requests/bs4/pyaes、AES-ECB/CBC/GCM、ARC4 与常用 Hash（另有 cryptography 的 AES/Fernet 兼容层）；<span class="text-hot">不含 lxml/pyquery/PIL/RSA</span>。
+        启动日志在「文件」App 的 猫窝/Documents/py.log。
       </p>
 
       <div class="mt-2 rounded-md bg-white/5 px-2.5 py-2 text-[length:var(--fs-mini)] text-ink-3">
-        需要 lxml/pyquery 或完整 pycryptodome 时：在「JS 运行时」填局域网 pyrt 地址
+        需要 lxml/pyquery 或完整 pycryptodome 时：在「搜索与源」把 JS 运行时地址填成局域网 pyrt
         （如 <code class="select-all">http://192.168.1.x:19331</code>）保存后回来重新检测；
         端内运行时会让位给远端，`.js/.py` 都走那台机器。
+        <button class="ml-1 underline hover:text-ink" @click="emit('goto', '[data-jsruntime]')">
+          去配置
+        </button>
       </div>
     </div>
   </template>
 
-  <!-- ── TV：Python 运行时模块 ── -->
+  <!-- ── TV：Python 运行时模块（QuickJS 跑 .js，模块跑 .py） ── -->
   <template v-if="mode === 'tv' && pyState">
-    <div class="set-sub mt-3 border-t border-line pt-3" data-runtime-deps>
-      <span class="font-medium text-ink-2">运行时模块</span>
+    <div class="set-sub" data-runtime-deps>
+      <span class="font-medium text-ink-2">Python 模块</span>
       <span class="text-[length:var(--fs-mini)] text-ink-3">
-        <template v-if="pyState.running">Python 运行中 · 端口 {{ pyState.port }}</template>
+        <template v-if="pyState.running">运行中 · 端口 {{ pyState.port }}</template>
         <template v-else-if="pyState.error">{{ pyState.error }}</template>
-        <template v-else>Python 未运行</template>
+        <template v-else>未运行</template>
       </span>
       <span class="flex-1" />
       <button
@@ -283,8 +354,40 @@ onBeforeUnmount(() => {
     </div>
   </template>
 
-  <div v-if="mode === 'fpk'" class="set-sub mt-3 border-t border-line pt-3" data-runtime-deps>
-    <span class="font-medium text-ink-2">运行时</span>
+  <!-- ── PC：插件型运行时（drpy / pyrt） ── -->
+  <template v-if="mode === 'desktop'">
+    <div class="set-sub" data-runtime-deps>
+      <span class="font-medium text-ink-2">脚本运行时</span>
+      <span class="text-[length:var(--fs-mini)] text-ink-3">由本机插件提供 · 安装与启停在下方插件列表</span>
+      <span class="flex-1" />
+      <button
+        class="rounded-md bg-card px-2.5 py-1 text-[length:var(--fs-mini)] hover:bg-card-hover"
+        :disabled="loading"
+        @click="rescan()"
+      >
+        {{ loading ? '检测中…' : '刷新状态' }}
+      </button>
+    </div>
+    <div class="pb-3 text-[length:var(--fs-xs)]" data-runtime-deps>
+      <div v-for="row in desktopRows" :key="row.id" class="mt-1 first:mt-0">
+        <div class="flex flex-wrap items-baseline gap-x-2">
+          <span class="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                :class="row.p?.phase === 'ready' ? 'bg-ok' : row.p?.installed ? 'bg-white/40' : 'bg-hot'" />
+          <span class="font-medium text-ink">{{ row.title }}</span>
+          <span :class="row.p?.phase === 'ready' ? 'text-ok' : row.p?.phase === 'failed' ? 'text-hot' : 'text-ink-3'">
+            {{ pluginText(row.p) }}
+          </span>
+          <span class="text-ink-3/70">· {{ row.serves }}</span>
+        </div>
+      </div>
+      <p class="mt-1.5 text-[length:var(--fs-mini)] text-ink-3/70">
+        缺哪个就在下方「插件列表」里下载安装；装好后插件管理器会自动拉起。
+      </p>
+    </div>
+  </template>
+
+  <div v-if="mode === 'fpk'" class="set-sub" data-runtime-deps>
+    <span class="font-medium text-ink-2">系统依赖</span>
     <span class="text-[length:var(--fs-mini)] text-ink-3">
       <template v-if="loading">检测中…</template>
       <template v-else-if="missing.length">{{ missing.length }} 项未安装</template>
@@ -317,7 +420,7 @@ onBeforeUnmount(() => {
         <span class="text-ink-3/70">· {{ row.serves }}</span>
       </div>
 
-      <p v-if="info(row.key)?.ok" class="ml-3.5 mt-0.5 text-[length:var(--fs-mini)] text-ink-3">
+      <p v-if="info(row.key)?.ok" class="ml-3.5 mt-0.5 break-all text-[length:var(--fs-mini)] text-ink-3">
         <code class="select-all">{{ shortPath(info(row.key)?.path) }}</code>
         <span v-if="sourceLabel(info(row.key)?.source)" class="ml-1 opacity-70">
           （{{ sourceLabel(info(row.key)?.source) }}）

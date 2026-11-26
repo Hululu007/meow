@@ -714,7 +714,7 @@
     }
   }
 
-  /** 顶部常驻层（顶栏）占掉的高度；没有则 0 */
+  /** 顶部常驻层（顶栏 + 吸顶条）占掉的高度；没有则 0 */
   function stickyTopHeight() {
     var h = 0
     var header = document.querySelector('.app-header')
@@ -725,6 +725,24 @@
         // 只在它确实贴着视口顶部时才算（页面滚到最顶上时 r.top 可能是 margin）
         if (r.top <= 1) h = Math.max(0, r.bottom)
       }
+    }
+    /*
+     * ★ 顶栏下面还可能压着一条吸顶条（设置页「分区胶囊」）。
+     *
+     * 只算顶栏时，遥控器把焦点移到设置项上，scrollIntoViewWithin 会把元素
+     * 顶到顶栏下沿 —— 正好被胶囊条盖住，用户看到的是"聚焦后配置区还是靠上"。
+     * 用显式标记 data-sticky-top，避免把浮层 / 底部常驻栏误算进遮挡高度。
+     * 只收"已经吸到当前遮挡下沿"的那条：页面在顶部时它在文档流里，
+     * 焦点滚动本身会把它留在上方，不需要额外让位。
+     */
+    var bars = document.querySelectorAll('[data-sticky-top]')
+    for (var i = 0; i < bars.length; i++) {
+      var b = bars[i]
+      var bs = getComputedStyle(b)
+      if (bs.display === 'none' || bs.visibility === 'hidden') continue
+      var br = b.getBoundingClientRect()
+      if (br.height <= 0) continue
+      if (br.top <= h + 1 && br.bottom > h) h = br.bottom
     }
     return h
   }

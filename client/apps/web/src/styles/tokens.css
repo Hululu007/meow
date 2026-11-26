@@ -1658,6 +1658,14 @@ html[data-shell='ios'] .cat-chips {
     border: 1px solid var(--color-line);
     background: var(--color-card-sunken);
     padding: 0.875rem; /* 14px，比 p-3 略宽，配合 20px 圆角更舒展 */
+    /*
+     * 长串（URL / 路径 / 令牌 / 源地址）不许把整页撑宽。
+     * 实测（2026-11-26）：插件源里一条 200+ 字符的 URL 让页面可横向拖动，
+     * 手机上整页跟着手指左右晃。overflow-wrap 可继承，写在这里覆盖整张卡片；
+     * 只在行内确实放不下时才断，正常文案不受影响。
+     */
+    overflow-wrap: anywhere;
+    min-width: 0;
   }
 
   /*

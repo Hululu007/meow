@@ -30,8 +30,10 @@ describe('设置页胶囊跳转', () => {
     expect(fn).not.toContain("behavior: 'smooth'")
     expect(fn).toContain('requestAnimationFrame(apply)')
     expect(fn).toContain('window.setTimeout(apply, 260)')
-    // 落点再让 20px：分区标题不被吸顶胶囊盖住
-    expect(settings).toContain('return header + navH + 20')
+    // 让位高度按**实际遮挡底边**算（顶栏 / 吸顶胶囊 rect），不再用 CSS 变量相加；
+    // 竖屏真机上「--header-h + 胶囊高度」量出来仍偏低，标题会被盖住。
+    expect(settings).toContain('return Math.max(headerBottom, navBottom) + 24')
+    expect(settings).toContain("document.querySelector<HTMLElement>('.app-header')")
   })
 })
 

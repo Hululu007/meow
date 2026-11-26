@@ -1611,6 +1611,15 @@ public class ApiServer {
                 sendJson(ex, 200, healthJson());
                 return;
             }
+            /*
+             * 运行时状态（设置页「运行时」分区）：地址 / 是否活着 / 支不支持 .py。
+             * 与 /api/health 分开 —— health 必须毫秒级，这里会做一次最长 800ms 的探测。
+             * 必须显式注册：否则会被下面的站点分派当成 site="runtime"。
+             */
+            if ("/api/runtime/status".equals(path)) {
+                sendJson(ex, 200, runtimeStatusJson());
+                return;
+            }
             // 健康度：主动探活 + 手动降权 + 明细。
             // 三条都必须显式注册：否则 /api/health/probe 会被下面的站点分派
             // 当成 site="health"、action="probe" 去加载一个不存在的 spider，
@@ -4719,6 +4728,35 @@ public class ApiServer {
             core.LogBuffer.info("search", "jsRuntime 不支持 .py（只跑 JS）→ .py 源将直接给出原因");
         }
         return py;
+    }
+
+    /**
+     * 设置页「运行时」分区用的状态快照：地址 + 活体探测 + .py 能力。
+     *
+     * <p>为什么不复用 /api/health：health 必须毫秒级、不能发网络请求；
+     * 这里允许一次 800ms 探测（scriptRuntimeUsable 自带 15 秒缓存），
+     * 只在用户打开设置页或点「重新检测」时调用。
+     */
+    private static String runtimeStatusJson() {
+        String base = loadPolicy().optString("jsRuntime", "");
+        if (base.isEmpty()) base = System.getenv().getOrDefault("MEOW_JS_RUNTIME", "");
+        boolean ok = !base.isEmpty() && scriptRuntimeUsable();
+        /*
+         * 只在探测成功时问 caps：运行时连不上时 runtimeSupportsPy 会保守返回
+         * true，那会把「没启动」显示成「支持 .py」，比未知更误导。
+         */
+        String py = ok ? (runtimeSupportsPy() ? "yes" : "no") : "unknown";
+        try {
+            JSONObject o = new JSONObject();
+            o.put("url", base);
+            o.put("ok", ok);
+            o.put("py", py);
+            o.put("breaker", scriptRuntimeBreakerOpen() ? "open" : "closed");
+            o.put("fails", scriptRuntimeFails.get());
+            return o.toString();
+        } catch (Throwable t) {
+            return "{\"url\":\"\",\"ok\":false,\"py\":\"unknown\"}";
+        }
     }
 
     /**
@@ -15405,21 +15443,31 @@ public class ApiServer {
             String reason = null;
             if (api.isEmpty()) {
                 reason = "缺少 api 字段";
-            } else if (isScriptApi(api) && !api.startsWith("node:")
-                    && !api.startsWith("py:") && !api.endsWith(".py")) {
-                // drpy 脚本：相对路径必须按**配置文件的地址**补全。
-                // 不补全的话 `./api/drpy2.min.js` 在运行时那边无从解析，
-                // 到时候每个源都得靠猜。这里补成绝对地址落盘，一次算清。
-                //
-                // ★ #13：判据必须用 isScriptApi（会剥 ?v=3 这类查询串）。
-                //   原来 endsWith(".js") 对 `./api/drpy2.min.js?v=3` 不成立，
-                //   会被下面的 "无法识别的 api 形式" 直接丢掉。
+            } else if (isScriptApi(api) && !api.startsWith("node:") && !api.startsWith("py:")) {
+                /*
+                 * 脚本源（drpy 的 .js / pyrt 的 .py）：相对路径必须按**配置文件的
+                 * 地址**补全。不补全的话 `./api/drpy2.min.js` 在运行时那边无从解析，
+                 * 到时候每个源都得靠猜。这里补成绝对地址落盘，一次算清。
+                 *
+                 * ★ #13：判据必须用 isScriptApi（会剥 ?v=3 这类查询串）。
+                 *   原来 endsWith(".js") 对 `./api/drpy2.min.js?v=3` 不成立，
+                 *   会被下面的 "无法识别的 api 形式" 直接丢掉。
+                 *
+                 * ★ .py 以前在这一步被当成「运行时不支持」整类丢掉（iOS 导入实测：
+                 *   136 站只进 26 站、110 个 .py 全进 skipped）。现在三端都有跑 .py
+                 *   的路径（PC/Docker/fpk 的 pyrt、TV 的 Python 模块、iOS 的端内
+                 *   CPython），导入期不能替运行时做"能不能执行"的决定 —— 保留站点，
+                 *   执行不了时由 callScriptRuntime 按 /health 的 caps 回一条准确原因
+                 *   （见 runtimeSupportsPy）。
+                 */
                 if (!api.startsWith("http") && !api.startsWith("js:")) {
                     String rel = api.startsWith("./") ? api.substring(2) : api;
                     api = resolveUrl(configBase, rel);
                 }
-            } else if (api.startsWith("node:") || api.endsWith(".py")) {
-                reason = "运行时不支持";
+            } else if (api.startsWith("node:")) {
+                reason = "运行时不支持（node: 内联脚本没有对应运行时）";
+            } else if (api.startsWith("py:")) {
+                reason = "运行时不支持（py: 内联脚本没有对应运行时）";
             } else if (api.startsWith("csp_")) {
                 String cls = api.substring(4);
                 /*

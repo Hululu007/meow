@@ -10,9 +10,10 @@ import WallpaperPicker from '@/components/common/WallpaperPicker.vue'
 import { THEME_MODES, THEME_STYLES, resolveMode } from '@/stores/theme'
 // iOS 壳：后端是 App 进程内的 JVM 网关，地址由壳写死 —— 设置页要能认出它，
 // 把「后端地址」那行换成只读展示（改了就等于把 App 指向别人的后端）。
-import { isIosShell, iosShellInfo } from '@/compat/shell'
+import { currentShell, isIosShell, iosShellInfo } from '@/compat/shell'
 import { uaText } from '@/compat/ua'
 import { fetchServerLogs } from '@/api/logs'
+import { detectFpkShell } from '@/api/fpkUpgrade'
 import type { TileAction } from '@/components/common/tile'
 import {
   apiBase,
@@ -3365,6 +3366,39 @@ const desktop = isDesktop()
 const ios = isIosShell()
 const iosInfo = iosShellInfo()
 
+/*
+ * 「运行时」分区归位（2026-11-26 用户口径：运行时状态不该藏在「搜索与源」里）。
+ *
+ * 各端运行时形态不同，展示位置也按"用户会去哪找"放：
+ *   - TV：模块是可独立安装的 APK → 独立分区（安装/启停/状态在一起）
+ *   - fpk：java/node/python 是系统依赖 → 独立分区
+ *   - iOS：端内 drpy/CPython 是壳能力 → 独立分区
+ *   - PC：drpy/pyrt 就是插件 → 放在「本机插件」里，不另开分区（否则同一份
+ *     插件状态在两个地方各显示一次）
+ */
+const fpkShell = ref(currentShell() === 'fpk')
+/*
+ * fpk 的身份是**异步探测**出来的（App 启动时 probeCapability 完成前
+ * data-shell 还是 web）。设置页是运行时状态的入口，这里补一次探测；
+ * shellInfo 自带缓存，Docker/Web 上就是复用启动时那次结果。
+ */
+onMounted(() => {
+  if (fpkShell.value || currentShell() !== 'web') return
+  void detectFpkShell()
+    .then((r) => {
+      if (r) fpkShell.value = true
+    })
+    .catch(() => {
+      /* 不是 fpk 就当普通 Web，运行时分区不出现 */
+    })
+})
+const showRuntimeNav = computed(() => (tvMode && tvModule) || ios || fpkShell.value)
+const runtimeHint = computed(() => {
+  if (ios) return '端内 drpy + CPython · .js/.py 源本机执行'
+  if (tvMode) return 'Python 模块 · .js 由 QuickJS、.py 由模块执行'
+  return 'meowd 探测到的本机 java / node / python'
+})
+
 // ---------------------------------------------------------------- 本机执行（TV）
 //
 // 电视上可以直接跑配置里的 jar（DexClassLoader），不必依赖后端。
@@ -4838,7 +4872,7 @@ const NAV_ITEMS = [
   { id: 'conn', label: '连接' },
   { id: 'plugin', label: '本机插件', desktopOnly: true },
   { id: 'localexec', label: '本机执行', tvOnly: true },
-  { id: 'runtime', label: '运行时模块', tvOnly: true },
+  { id: 'runtime', label: '运行时' },
   // 托盘/关闭行为只在 PC 上有意义；Web 起不了托盘，TV 壳也不是这个交互
   { id: 'desktop', label: '桌面端行为', desktopOnly: true },
   { id: 'source', label: '搜索与源' },
@@ -4856,6 +4890,8 @@ const NAV_ITEMS = [
 
 const navItems = computed(() =>
   NAV_ITEMS.filter((i) => {
+    // 运行时分区按端决定（PC 在「本机插件」里，不单独出现）
+    if (i.id === 'runtime') return showRuntimeNav.value
     if ('desktopOnly' in i && i.desktopOnly) return desktop
     if ('tvOnly' in i && i.tvOnly) return tvMode
     // 原生壳才有（PC 的 Tauri / TV 的 WebView 壳）；纯 Web 隐藏
@@ -5192,6 +5228,13 @@ function jumpToEl(el: HTMLElement) {
   apply()
   requestAnimationFrame(apply)
   window.setTimeout(apply, 260)
+  /*
+   * 再补两次：分区内容第一次挂载（visitedSec）会把上方分区撑高，
+   * 目标被顶到胶囊下面。只到 260ms 时部分异步内容（统计/列表）还没渲染完，
+   * 落点会偏；这两次只做位置校正，不重新闪框。
+   */
+  window.setTimeout(apply, 700)
+  window.setTimeout(apply, 1200)
 }
 
 /**
@@ -5200,19 +5243,29 @@ function jumpToEl(el: HTMLElement) {
  * <p>原来写死 72（只算了顶栏），竖屏下胶囊条吸在顶栏下沿还有 ~44px，
  * 目标分区标题就被压在胶囊下面，看起来"跳不准"；iPad 横屏走容器分支
  * 不受影响（用户实测横屏正确）。
+ *
+ * <p>★ 2026-11-26 再修：不要再拿「--header-h + 胶囊高度」相加。
+ * 胶囊条自己有上下 padding，安全区也叠在顶栏里，两项相加量出来的下沿
+ * 仍比实际低 —— 真机上标题还是被压住。直接取**实际遮挡元素的下沿**
+ * （元素在视口里的 rect.bottom），滚到哪算哪，多一层都不漏。
  */
 function stickyTopOffset(): number {
-  const raw = getComputedStyle(document.documentElement).getPropertyValue('--header-h')
-  const header = parseFloat(raw) || 56
+  const headerEl = document.querySelector<HTMLElement>('.app-header')
+  const hr = headerEl?.getBoundingClientRect()
+  const headerBottom =
+    hr && hr.height > 0
+      ? Math.max(0, hr.bottom)
+      : parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--header-h')) || 56
+
   const nav = chipsEl.value
-  const navH = nav && nav.getBoundingClientRect().height > 0 && nav.offsetParent !== null
-    ? nav.getBoundingClientRect().height
-    : 0
-  /*
-   * +20 而不是 +8（2026-11-26 用户：落点再往上一点点时，分区标题会被吸顶胶囊
-   * 正好盖住）。8 只够贴边，留 20 才能让标题完整露出来。
-   */
-  return header + navH + 20
+  let navBottom = 0
+  if (nav && getComputedStyle(nav).display !== 'none') {
+    const nr = nav.getBoundingClientRect()
+    // 只在胶囊条已经吸到顶栏下方（或与顶栏重叠）时才算遮挡：
+    // 页面在顶部时它在文档流里，bottom 同样是"它占到的位置"，不会多扣。
+    if (nr.height > 0) navBottom = nr.bottom
+  }
+  return Math.max(headerBottom, navBottom) + 24
 }
 
 /**
@@ -5509,6 +5562,7 @@ onBeforeUnmount(() => {
     -->
     <nav
       ref="chipsEl"
+      data-sticky-top
       class="no-scrollbar sticky top-[var(--header-h)] z-20 -mx-4 flex gap-1.5 overflow-x-auto scroll-smooth border-b border-line/60 bg-[var(--color-strip-veil)] px-4 pb-2 pt-1 backdrop-blur-xl backdrop-saturate-[180%] max-sm:-mx-3 max-sm:gap-2 max-sm:px-3 wide:hidden"
       aria-label="设置分区"
     >
@@ -5530,7 +5584,7 @@ onBeforeUnmount(() => {
     </nav>
 
     <div
-      class="flex flex-col gap-4 max-sm:mt-3 wide:grid wide:min-h-0 wide:flex-1 wide:grid-cols-[200px_minmax(0,1fr)] wide:grid-rows-[minmax(0,1fr)] wide:gap-6"
+      class="flex min-w-0 flex-col gap-4 overflow-x-hidden max-sm:mt-3 wide:grid wide:min-h-0 wide:flex-1 wide:grid-cols-[200px_minmax(0,1fr)] wide:grid-rows-[minmax(0,1fr)] wide:gap-6"
     >
       <!-- ── 左侧导航（宽屏时定高不滚） ── -->
       <aside
@@ -5822,6 +5876,10 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
+      <!-- 运行时状态就长在插件区：PC 的 drpy/pyrt 就是插件，装没装、跑没跑
+           与下面的插件列表是同一份数据，不需要单开一个分区。 -->
+      <RuntimeDepsPanel :plugins="plugins" />
+
       <!-- 插件源管理 -->
       <div class="mb-2 rounded-lg bg-white/[0.04] px-3 py-2" data-plugin-source>
         <div class="mb-1.5 flex items-center gap-2">
@@ -5865,7 +5923,7 @@ onBeforeUnmount(() => {
             @change="selectSource(s.id)"
           />
           <span class="w-16 shrink-0 truncate text-[11px]" :title="s.name">{{ s.name }}</span>
-          <span class="flex-1 truncate font-mono text-[11px] text-ink-3" :title="s.url">
+          <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-3" :title="s.url">
             {{ s.url }}
           </span>
           <span v-if="s.id === sources.current" class="text-[10px] text-accent">当前</span>
@@ -6257,13 +6315,16 @@ onBeforeUnmount(() => {
       </template>
       </section>
 
-    <!-- ══════════ 运行时模块（仅 TV）══════════ -->
-    <section v-if="tvMode && tvModule" data-sec="runtime" data-runtime-module class="set-card shrink-0">
+    <!-- ══════════ 运行时（TV 模块 / fpk 依赖 / iOS 端内 / PC 插件在「本机插件」）══════════ -->
+    <section v-if="showRuntimeNav" data-sec="runtime" data-runtime-module class="set-card shrink-0">
       <template v-if="visitedSec('runtime')">
       <div class="set-head">
-        <h2 class="set-title">运行时模块</h2>
-        <span class="set-hint">内置 node 运行时 · 供本机网关弹幕聚合</span>
-        <span class="set-actions flex items-center text-[11px] text-ink-3">
+        <h2 class="set-title">运行时</h2>
+        <span class="set-hint">{{ runtimeHint }}</span>
+        <span
+          v-if="tvMode && tvModule"
+          class="set-actions flex items-center text-[11px] text-ink-3"
+        >
           {{
             modState.installed
               ? modState.enabled
@@ -6276,6 +6337,8 @@ onBeforeUnmount(() => {
         </span>
       </div>
 
+      <!-- TV 的模块安装/启停/卸载（其它端没有这层） -->
+      <template v-if="tvMode && tvModule">
       <p class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
         模块约 60MB，按 CPU 架构单独安装；下载源与令牌沿用「更新」设置。
       </p>
@@ -6359,8 +6422,18 @@ onBeforeUnmount(() => {
           </span>
         </div>
       </div>
+      </template><!-- /TV 模块安装 -->
 
-    
+      <!--
+        各端运行时状态（同一组件按壳形态切换）：
+          iOS → 端内 drpy + CPython（policy.pyRuntime 给启动结果）
+          TV  → Python 模块是否就绪
+          fpk → java/node/python 三个可执行文件
+       -->
+      <div :class="tvMode && tvModule ? 'mt-3 border-t border-line pt-3' : ''">
+        <RuntimeDepsPanel :plugins="plugins" @goto="gotoSelector" />
+      </div>
+
       </template>
       </section>
 
@@ -6844,18 +6917,18 @@ onBeforeUnmount(() => {
         「清空搜索缓存」在下面的「结果缓存」分组。
       </p>
 
-      <!-- 运行时：drpy 用外部 Node 进程；广告过滤是可选的后端策略 -->
+      <!-- 运行时：drpy / pyrt 地址；广告过滤是可选的后端策略 -->
       <div class="set-sub mt-3">
         <span class="font-medium text-ink-2">运行时与过滤</span>
-        <span>drpy 站需要外部 Node；广告过滤是可选的后端策略</span>
+        <span>drpy / pyrt 地址（.js、.py 源都走它）；广告过滤是可选的后端策略</span>
       </div>
-      <div class="flex flex-wrap items-center gap-2.5">
+      <div data-jsruntime class="flex min-w-0 flex-wrap items-center gap-2.5">
         <span class="w-16 shrink-0 text-xs text-ink-3">JS 运行时</span>
         <input
           v-model="jsRuntime"
           placeholder="http://127.0.0.1:9330（留空 = 未装 drpy 插件）"
           class="min-w-[16rem] max-sm:min-w-[10rem] flex-1 rounded-md border border-line bg-field px-2.5 py-1.5 font-mono text-xs outline-none transition focus:border-accent"
-          title="drpy 插件启动时会自动写入；手动部署 Node 服务时填它的地址"
+          title="drpy / pyrt 的地址；PC 插件启动时会自动写入，手动部署时填它的地址"
         />
         <button
           class="rounded-md bg-card px-3 py-1.5 text-xs transition hover:bg-card-hover disabled:opacity-40"
@@ -6886,11 +6959,8 @@ onBeforeUnmount(() => {
         {{ advMsg }}
       </p>
 
-      <!-- ── 运行时依赖（只 fpk）──
-        与上面「JS 运行时」是两件事：上面填的是 drpy 的**服务地址**，
-        这里报的是 meowd 探测到的**本机可执行文件**（java/node/python）。
-        组件内部自己判 capability==='fpk'，Web/PC/TV 不渲染。 -->
-      <RuntimeDepsPanel />
+      <!-- 运行时状态已收口到独立「运行时」分区（运行时是执行环境，不是源）。
+           这里只留「JS 运行时」地址本身，它决定 .js/.py 请求发到哪台机器。 -->
 
       <!-- ── 搜索行为 ──
            从原「浏览与搜索」区搬来。这些是"搜索怎么跑"的参数，

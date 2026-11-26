@@ -207,6 +207,26 @@ jobs:
           test -f client/apps/ios/build/python/pyext/_ssl.cpython-312-iphoneos.so || { echo "_ssl missing"; exit 1; }
           du -sh client/apps/ios/build/python/Python.framework client/apps/ios/build/python/runtime
 
+      # ★ Frameworks/pyext 里的 .so 必须自带签名。
+      #   侧载器（SideStore/AltStore）按 .framework 递归签名，散装扩展目录经常
+      #   被漏掉；iOS 不允许 dlopen 无签名可执行页，症状是 pyrt.py 在 import
+      #   阶段就挂（`_random`/`_socket` 这类 C 扩展全是 .so），设置页只显示
+      #   “CPython 不可用”。构建期先打 ad-hoc 签名：侧载器重签会覆盖它，
+      #   不重签时它自己也能被加载。Python.framework 一并签，防上游 asset 未签。
+      - name: Ad-hoc sign CPython payload
+        run: |
+          set -euo pipefail
+          P=client/apps/ios/build/python
+          find "$P/pyext" -name '*.so' -type f -print0 \
+            | xargs -0 -n1 codesign --force --sign - --timestamp=none
+          # 先签 framework bundle；上游没带 Info.plist 时退到直接签二进制
+          if ! codesign --force --sign - --timestamp=none "$P/Python.framework"; then
+            codesign --force --sign - --timestamp=none "$P/Python.framework/Python"
+          fi
+          codesign --verify --strict "$P/Python.framework/Python"
+          codesign --verify --strict "$P/pyext/_ssl.cpython-312-iphoneos.so"
+          echo "[py] ad-hoc signed $(find "$P/pyext" -name '*.so' -type f | wc -l) extensions"
+
       - name: Generate Xcode project
         run: |
           set -euo pipefail
@@ -264,6 +284,12 @@ jobs:
           fi
           if ! unzip -l "$GITHUB_WORKSPACE/artifacts/$IPA_NAME" | grep -q 'Frameworks/pyext/_ssl.cpython-312-iphoneos.so'; then
             echo "ERROR: Frameworks/pyext 缺失（C 扩展无法加载）" >&2
+            exit 1
+          fi
+          # 签名必须活到 IPA 里：Xcode 的 copyFiles 若改了字节，ad-hoc 签名会失效，
+          # 真机上 dlopen 直接被拒（pyrt 起不来，Documents/py.log 里是 ImportError）
+          if ! codesign --verify --strict "$APP/Frameworks/pyext/_ssl.cpython-312-iphoneos.so"; then
+            echo "ERROR: pyext 的 ad-hoc 签名在打包后失效" >&2
             exit 1
           fi
           echo "ipa bytes: $(stat -f%z "$GITHUB_WORKSPACE/artifacts/$IPA_NAME")"

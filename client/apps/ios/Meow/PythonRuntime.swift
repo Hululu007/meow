@@ -11,6 +11,11 @@ import Foundation
 /// 不可用时退回 drpy（NodeBridge 负责写）。这样 `.py`/`.js` 都是本地执行，
 /// 不需要局域网里再有一台 PC。
 ///
+/// <p>★ 启动状态写进 `policy.json` 的 `pyRuntime`（state/error/at）：
+/// 设置页通过 `/api/policy` 就能拿到，不再靠"地址是不是 19331"猜 ——
+/// 之前用户看到的是「CPython 未知」，既不知道是没打包、没签名还是 import 失败。
+/// 真正的 traceback 在 `Documents/py.log`（Python 的 stdout/stderr 被 C 桥重定向）。
+///
 /// <p>包体（2026-11-26 实测裁剪后）：framework 2.1MB + runtime 6.9MB（zip 后）。
 enum PythonRuntime {
     static let port = 19331
@@ -32,6 +37,7 @@ enum PythonRuntime {
               fm.fileExists(atPath: home.appendingPathComponent("lib/python3.12/encodings/__init__.py").path)
         else {
             LaunchLog.write("[py] payload not bundled; py sources stay remote-only")
+            record("unavailable", "安装包里没有 runtime/pyrt.py（旧版包或构建漏拷）")
             return
         }
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -57,11 +63,21 @@ enum PythonRuntime {
         // 标记裁剪版运行时：pyrt 遇到 lxml/pyquery ImportError 时给出准确提示
         setenv("MEOW_PY_TRIM", "1", 1)
 
-        started = meow_py_start(script.path) == 0
+        let logPath = docs.appendingPathComponent("py.log")
+        // 每次启动保留上一轮的回溯（追加写），但别无限长：超过 64KB 直接重开
+        if let attrs = try? fm.attributesOfItem(atPath: logPath.path),
+           let sz = attrs[.size] as? NSNumber, sz.intValue > 64 * 1024 {
+            try? fm.removeItem(at: logPath)
+        }
+        record("starting", "")
+        started = meow_py_start(script.path, logPath.path) == 0
         LaunchLog.write("[py] start \(started ? "ok" : "failed") home=\(home.lastPathComponent)")
+        if !started {
+            record("failed", "pthread 创建失败（日志见 Documents/py.log）")
+        }
     }
 
-    /// 探活：GET /health 返回 200 即就绪。
+    /// 探活：GET /health 返回 200 即就绪。结果同时写回 policy.pyRuntime。
     static func waitHealthy(timeout: TimeInterval) -> Bool {
         guard started else { return false }
         let deadline = Date().addingTimeInterval(timeout)
@@ -76,10 +92,54 @@ enum PythonRuntime {
                 sem.signal()
             }.resume()
             _ = sem.wait(timeout: .now() + 3)
-            if ok { return true }
+            if ok {
+                record("running", "")
+                return true
+            }
             Thread.sleep(forTimeInterval: 0.4)
         }
+        let tail = logTail()
+        record("failed", tail.isEmpty ? "25 秒内 /health 未就绪（Documents/py.log 为空）" : tail)
+        LaunchLog.write("[py] log tail: \(tail.suffix(300))")
         return false
+    }
+
+    // MARK: - 状态落盘
+
+    private static func record(_ state: String, _ error: String) {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let f = docs.appendingPathComponent("gateway/policy.json")
+        var obj: [String: Any] = [:]
+        if let data = try? Data(contentsOf: f),
+           let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            obj = j
+        }
+        var st: [String: Any] = [
+            "state": state,
+            "port": port,
+            "at": Int(Date().timeIntervalSince1970),
+        ]
+        if !error.isEmpty {
+            // 面板只展示前 400 字；更长的回溯在 Documents/py.log
+            st["error"] = String(error.suffix(400))
+        }
+        obj["pyRuntime"] = st
+        if let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]) {
+            try? fm.createDirectory(at: f.deletingLastPathComponent(),
+                                    withIntermediateDirectories: true)
+            try? data.write(to: f, options: .atomic)
+        }
+    }
+
+    /// 读 py.log 尾部（启动失败的 traceback 通常就在最后几行）。
+    private static func logTail() -> String {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let f = docs.appendingPathComponent("py.log")
+        guard let data = try? Data(contentsOf: f), !data.isEmpty else { return "" }
+        let text = String(decoding: data, as: UTF8.self)
+        return String(text.suffix(800))
     }
 }
 #endif
