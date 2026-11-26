@@ -88,6 +88,15 @@ function Get-CurrentUnitVersion([string]$id) {
                 return [string](([IO.File]::ReadAllText($p, [Text.Encoding]::UTF8) | ConvertFrom-Json).version)
             }
         }
+        'tv-node' {
+            # 全量链用 -PatchVersion 传壳补丁号 → 模块版本 18.20.4.<壳补丁>
+            $p = $Version.Split('.')
+            if ($p.Count -ge 3) { return "18.20.4.$([int]$p[2])" }
+        }
+        'tv-python' {
+            $p = $Version.Split('.')
+            if ($p.Count -ge 3) { return "0.1.$([int]$p[2])" }
+        }
     }
     return ''
 }

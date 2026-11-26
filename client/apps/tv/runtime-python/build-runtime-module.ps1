@@ -20,14 +20,18 @@
 [CmdletBinding()]
 param(
     [string[]]$Flavors = @('arm64', 'v7a'),
-    [string]$OutDir
+    [string]$OutDir,
+    # ★ 显式补丁号（2026-11-26）：CI 全量发版传壳补丁号（1.2.23 → 23），
+    #   版本变成 0.1.23，客户端才会按版本号更新；留空时保持 0.1.0。
+    [string]$PatchVersion = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $tvRoot = Split-Path -Parent $here
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $tvRoot))
-if (-not $OutDir) { $OutDir = Join-Path $repoRoot 'release\runtime-python-0.1.0' }
+$versionName = if ($PatchVersion -match '^\d+$') { "0.1.$PatchVersion" } else { '0.1.0' }
+if (-not $OutDir) { $OutDir = Join-Path $repoRoot "release\runtime-python-$versionName" }
 
 $gradle = if (Test-Path 'C:\Android\gradle-8.9\bin\gradle.bat') {
     'C:\Android\gradle-8.9\bin\gradle.bat'
@@ -48,7 +52,7 @@ foreach ($f in $Flavors) {
     Write-Host "== $f -> $task ==" -ForegroundColor Cyan
     Push-Location $tvRoot
     try {
-        & $gradle $task
+        & $gradle $task "-PmeowVersionName=$versionName"
         if ($LASTEXITCODE -ne 0) { throw "gradle $task 失败（exit $LASTEXITCODE）" }
     } finally {
         Pop-Location

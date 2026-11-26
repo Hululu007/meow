@@ -26,7 +26,10 @@ param(
     [string]$LibNodeSource,
     [switch]$NoFetch,
     [switch]$Force,
-    [string]$OutDir
+    [string]$OutDir,
+    # ★ 显式补丁号（2026-11-26）：CI 全量发版传壳补丁号（1.2.23 → 23），
+    #   版本变成 18.20.4.23，客户端才会按版本号更新；留空时沿用 .deps 自增（本地）。
+    [string]$PatchVersion = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -123,8 +126,11 @@ $inputsHash = -join ($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($
     ForEach-Object { $_.ToString('x2') })
 
 $prevHash = if (Test-Path $inputsFile) { (Get-Content $inputsFile -Raw).Trim() } else { '' }
-$patch = 1
-if (Test-Path $versionFile) { $patch = [int](Get-Content $versionFile -Raw).Trim() }
+# 显式 PatchVersion 优先（CI 全量）；否则按 .deps 自增（本地）
+$useExplicit = $PatchVersion -match '^\d+$'
+$patch = if ($useExplicit) { [int]$PatchVersion }
+         elseif (Test-Path $versionFile) { [int](Get-Content $versionFile -Raw).Trim() }
+         else { 1 }
 
 # 判"产物是否齐全"必须按**带版本的文件名**找：资产名改成 tv-node-<abi>-<ver>.apk
 # 之后，还按 tv-node-<abi>.apk 判断就永远为 false —— reuse 分支形同不存在
@@ -135,12 +141,13 @@ foreach ($a in $Abis) {
     if ($found -lt 1) { $allPresent = $false }
 }
 
-if (-not $Force -and $prevHash -eq $inputsHash -and $allPresent) {
+# 显式版本不复用：产物名带版本，复用旧版本会让 Release 文件名/版本对不上
+if (-not $Force -and -not $useExplicit -and $prevHash -eq $inputsHash -and $allPresent) {
     Write-Host "reuse $NodeVersion.$patch（inputs 未变，跳过 gradle）"
     Write-Host "产物: $OutDir"
     exit 0
 }
-if ($Force -or $prevHash -ne $inputsHash) {
+if (-not $useExplicit -and ($Force -or $prevHash -ne $inputsHash)) {
     if ($prevHash -and $prevHash -ne $inputsHash -and (Test-Path $versionFile)) { $patch++ }
     $inputsHash | Set-Content $inputsFile -Encoding ASCII
     $patch | Set-Content $versionFile -Encoding ASCII

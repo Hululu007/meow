@@ -29,7 +29,8 @@ android {
         minSdk 26
         targetSdk 34
         versionCode 1
-        versionName "0.1.0"
+        // CI 全量发版传 -PmeowVersionName（含壳补丁号，如 0.1.23）；本地默认 0.1.0
+        versionName project.findProperty('meowVersionName') ?: "0.1.0"
     }
 
     flavorDimensions = ['abi']

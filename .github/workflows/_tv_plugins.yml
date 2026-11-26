@@ -31,6 +31,10 @@ on:
         description: node 版本
         required: false
         default: '18.20.4'
+      patch_version:
+        description: 模块补丁号（全量发版传壳补丁号，如 1.2.23 → 23；留空=旧行为）
+        required: false
+        default: ''
   workflow_call:
     inputs:
       node_version:
@@ -38,6 +42,11 @@ on:
         required: false
         type: string
         default: '18.20.4'
+      patch_version:
+        description: 模块补丁号（全量发版传壳补丁号；留空=旧行为）
+        required: false
+        type: string
+        default: ''
     secrets:
       TV_KEYSTORE_B64:
         required: false
@@ -133,7 +142,7 @@ jobs:
           set -euo pipefail
           cd client/apps/tv/runtime-node
           # ubuntu runner 自带 pwsh；脚本内部已按平台切 curl.exe/curl
-          pwsh -NoProfile -File build-runtime-module.ps1 -NodeVersion "${{ inputs.node_version }}"
+          pwsh -NoProfile -File build-runtime-module.ps1 -NodeVersion "${{ inputs.node_version }}" -PatchVersion "${{ inputs.patch_version }}"
 
       # ── Python 运行时模块（Chaquopy）────────────────────────────────
       # 与 node 模块不同：没有"上游二进制"要下，但 Chaquopy 的 pip 要联网取
@@ -149,13 +158,16 @@ jobs:
           set -euo pipefail
           cd client/apps/tv/runtime-python
           # -PbuildPython 覆盖 build.gradle 里的平台默认值（Windows pyenv 路径）
-          pwsh -NoProfile -File build-runtime-module.ps1 -OutDir "$GITHUB_WORKSPACE/release/runtime-python-0.1.0"
+          # 不传 OutDir：脚本按版本号自建目录（release/runtime-python-0.1.<补丁>）
+          pwsh -NoProfile -File build-runtime-module.ps1 -PatchVersion "${{ inputs.patch_version }}"
 
       - name: 自检 Python 模块
         shell: bash
         run: |
           set -euo pipefail
-          D="release/runtime-python-0.1.0"
+          # 目录名带版本（0.1.0 / 0.1.<壳补丁>），按 glob 取最新
+          D=$(ls -d release/runtime-python-* 2>/dev/null | tail -1)
+          [ -n "$D" ] || { echo "::error::没有 release/runtime-python-* 产物目录"; exit 1; }
           for abi in arm64-v8a armeabi-v7a; do
             apk=$(ls "$D"/tv-python-*-*.apk 2>/dev/null | grep -- "$abi" | head -1 || true)
             if [ -z "$apk" ]; then

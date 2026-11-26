@@ -78,7 +78,9 @@ jobs:
       # 本次实际构建的插件（守卫 id），供 publish 的版本守卫使用
       guard: ${{ steps.buildset.outputs.guard }}
       docker: ${{ steps.scope.outputs.docker }}
-      tvplugins: ${{ steps.scope.outputs.tvplugins }}
+      tvplugins: ${{ steps.buildset.outputs.tvplugins || steps.scope.outputs.tvplugins }}
+      # 模块补丁号 = 壳补丁号（1.2.23 → 23），让模块版本跟上壳（18.20.4.23 / 0.1.23）
+      patch_version: ${{ steps.buildset.outputs.patch_version }}
       release: ${{ steps.scope.outputs.release }}
     steps:
       - uses: actions/checkout@v4
@@ -187,6 +189,22 @@ jobs:
             PCS="${PCS:+$PCS,}$id"
           done
           ONLY="apiserver${PCS:+,$PCS}"
+
+          # ── 运行时模块（tv-node / tv-python）─────────────────────────
+          # 构建条件：有源码改动，或继承源里根本没有该模块（如 tv-python 首秀）。
+          # 两者都无 → 继承旧版，不构建（模块版本号才不会被白涨）。
+          TVPLUGINS=false
+          for id in tv-node tv-python; do
+            case ",$CHANGED," in
+              *",$id,"*) TVPLUGINS=true; echo "::notice::${id} 有源码改动，本次构建模块" ;;
+            esac
+            if [ -n "$ASSETS" ] && printf '%s\n' "$ASSETS" | grep -q "^${id}-"; then
+              :
+            else
+              TVPLUGINS=true; echo "::notice::${id} 在 ${PREV:-上一版} 里没有资产，本次强制构建"
+            fi
+          done
+
           # 守卫只看本次真的构建的插件（apiserver 版本跟壳走，守卫内会跳过）
           GUARD=""
           for id in $(echo "$ONLY" | tr ',' ' '); do
@@ -194,9 +212,16 @@ jobs:
             g="$id"; [ "$id" = danmu ] && g="danmu-api"
             GUARD="${GUARD:+$GUARD,}$g"
           done
+          [ "$TVPLUGINS" = "true" ] && GUARD="${GUARD:+$GUARD,}tv-node,tv-python"
+
+          # 壳补丁号：1.2.23 → 23（模块版本用它：18.20.4.23 / 0.1.23）
+          PATCH="${GITHUB_REF_NAME##*.}"
+
           echo "plugins_only=$ONLY" >> "$GITHUB_OUTPUT"
           echo "guard=$GUARD" >> "$GITHUB_OUTPUT"
-          echo "构建范围：$ONLY（自 ${PREV:-无} 起改动：${CHANGED:-无}）"
+          echo "tvplugins=$TVPLUGINS" >> "$GITHUB_OUTPUT"
+          echo "patch_version=$PATCH" >> "$GITHUB_OUTPUT"
+          echo "构建范围：plugins=$ONLY tvplugins=$TVPLUGINS patch=$PATCH（自 ${PREV:-无} 起改动：${CHANGED:-无}）"
 
   web:
     name: Web dist
@@ -294,6 +319,9 @@ jobs:
     needs: plan
     if: ${{ needs.plan.outputs.tvplugins == 'true' }}
     uses: ./.github/workflows/_tv_plugins.yml
+    with:
+      # 模块补丁号跟壳走（1.2.23 → 23）：tv-node 18.20.4.23 / tv-python 0.1.23
+      patch_version: ${{ needs.plan.outputs.patch_version }}
     secrets: inherit
 
   # ── iOS 未签名 IPA（2026-11-24 接入）────────────────────────────────────
