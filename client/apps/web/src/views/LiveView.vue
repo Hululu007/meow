@@ -616,10 +616,35 @@ function lastSourceUrl(): string {
   }
 }
 
-/** 上次用的那条源（没了就退回第一条） */
+/**
+ * 源排序：上次用的排第一；没有记录时**内置公共源排第一**。
+ *
+ * ★ 2026-11-26 真机：用户配置的 `Gather「果」` 台址已大面积失效（连接被拒），
+ *   而它排在列表第一位且被合并进线路池的最前面 —— 每个台先试 5~6 条死线路，
+ *   看门狗一条一条等，进去就是「一直转圈」。内置「公共直播源（每日更新）」
+ *   是活的，默认让它先试，用户显式选过的源仍然尊重。
+ */
+function orderedLives(list: Array<{ name: string; url: string }>) {
+  const pref = lastSourceUrl()
+  const builtin = list.find(
+    (p) => /公共直播源/.test(p.name) || /guovin\.github\.io/i.test(p.url),
+  )
+  const firstUrl = (pref && list.some((p) => p.url === pref) ? pref : builtin?.url) || ''
+  if (!firstUrl) return list
+  return [
+    ...list.filter((p) => p.url === firstUrl),
+    ...list.filter((p) => p.url !== firstUrl),
+  ]
+}
+
+/** 上次用的那条源（没了就退回第一条；没记录时优先内置每日更新源） */
 function preferPlaylist(): { name: string; url: string } {
   const last = lastSourceUrl()
-  return playlists.value.find((p) => p.url === last) || playlists.value[0]
+  return (
+    playlists.value.find((p) => p.url === last) ||
+    orderedLives(playlists.value.slice())[0] ||
+    playlists.value[0]
+  )
 }
 
 // ---------------------------------------------------------------- 多源合并
@@ -639,7 +664,8 @@ const mergeBusy = ref(0)
  * <p>进度可见性：`mergeBusy` 递减到 0 才算完成；中途失败的单源只丢自己。
  */
 async function refreshMerged() {
-  const lives = playlists.value.slice()
+  // 先按"上次用的 / 内置每日更新"排序：合并时线路顺序 = 源的顺序
+  const lives = orderedLives(playlists.value.slice())
   if (!lives.length) return
   const prefer = lastSourceUrl()
   const got = new Map<string, ParsedSource>()

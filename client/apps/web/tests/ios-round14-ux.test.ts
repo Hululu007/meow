@@ -1,0 +1,50 @@
+/**
+ * 2026-11-26 第三次真机反馈：
+ *
+ *  1. 设置页胶囊跳转要"一次到位"：改成瞬时滚动（平滑滚动会被 spy/校正打断）
+ *  2. 横屏→竖屏首页胶囊消失：iPad 宽度 >639 时胶囊条原本不吸顶
+ *  3. 直播默认源是死的（连接被拒）：默认优先内置每日更新源
+ */
+import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+const WEB = join(__dirname, '..')
+const read = (p: string) => readFileSync(p, 'utf8').replace(/\r\n/g, '\n')
+
+const settings = read(join(WEB, 'src', 'views', 'SettingsView.vue'))
+const homeCss = read(join(WEB, 'src', 'styles', 'tokens.css'))
+const live = read(join(WEB, 'src', 'views', 'LiveView.vue'))
+
+describe('设置页胶囊跳转', () => {
+  it('跳转用瞬时滚动，不再有 smooth 动画被打断', () => {
+    const fn = settings.slice(settings.indexOf('function jumpToEl('),
+      settings.indexOf('function stickyTopOffset('))
+    expect(fn).toContain("behavior: 'auto'")
+    expect(fn).not.toContain("behavior: 'smooth'")
+    expect(fn).toContain('requestAnimationFrame(apply)')
+    expect(fn).toContain('window.setTimeout(apply, 260)')
+  })
+})
+
+describe('首页胶囊吸顶（iOS/iPad）', () => {
+  it('iOS 壳在任意宽度下都 sticky', () => {
+    expect(homeCss).toContain("html[data-shell='ios'] .cat-chips")
+    const block = homeCss.slice(homeCss.indexOf("html[data-shell='ios'] .cat-chips"))
+    expect(block.slice(0, 300)).toContain('position: sticky')
+    expect(block.slice(0, 300)).toContain('top: var(--header-h)')
+  })
+})
+
+describe('直播默认源', () => {
+  it('没有上次记录时优先内置「公共直播源（每日更新）」', () => {
+    expect(live).toContain('function orderedLives(')
+    const fn = live.slice(live.indexOf('function orderedLives('),
+      live.indexOf('/** 上次用的那条源'))
+    expect(fn).toContain('公共直播源')
+    expect(fn).toContain('guovin')
+    // 合并时按这个顺序组装（线路顺序 = 源顺序）
+    const merged = live.slice(live.indexOf('async function refreshMerged('))
+    expect(merged.slice(0, 300)).toContain('orderedLives(playlists.value.slice())')
+  })
+})

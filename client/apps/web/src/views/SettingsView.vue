@@ -5131,12 +5131,23 @@ async function scrollToSec(id: string) {
   if (id === 'maint') void loadSearchCacheStats()
   // 直播源同理：点到这一栏才拉（见 ensureLives 的注释）
   if (id === 'live') void ensureLives()
-  // 锁 700ms：等平滑滚动结束（或降级后的瞬时跳转）再恢复 scroll spy，
-  // 否则滚动过程中高亮会被 spy 抢走。
-  navLock = Date.now() + 700
+  /*
+   * ★ 锁到落点稳定（2026-11-26 真机：点「9 AI」先到 9，随后高亮自己跳到 7）。
+   *   跳转已改成瞬时滚动，但仍要覆盖 260ms 的二次校正；spy 在锁内不写高亮。
+   */
+  navLock = Date.now() + 1200
   // 立刻闪：目标是"确认落点"，早一点开始用户才不会觉得"点了没反应"
   flashSection(el)
   jumpToEl(el)
+  // 校正结束后把高亮/选中钉回目标（防止 spy 抢写）
+  for (const at of [350, 800]) {
+    window.setTimeout(() => {
+      if (Date.now() < navLock) {
+        activeSec.value = id
+        lastNavSec.value = id
+      }
+    }, at)
+  }
 }
 
 /**
@@ -5152,34 +5163,35 @@ async function scrollToSec(id: string) {
  *   = 当前容器滚动量 + (目标视口位置 - 容器视口位置)
  */
 function jumpToEl(el: HTMLElement) {
-  const c = contentRef.value
-  const useContainer = !!c && c.scrollHeight > c.clientHeight + 1
   const offset = stickyTopOffset()
-  if (useContainer) {
-    const target =
-      c!.scrollTop + (el.getBoundingClientRect().top - c!.getBoundingClientRect().top) - 8
-    scrollContainerTo(c!, target)
-    // 平滑滚动期间布局可能变（图片/异步列表）：落地后再校正一次
-    window.setTimeout(() => {
-      const cc = contentRef.value
-      if (!cc) return
-      const want =
-        cc.scrollTop + (el.getBoundingClientRect().top - cc.getBoundingClientRect().top) - 8
-      if (Math.abs(cc.scrollTop - want) > 6) scrollContainerTo(cc, want)
-    }, 480)
-  } else {
-    const want = el.getBoundingClientRect().top + window.scrollY - offset
-    scrollWindowTo(want)
-    window.setTimeout(() => {
-      const w = el.getBoundingClientRect().top + window.scrollY - stickyTopOffset()
-      /*
-       * ★ 竖屏跳动不准的第二刀（2026-11-25 用户报「点两次落点不一样」）：
-       *   平滑滚动 + 吸顶胶囊 + 异步内容加载会让"第一帧算出来的目标"偏移。
-       *   落地后按真实位置再校一次，只在实际偏差 > 6px 时补，不会来回抖。
-       */
-      if (Math.abs(window.scrollY - w) > 6) scrollWindowTo(w)
-    }, 480)
+  /*
+   * ★ 用**瞬时滚动**，不用 smooth（2026-11-26 真机：点胶囊滚动到一半又被
+   *   改到别的分区）。原因有两个，都只在竖屏出现：
+   *   1) 平滑滚动耗时会超过原来的滚动锁，spy 中途解锁改写高亮；
+   *   2) 480ms 的二次校正会打断尚未结束的 smooth 动画，动画重新计时/被
+   *      后面的布局变化顶掉，最后停在半路。
+   *   瞬时滚动没有"进行中"状态，落点一次到位；随后的两帧/260ms 校正只做
+   *   微量修正（顶栏/胶囊条高度、异步内容把目标推移）。
+   */
+  const apply = () => {
+    const c = contentRef.value
+    const useContainer = !!c && c.scrollHeight > c.clientHeight + 1
+    if (useContainer) {
+      const target =
+        c.scrollTop + (el.getBoundingClientRect().top - c.getBoundingClientRect().top) - 8
+      c.scrollTop = Math.max(0, target)
+    } else {
+      const want = el.getBoundingClientRect().top + window.scrollY - offset
+      try {
+        window.scrollTo({ top: Math.max(0, want), behavior: 'auto' as ScrollBehavior })
+      } catch {
+        window.scrollTo(0, Math.max(0, want))
+      }
+    }
   }
+  apply()
+  requestAnimationFrame(apply)
+  window.setTimeout(apply, 260)
 }
 
 /**
@@ -5220,7 +5232,7 @@ async function gotoSelector(sel: string) {
     lastNavSec.value = id
   }
   await nextTick()
-  navLock = Date.now() + 700
+  navLock = Date.now() + 1200
   flashSection(el)
   jumpToEl(el)
 }
