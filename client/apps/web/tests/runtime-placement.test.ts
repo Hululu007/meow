@@ -160,6 +160,11 @@ describe('设置页落点与横向溢出', () => {
     expect(cBridge).toContain('static void dump_py_error')
     expect(cBridge).toContain('[meow-py] exception: %s: ')
     expect(cBridge).toContain('dump_py_error(g_log)')
+    /*
+     * PyRun_FileExFlags 不会设 __file__：pyrt.py 用它算 HERE，漏了就是
+     * NameError（2026-11-26 真机第一条真实异常）。
+     */
+    expect(cBridge).toContain('PyDict_SetItemString(globals, "__file__", dunsel)')
     expect(pyRuntime).toContain('setenv("MEOW_PY_LOG"')
   })
 })

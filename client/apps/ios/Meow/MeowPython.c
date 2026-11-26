@@ -76,6 +76,17 @@ static void *meow_py_thread(void *arg) {
     }
     PyObject *main_mod = PyImport_AddModule("__main__");
     PyObject *globals = PyModule_GetDict(main_mod);
+    /*
+     * ★ PyRun_FileExFlags 不会替我们设置 __file__（那是 import 机制的活）。
+     *   pyrt.py 用 `os.path.dirname(os.path.abspath(__file__))` 定位 scripts 目录，
+     *   真机实测（2026-11-26）就挂在第一行：NameError: name '__file__' is not defined。
+     *   PC/TV 走 importlib 加载所以有 __file__，只有这条 C 桥需要手工补。
+     */
+    PyObject *dunsel = PyUnicode_FromString(g_script);
+    if (dunsel) {
+        PyDict_SetItemString(globals, "__file__", dunsel);
+        Py_DECREF(dunsel);
+    }
     // PyRun_FileExFlags 的最后两个参数：closeit=1、flags=NULL
     PyObject *res = PyRun_FileExFlags(fp, g_script, Py_file_input, globals, globals, 1, NULL);
     if (!res) {
