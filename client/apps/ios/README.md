@@ -109,11 +109,14 @@ bash scripts/trim-java-modules.sh \
 IPA 回滚直接重装 `ipa-test` 上的完整包（`Meow-unsigned-test.ipa`，发布记录里带 sha256）。
 裁减产物（90MB）不入库，只由脚本生成。
 
-**CI 接线**：`_ios.yml` 的 `Trim OpenJDK modules (Phase 1)` 在 `prepare-runtime.sh` 之后运行。
-runner 是 arm64 时用系统 Rosetta 跑 Zulu 9 x64 的 `jlink`（缓存 key `ios-jdk9-zulu-macos-x64-v1`），
-生成后覆盖 `build/openjdk/lib/modules`，并做门禁：模块数必须 56、关键模块必须在、
-raw size < 110MB；IPA 打包后再检查一次 `openjdk/lib/modules` 体积。
-trim 步骤失败会让 CI 红，不会静默发完整包。恢复=删除该 step（或整段 JDK9 cache/run）。
+**CI 接线**：`_ios.yml` 的 `Apply trimmed OpenJDK modules (Phase 1)` 在 `prepare-runtime.sh` 之后运行。
+裁减需要 JDK 9 jlink（iOS runner 上只有 11/17/21/25），所以产物由本脚本在本地生成，
+固定放在独立 release tag **`ios-openjdk9-modules-v1.0-lib`** 的资产
+`openjdk9-ios-arm64-modules-phase1-v1.0-lib.zip`（**不进仓库、不挂 ipa-test、不用 latest**）。
+CI 只下载 + 校验 `sha256 b871d4a0…`，覆盖 `build/openjdk/lib/modules`，再验模块数 56、关键模块、
+raw < 110MB；IPA 打包后再验一次 modules 体积。资产里有 `manifest.json` 记录上游 bundle
+（`Oct4Pie/lib-openjdk-9-ios` tag `v1.0-lib`，bundle sha256 `24adf2e6…`）、删除清单与恢复方式。
+上游升级时重新生成并新建 tag；恢复=删除该 CI step，或重跑 `prepare-runtime.sh` 用完整 bundle。
 
 ## 已知风险 / 待验证
 
