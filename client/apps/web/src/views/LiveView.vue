@@ -499,7 +499,7 @@ const MAX_AUTO_SKIP = 5
  * 3 秒会把「慢但能播」的台判成坏台，一路跳到最后还报"全都放不出来"。
  * 放宽到 6 秒，代价是整组全坏时多等 3 秒。
  */
-const BAD_CHANNEL_MS = 6000
+const BAD_CHANNEL_MS = 4500
 
 // ---------------------------------------------------------------- 会话级缓存
 //
@@ -616,10 +616,99 @@ function lastSourceUrl(): string {
   }
 }
 
-/** 上次用的那条源（没了就退回第一条） */
+/**
+ * 每条直播源的"最近表现"（本地持久化，7 天过期）。
+ *
+ * ★ 2026-11-26 真机：配置源 Gather「果」的台址大面积 Connection refused，
+ *   但排序只看"上次选的" → 死源永远排第一，每个台先耗十几秒试死线路。
+ *   这里按成功率给源打分，**成功过的源**（而不是点过的源）优先。
+ */
+const SRC_SCORE_KEY = 'meow.live.srcScore'
+type SrcScoreMap = Record<string, { ok: number; fail: number; at: number }>
+const SRC_SCORE_TTL = 7 * 24 * 3600_000
+
+function readSrcScore(): SrcScoreMap {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SRC_SCORE_KEY) || '{}') as SrcScoreMap
+    const out: SrcScoreMap = {}
+    const now = Date.now()
+    for (const [k, v] of Object.entries(raw || {})) {
+      if (v && now - (v.at || 0) < SRC_SCORE_TTL) out[k] = v
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function bumpSrcScore(name: string, delta: 1 | -1) {
+  const key = String(name || '').trim()
+  if (!key) return
+  try {
+    const map = readSrcScore()
+    const cur = map[key] || { ok: 0, fail: 0, at: Date.now() }
+    if (delta > 0) cur.ok++
+    else cur.fail++
+    cur.at = Date.now()
+    map[key] = cur
+    localStorage.setItem(SRC_SCORE_KEY, JSON.stringify(map))
+  } catch {
+    /* 隐私模式写不进就算了 */
+  }
+}
+
+/** 源得分：成功按 2 分、失败按 1 分扣（一次成功抵两次失败） */
+function srcScoreOf(name: string): number {
+  const v = readSrcScore()[String(name || '').trim()]
+  return v ? (v.ok || 0) * 2 - (v.fail || 0) : 0
+}
+
+/** 当前线路来自哪个源（label 形如「线路 3 · Guovin」） */
+function currentLineSrc(): string {
+  const cur = current.value
+  if (!cur) return ''
+  const label = cur.urls[currentUrlIndex.value]?.label || ''
+  const at = label.lastIndexOf(' · ')
+  return at >= 0 ? label.slice(at + 3).trim() : ''
+}
+
+function isBuiltinSource(p: { name: string; url: string }): boolean {
+  return /公共直播源/.test(p.name) || /guovin\.github\.io/i.test(p.url)
+}
+
+/**
+ * 源排序：有成功记录按得分排；没有记录时「上次选的 → 内置每日更新 → 其余」。
+ *
+ * ★ 2026-11-26 真机：死源排第一会让进去长时间转圈（每个台先试它 5~6 条死线路）。
+ */
+function orderedLives(list: Array<{ name: string; url: string }>) {
+  const scores = readSrcScore()
+  const haveOk = list.some((p) => (scores[p.name]?.ok || 0) > 0)
+  if (haveOk) {
+    return [...list].sort((a, b) => {
+      const d = srcScoreOf(b.name) - srcScoreOf(a.name)
+      if (d) return d
+      return Number(isBuiltinSource(b)) - Number(isBuiltinSource(a))
+    })
+  }
+  const pref = lastSourceUrl()
+  const builtin = list.find(isBuiltinSource)
+  const firstUrl = (pref && list.some((p) => p.url === pref) ? pref : builtin?.url) || ''
+  if (!firstUrl) return list
+  return [
+    ...list.filter((p) => p.url === firstUrl),
+    ...list.filter((p) => p.url !== firstUrl),
+  ]
+}
+
+/** 上次用的那条源（没了就退回第一条；没记录时优先内置每日更新源） */
 function preferPlaylist(): { name: string; url: string } {
   const last = lastSourceUrl()
-  return playlists.value.find((p) => p.url === last) || playlists.value[0]
+  return (
+    playlists.value.find((p) => p.url === last) ||
+    orderedLives(playlists.value.slice())[0] ||
+    playlists.value[0]
+  )
 }
 
 // ---------------------------------------------------------------- 多源合并
@@ -639,9 +728,9 @@ const mergeBusy = ref(0)
  * <p>进度可见性：`mergeBusy` 递减到 0 才算完成；中途失败的单源只丢自己。
  */
 async function refreshMerged() {
-  const lives = playlists.value.slice()
+  // 先按"上次用的 / 内置每日更新"排序：合并时线路顺序 = 源的顺序
+  const lives = orderedLives(playlists.value.slice())
   if (!lives.length) return
-  const prefer = lastSourceUrl()
   const got = new Map<string, ParsedSource>()
 
   // 会话内解析缓存先顶上（同一进程里切回直播页不用重拉）
@@ -651,7 +740,7 @@ async function refreshMerged() {
       got.set(p.url, { name: p.name, url: p.url, groups: hit.groups })
     }
   }
-  if (got.size) applyMerged(lives, got, prefer)
+  if (got.size) applyMerged(lives, got)
 
   const todo = lives.filter((p) => !got.has(p.url))
   if (!todo.length) return
@@ -663,7 +752,7 @@ async function refreshMerged() {
         if (r.ok && r.groups?.length) {
           parsedCache.set(p.url, { groups: r.groups, at: Date.now() })
           got.set(p.url, { name: p.name, url: p.url, groups: r.groups })
-          applyMerged(lives, got, prefer)
+          applyMerged(lives, got)
         }
       } catch {
         /* 单源失败不影响其它源 */
@@ -1103,6 +1192,8 @@ function markLiveFail(name: string) {
   healthRev.value++
 }
 function markLiveOk(name: string) {
+  // 这个源刚播成功：加分，下次排前面（见 orderedLives）
+  bumpSrcScore(currentLineSrc(), 1)
   noteLiveOk(name)
   healthRev.value++
 }
@@ -2314,6 +2405,8 @@ function markBadAndAdvance(myUrl: string) {
    */
   const cur = current.value
   if (cur) markLiveFail(cur.name)
+  // 这条线路刚判失败：给来源扣分
+  bumpSrcScore(currentLineSrc(), -1)
   if (cur && cur.urls.length > 1 && lineTryCount < cur.urls.length - 1) {
     lineTryCount++
     const nextLine = (currentUrlIndex.value + 1) % cur.urls.length
@@ -2878,7 +2971,7 @@ onBeforeUnmount(() => {
               （TV 焦点落点）。直播没有进度条/音量/倍速，其余按直播语义排。
           -->
           <div
-            v-if="!landscape && !showGuide"
+            v-if="(!landscape || !isTvEnv()) && !showGuide"
             class="meow-ctrl-bar absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-3 pb-[calc(0.625rem+var(--tabbar-clear))] pt-12 sm:px-5 sm:pb-4 sm:pt-14"
             :class="showCtrl ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
             data-ctrl-root

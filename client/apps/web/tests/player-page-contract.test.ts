@@ -123,7 +123,11 @@ describe('直播播放页：频道面板导航（页面接管 + 列内夹停）'
     // 横屏本来就没有底栏；竖屏底栏一直在，它不是 FOCUSABLE 之外的东西——
     // 只要它在，tv-nav 就有候选元素、会画焦点框，然后 `if (!markedEl())`
     // 不成立、键不再派发给页面 → 面板按键全失效。
-    expect(src, '底栏 v-if 必须排除面板打开态').toMatch(/v-if="!landscape && !showGuide"/)
+    // 2026-11-26：手机横屏也要有底栏（进页面先显示控制栏，频道按钮开面板）；
+    // TV 横屏仍然不给底栏 —— 判据从"只看横竖"改成"横屏且非 TV"。
+    expect(src, '底栏 v-if 必须排除面板打开态，并只对非 TV 横屏显示').toMatch(
+      /v-if="\(!landscape \|\| !isTvEnv\(\)\) && !showGuide"/,
+    )
   })
 
   it('面板光标环抄全站焦点环规格（内白线 + 外扩 accent 环 + 辉光）', () => {
@@ -432,7 +436,10 @@ describe('直播页：多源合并与持久化缓存', () => {
     expect(src, 'openPlaylist 没记源').toMatch(
       /async function openPlaylist[\s\S]{0,300}setItem\(SRC_KEY/,
     )
-    expect(src, '合并没读上次的源').toMatch(/const prefer = lastSourceUrl\(\)/)
+    // 排序改成 orderedLives：无成功记录时读上次选的源，有记录按源得分
+    expect(src, '合并排序要读上次的源').toMatch(
+      /function orderedLives[\s\S]{0,900}lastSourceUrl\(\)/,
+    )
   })
 
   it('面板显示线路来源（台行的「N 线」看不出分布）', () => {

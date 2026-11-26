@@ -28,7 +28,7 @@ describe('设置页胶囊跳转（竖屏）', () => {
     expect(settings).toContain('function stickyTopOffset(')
     expect(settings).toContain('const offset = stickyTopOffset()')
     // 落地后 480ms 再按真实位置校一次（平滑滚动 + 异步布局会漂）
-    expect(settings).toContain('}, 480)')
+    expect(settings).toContain('window.setTimeout(apply, 260)')
     expect(settings).not.toContain('window.scrollY - 72')
   })
 })

@@ -1466,6 +1466,23 @@ html[data-tv='1'] .cat-chips .meow-tv-focus {
   -webkit-mask-image: var(--chips-mask);
   mask-image: var(--chips-mask);
 }
+
+/*
+ * iOS 壳（含 iPad 竖屏，宽度 >639）：分类胶囊也吸顶。
+ *
+ * <p>原来的吸顶只在 `max-sm`（<640）里写；iPad 竖屏/横屏 CSS 宽度都超过
+ * 639 → 胶囊条是普通流内元素。从横屏（滚动过）转竖屏后，胶囊条留在上方
+ * 视口外，看起来就是「首页胶囊不见了」（2026-11-26 用户复现）。
+ * TV 不在此列（tv-nav 把 sticky 祖先当钉住层，会影响左右键进内容区）。
+ */
+html[data-shell='ios'] .cat-chips {
+  position: sticky;
+  top: var(--header-h);
+  z-index: 20;
+  background: var(--color-strip-veil);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  backdrop-filter: blur(16px) saturate(180%);
+}
 @media (max-width: 639px) {
   .cat-chips[data-fade] {
     -webkit-mask-image: none;

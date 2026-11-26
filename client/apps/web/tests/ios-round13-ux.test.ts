@@ -73,7 +73,7 @@ describe('首页分类胶囊转屏', () => {
 
 describe('设置页胶囊跳转', () => {
   it('锁覆盖二次校正，并在校正后把高亮钉回目标', () => {
-    expect(settings).toContain('navLock = Date.now() + 1800')
-    expect(settings).toContain('for (const at of [900, 1500])')
+    expect(settings).toContain('navLock = Date.now() + 1200')
+    expect(settings).toContain('for (const at of [350, 800])')
   })
 })
