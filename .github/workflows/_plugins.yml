@@ -69,6 +69,19 @@ jobs:
       #   失败（units.json 里它是可选单元，job 仍绿），半套产物被存进
       #   `plugins-Windows-all-…`，下一次全量直接命中并「跳过构建」，
       #   Release 里永久缺件。现在只有校验通过才 save。
+      # cache key 不允许逗号（GitHub 校验：cannot contain commas），而 plugins_only
+      # 是多值逗号分隔 → 先换成横杠再进 key。
+      # ★ 不能用 `replace()`：GitHub Actions 表达式没有这个函数（用了会让整个
+      #   workflow 解析失败 —— 表现为 Actions 列表里名字变成文件路径、tag 事件不触发，
+      #   2026-11-26 实测）。
+      - name: 生成缓存键标识（plugins_only 去逗号）
+        id: slug
+        shell: bash
+        run: |
+          V='${{ inputs.plugins_only }}'
+          [ -z "$V" ] && V=all
+          echo "v=${V//,/-}" >> "$GITHUB_OUTPUT"
+
       - name: 恢复插件产物缓存
         id: pcache
         uses: actions/cache/restore@v4
@@ -82,7 +95,7 @@ jobs:
           #   会出现"改了裁剪清单却复用旧 zip"——和上面 manifests 那次同款事故。
           # ★ pyrt（2026-11-26 补）：产物是「pyrt.py + vendor/ 里 pip 装好的依赖」，
           #   这两个输入都不在旧键里 → 改了 pyrt.py / requirements.txt 会复用旧 zip。
-          key: plugins-${{ runner.os }}-${{ replace(inputs.plugins_only || 'all', ',', '-') }}-${{ hashFiles('client/package.json', 'deploy/units.json', 'server/build-plugin.ps1', 'server/build-plugin-danmu.ps1', 'server/build-plugin-drpy.ps1', 'server/build-plugin-ffmpeg.ps1', 'server/build-plugin-pyrt.ps1', 'server/pyrt/**', 'server/plugin-manifests/**', 'server/host/src/**', 'server/host/guard-libs/**', 'server/tools/guard/**', 'server/drpy/**') }}
+          key: plugins-${{ runner.os }}-${{ steps.slug.outputs.v }}-${{ hashFiles('client/package.json', 'deploy/units.json', 'server/build-plugin.ps1', 'server/build-plugin-danmu.ps1', 'server/build-plugin-drpy.ps1', 'server/build-plugin-ffmpeg.ps1', 'server/build-plugin-pyrt.ps1', 'server/pyrt/**', 'server/plugin-manifests/**', 'server/host/src/**', 'server/host/guard-libs/**', 'server/tools/guard/**', 'server/drpy/**') }}
 
       # ── 静态载荷缓存（2026-11-13 新增）────────────────────────────────
       # 有两类"与代码无关、却每版都重新下载/重建"的东西，实测占本 job 一半：
