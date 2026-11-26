@@ -94,6 +94,25 @@ function resolveBase(): string {
   if (typeof location !== 'undefined' && !/^https?:$/.test(location.protocol)) {
     return desktopBase
   }
+  /*
+   * 同源兜底必须带上「文档所在目录」当前缀。
+   *
+   * fnOS 微应用挂在 `/app/meow/` 下（网关注入前缀后转发），这时写死 `/api` 会打到
+   * 宿主根 —— fnOS 自己那套 web 回 404，界面显示「后端未连接：同源 /api」
+   * （2026-11-26 安卓飞牛 App + 全新 localStorage 实测；老设备因为有手填的
+   * `meow.api` 才没暴露）。路由是 hash 模式，pathname 恒等于文档目录，直接拿来用。
+   */
+  if (typeof location !== 'undefined' && /^https?:$/.test(location.protocol)) {
+    let dir = location.pathname
+    if (dir.endsWith('/index.html')) dir = dir.slice(0, -'/index.html'.length) + '/'
+    if (!dir.endsWith('/')) {
+      // 末段没有扩展名就当目录（/app/meow），有扩展名就当文件
+      const last = dir.slice(dir.lastIndexOf('/') + 1)
+      dir = last.includes('.') ? dir.slice(0, dir.lastIndexOf('/')) : dir
+    }
+    const prefix = dir === '/' ? '' : dir.replace(/\/$/, '')
+    return prefix
+  }
   return ''
 }
 
