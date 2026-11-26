@@ -213,6 +213,16 @@ export default defineConfig({
     ['meta', { property: 'og:image:height', content: '630' }],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
     ['meta', { name: 'twitter:image', content: 'https://upchr.github.io/meow/og.png' }],
+    // spa: true 让文档内链接切换也上报——VitePress 是客户端路由，缺了只统计首次进入
+    [
+      'script',
+      {
+        type: 'module',
+        defer: '',
+        src: 'https://static.cloudflareinsights.com/beacon.min.js',
+        'data-cf-beacon': '{"token":"c765d0f5dd3242cba4d40c2dd487fd2e","spa":true}',
+      },
+    ],
   ],
 
   sitemap: {
