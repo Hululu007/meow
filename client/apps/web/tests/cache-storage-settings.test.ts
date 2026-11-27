@@ -64,10 +64,10 @@ describe('弹幕缓存', () => {
      * 会调 storeDanmaku（它内部才调 danmakuDiskPut）。
      */
     const anchor = API_JAVA.indexOf(
-      'private static String fetchDanmakuAuto(String clean, int ep, String[] sourceOut)',
+      'String clean, int ep, String[] sourceOut, boolean fresh, String prefer, int year)',
     )
     expect(anchor).toBeGreaterThan(-1)
-    const seg = API_JAVA.slice(anchor, anchor + 2600)
+    const seg = API_JAVA.slice(anchor, anchor + 3000)
     // 命中分支必须写盘（直接或经 storeDanmaku）
     expect(seg).toMatch(/danmakuDiskPut|storeDanmaku/)
     // storeDanmaku 本体必须真的调 danmakuDiskPut

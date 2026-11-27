@@ -7780,7 +7780,8 @@ public class ApiServer {
      *
      * <p>不做硬过滤：别名/翻译名差异会误杀，只用于**排序**选最佳候选。
      */
-    private static int danmakuTitleScore(String clean, String title, int episodes) {
+    private static int danmakuTitleScore(String clean, String title, int episodes,
+            int wantEp, int wantYear) {
         String a = normTitleKey(clean);
         String b = normTitleKey(title);
         int score = 0;
@@ -7809,7 +7810,44 @@ public class ApiServer {
             score -= got * 5;
         }
         score += Math.min(20, Math.max(0, episodes) / 5);
+        /*
+         * ★ 集数覆盖（2026-11-27）：候选总集数不够这一集 → 直接排除。
+         *
+         * 旧实现只按"集数越多分越高"（上面那 +20），于是「我的三体 第四季」
+         * 这种 9 集的短片也能和 30 集正片同档；更糟的是用户看第 20 集时，
+         * 12 集的候选照样被选中，最后拿到的是错的集。
+         * iqiyi/tencent 直连用同一份判据，和聚合源（danmakuCandidateScore）保持一致。
+         */
+        if (episodes > 0 && wantEp > 0) {
+            if (episodes < wantEp) score -= 300;
+            else score += 40;
+        }
+        /*
+         * 年份（同名不同年）：三体 2022 动画 / 2023 剧版，iqiyi 搜索会一起返回。
+         * 只在两边都拿到年份时才判，避免把"没有年份信息的老条目"一刀切掉。
+         */
+        if (wantYear > 0) {
+            int gotYear = parseYearOf(title);
+            if (gotYear > 0) score += (gotYear == wantYear) ? 80 : -150;
+        }
         return score;
+    }
+
+    /**
+     * 从名字/日期里抠四位年份（1990–2099）。
+     *
+     * <p>支持三种写法：`三体(2023)`、`三体（2023）`、`2023-01-01T00:00:00Z`。
+     * 取不到返回 0（调用方据此跳过年份判据，不是"当成 0 年"）。
+     */
+    private static int parseYearOf(String s) {
+        if (s == null || s.isEmpty()) return 0;
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("(?<![0-9])(19[9][0-9]|20[0-9]{2})(?![0-9])").matcher(s);
+        while (m.find()) {
+            int y = parseIntSafe(m.group(1), 0);
+            if (y >= 1990 && y <= 2099) return y;
+        }
+        return 0;
     }
 
     /** 平台名归一：360 的 qiyi/qq/bilibili1/imgo 与聚合源的 iqiyi/tencent/... 对齐。 */
@@ -8359,7 +8397,7 @@ public class ApiServer {
             JSONArray vids = album.optJSONArray("videoinfos");
             if (vids == null || vids.length() == 0) continue;
             String title = album.optString("albumTitle", clean);
-            int score = danmakuTitleScore(clean, title, vids.length());
+            int score = danmakuTitleScore(clean, title, vids.length(), 0, 0);
             if (score > bestScore) {
                 bestScore = score;
                 best = album;
@@ -8446,7 +8484,7 @@ public class ApiServer {
                     .put("label", "腾疼")
                     .put("episode", 1)
                     .put("host", "v.qq.com"));
-            scores.add(danmakuTitleScore(clean, title, eps));
+            scores.add(danmakuTitleScore(clean, title, eps, 0, 0));
         }
         for (int a = 1; a < picked.size(); a++) {
             for (int b = a; b > 0 && scores.get(b) > scores.get(b - 1); b--) {
@@ -8865,6 +8903,14 @@ public class ApiServer {
             epNo = 2;
         }
         final int ep = epNo;
+        /*
+         * 年份同 handleDanmaku：预取和主请求写的是同一个缓存键，若预取不带年份
+         * 就会按错候选抓一份写进去，主请求随后命中的正是这份错的 ——
+         * 所以预取必须和主请求用同一组入参。
+         */
+        int yearRaw = parseIntSafe(q.getOrDefault("year", "").trim(), 0);
+        if (yearRaw <= 0) yearRaw = parseYearOf(name);
+        final int year = yearRaw;
         final String cacheKey = "dm|" + clean + "|" + ep;
 
         // 已有缓存（内存或磁盘）→ 无事可做。
@@ -8896,7 +8942,7 @@ public class ApiServer {
                  */
                 Thread.sleep(5_000);
                 long t0 = System.currentTimeMillis();
-                String r = fetchDanmakuAutoPrefetch(clean, ep);
+                String r = fetchDanmakuAutoPrefetch(clean, ep, year);
                 if (r == null) {
                     // 主请求在跑 → 预取主动让路；这不是"没抓到结果"（日志 A13）
                     System.err.println("[danmaku] prefetch " + clean + " ep" + ep
@@ -9118,7 +9164,12 @@ public class ApiServer {
      * 命中缓存直接返回，避免重复 14 秒下载。
      */
     private static String fetchDanmakuAuto(String clean, int ep) {
-        return fetchDanmakuAuto(clean, ep, null);
+        return fetchDanmakuAuto(clean, ep, null, 0);
+    }
+
+    /** 带年份的重载：同名不同年的剧（三体 2022 动画 / 2023 剧版）靠它区分。 */
+    private static String fetchDanmakuAuto(String clean, int ep, int year) {
+        return fetchDanmakuAuto(clean, ep, null, year);
     }
 
     /**
@@ -9163,7 +9214,11 @@ public class ApiServer {
     private static final ThreadLocal<Boolean> DM_NO_NEGATIVE_CACHE = new ThreadLocal<>();
 
     private static String fetchDanmakuAuto(String clean, int ep, String[] sourceOut) {
-        return fetchDanmakuAuto(clean, ep, sourceOut, false);
+        return fetchDanmakuAuto(clean, ep, sourceOut, false, null, 0);
+    }
+
+    private static String fetchDanmakuAuto(String clean, int ep, String[] sourceOut, int year) {
+        return fetchDanmakuAuto(clean, ep, sourceOut, false, null, year);
     }
 
     /**
@@ -9172,7 +9227,7 @@ public class ApiServer {
      * <p>已经有主请求在抓这一集 → 直接放弃（主请求会写缓存，预取再做一遍没意义）；
      * 自己开跑时打上 {@link #DANMAKU_PREFETCHING}，让后到的主请求别等满 20 秒。
      */
-    private static String fetchDanmakuAutoPrefetch(String clean, int ep) {
+    private static String fetchDanmakuAutoPrefetch(String clean, int ep, int year) {
         String cacheKey = "dm|" + clean + "|" + ep;
         if (DANMAKU_INFLIGHT.contains(cacheKey)) {
             // null = 跳过（主请求在跑），调用方不要把它记成"无结果"
@@ -9183,7 +9238,8 @@ public class ApiServer {
         DANMAKU_PREFETCHING.add(cacheKey);
         DM_NO_NEGATIVE_CACHE.set(Boolean.TRUE);
         try {
-            return fetchDanmakuAuto(clean, ep, null, false);
+            // 与主请求同一组入参（含年份）：预取写的就是主请求要读的缓存键
+            return fetchDanmakuAuto(clean, ep, null, false, null, year);
         } finally {
             DM_NO_NEGATIVE_CACHE.remove();
             DANMAKU_PREFETCHING.remove(cacheKey);
@@ -9200,7 +9256,12 @@ public class ApiServer {
      */
     private static String fetchDanmakuAuto(
             String clean, int ep, String[] sourceOut, boolean fresh) {
-        return fetchDanmakuAuto(clean, ep, sourceOut, fresh, null);
+        return fetchDanmakuAuto(clean, ep, sourceOut, fresh, null, 0);
+    }
+
+    private static String fetchDanmakuAuto(
+            String clean, int ep, String[] sourceOut, boolean fresh, int year) {
+        return fetchDanmakuAuto(clean, ep, sourceOut, fresh, null, year);
     }
 
     /**
@@ -9209,7 +9270,7 @@ public class ApiServer {
      *               保持原顺序，由聚合源覆盖。
      */
     private static String fetchDanmakuAuto(
-            String clean, int ep, String[] sourceOut, boolean fresh, String prefer) {
+            String clean, int ep, String[] sourceOut, boolean fresh, String prefer, int year) {
         String cacheKey = "dm|" + clean + "|" + ep;
         // 只有真正 add 成功的那次请求才有权在 finally 里删标记
         boolean registered = false;
@@ -9274,7 +9335,7 @@ public class ApiServer {
             }
         }
         try {
-            return fetchDanmakuAuto0(clean, ep, cacheKey, sourceOut, fresh, prefer);
+            return fetchDanmakuAuto0(clean, ep, cacheKey, sourceOut, fresh, prefer, year);
         } finally {
             /*
              * 只删自己登记的标记。
@@ -9363,7 +9424,7 @@ public class ApiServer {
      */
     private static String fetchDanmakuAuto0(
             String clean, int ep, String cacheKey, String[] sourceOut, boolean skipCacheWrite,
-            String prefer) {
+            String prefer, int year) {
         String[] order = danmakuOrder();
         /*
          * 手选源跨集沿用：上一集用户点了腾讯，这一集就把腾讯排到最前。
@@ -9391,7 +9452,7 @@ public class ApiServer {
         // 单源不必起线程：少一层调度，也让日志更直白
         if (order.length == 1) {
             String only = order[0];
-            String r = runDanmakuSource(only, clean, ep);
+            String r = runDanmakuSource(only, clean, ep, year);
             if (skipCacheWrite) {
                 if (sourceOut != null) {
                     sourceOut[0] = (r == null || r.isEmpty()) ? "none" : sourceTagOf(only);
@@ -9425,7 +9486,7 @@ public class ApiServer {
                         Thread.currentThread().interrupt();
                     }
                 }
-                return runDanmakuSource(src, clean, ep);
+                return runDanmakuSource(src, clean, ep, year);
             }));
         }
         /*
@@ -9637,7 +9698,7 @@ public class ApiServer {
     }
 
     /** 执行单个源。异常一律吞成空串，让并发抢先不会因一个源炸掉整条链。 */
-    private static String runDanmakuSource(String src, String clean, int ep) {
+    private static String runDanmakuSource(String src, String clean, int ep, int year) {
         String r = "";
         /*
          * 入口先清空：底层解析函数（fetchTencentXml / fetchIqiyiBulletXml）还有
@@ -9649,9 +9710,9 @@ public class ApiServer {
         DANMAKU_TOTAL_TL.remove();
         try {
             if ("aggregator".equals(src)) {
-                r = fetchDanmakuFromAggregators(clean, ep);
+                r = fetchDanmakuFromAggregators(clean, ep, year);
             } else if ("iqiyi".equals(src)) {
-                r = fetchIqiyiByTitle(clean, ep);
+                r = fetchIqiyiByTitle(clean, ep, year);
                 if (r.isEmpty()) {
                     System.err.println("[danmaku] iqiyi returned empty for " + clean + " ep" + ep);
                 } else {
@@ -9659,7 +9720,7 @@ public class ApiServer {
                             + " (" + r.length() + "B)");
                 }
             } else if ("tencent".equals(src)) {
-                r = fetchDanmakuFromTencent(clean, ep);
+                r = fetchDanmakuFromTencent(clean, ep, year);
             }
         } catch (Throwable t) {
             if ("iqiyi".equals(src) || "tencent".equals(src)) markDanmakuSource(src, false);
@@ -9808,7 +9869,7 @@ public class ApiServer {
      * <p>受 {@link #isTencentAutoEnabled()} 控制：用户在设置页取消勾选
      * 「腾讯自动抓取」时，这一档整个跳过（手动搜索里仍然有腾讯候选）。
      */
-    private static String fetchDanmakuFromTencent(String clean, int ep) {
+    private static String fetchDanmakuFromTencent(String clean, int ep, int year) {
         if (!isTencentAutoEnabled()) {
             System.err.println("[danmaku] tencent auto disabled by policy");
             return "";
@@ -9852,7 +9913,7 @@ public class ApiServer {
      *   <li>简单聚合接口兜底（直接返回 XML）</li>
      * </ol>
      */
-    private static String fetchDanmakuFromAggregators(String clean, int ep) {
+    private static String fetchDanmakuFromAggregators(String clean, int ep, int year) {
         String[] hosts = danmakuHosts();
         if (hosts.length == 0) {
             // 全部在冷却期：直接跳过这一档，别白等 9 秒预算
@@ -9896,7 +9957,7 @@ public class ApiServer {
                 // 不是弹弹play 三段式，必须走模板替换后直接取
                 String b = isDanmakuTemplate(h)
                         ? fetchDanmakuByTemplate(h, clean, ep)
-                        : fetchDanmakuByProtocol(h, clean, ep);
+                        : fetchDanmakuByProtocol(h, clean, ep, year);
                 boolean ok = b != null && b.contains("<d ");
                 markDanmakuHost(h, ok);
                 if (ok) {
@@ -9921,7 +9982,7 @@ public class ApiServer {
                     // 不能一律按弹弹play 三段式处理。
                     String b = isDanmakuTemplate(h)
                             ? fetchDanmakuByTemplate(h, clean, epf)
-                            : fetchDanmakuByProtocol(h, clean, epf);
+                            : fetchDanmakuByProtocol(h, clean, epf, year);
                     boolean ok = b != null && b.contains("<d ");
                     // 只记"被调用过且失败"。成功也记（清掉旧的失败标记）。
                     // 注意这里不区分"站挂了"和"这站没这部剧"——两者都是
@@ -10466,7 +10527,7 @@ public class ApiServer {
     }
 
     /** 按片名走爱奇艺官方：搜索 → 取 tvId → Bullet 分片。 */
-    private static String fetchIqiyiByTitle(String clean, int ep) {
+    private static String fetchIqiyiByTitle(String clean, int ep, int year) {
         try {
             String searchUrl = IQIYI_SEARCH + URLEncoder.encode(clean, "UTF-8");
             // ★ 12 秒 → 4 秒（2026-11-27）：与 searchIqiyi 同一个理由 ——
@@ -10496,7 +10557,8 @@ public class ApiServer {
                 if (!IQIYI_CHANNEL.matcher(album.optString("channel", "")).matches()) continue;
                 JSONArray vids = album.optJSONArray("videoinfos");
                 if (vids == null || vids.length() == 0) continue;
-                int score = danmakuTitleScore(clean, album.optString("albumTitle", clean), vids.length());
+                int score = danmakuTitleScore(clean, album.optString("albumTitle", clean),
+                        vids.length(), ep, year);
                 if (score > bestScore) {
                     bestScore = score;
                     best = album;
@@ -10693,18 +10755,60 @@ public class ApiServer {
                                 .optJSONArray("barrage_list");
                         if (list == null || list.length() == 0) return null;
                         /*
-                         * 诊断（2026-11-02）：腾讯原始分片到底有没有颜色字段？
-                         * 抓取层现在把颜色写死成白色 16777215，全站 4 万条全白。
-                         * 打一次 key 列表就能确认上游是否提供 —— 有就接上，
-                         * 没有就在注释里写明"上游不提供"，免得以后反复怀疑。
+                         * 诊断（2026-11-02，2026-11-27 收口）：腾讯原始分片到底有没有
+                         * 颜色字段？抓取层把颜色写死成白色 16777215，全站 4 万条全白。
+                         *
+                         * ★ 原来每个分片都打一整份 key 列表 + 320 字样本（实测一次
+                         *   弹幕请求 91 行、约 64KB），属于典型的"调试打印忘了关"。
+                         *   现在只在打开 MEOW_LOG_LEVEL=debug 时打一次，且进环形缓冲
+                         *   （tag=danmaku），不再刷 stdout。
                          */
-                        org.json.JSONObject probe = list.optJSONObject(0);
-                        if (probe != null) {
-                            String s0 = probe.toString();
-                            System.err.println("[danmaku] tencent seg keys = "
-                                    + probe.names()
-                                    + " | sample = " + s0.substring(0, Math.min(320, s0.length())));
+                        if (core.LogBuffer.debugEnabled()) {
+                            org.json.JSONObject probe = list.optJSONObject(0);
+                            if (probe != null) {
+                                String s0 = probe.toString();
+                                core.LogBuffer.debug("danmaku", "tencent seg keys = "
+                                        + probe.names()
+                                        + " | sample = " + s0.substring(0, Math.min(320, s0.length())));
+                            }
                         }
+                        /*
+                         * ★ time_offset 是**整集绝对毫秒**，不是片内偏移（2026-11-27 实测）。
+                         *
+                         * 腾讯把一集切成 30 秒一片（45 分钟 = 91 片），每片硬顶 600 条；
+                         * 第 2 片的 time_offset 范围就是 30000..59000，第 3 片 60000..89000。
+                         * 旧代码写 {@code absMs = startMs + off}，等于**又加了一遍片起点**：
+                         * <pre>
+                         *   片1 (start=30s) 的弹幕 → 落到 60..89 秒
+                         *   片2 (start=60s) 的弹幕 → 落到 120..149 秒
+                         * </pre>
+                         * 结果时间轴变成「有弹幕 30 秒 / 空 30 秒」规律交替 ——
+                         * 用户看到的就是"弹幕潮汐"（实测 45 个 31 秒空窗）。
+                         * 更糟的是一半弹幕被推到片长之外，被下面的 over-duration 砍掉
+                         * （庆余年第二季 ep1：54,435 条只剩 27,550 条）。
+                         *
+                         * 兼容老格式：有的 vid 的 time_offset 确实是片内相对值
+                         * （片 1 的 min≈0）。用「该片最小 time_offset 是否 >= 片起点」
+                         * 判断语义，两种格式都能对。
+                         */
+                        long minOff = Long.MAX_VALUE;
+                        for (int i = 0; i < list.length(); i++) {
+                            org.json.JSONObject c0 = list.optJSONObject(i);
+                            if (c0 == null) continue;
+                            try {
+                                long o0 = Long.parseLong(c0.optString("time_offset", "0"));
+                                if (o0 >= 0 && o0 < minOff) minOff = o0;
+                            } catch (Exception ignored) {
+                            }
+                        }
+                        /*
+                         * 判据取「最小值 ≥ 片起点的一半」而不是「≥ 片起点」：
+                         * 腾讯的片**允许跨片重叠** —— 实测片 330s 里的 time_offset
+                         * 从 310000 起（比片头早 20 秒）。用「≥ startMs」会把这种片
+                         * 误判成相对格式，再叠一次片起点，那一整片弹幕就被推到 640 秒外。
+                         */
+                        final boolean offIsAbsolute = minOff == Long.MAX_VALUE
+                                || minOff >= startMs / 2;
                         for (int i = 0; i < list.length(); i++) {
                             org.json.JSONObject c = list.optJSONObject(i);
                             if (c == null) continue;
@@ -10715,7 +10819,7 @@ public class ApiServer {
                                 off = Long.parseLong(c.optString("time_offset", "0"));
                             } catch (Exception ignored) {
                             }
-                            long absMs = startMs + off;
+                            long absMs = offIsAbsolute ? off : startMs + off;
                             /*
                              * 颜色：优先读上游字段，读不到退回白色（16777215）。
                              *
@@ -11063,8 +11167,17 @@ public class ApiServer {
         boolean fresh = "1".equals(q.getOrDefault("fresh", ""));
         // 上一集手选过平台 → 这一集优先同平台（前端 dmManualSource 透传）
         String prefer = q.getOrDefault("prefer", "").trim();
+        /*
+         * 年份（可选）：同名不同年的剧靠它区分（三体 2022 动画 / 2023 剧版、
+         * 凡人修仙传 2020 动漫 / 2025 真人剧）。来源两处：
+         *   1) 前端从详情页 vod_year 透传的 {@code year}
+         *   2) 片名自带 `(2023)` —— cleanName 会剥掉括号，所以从未清洗的 name 里补
+         * 只作为打分依据，**不进缓存键**：未知（0）时该维度不生效，行为与以前一致。
+         */
+        int year = parseIntSafe(q.getOrDefault("year", "").trim(), 0);
+        if (year <= 0) year = parseYearOf(name);
         String[] src = new String[1];
-        String xml = fetchDanmakuAuto(clean, epNo, src, fresh, prefer);
+        String xml = fetchDanmakuAuto(clean, epNo, src, fresh, prefer, year);
         String from = src[0] == null ? "unknown" : src[0];
 
         /*
@@ -11123,7 +11236,7 @@ public class ApiServer {
 
         // 方案 A（肥猫主路径）：弹弹play 三段式协议，带 Referer。
         for (String host : xml.isEmpty() ? danmakuHosts() : new String[0]) {
-            String body = fetchDanmakuByProtocol(host, clean, epNo);
+            String body = fetchDanmakuByProtocol(host, clean, epNo, 0);
             if (body != null && body.contains("<d ")) {
                 xml = body;
                 break;
@@ -11856,7 +11969,7 @@ public class ApiServer {
         }
     }
 
-    private static String fetchDanmakuByProtocol(String host, String name, int episode) {
+    private static String fetchDanmakuByProtocol(String host, String name, int episode, int year) {
         try {
             // 1) 搜动画，关键词做几种归一化后逐个试（去括号年份 / 去第N季 / 去括号内容）
             //    命中结果缓存 30 分钟：同一部剧切集时省掉这次请求（见 DM_ANIME_CACHE 注释）
@@ -11896,7 +12009,7 @@ public class ApiServer {
              *   0 = 以片名开头，1 = 包含片名，2 = 不沾；同分取短名。
              * 先试最高分，失败再依次试最多 2 个备选（不把预算耗尽）。
              */
-            int[] order = pickAnimeOrder(animes, name, episode);
+            int[] order = pickAnimeOrder(animes, name, episode, year);
             /*
              * 记下最终排序的前三名（片名 + 分 + 集数）。没有这行日志时，
              * "为什么选了错的版本"只能靠弹幕条数反推 —— 2026-11-27 排查
@@ -11908,7 +12021,7 @@ public class ApiServer {
                 if (o == null) continue;
                 if (picks.length() > 0) picks.append(" | ");
                 picks.append(animeTitleOf(o)).append(" score=")
-                        .append(danmakuCandidateScore(name, o, episode))
+                        .append(danmakuCandidateScore(name, o, episode, year))
                         .append(" eps=").append(o.optInt("episodeCount", 0));
             }
             System.err.println("[danmaku] aggregator pick for [" + name + "] ep" + episode
@@ -11985,15 +12098,15 @@ public class ApiServer {
      * 现在把候选自带的 {@code type / episodeCount / startDate} 和片名里的
      * 【类型】、from 来源一起纳入打分，见 {@link #danmakuCandidateScore}。
      */
-    private static int[] pickAnimeOrder(JSONArray animes, String name, int wantEp) {
+    private static int[] pickAnimeOrder(JSONArray animes, String name, int wantEp, int wantYear) {
         int n = Math.min(animes.length(), 8);
         Integer[] idx = new Integer[n];
         for (int i = 0; i < n; i++) idx[i] = i;
         java.util.Arrays.sort(idx, (a, b) -> {
             JSONObject oa = animes.optJSONObject(a);
             JSONObject ob = animes.optJSONObject(b);
-            int sa = danmakuCandidateScore(name, oa, wantEp);
-            int sb = danmakuCandidateScore(name, ob, wantEp);
+            int sa = danmakuCandidateScore(name, oa, wantEp, wantYear);
+            int sb = danmakuCandidateScore(name, ob, wantEp, wantYear);
             if (sa != sb) return Integer.compare(sb, sa);   // 分高在前
             // 同分：名字短的在前面（剧名后面挂的字越少越可能是正片）
             int la = candidateNameKey(animeTitleOf(oa)).length();
@@ -12029,7 +12142,7 @@ public class ApiServer {
      *       「最早即正片」在跨形态同名作品上不成立；只有类型、集数都打平时才用于稳定排序。</li>
      * </ul>
      */
-    private static int danmakuCandidateScore(String clean, JSONObject anime, int wantEp) {
+    private static int danmakuCandidateScore(String clean, JSONObject anime, int wantEp, int wantYear) {
         if (anime == null) return -1000;
         String rawTitle = animeTitleOf(anime);
         String a = candidateNameKey(clean);
@@ -12067,6 +12180,18 @@ public class ApiServer {
 
         int cnt = anime.optInt("episodeCount", 0);
         if (cnt > 0) score += cnt < wantEp ? -320 : 45;
+
+        /*
+         * 年份：同名不同年的两部剧（三体 2022 动画 / 2023 剧版），名字档位、集数
+         * 覆盖、类型全都可能打平，只有年份能一锤定音。候选的年份两处可取：
+         * 标题里的 `(2023)`，或 danmu_api 的 `startDate`（2023-01-01T00:00:00Z）。
+         * 我们自己的 wantYear 来自详情页 vod_year 或片名括号；取不到就跳过这一维。
+         */
+        if (wantYear > 0) {
+            int gotYear = parseYearOf(rawTitle);
+            if (gotYear <= 0) gotYear = parseYearOf(anime.optString("startDate", ""));
+            if (gotYear > 0) score += (gotYear == wantYear) ? 80 : -150;
+        }
 
         String type = anime.optString("type", "");
         if (type.isEmpty()) type = animeTypeFromTitle(rawTitle);

@@ -1033,13 +1033,21 @@ export async function castBase(peerHost = '', force = false): Promise<CastBase |
   }
 }
 
-/** 弹幕地址（后端统一抓取 + 转 XML）。 */
+/**
+ * 弹幕地址（后端统一抓取 + 转 XML）。
+ *
+ * <p>`year` 只用于后端挑候选：同名不同年的剧（三体 2022 动画 / 2023 剧版、
+ * 凡人修仙传 2020 动漫 / 2025 真人剧）光靠片名分不开。传空则不参与打分。
+ */
 export function proxyDanmaku(
   name: string,
   episode = '1',
-  opts?: { base?: string; token?: string },
+  opts?: { base?: string; token?: string; year?: string | number },
 ): string {
   const params = new URLSearchParams({ name, episode })
+  if (opts?.year !== undefined && opts.year !== null && String(opts.year) !== '') {
+    params.set('year', String(opts.year))
+  }
   const ct = opts?.token ? `&ct=${encodeURIComponent(opts.token)}` : ''
   return `${opts?.base || base()}/api/proxy/danmaku?${params.toString()}${ct}`
 }
@@ -1059,9 +1067,12 @@ export function proxyDanmakuByUrl(url: string): string {
  * 集中在这里是为了让两处用同一份 URL 与 POST 语义——预取有副作用，
  * 用 POST 才不会被中间层或浏览器预取器当成可缓存 GET。
  */
-export function prefetchDanmaku(name: string, episode: string): void {
+export function prefetchDanmaku(name: string, episode: string, year?: string | number): void {
   if (!name || !episode) return
   const params = new URLSearchParams({ name, episode })
+  if (year !== undefined && year !== null && String(year) !== '') {
+    params.set('year', String(year))
+  }
   void fetch(`${base()}/api/proxy/danmaku/prefetch?${params.toString()}`, {
     method: 'POST',
   }).catch(() => {})

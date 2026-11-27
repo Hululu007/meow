@@ -49,7 +49,8 @@ describe('弹幕颜色：抓取层', () => {
   it('腾讯不再写死白色，改为读上游字段', () => {
     const i = API.indexOf('private static String fetchTencentXml')
     expect(i).toBeGreaterThan(-1)
-    const body = API.slice(i, i + 6000)
+    // 窗口要罩住整个函数：2026-11-27 加了时间轴注释后函数体变长，6000 已经不够
+    const body = API.slice(i, i + 12000)
     // 原来的实现是 all.add(new String[]{..., "16777215", ...}) 硬编码
     expect(body).not.toMatch(/all\.add\(new String\[\]\{String\.valueOf\(absMs \/ 1000\),\s*"16777215"/)
     // 现在探测多个可能的字段名
@@ -57,6 +58,21 @@ describe('弹幕颜色：抓取层', () => {
     expect(body).toContain('fontcolor')
     // 且保留白色兜底（上游真不提供时不能变成黑色/透明）
     expect(body).toContain('16777215')
+  })
+
+  it('腾讯 time_offset 是整集绝对毫秒，不能再加片起点', () => {
+    const i = API.indexOf('private static String fetchTencentXml')
+    expect(i).toBeGreaterThan(-1)
+    const body = API.slice(i, i + 12000)
+    /*
+     * 2026-11-27 真 bug：分片 30 秒一片、time_offset 已经是绝对毫秒，
+     * 旧代码 `startMs + off` 又加一遍片起点 → 时间轴「满 30 秒 / 空 30 秒」交替，
+     * 且一半弹幕被 over-duration 砍掉（庆余年 ep1：54,435 → 27,550）。
+     */
+    expect(body).toContain('long absMs = offIsAbsolute ? off : startMs + off;')
+    expect(body).toContain('final boolean offIsAbsolute = minOff == Long.MAX_VALUE')
+    // 判据必须允许跨片重叠（片 330 里的弹幕可能从 310 秒起）
+    expect(body).toContain('minOff >= startMs / 2')
   })
 
   it('颜色值兼容十进制 / #RRGGBB / 六位十六进制', () => {

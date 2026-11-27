@@ -334,7 +334,7 @@ function maybePrefetchFirstDanmaku(name: string) {
   const line = lines.value[activeLine.value]
   const first = line?.episodes?.[0]
   if (!first?.name) return
-  prefetchDanmaku(name, first.name)
+  prefetchDanmaku(name, first.name, item.value?.vod_year || '')
 }
 
 function play(ep: { name: string; url: string }) {
@@ -363,6 +363,9 @@ function play(ep: { name: string; url: string }) {
       ep: ep.name,
       // 影片 id：播放页用它补剧集表、记录续播进度
       vod: item.value?.vod_id || '',
+      // 年份：同名不同年的剧（三体 2022 动画 / 2023 剧版）靠它选对弹幕候选。
+      // 只喂弹幕打分，不参与别的判断；源站没给就传空串。
+      year: item.value?.vod_year || '',
       // 把整条线路的剧集带过去，播放页据此自动连播
       list: JSON.stringify(line?.episodes || []),
     },

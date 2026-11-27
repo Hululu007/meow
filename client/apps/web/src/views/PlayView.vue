@@ -210,6 +210,8 @@ const rawId = ref(safeDecode((route.query.id as string) || ''))
  * `name` 参数，不洗就会「标题显示一串 id、弹幕永远搜不到」。
  */
 const title = pickVodName(route.query.name as string)
+/** 年份：详情页透传，仅供弹幕后端挑候选（同名不同年的剧） */
+const titleYear = (route.query.year as string) || ''
 const epName = ref((route.query.ep as string) || '')
 /** 影片 id：从历史页直达播放时没有 list，靠它把剧集表补回来 */
 const vodId = (route.query.vod as string) || ''
@@ -745,7 +747,7 @@ const danmakuUrl = computed(() => {
   // 优先用 spider 自己给的 danmaku（可能是本地代理形式，PC 上不可用）
   // 这里统一走我们自己的代理，保证 Web/PC 都能用
   if (!title) return ''
-  return proxyDanmaku(title, epName.value || '1')
+  return proxyDanmaku(title, epName.value || '1', { year: titleYear })
 })
 
 /**
@@ -2656,6 +2658,7 @@ async function pushCast(mediaUrl: string, position: number, titleText?: string):
     const danmakuUrl = proxyDanmaku(title, epName.value || '1', {
       base: cb.base,
       token: cb.token,
+      year: titleYear,
     })
     const r = await castSessionPlay(
       s.device,
@@ -3507,7 +3510,7 @@ function maybePrefetchNextDanmaku(pos: number, dur: number) {
   prefetchedEp.add(key)
   // fire-and-forget（POST，带副作用；失败静默）。实现见 api.prefetchDanmaku ——
   // 详情页预取第 1 集走同一个函数，避免两处 URL/方法漂移。
-  prefetchDanmaku(displayTitle(), next.name)
+  prefetchDanmaku(displayTitle(), next.name, titleYear)
 }
 
 /** 读预取配置（policy.json）；失败保持默认，不该挡住播放 */

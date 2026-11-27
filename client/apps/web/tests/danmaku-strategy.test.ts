@@ -17,15 +17,24 @@ const player = readFileSync(PLAYER, 'utf8')
 describe('候选季/版本校验', () => {
   it('爱奇艺按标题分选最佳专辑，不再取第一个', () => {
     expect(backend).toContain('private static int danmakuTitleScore(')
-    expect(backend).toContain('int score = danmakuTitleScore(clean, album.optString("albumTitle", clean), vids.length());')
-    expect(backend).toContain('int score = danmakuTitleScore(clean, title, vids.length());')
+    // 取弹幕时按「目标集号 + 年份」打分（2026-11-27 起）
+    expect(backend).toContain('vids.length(), ep, year);')
+    // 手动搜索的候选列表没有目标集，两个维度都传 0
+    expect(backend).toContain('vids.length(), 0, 0);')
     // 旧实现：第一个频道匹配就 break / return
     expect(backend).not.toContain('break;   // 只取第一个正片')
   })
 
   it('腾讯搜索结果按标题评分排序后再返回', () => {
-    expect(backend).toContain('scores.add(danmakuTitleScore(clean, title, eps));')
+    expect(backend).toContain('scores.add(danmakuTitleScore(clean, title, eps, 0, 0));')
     expect(backend).toContain('for (int b = a; b > 0 && scores.get(b) > scores.get(b - 1); b--)')
+  })
+
+  it('集数不够这一集、年份对不上都要降权', () => {
+    // 覆盖不了目标集号 → 直接排除（原来只按"集数多"加分，短片也能压正片）
+    expect(backend).toContain('if (episodes < wantEp) score -= 300;')
+    // 年份一致加分、不一致重罚；两边都缺年份时跳过这一维
+    expect(backend).toContain('score += (gotYear == wantYear) ? 80 : -150;')
   })
 })
 
@@ -68,7 +77,7 @@ describe('预取质量门与让路', () => {
 
   it('预取延迟 5s，主请求在跑就放弃', () => {
     expect(backend).toContain('Thread.sleep(5_000)')
-    expect(backend).toContain('fetchDanmakuAutoPrefetch(clean, ep)')
+    expect(backend).toContain('fetchDanmakuAutoPrefetch(clean, ep, year)')
     expect(backend).toContain('if (DANMAKU_INFLIGHT.contains(cacheKey))')
   })
 
@@ -96,7 +105,7 @@ describe('腾讯时长校验', () => {
 
 describe('手选源跨集沿用', () => {
   it('后端 prefer 排到降级链最前', () => {
-    expect(backend).toContain('fetchDanmakuAuto(clean, epNo, src, fresh, prefer)')
+    expect(backend).toContain('fetchDanmakuAuto(clean, epNo, src, fresh, prefer, year)')
     expect(backend).toContain('reordered.add(p)')
   })
 
