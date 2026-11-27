@@ -109,6 +109,11 @@ export interface DiagSources {
   siteDegraded?: boolean
   /** play 返回的 parse 字段 */
   parse?: number | string
+  /**
+   * 「我们这一跳」失败的原因（转码/代理）。播放页把 hopError 传进来。
+   * 2026-11-27：PlayView 已按此传参，缺字段时 vue-tsc 报 TS2353，发版链红。
+   */
+  hopError?: string | null
 }
 
 /** 从浏览器全局读取证据。任何一项缺失都不报错——诊断要能降级工作。 */
