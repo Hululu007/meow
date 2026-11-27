@@ -7865,15 +7865,29 @@ public class ApiServer {
             names.add("360");
             fs.add(POOL.submit(() -> search360(clean)));
         }
+        /*
+         * 总预算 9 秒，但**每个源单独限时**（2026-11-27 改）。
+         *
+         * <p>原来所有源共用一个 deadline，第一个 future（iqiyi）慢就吃掉全部：
+         * 实测 iqiyi 搜索 9 秒没回 → tencent / 360 根本没机会跑 →
+         * 「搜索弹幕」整体 11.17 秒且结果为空。现在 iqiyi 最多占 5 秒，
+         * 剩下的时间留给后面的源，总耗时不变但**能拿到结果**。
+         */
         long deadline = System.currentTimeMillis() + 9_000L;
+        long perSource = 5_000L;
         for (int i = 0; i < fs.size(); i++) {
             long left = deadline - System.currentTimeMillis();
             if (left <= 0) break;
+            long wait = Math.min(left, perSource);
             try {
-                List<JSONObject> r = fs.get(i).get(left, java.util.concurrent.TimeUnit.MILLISECONDS);
+                List<JSONObject> r = fs.get(i).get(wait, java.util.concurrent.TimeUnit.MILLISECONDS);
                 if (r != null && !r.isEmpty()) out.addAll(r);
             } catch (java.util.concurrent.TimeoutException te) {
-                System.err.println("[danmaku] search " + names.get(i) + " timeout (9s budget)");
+                // ★ 必须 cancel：否则这个 future 继续占着 POOL 的线程，
+                // 播放页并发来请求时会互相拖慢（"池内提交同池任务"同款自锁）。
+                fs.get(i).cancel(true);
+                System.err.println("[danmaku] search " + names.get(i) + " timeout ("
+                        + wait + "ms of " + perSource + "ms per source)");
             } catch (Throwable t) {
                 markDanmakuSource(names.get(i), false);
                 System.err.println("[danmaku] search " + names.get(i) + " failed: " + t);
@@ -8269,7 +8283,17 @@ public class ApiServer {
     private static List<JSONObject> searchIqiyi(String clean) throws Exception {
         List<JSONObject> out = new ArrayList<>();
         String searchUrl = IQIYI_SEARCH + URLEncoder.encode(clean, "UTF-8");
-        String body = fetchText(searchUrl, 12_000, IQIYI_REFERER);
+        /*
+         * ★ 12 秒 → 2.5 秒（2026-11-27）：fetchText 的 timeout 是
+         * **connect 与 read 各一份**，所以传 2.5 秒 = 最坏 5 秒。
+         * 实测爱奇艺搜索**搜不到**时要多等 8.4 秒才回（"no docinfos"），
+         * 整条弹幕链因此被拖到 10 秒才判失败（[slow] 10040ms）。
+         * 搜得到时它 1~2 秒就回（iqiyi ok 784996B），不受影响 ——
+         * 砍的是"注定没结果"的等待，不是"慢但会成功"的等待。
+         * ★ 2.5 秒 → 4 秒（connect+read 各一份 = 最坏 8 秒）：实测慢的那次
+         * 是 8.4 秒才回，2.5 秒的 connect 会把"慢但搜得到"也砍掉。
+         */
+        String body = fetchText(searchUrl, 4_000, IQIYI_REFERER);
         if (body == null) return out;
         JSONObject data = new JSONObject(body).optJSONObject("data");
         JSONArray docs = data == null ? null : data.optJSONArray("docinfos");
@@ -8342,7 +8366,16 @@ public class ApiServer {
                 .put("uuid", "05d689a9-7991-4f54-befb-b616e473b95a")
                 .put("retry", 0)
                 .put("query", clean);
-        String body = postJson(TENCENT_SEARCH, payload.toString(), TENCENT_REFERER, 12_000);
+        /*
+         * ★ 12 秒 → 2.5 秒（2026-11-27）：postJson 的 timeout 同样是
+         * connect/read 各一份，2.5 秒 = 最坏 5 秒。实测腾讯搜索在这台机器上
+         * 会卡住 8~9 秒才放弃，**且不发任何日志**（异常被 postJson 吞掉），
+         * 于是整条弹幕链的总耗时由它决定 —— 未知片实测 10.04 秒，
+         * 拆开是「iqiyi ≤5s + tencent ~8.4s + aggregator 1.6s」。
+         * 搜得到时腾讯 1~2 秒就回，不受影响。
+         * ★ 2.5 秒 → 4 秒（connect+read 各一份 = 最坏 8 秒）。
+         */
+        String body = postJson(TENCENT_SEARCH, payload.toString(), TENCENT_REFERER, 4_000);
         if (body == null) return out;
         JSONObject data = new JSONObject(body).optJSONObject("data");
         JSONObject normal = data == null ? null : data.optJSONObject("normalList");
@@ -10363,7 +10396,9 @@ public class ApiServer {
     private static String fetchIqiyiByTitle(String clean, int ep) {
         try {
             String searchUrl = IQIYI_SEARCH + URLEncoder.encode(clean, "UTF-8");
-            String body = fetchText(searchUrl, 12_000, IQIYI_REFERER);
+            // ★ 12 秒 → 4 秒（2026-11-27）：与 searchIqiyi 同一个理由 ——
+            // connect+read 各一份 = 最坏 8 秒；搜不到时它本来要 8.4 秒才回。
+            String body = fetchText(searchUrl, 4_000, IQIYI_REFERER);
             if (body == null) {
                 System.err.println("[danmaku] iqiyi search: null response");
                 return "";
@@ -11104,6 +11139,21 @@ public class ApiServer {
     }
 
     private static String cleanName(String s) {
+        /*
+         * 复合串兜底（2026-11-27）：有的源把整条 item 编码进片名，
+         * 形如 `576064$$$两京十五日$$$https://img.shangesheng.com/...webp$$$0`。
+         * 直接拿去搜索必然 0 结果 —— 实测同一部片用干净片名的入口一次命中
+         * （iqiyi 784996B），用脏片名的入口 4 次全灭。
+         * 这里按 `$$$` 拆开，取第一段"像片名"的：跳过纯数字、跳过 URL。
+         */
+        if (s.contains("$$$")) {
+            for (String part : s.split("\\$\\$\\$", -1)) {
+                String t = part.trim();
+                if (t.isEmpty() || t.matches("\\d+") || t.startsWith("http")) continue;
+                s = t;
+                break;
+            }
+        }
         // 不要用 `[（(].*?[）)]`：无括号时它会匹配空串，把整个片名吞掉。
         String r = s
                 .replaceAll("[\\(（]\\s*(?:19|20)\\d{2}\\s*[\\)）]", "")

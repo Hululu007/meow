@@ -638,6 +638,14 @@ const dmLoading = ref(false)
 const dmSource = ref('')
 /** 所有源都没拿到弹幕（后端 X-Danmaku-Empty=1） */
 const dmEmpty = ref(false)
+/**
+ * 重试过一次仍然空 —— 这一集**确实没有弹幕**（不是抓取失败）。
+ *
+ * <p>与 `dmEmpty` 分开是因为两者对用户的意义不同：
+ * `dmEmpty` 是"失败，30 秒后再试"，`dmNoData` 是"没有，别等了"。
+ * 混在一起就会出现「弹幕加载失败（重试中…）」永远挂着（2026-11-27 修）。
+ */
+const dmNoData = ref(false)
 let dmRetryTimer: number | undefined
 let dmRetried = false
 const showCtrl = ref(true)
@@ -6283,15 +6291,29 @@ async function loadDanmaku(
     // 所有源都没拿到（多半是上游接口抖动，实测爱奇艺偶发返回空）。
     // 后端只把失败缓存 30 秒，所以 30 秒后重试有较大概率拿到。
     // 只重试一次，避免用户看到无限请求。
-    if (empty && !dmRetried) {
+    //
+    // ★ 第二次仍然空时**必须复位**（2026-11-27 修）：原来写成
+    //   `if (empty && !dmRetried) {...} else if (!empty) {...}`，
+    //   第二次落空时两个分支都不进 → dmEmpty 永远为 true → 顶栏一直挂
+    //   「弹幕加载失败（重试中…）」，可后端早就用 X-Danmaku-Empty:1
+    //   说过"这一集没有弹幕"，用户看到的是持续失败而不是"没有弹幕"。
+    //   现在区分三态：加载中 / 首次失败（会重试）/ 确实没有弹幕。
+    if (!empty) {
+      dmRetried = false
+      dmEmpty.value = false
+      dmNoData.value = false
+    } else if (!dmRetried) {
       dmRetried = true
       dmEmpty.value = true
+      dmNoData.value = false
       dmRetryTimer = window.setTimeout(() => {
         if (props.danmakuUrl === url) loadDanmaku(url)
       }, 30_000)
-    } else if (!empty) {
-      dmRetried = false
+    } else {
+      // 重试过还是空：如实说"没有弹幕"，别再挂着"重试中"骗用户
       dmEmpty.value = false
+      dmNoData.value = true
+      dmRetryTimer = undefined
     }
   } catch {
     if (fresh) {
@@ -7788,7 +7810,10 @@ defineExpose({
         -->
         <div class="text-[11px] text-ink-2">
           <template v-if="dmEmpty && !dmLoading">
-            <span class="text-amber-400/90">弹幕加载失败（重试中…）</span>
+            <span class="text-amber-400/90">弹幕加载失败（30 秒后重试）</span>
+          </template>
+          <template v-else-if="dmNoData && !dmLoading">
+            <span class="text-ink-3">本集暂无弹幕</span>
           </template>
           <template v-else>
             弹幕 {{ dmCount }}<template v-if="dmTotal > dmCount"> / {{ dmTotal }}{{ dmTruncated ? '+' : '' }}</template> 条<template v-if="dmLoading"> · 加载中…</template>
@@ -8584,10 +8609,15 @@ defineExpose({
           弹幕设置（移动端）：紧贴搜索图标右侧，直接开面板。
           以前只有「更多」菜单里有入口，手机全屏要看设置得先点更多（2026-11-25 用户要求）。
           PC/TV 仍在「更多」菜单（本按钮 isTouch 才渲染）。
+
+          ★ 2026-11-27 修：原来写的是 `hidden … sm:grid` —— `sm:` 断点是 640px，
+          而手机上的 CSS 视口只有 440px（飞牛 App 实测 viewport 440×880 dpr=3），
+          于是这个按钮**在手机上根本不渲染**，「弹幕设置」只剩「更多」菜单里
+          那一个入口。触屏端它有 v-if="isTouch" 把关，不需要再靠断点藏。
         -->
         <button
           v-if="isTouch"
-          class="hidden h-7 w-7 shrink-0 place-items-center rounded-md bg-white/10 transition hover:bg-white/20 sm:grid"
+          class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-white/10 transition hover:bg-white/20"
           title="弹幕设置"
           aria-label="弹幕设置"
           @click.stop="toggleDmPanel($event)"
@@ -8849,7 +8879,13 @@ defineExpose({
         保留在菜单里（同一入口两处互补，和「搜索弹幕」的 `sm:hidden` 同款）。
         PC/TV 始终走菜单。
       -->
-      <button class="menu-item" :class="isTouch ? 'sm:hidden' : ''" @click="toggleDmPanel($event)">
+      <!--
+        ★ @click.stop 是必须的（2026-11-27 修）：这个按钮在「更多」面板**里面**，
+        点它会打开弹幕设置面板；事件继续冒泡到 wrap → onWrapClick() 看到
+        showDmPanel 已经是 true → openPanel(null) → 面板开了又被同一次点击关掉，
+        表现为"点了没反应"。
+      -->
+      <button class="menu-item" :class="isTouch ? 'sm:hidden' : ''" @click.stop="toggleDmPanel($event)">
         <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M4 6h16M4 12h10M4 18h7" />
         </svg>
