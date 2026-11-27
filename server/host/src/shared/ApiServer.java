@@ -10354,10 +10354,23 @@ public class ApiServer {
      */
     private static final long DANMAKU_DISK_TTL_MS = core.VideoCache.DANMAKU_TTL_MS;
 
+    /**
+     * 弹幕缓存格式版本（2026-11-27 起）。
+     *
+     * <p>抓取/解析语义一变，磁盘里的旧 XML 就不再是"同一个东西"。本次修了腾讯
+     * 分片时间轴（旧数据是「满 30 秒 / 空 30 秒」的错位版），而磁盘 TTL 是 30 天 ——
+     * 不加版本门的话，老用户重看老剧仍拿错位弹幕，看起来像"修复没生效"。
+     *
+     * <p>做法：版本拼进**文件名**（md5(key|ver)），旧文件自然不命中，按 TTL/配额淘汰，
+     * 不需要启动时扫目录删除（那会拖慢冷启动）。
+     * 以后凡是改动「时间轴语义 / 候选选择」，都要递增这个版本。
+     */
+    private static final String DANMAKU_CACHE_VER = "v2";
+
     private static java.io.File danmakuCacheFile(String key) {
         try {
             java.nio.file.Path dir = core.DataPaths.dir("cache/danmaku");
-            return dir.resolve(md5Hex(key) + ".xml").toFile();
+            return dir.resolve(md5Hex(key + "|" + DANMAKU_CACHE_VER) + ".xml").toFile();
         } catch (Throwable t) {
             return null;
         }
