@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import VideoPlayer from '@/components/player/VideoPlayer.vue'
+import { pickVodName } from '@/utils/introText'
 import {
   apiBase,
   castBase,
@@ -200,7 +201,15 @@ const flag = ref((route.query.flag as string) || '')
  * 对没编码过的普通 id 是无害的。
  */
 const rawId = ref(safeDecode((route.query.id as string) || ''))
-const title = (route.query.name as string) || ''
+/**
+ * 剧名。
+ *
+ * <p>兜底洗一次 `pickVodName`（2026-11-27）：DetailView 已经在入口洗过一遍，
+ * 但**旧历史记录 / 收藏**里存的是当时的 `vod_name`，可能是
+ * `id$$$片名$$$海报$$$备注` 的打包串。这个值同时用于顶栏显示和弹幕接口的
+ * `name` 参数，不洗就会「标题显示一串 id、弹幕永远搜不到」。
+ */
+const title = pickVodName(route.query.name as string)
 const epName = ref((route.query.ep as string) || '')
 /** 影片 id：从历史页直达播放时没有 list，靠它把剧集表补回来 */
 const vodId = (route.query.vod as string) || ''
@@ -291,6 +300,8 @@ async function runDiagnosis() {
       lines: lines.value.map((l) => l.name),
       watchdogFired: !!error.value && errorSource.value === 'play',
       parse: play.value?.parse,
+      // 「我们这一跳」的原因：诊断靠它把"没有 ffmpeg"和"网络超时"分开
+      hopError: hopError.value,
     })
     if (r.ok && r.data) {
       diagnosis.value = r.data
@@ -1261,14 +1272,94 @@ let healMinHeight = 0
 let healPrev: { url: string; header?: string } | null = null
 
 async function ensureTranscodeProbe(): Promise<boolean> {
-  if (transcodeOk.value !== null) return transcodeOk.value
+  /*
+   * true 是稳定事实（装了就是装了）→ 短路，不再问。
+   * false / null 都可能变（ffmpeg 插件刚装好、后端刚起来）→ 每次都重新问，
+   * 由 api/library.ts 的 30 秒 TTL 挡掉重复请求。
+   */
+  if (transcodeOk.value === true) return true
+  let v: boolean | null = null
   try {
-    transcodeOk.value = await transcodeAvailable()
+    v = await transcodeAvailable()
   } catch {
-    transcodeOk.value = false
+    v = null
   }
-  return transcodeOk.value
+  /*
+   * null = 没问到（网络失败 / 老后端）。**按"可用"处理**，保持旧行为：
+   * 真不能转的时候后端会回 502 + 人话 msg；把 PC/Docker 误判成"不支持"
+   * 反而是新引入的伤害（2026-11-27 回归审查）。
+   */
+  if (v === null) return true
+  transcodeOk.value = v
+  return v
 }
+
+/**
+ * 本端没有转码能力时的统一判定（错误页与诊断共用）。
+ *
+ * <p>后端 502 的中文 msg（「找不到 ffmpeg…」）和技术性原因（iOS 不能起子
+ * 进程）对用户毫无意义，错误页要换成人话；原始 msg 留在 hopError 里给诊断用。
+ */
+function isTranscodeUnavailableText(s: string | null | undefined): boolean {
+  return !!s && /找不到\s*ffmpeg|ffmpeg/i.test(s)
+}
+
+/** 本端没有转码能力的主文案（按端说人话；建议句由模板单独给） */
+function transcodeUnavailableMain(): string {
+  return isIosShell()
+    ? '这个格式本机播不了：iOS 端没有转码能力'
+    : '这个格式本机播不了：当前后端没有 ffmpeg'
+}
+
+/**
+ * 能力预检失败时的统一收尾（2026-11-27）。
+ *
+ * <p>片库的扩展名预判、直连失败兜底、诊断建议三条路原来都直接去起转码，
+ * iOS / 桌面 Safari / 没装插件的 PC 上必然 502，错误页显示「找不到 ffmpeg」——
+ * 跟用户选的片子毫无关系（用户实报）。收在这里比逐点补守卫更彻底。
+ *
+ * @param silent true = 自愈/后台动作：恢复原样播放，不弹错误页
+ */
+function handleTranscodeUnavailable(silent: boolean): void {
+  transcodeWaiting.value = false
+  transcodeTried = false
+  const pv = healPrev
+  healPrev = null
+  if (pv) {
+    // 自愈切走前记了原地址：原样播回去，别把用户丢在错误页
+    play.value = { url: pv.url, header: pv.header } as PlayResult
+    return
+  }
+  if (silent) return
+  libraryNoDirect.value = false
+  loading.value = false
+  loadingText.value = ''
+  playError.value = ''
+  // 原始技术原因留在 hopError：诊断靠它命中 TRANSCODE_UNAVAILABLE，UI 层再降级
+  hopError.value = 'ffmpeg 不可用（本端没有转码能力）'
+  error.value = transcodeUnavailableMain()
+}
+
+/**
+ * 错误页首行文案。
+ *
+ * <p>后端 502 的 msg 与"iOS 不能起子进程"这类原因对用户没有信息量，还会
+ * 让人以为是片子的问题。命中转码缺失就换成能力说明（2026-11-27 用户实报：
+ * 错误页大字显示「找不到 ffmpeg（policy.json 或 PATH 均未配置）」）。
+ */
+const errorMainText = computed(() =>
+  isTranscodeUnavailableText(error.value) || isTranscodeUnavailableText(hopError.value)
+    ? transcodeUnavailableMain()
+    : error.value,
+)
+
+/** 错误页第二行：命中转码缺失时给可执行的下一步，否则照旧显示技术原因 */
+const errorSubText = computed(() => {
+  if (isTranscodeUnavailableText(error.value) || isTranscodeUnavailableText(hopError.value)) {
+    return '换 MP4/HLS 源，或用装了 ffmpeg 的端播放（PC 装插件 / Docker / TV 本机执行）'
+  }
+  return hopError.value
+})
 
 /** 播放器报错 */
 /** 当前环境能用原生播放器（仅 TV 壳） */
@@ -1374,6 +1465,15 @@ function tryNative() {
  */
 async function tryTranscode(src: string, copy = false, repair = false, startAt = 0,
                             allowHevc = true) {
+  /*
+   * ★ 能力预检收在函数入口（2026-11-27）：调用点有 10+ 处（自愈、换线、
+   *   诊断建议、排队重试…），逐点补守卫总会漏，而且以后新加的还会漏。
+   *   放在这里既覆盖全部，也不改变"有 ffmpeg 的端"任何行为。
+   */
+  if (!(await ensureTranscodeProbe())) {
+    handleTranscodeUnavailable(repair)
+    return
+  }
   const minH = healMinHeight
   healMinHeight = 0
   const myEpoch = playEpoch
@@ -1663,6 +1763,16 @@ function unsupportedContainer(url: string): boolean {
 async function tryLibraryTranscode(lib: string, file: string, copy = false, repair = false,
                                   startAt = 0, allowHevc = true) {
   dbg('startTranscode', file)
+  /*
+   * ★ 能力预检（2026-11-27 用户实报）：片库这条原来只有 4 个调用点自己做了
+   *   预检，**扩展名预判**（起播前）与**直连失败兜底**两条漏了 —— iOS /
+   *   桌面 Safari / 没装插件的 PC 上必然撞 502，错误页显示「找不到 ffmpeg」，
+   *   跟用户选的片子毫无关系。收在函数入口，一处覆盖全部。
+   */
+  if (!(await ensureTranscodeProbe())) {
+    handleTranscodeUnavailable(repair)
+    return
+  }
   // 转码一旦开始，之前那条错误页要收掉（否则错误页盖着、用户在等转码却看着报错）
   playError.value = ''
   const myEpoch = playEpoch
@@ -3846,13 +3956,15 @@ onBeforeUnmount(() => {
     <div v-else-if="error" class="grid h-full place-items-center px-6">
       <div class="max-w-md text-center">
         <div class="text-4xl opacity-40">🎬</div>
-        <p class="mt-4 text-sm text-ink-2">{{ error }}</p>
+        <p class="mt-4 text-sm text-ink-2">{{ errorMainText }}</p>
         <!--
           我们这一跳（转码/代理）的失败原因单独一行。
           不能合并进上面那句：真实原因往往只是网络抖动，而转码失败
           会把它盖成"找不到 ffmpeg"，用户看到的报错跟影片毫无关系。
+          ★ 2026-11-27：命中"本端没有转码能力"时这一行换成可执行的下一步
+          （errorSubText），原始技术原因只进诊断证据。
         -->
-        <p v-if="hopError" class="mt-1.5 text-xs text-ink-3">（{{ hopError }}）</p>
+        <p v-if="errorSubText" class="mt-1.5 text-xs text-ink-3">（{{ errorSubText }}）</p>
         <!-- 只有"拿不到地址"才给这句；播放中途失败是另一回事 -->
         <p v-if="isFetchError" class="mt-2 text-xs text-ink-3">
           提示：这条线路没能取到播放地址（源站可能临时不可用），换个线路或换个源试试

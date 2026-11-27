@@ -231,14 +231,29 @@ describe('移动端全屏锁定', () => {
     w.unmount()
   })
 
-  it('移动端底栏提供弹幕设置入口（搜索图标右侧），不再收进更多', async () => {
+  /*
+   * 口径（2026-11-27 用户定）：不按设备判，按**有没有横向空间**判 ——
+   * 竖屏尺寸不够就不显示（收进「更多」），横屏/全屏后应该显示。
+   * 所以这里按视口分两个用例，而不是笼统断言"移动端底栏必须有"。
+   */
+  it('横屏底栏提供弹幕设置入口（搜索图标右侧），点开就是面板', async () => {
+    setViewport(844, 390)
     const w = mountPlayer()
     fakeMedia(w)
     const btn = w.findAll('button').find((b) => b.attributes('aria-label') === '弹幕设置')
-    expect(btn, '底栏缺少弹幕设置按钮').toBeTruthy()
+    expect(btn, '横屏底栏缺少弹幕设置按钮').toBeTruthy()
     await btn!.trigger('click')
     await w.vm.$nextTick()
     expect(w.find('[data-panel="dm"]').exists()).toBe(true)
+    w.unmount()
+  })
+
+  it('竖屏尺寸不够时不渲染弹幕设置入口（收进「更多」）', async () => {
+    setViewport(390, 844)
+    const w = mountPlayer()
+    fakeMedia(w)
+    const btn = w.findAll('button').find((b) => b.attributes('aria-label') === '弹幕设置')
+    expect(btn, '竖屏不该渲染横屏才有的入口').toBeFalsy()
     w.unmount()
   })
 

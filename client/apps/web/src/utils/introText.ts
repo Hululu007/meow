@@ -69,3 +69,38 @@ export function cleanIntro(raw: string | null | undefined): string {
 export function cleanLine(raw: string | null | undefined): string {
   return cleanIntro(raw).replace(/\s*\n\s*/g, ' ').trim()
 }
+
+/**
+ * 从上游 `vod_name` 里取出真正的片名。
+ *
+ * <p>有的采集站把整条 item 打包进 `vod_name`：
+ * `576064$$$两京十五日$$$https://img...webp$$$0`，格式是
+ * `id$$$片名$$$海报$$$备注`。我们原样透传会让**弹幕搜索必然 0 结果**
+ * （2026-11-27 实测：同一部片用干净名一次命中 iqiyi 787KB，用脏名 4 次全灭，
+ * 因为整串原样被拿去搜）。
+ *
+ * <p>规则：含 `$$$` 就拆开，取第一段「像片名」的（跳过空、纯数字、URL）；
+ * 不含就原样返回 —— 大多数源本来就是干净名，不该被动。
+ *
+ * <p>★ **不动「第 N 季」**：季名参与片名匹配，剥掉会搜到别季的弹幕。
+ * 后端 `cleanName()` 里那段剥季逻辑是弹幕侧自己的匹配策略，与此无关。
+ */
+export function pickVodName(raw: string | null | undefined): string {
+  let s = String(raw ?? '').trim()
+  if (s.includes('$$$')) {
+    for (const part of s.split('$$$')) {
+      const t = part.trim()
+      if (!t || /^\d+$/.test(t) || /^https?:\/\//i.test(t)) continue
+      s = t
+      break
+    }
+  }
+  /*
+   * 第二种脏形态（2026-11-27 实测）：搜索结果标题把集数范围和副标题也塞进
+   * vod_name —— `【我的有罪之人】 第1-12集 未删减 reaction`。
+   * 从「第N集 / 第N-M集 / 全N集 / 更新至N集」处截断，再剥【】[] 包装。
+   */
+  const epMark = s.match(/第\s*\d+(?:\s*-\s*\d+)?\s*集|全\s*\d+\s*集|更新至\s*\d+\s*集/)
+  if (epMark && epMark.index != null && epMark.index > 0) s = s.slice(0, epMark.index)
+  return s.replace(/[【】[\]]/g, '').trim()
+}

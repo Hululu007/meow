@@ -16,7 +16,7 @@ import { getLinePref } from '@/stores/linePref'
 import { useAppStore } from '@/stores/app'
 import PosterImage from '@/components/common/PosterImage.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
-import { cleanIntro, cleanLine } from '@/utils/introText'
+import { cleanIntro, cleanLine, pickVodName } from '@/utils/introText'
 import { isFnosAppWebView } from '@/compat/shell'
 
 const route = useRoute()
@@ -241,6 +241,10 @@ async function load() {
       error.value = '未获取到详情'
       return
     }
+    // 上游 vod_name 可能是 `id$$$片名$$$海报$$$备注` 的打包串（实测「荐片」）。
+    // 在入口洗一次，标题/收藏/历史/play query（→弹幕 name）就全干净了；
+    // 后端 cleanName() 仍是第二道防线（旧历史数据）。
+    if (v.vod_name) v.vod_name = pickVodName(v.vod_name)
     item.value = v
     lines.value = parsePlayLines(v.vod_play_from || '', v.vod_play_url || '')
     if (!lines.value.length) error.value = '该片暂无播放源'

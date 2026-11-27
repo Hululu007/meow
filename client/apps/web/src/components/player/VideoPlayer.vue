@@ -2862,7 +2862,7 @@ let lockHintTimer: number | undefined
  * 已经铺满整个屏幕，但 `pseudoFs` 仍是 false —— 锁定按钮不能只认全屏 API，
  * 否则「自动横屏播放」时整条锁入口消失（2026-11-25 用户真机报）。
  */
-const landscapeViewport = ref(false)
+const landscapeViewport = ref(typeof window !== 'undefined' && isLandscapeViewport())
 function syncLandscapeViewport() {
   landscapeViewport.value = isLandscapeViewport()
 }
@@ -4331,6 +4331,23 @@ const isFsUi = computed(
  */
 const rotFs = computed(
   () => isFnosAppWebView() && (fullscreen.value || pseudoFs.value) && !landscapeViewport.value,
+)
+
+/**
+ * 底栏「弹幕设置」（≡）按钮是否渲染。
+ *
+ * <p><b>口径（2026-11-27 用户定）</b>：不按设备判，按**是否有横向空间**判 ——
+ * 竖屏尺寸不够就不显示，横屏/全屏后就该显示（IPA 上一直是这样，因为它真的转横屏）。
+ *
+ * <p>为什么不能再用 `sm:grid` 断点：那个断点看的是**视口宽度**。手机竖屏 440px
+ * 命中不了 640，而飞牛 App 里的"横屏"是 CSS `rotate(90deg)`（`rotFs`），
+ * **视口仍是 440×880** → `sm:` 永远不命中，全屏后按钮也不出来。
+ * 所以显式把「真横屏」(landscapeViewport) 和「CSS 伪横屏」(rotFs) 都算上。
+ *
+ * <p>PC 的 `isTouch` 为 false，走「更多」菜单，行为不变。
+ */
+const showDmSettingBtn = computed(
+  () => isTouch.value && (landscapeViewport.value || rotFs.value),
 )
 const rotStyle = computed<Record<string, string> | undefined>(() =>
   rotFs.value
@@ -8610,13 +8627,16 @@ defineExpose({
           以前只有「更多」菜单里有入口，手机全屏要看设置得先点更多（2026-11-25 用户要求）。
           PC/TV 仍在「更多」菜单（本按钮 isTouch 才渲染）。
 
+          可见性见 `showDmSettingBtn`（竖屏不显示、横屏/伪横屏显示）。
           ★ 2026-11-27 修：原来写的是 `hidden … sm:grid` —— `sm:` 断点是 640px，
           而手机上的 CSS 视口只有 440px（飞牛 App 实测 viewport 440×880 dpr=3），
-          于是这个按钮**在手机上根本不渲染**，「弹幕设置」只剩「更多」菜单里
-          那一个入口。触屏端它有 v-if="isTouch" 把关，不需要再靠断点藏。
+          于是这个按钮**在手机上根本不渲染**。但也不能简单地常显：
+          用户口径是「竖屏尺寸不够就不显示，横屏后应该显示」（IPA 真横屏时正常）。
+          所以改成 `showDmSettingBtn` 显式判「真横屏 or CSS 伪横屏」，
+          不按设备、也不靠断点。PC 的 isTouch 为 false，走「更多」菜单不变。
         -->
         <button
-          v-if="isTouch"
+          v-if="showDmSettingBtn"
           class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-white/10 transition hover:bg-white/20"
           title="弹幕设置"
           aria-label="弹幕设置"

@@ -8455,12 +8455,23 @@ public class ApiServer {
     private static final String[] DANMAKU_HOSTS = {
             // 弹弹play 官方（肥猫 m.j() 的协议端点；需要 AppId 签名时会 403）
             "https://api.dandanplay.net",
-            // 社区镜像 / 聚合站
-            "https://vercel.junce.dpdns.org",
-            "https://danmu.junce.dpdns.org",
+            /*
+             * ★ 2026-11-27 清掉四个确认死掉的（每个都在 .34 上用 DoH 实测过）：
+             *   vercel.junce.dpdns.org → 402 DEPLOYMENT_DISABLED（Vercel 部署被停用）
+             *   danmu.junce.dpdns.org  → DNS 无记录
+             *   api.danmu.icu          → DNS 无记录
+             *   fc.lyz05.cn            → 403 Cloudflare 人机挑战，脚本过不去
+             *
+             * 留着它们只会：占 POOL 的线程槽（死 host 每次搜索都提交一个 future）、
+             * 每次把片名发给已经死掉的第三方服务器、日志刷一堆
+             * UnknownHostException 掩盖真问题。真正可用的聚合源是用户自建的
+             * danmu_api（`127.0.0.1:9321`），内置池只是兜底。
+             */
+            // startling-pothos：503 usage_exceeded 是 Netlify 额度超限，
+            // 下个计费周期可能自愈，留作观察。
             "https://startling-pothos-0ee7cd.netlify.app",
-            "https://api.danmu.icu",
-            "https://fc.lyz05.cn",
+            // dmku.hls.one：根路径 200，但 `/api/v2/search/episodes` 404
+            // —— 走的不是弹弹play v2 协议，命中率待观察，留着成本很低。
             "https://dmku.hls.one",
     };
 
@@ -11154,6 +11165,20 @@ public class ApiServer {
                 break;
             }
         }
+        /*
+         * 第二种脏形态（2026-11-27 实测）：搜索结果标题把**集数范围和副标题**
+         * 也塞进 vod_name —— `【我的有罪之人】 第1-12集 未删减 reaction`。
+         * 整串去搜索必然 0 结果（线上日志原样打出过这句，同一部片的一集
+         * 连续 4 次 all sources failed）。
+         * 规则：从「第N集 / 第N-M集 / 全N集 / 更新至N集」处**截断**，
+         * 再把【】[]包装剥掉（只剥符号，不动内容）。
+         * 片名本身带这种集数标记的极少，正则限定得比较死，误伤概率低。
+         */
+        java.util.regex.Matcher epMark = java.util.regex.Pattern
+                .compile("第\\s*\\d+(?:\\s*-\\s*\\d+)?\\s*集|全\\s*\\d+\\s*集|更新至\\s*\\d+\\s*集")
+                .matcher(s);
+        if (epMark.find() && epMark.start() > 0) s = s.substring(0, epMark.start());
+        s = s.replaceAll("[【】\\[\\]]", "").trim();
         // 不要用 `[（(].*?[）)]`：无括号时它会匹配空串，把整个片名吞掉。
         String r = s
                 .replaceAll("[\\(（]\\s*(?:19|20)\\d{2}\\s*[\\)）]", "")
