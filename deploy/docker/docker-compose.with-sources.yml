@@ -103,23 +103,27 @@ services:
   drpy:
     # ★ drpy 是**独立版本线**，不能跟 MEOW_VERSION 走。
     #
-    #   踩过的坑：原来写 `${MEOW_VERSION:-0.9.x}`，主版本升到 0.9.24 之后
-    #   compose 会去找 `meow-drpy:0.9.24`，而仓库里根本没有这个 tag
+    #   踩过的坑：原来写 `${MEOW_VERSION:-0.9.x}`，主版本一升
+    #   compose 就会去找 `meow-drpy:<主版本>`，而仓库里根本没有这个 tag
     #   （drpy 只在主版本发版时顺带重打一次）。新机器 `docker compose up`
     #   直接报 manifest unknown；老机器因为本地已有旧镜像照常能跑，
     #   所以只在**换机器 / 清镜像**时才暴露，开发机上基本发现不了。
     #
     #   现在用 DRPY_VERSION 单独钉。**默认值必须是远端真实存在的 tag**——
-    #   实测远端只有 0.9.23 与 latest，没有 0.1.0（那是插件 manifest 里的
+    #   实测远端只有 0.9.2x 与 latest，没有 0.1.x（那是插件 manifest 里的
     #   代码版本，两条线本来就不同，别再混用）。
     #   升级 drpy 时：改这里 + .env.example，再跑 build-push-docker.ps1。
-    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.23}}
+    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.24}}
     container_name: meow-drpy
     ports:
-      - "${DRPY_PORT:-30013}:9330"
+      - "127.0.0.1:${DRPY_PORT:-30013}:9330"
     environment:
       DRPY_PORT: "9330"
       DRPY_STRIP_REMOTE: "1"
+      # 容器间互信：pyrt 从 docker 网桥（172.x）转发 .js 过来，源地址永远不是回环。
+      # ★ 安全性依赖上面的端口只绑 127.0.0.1 —— 否则 DNAT 会让局域网请求也显示成
+      #   网桥地址（172.x.0.1），私有网段判定就变成"谁都能执行脚本"。
+      DRPY_TRUST_PRIVATE: "1"
     restart: unless-stopped
     networks: [meow]
 

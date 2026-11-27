@@ -4,7 +4,7 @@
   "capability": "backend",
   "required": true,
   "fatal": false,
-  "version": "1.2.24",
+  "version": "1.2.25",
   "exec": "jre/bin/java",
   "execFallback": [
     "java"

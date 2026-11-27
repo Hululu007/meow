@@ -174,6 +174,9 @@ final class DebugServer {
             for (int i = 0; i < PORT_TRIES; i++) {
                 int candidate = BASE_PORT + i;
                 if (candidate == GATEWAY_PORT) continue;
+                // 跳过其它服务的保留端口（2026-11-27 统一）：9979-9985 是 PC 的
+                // 后端协商段，同机排查/模拟器与 PC 并行时撞上会让两边都莫名其妙。
+                if (candidate >= 9979 && candidate <= 9985) continue;
                 try {
                     // 不传 InetAddress：单参构造就是绑通配地址（0.0.0.0），
                     // 顺带避免在 UI 线程上做一次不必要的地址解析

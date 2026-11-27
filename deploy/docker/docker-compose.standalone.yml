@@ -60,13 +60,17 @@ services:
 
   # drpy 运行时（.js 源）。独立版本线，别跟 MEOW_VERSION 走。
   drpy:
-    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.23}}
+    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.24}}
     container_name: meow-drpy
     ports:
-      - "${DRPY_PORT:-30013}:9330"
+      - "127.0.0.1:${DRPY_PORT:-30013}:9330"
     environment:
       DRPY_PORT: "9330"
       DRPY_STRIP_REMOTE: "1"
+      # 容器间互信：pyrt 从 docker 网桥（172.x）转发 .js 过来，源地址永远不是回环。
+      # ★ 安全性依赖上面的端口只绑 127.0.0.1 —— 否则 DNAT 会让局域网请求也显示成
+      #   网桥地址（172.x.0.1），私有网段判定就变成"谁都能执行脚本"。
+      DRPY_TRUST_PRIVATE: "1"
     restart: unless-stopped
     networks: [meow]
 

@@ -261,7 +261,12 @@ fn apply_proxy_prefix(prefix: &str, url: &str) -> Option<String> {
 
 /// 公开地址 → 直连 + 代理候选；私有/非 GitHub 原样返回。
 fn expand_public_candidates(url: &str, proxies: &[String]) -> Vec<String> {
-    if !source_token().trim().is_empty() || !is_public_github_url(url) {
+    // ★ 不要再判 source_token()（2026-11-27）：公开库根本不需要 token，但历史上
+    //   只要 token 文件存在这里就「只走直连」→ 直连 objects.githubusercontent.com
+    //   一抖动就整条失败（curl 35，实测连 drpy/apiserver 能下、node/pyrt 挂）。
+    //   token 的边界由 download_one 里的 token_allowed_for 保证：只发给 GitHub
+    //   自己的域名，代理候选天然不带凭证；私有源的直连（带 token）排第一，成功即停。
+    if !is_public_github_url(url) {
         return vec![url.to_string()];
     }
     let mut out = vec![url.to_string()];

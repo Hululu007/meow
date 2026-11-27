@@ -23,9 +23,14 @@ const pyrt = read(join(ROOT, 'server', 'pyrt', 'pyrt.py'))
 const drpy = read(join(ROOT, 'server', 'drpy', 'server.js'))
 
 describe('运行时 /health 带 caps', () => {
-  it('pyrt 报告 py=true，js 取决于 PYRT_DRPY', () => {
+  it('pyrt 报告 py=true，js 由启动时的 drpy 探测结果决定', () => {
     expect(pyrt).toContain('"py": True')
-    expect(pyrt).toContain('"js": bool(os.environ.get("PYRT_DRPY"')
+    // 2026-11-27：js 不再看"有没有配 PYRT_DRPY"（那会让端口顺延后仍报 js=true
+    // 却转发不通），改为启动时探测的真实结果
+    expect(pyrt).toContain('"js": _drpy_ok')
+    // 探测候选端口：drpy 的端口是协商出来的（9330 被占会顺延）
+    expect(pyrt).toContain('_DRPY_CANDIDATE_PORTS')
+    expect(pyrt).toContain('def _resolve_drpy')
   })
 
   it('drpy 报告 py=false', () => {

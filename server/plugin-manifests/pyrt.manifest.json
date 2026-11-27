@@ -5,7 +5,7 @@
   "capability": "runtime",
   "required": false,
   "fatal": false,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "exec": "python/python.exe",
   "execFallback": [
     "python3",
@@ -29,7 +29,7 @@
   "autostart": true,
   "env": {
     "PYRT_PORT": "{port}",
-    "PYRT_DRPY": "http://127.0.0.1:9330",
+    "_pyrt_drpy_why": "PYRT_DRPY 已移除（2026-11-27）：drpy 端口是协商出来的（9330 被占顺延到 9331…），写死会让 pyrt 转发 .js 时 Connection refused。pyrt.py 启动时自己探 9330-9334 找 service=meow-drpy；Docker compose 仍可显式传 PYRT_DRPY=http://drpy:9330（探活会优先用它）。",
     "PYRT_SCRIPTS": "{appData}/py-scripts"
   },
   "inject": {

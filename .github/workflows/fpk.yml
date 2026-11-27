@@ -367,6 +367,23 @@ jobs:
           export CARGO_TARGET_CACHE="$HOME/.cache/meow/cargo-target-${{ matrix.platform }}"
           bash client/apps/fnos/build-arm.sh
 
+      # ── 运行时插件载荷（drpy / pyrt）──────────────────────────────
+      # ★ 1.2.22 / 1.2.24 的 fpk 包里只有 danmu-api：build-fpk.sh 的复制逻辑
+      #   一直在，但 CI **从来没构建过**这两个载荷目录 → 每版都落进"缺目录"告警
+      #   分支 → 装到 NAS 上 .js/.py 源全哑（depot 探测报 runtime:"down"）。
+      #   这里补上，且必须排在「组包」之前。
+      - name: 构建运行时插件载荷
+        shell: bash
+        env:
+          FPK_ARCH: ${{ matrix.platform == 'arm' && 'aarch64' || 'x86_64' }}
+        run: |
+          set -euo pipefail
+          # drpy：纯 JS（server.js/worker.js/host.js + node_modules），跨平台
+          pwsh -NoProfile -File server/build-plugin-drpy.ps1
+          # pyrt：按目标架构打（vendor 里的 pycryptodome 是架构相关的 .so/.pyd）
+          bash server/build-plugin-pyrt-linux.sh "$FPK_ARCH"
+          du -sh server/build/plugins/drpy "server/build/plugins/pyrt-$FPK_ARCH"
+
       - name: 组包
         env:
           SRC: ${{ github.workspace }}

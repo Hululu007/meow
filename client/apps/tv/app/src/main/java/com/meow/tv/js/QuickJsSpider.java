@@ -22,9 +22,12 @@ import okhttp3.ResponseBody;
 /**
  * TV 端内置的 JS 源加载器（QuickJS）。
  *
- * <p><b>只吃 vbox 方言</b>：`var spider = { __jsEvalReturn: function(){ ... } }`。
- * 这是我们从怪兽 IPA / vbox-Ai 那套拿到的 14 个 .js 源的实际形态，
- * 与 Fongmi 的 `export default class extends Spider`（ES module）不是一回事。
+ * <p><b>方言：两种都认</b>（2026-11-27 补全）——
+ * `spider.__jsEvalReturn()`（vbox / Fongmi，源包主流）与全局 `__JS_SPIDER__`
+ * （CatVod / drpy 标准）。判据顺序与 `server/drpy/host.js` 一致，保证同一份
+ * .js 源在 TV 与 PC/fpk/Docker 上行为相同。以前只认 vbox，纯 CatVod 形态的源
+ * 在 TV 上一律报"不是 vbox 方言"。
+ * 与 Fongmi 的 `export default class extends Spider`（ES module）仍不是一回事。
  * 所以这里**没有**搬 Fongmi 的 quickjs 模块（那套 2664 行、39 个全局函数、
  * 依赖 catvod 的 Crypto/Js/Task/Trans 一整套工具类），只做方言需要的最小集。
  *
@@ -91,22 +94,30 @@ public final class QuickJsSpider {
         ctx.bind("__meow_siteKey", args -> siteKey).join();
 
         ctx.evaluate(source, api).get();
-        // 取出导出对象，挂到全局 __meow 上，后续调用都走它
-        Object exported = ctx.evaluate(
+        /*
+         * 取出导出对象，挂到全局 __meow 上，后续调用都走它。
+         *
+         * ★ 两种方言都要认（2026-11-27）：
+         *   · CatVod / drpy 标准：执行后得到全局 `__JS_SPIDER__`
+         *   · vbox / Fongmi：顶层 `var spider = { __jsEvalReturn(){...} }`
+         *   以前只认后者（注释还写着"只吃 vbox 方言"），于是纯 CatVod 形态的 .js
+         *   源在 TV 上一律报"不是 vbox 方言"，而同一份源在 PC/fpk 的 drpy 里能跑
+         *   —— 各端体验不一致。这里补上 __JS_SPIDER__ 分支，与 server/drpy/host.js
+         *   的判据顺序保持一致（先 __JS_SPIDER__，再 vbox）。
+         */
+        final String EXPORT_EXPR =
                 "(function(){"
+                        + "if (typeof __JS_SPIDER__ !== 'undefined' && __JS_SPIDER__) return __JS_SPIDER__;"
                         + "if (typeof spider !== 'undefined' && spider && typeof spider.__jsEvalReturn === 'function') return spider.__jsEvalReturn();"
                         + "if (typeof __jsEvalReturn === 'function') return __jsEvalReturn();"
                         + "return null"
-                        + "})()", api + "#export").get();
+                        + "})()";
+        Object exported = ctx.evaluate(EXPORT_EXPR, api + "#export").get();
         if (exported == null) {
-            throw new IllegalStateException("脚本没有导出 spider.__jsEvalReturn()，不是 vbox 方言");
+            throw new IllegalStateException(
+                    "脚本没有导出 __JS_SPIDER__ 或 spider.__jsEvalReturn()，不是 drpy/vbox 方言");
         }
-        ctx.evaluate("var __meow = "
-                + "(function(){"
-                + "if (typeof spider !== 'undefined' && spider && typeof spider.__jsEvalReturn === 'function') return spider.__jsEvalReturn();"
-                + "if (typeof __jsEvalReturn === 'function') return __jsEvalReturn();"
-                + "return null"
-                + "})()", api + "#bind").get();
+        ctx.evaluate("var __meow = " + EXPORT_EXPR, api + "#bind").get();
     }
 
     public String homeContent(boolean filter) throws Exception {

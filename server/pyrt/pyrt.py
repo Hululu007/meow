@@ -71,7 +71,19 @@ PORT = int(os.environ.get("PYRT_PORT", "19331"))
 与 drpy 的 DRPY_BIND 同一个坑，同一个解法。
 """
 BIND = os.environ.get("PYRT_BIND", "127.0.0.1")
-DRPY_UPSTREAM = os.environ.get("PYRT_DRPY", "http://127.0.0.1:19330").rstrip("/")
+DRPY_UPSTREAM = os.environ.get("PYRT_DRPY", "").rstrip("/")
+"""
+`.js` 转发目标。启动时会主动解析（见 `_resolve_drpy`），不依赖写死的端口。
+
+★ 为什么要探测（2026-11-27）：drpy 的端口是**协商**出来的（9330 被占会顺延到
+  9331…，PC/fpk 的插件管理器就是这么做的），而以前这里写死 9330 —— drpy 一
+  顺延，pyrt 转发 `.js` 就 Connection refused，表现是「.js 源全部 drpy forward
+  失败」而 `.py` 正常。现在按候选端口探一遍 `/health`，转发失败时再探一次。
+"""
+_DRPY_CANDIDATE_PORTS = (9330, 9331, 9332, 9333, 9334)
+_drpy_ok = False
+_drpy_at = 0.0
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 """
 脚本根目录。默认 `<pyrt.py 所在目录>/scripts`；容器/插件把数据卷挂进来即可。
@@ -354,8 +366,64 @@ def _is_js_api(api):
     return path.endswith(".js") or path.endswith(".mjs")
 
 
+def _drpy_alive(base):
+    """这个地址是不是一个活着的 JS 运行时（drpy 或 TV 的内置 QuickJS）？
+
+    两种 /health 形状都要认：
+      drpy      → {"ok":true,"service":"meow-drpy","py":false,"js":true,...}
+      QuickJS   → {"ok":true,"service":"quickjs","py":false,"caps":{"js":true,...}}
+    只判 `"js":true` 字样即可覆盖两者；不能判 `py`（QuickJS 也是 py:false）。
+    """
+    if not base:
+        return False
+    try:
+        with urllib.request.urlopen(base.rstrip("/") + "/health", timeout=1.5) as r:
+            if r.status != 200:
+                return False
+            body = r.read(1024).decode("utf-8", "replace")
+            # 别把自己当上游（误配 PYRT_DRPY 指向 pyrt 自己时会无限自转发）
+            if '"service":"pyrt"' in body.replace(" ", ""):
+                return False
+            return '"js":true' in body.replace(" ", "") or "drpy" in body.lower()
+    except Exception:
+        return False
+
+
+def _resolve_drpy(force=False):
+    """确定 `.js` 转发目标：已配置地址优先，其次按候选端口探测。
+
+    ★ 只在启动与「转发失败」时调用，**不要放进 /health** —— 宿主探活用 800ms
+      超时，探测多端口会把健康检查拖成假死（2026-11-27 实测过同类问题）。
+    """
+    global DRPY_UPSTREAM, _drpy_ok, _drpy_at
+    now = time.time()
+    with _lock:
+        # 刚确认过且仍然活着：直接用，省一次探测
+        if not force and _drpy_ok and (now - _drpy_at) < 60:
+            return DRPY_UPSTREAM
+        cands = []
+        if DRPY_UPSTREAM:
+            cands.append(DRPY_UPSTREAM)
+        for p in _DRPY_CANDIDATE_PORTS:
+            u = "http://127.0.0.1:%d" % p
+            if u not in cands:
+                cands.append(u)
+        for u in cands:
+            if _drpy_alive(u):
+                if u != DRPY_UPSTREAM:
+                    log("drpy upstream -> %s" % u)
+                DRPY_UPSTREAM = u
+                _drpy_ok = True
+                _drpy_at = now
+                return u
+        _drpy_ok = False
+        _drpy_at = now
+        log("drpy upstream 不可用（试过 %s）—— .js 源会报转发失败" % ",".join(cands))
+        return DRPY_UPSTREAM
+
+
 def forward_drpy(handler, body):
-    """把 `.js` 请求原样转给 drpy。
+    """把 `.js` 请求原样转给 drpy（地址失效时重探一次再试）。
 
     参数是 BaseHTTPRequestHandler 实例，不是 dict：
     路径用 `handler.path`，请求头在 `handler.headers` 里（一个 email.message.Message）。
@@ -363,14 +431,21 @@ def forward_drpy(handler, body):
     `'Handler' object has no attribute 'get'` —— 转发链路整条不可用，
     而 `.py` 源照常能跑，所以很容易漏测。
     """
-    url = DRPY_UPSTREAM + handler.path
-    req = urllib.request.Request(url, data=body, method="POST")
-    for h in ("X-DRPY-Api", "X-DRPY-Ext", "Content-Type"):
-        v = handler.headers.get(h)
-        if v:
-            req.add_header(h, v)
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return r.read()
+    for attempt in (0, 1):
+        url = DRPY_UPSTREAM + handler.path
+        req = urllib.request.Request(url, data=body, method="POST")
+        for h in ("X-DRPY-Api", "X-DRPY-Ext", "Content-Type"):
+            v = handler.headers.get(h)
+            if v:
+                req.add_header(h, v)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.read()
+        except (urllib.error.URLError, ConnectionError, OSError):
+            # 第一跳失败：drpy 可能换了端口（协商顺延/重启）→ 重探后重试一次
+            if attempt == 0 and _resolve_drpy(force=True):
+                continue
+            raise
 
 
 def parse_ext(ext):
@@ -457,7 +532,8 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "service": "pyrt",
                 "py": True,
-                "js": bool(os.environ.get("PYRT_DRPY", "").strip()),
+                # 用启动时解析的结果，不在这里探测（宿主探活只有 800ms）
+                "js": _drpy_ok,
             }
             # ★ 必须紧凑分隔符：插件健康检查是按 contains('"ok":true') 判活的，
             #   json.dumps 默认带空格（"ok": true）会判死 → 启动 20s 超时后回滚
@@ -557,7 +633,10 @@ def serve(port=None, scripts_dir=None, drpy_upstream=None):
         DRPY_UPSTREAM = drpy_upstream.rstrip("/")
     if port:
         PORT = int(port)
-    log("serve on %s:%d, scripts=%s, drpy=%s" % (BIND, PORT, PY_DIR, DRPY_UPSTREAM))
+    # 起服务前先把 `.js` 上游定下来（drpy 端口可能是协商出来的）
+    _resolve_drpy(force=True)
+    log("serve on %s:%d, scripts=%s, drpy=%s (js=%s)"
+        % (BIND, PORT, PY_DIR, DRPY_UPSTREAM, _drpy_ok))
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
 
 

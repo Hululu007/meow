@@ -152,6 +152,15 @@ pub struct Inject {
     pub target: String,
     pub key: String,
     pub value: String,
+    /// 这个键"归我管"：只在现有值指向**本机插件**（127.0.0.1/localhost）时覆盖。
+    ///
+    /// 为什么需要（2026-11-27）：drpy 与 pyrt 都 inject `jsRuntime`，而 pyrt
+    /// 能同时服务 .py 并转发 .js 给 drpy，所以它该赢。以前这里没有 force，
+    /// pyrt 启动时看到 jsRuntime 已是 drpy 写的 `http://127.0.0.1:9330` 就放弃
+    /// 覆盖 → 宿主把 .py 源派给 drpy（/health 报 py=false）→ PC 上 .py 源全哑。
+    /// fpk 端的 meowd 早已实现同一语义，这里对齐它；用户手配的局域网地址仍保留。
+    #[serde(default)]
+    pub force: bool,
 }
 
 fn default_health_timeout() -> u64 { 45_000 }
@@ -359,7 +368,7 @@ impl PluginManager {
                     .value
                     .replace("{pluginDir}", &dir.to_string_lossy())
                     .replace("{port}", "0");
-                if let Err(e) = inject_value(Path::new(&target), &inj.key, &value) {
+                if let Err(e) = inject_value(Path::new(&target), &inj.key, &value, inj.force) {
                     inject_error = Some(format!("已安装，但写配置失败: {e}"));
                 }
             }
@@ -501,7 +510,7 @@ impl PluginManager {
                     .target
                     .replace("{appData}", &self.app_data.to_string_lossy());
                 let value = inj.value.replace("{port}", &port.to_string());
-                if let Err(e) = inject_value(Path::new(&target), &inj.key, &value) {
+                if let Err(e) = inject_value(Path::new(&target), &inj.key, &value, inj.force) {
                     r.error = Some(format!("已启动，但写配置失败: {e}"));
                 }
             }
@@ -929,12 +938,15 @@ fn http_get(port: u16, path: &str, timeout_ms: u64) -> Option<String> {
 
 /// 把 key=value 写进 policy.json（读-改-写，保留其他字段）。
 ///
-/// **不覆盖用户手填的值**。`inject` 的语义是"插件启动后自动接线，让用户零配置"，
+/// **默认不覆盖用户手填的值**。`inject` 的语义是"插件启动后自动接线，让用户零配置"，
 /// 不是"强制把地址改成我这里"。如果用户已经在设置页填了远端 danmu_api
 /// （比如 NAS 上的），插件启动时把它改成 127.0.0.1 就是灾难。
 ///
-/// 例外：值等于当前插件地址时允许更新（端口协商后可能从 9321 变 9322）。
-fn inject_value(target: &Path, key: &str, value: &str) -> Result<(), String> {
+/// 例外一：值等于当前插件地址时允许更新（端口协商后可能从 9321 变 9322）。
+/// 例外二：manifest 声明 `force: true` 且现有值指向**另一个本机插件**
+/// （127.0.0.1 / localhost）时覆盖 —— 用于 pyrt 接管 drpy 写下的 `jsRuntime`。
+/// 用户手配的局域网地址（192.168.x / 域名）永远不覆盖。
+fn inject_value(target: &Path, key: &str, value: &str, force: bool) -> Result<(), String> {
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -950,8 +962,14 @@ fn inject_value(target: &Path, key: &str, value: &str) -> Result<(), String> {
     if let Some(existing) = obj.get(key).and_then(|v| v.as_str()) {
         let existing = existing.trim();
         if !existing.is_empty() && existing != value {
-            // 已有非空值且不是我们自己写的：尊重用户配置，不覆盖
-            return Ok(());
+            // 已有非空值且不是我们自己写的：默认尊重用户配置，不覆盖
+            let is_local_plugin = existing.starts_with("http://127.0.0.1:")
+                || existing.starts_with("http://localhost:")
+                || existing.starts_with("https://127.0.0.1:")
+                || existing.starts_with("https://localhost:");
+            if !(force && is_local_plugin) {
+                return Ok(());
+            }
         }
     }
 

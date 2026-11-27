@@ -100,6 +100,7 @@ import {
 import {
   clearUpdateCache,
   cancelAppUpdateCheck,
+  currentVersion as currentAppVersion,
   downloadCandidates,
   fetchTextViaNativeJob,
   getBackupUpdateSource,
@@ -188,7 +189,6 @@ import { clearSearchHistory, listSearchHistory } from '@/stores/searchHistory'
 import { iosNotify, tvInlineInput } from '@/api/nativeBridge'
 import { qrSvg } from '@/utils/qr'
 import FpkUpgradePanel from '@/components/common/FpkUpgradePanel.vue'
-import RuntimeDepsPanel from '@/components/common/RuntimeDepsPanel.vue'
 import UpdateCenter from '@/components/common/UpdateCenter.vue'
 import GitAccelPanel from '@/components/common/GitAccelPanel.vue'
 import { alertDialog, confirmDialog } from '@/composables/useConfirm'
@@ -4434,6 +4434,37 @@ function phaseClass(p: PluginInfo['phase']) {
   return 'bg-card text-ink-3'
 }
 
+/* ---------------------------------------------------------------- 插件列表排序与展示名
+ *
+ * ★ 为什么在前端排（2026-11-27）：Rust 侧 `state_of()` 按插件目录的 readdir 顺序
+ *   输出，不同机器/不同安装顺序看到的行序都不一样。用户要求固定成
+ *   「业务服务 → 工具 → 运行时」，所以在 UI 侧按 id 排序 —— 不动 Rust、不动 manifest，
+ *   已装用户升级后立刻生效。
+ *
+ * ★ 为什么显示名在前端映射：Node 插件的 name 存在 zip 内的 manifest.json 里
+ *   （由 server/build-release.ps1 生成）。改那里会让 node 插件包哈希变化、
+ *   触发版本守卫要求升版本 —— 而 node 的版本号来自 node.exe（22.23.5），
+ *   不能随意改。改显示层零风险。
+ */
+const PLUGIN_ORDER = ['apiserver', 'danmu-api', 'ffmpeg', 'node', 'drpy', 'pyrt']
+const PLUGIN_LABELS: Record<string, string> = { node: 'Node 环境' }
+/** 运行时职责标识：谁服务 .js、谁服务 .py（pyrt 还负责把 .js 转发给 drpy） */
+const RUNTIME_BADGES: Record<string, string> = { drpy: 'JS', pyrt: 'PY' }
+
+const sortedPlugins = computed(() => {
+  const rank = (id: string) => {
+    const i = PLUGIN_ORDER.indexOf(id)
+    return i < 0 ? PLUGIN_ORDER.length : i
+  }
+  return [...plugins.value].sort((a, b) => rank(a.id) - rank(b.id))
+})
+function pluginLabel(p: PluginInfo): string {
+  return PLUGIN_LABELS[p.id] || p.name
+}
+function runtimeBadge(id: string): string {
+  return RUNTIME_BADGES[id] || ''
+}
+
 /**
  * 刷新插件状态（首刷 + 每 3s 轮询）。
  *
@@ -5945,7 +5976,8 @@ onBeforeUnmount(() => {
       <div class="set-head">
         <h2 class="set-title">本机插件</h2>
         <span class="text-[11px] text-ink-3">
-          按需下载 · 开关 = 是否随应用启动 · 点「启动」会同时打开开关 · 退出应用会自动关闭
+          按需下载 · 开关 = 是否随应用启动 · <span class="text-ink-2">JS</span> 跑 .js 源 ·
+          <span class="text-ink-2">PY</span> 跑 .py 源（并把 .js 转发给 drpy）
         </span>
         <span class="flex-1" />
         <button
@@ -5964,9 +5996,8 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <!-- 运行时状态就长在插件区：PC 的 drpy/pyrt 就是插件，装没装、跑没跑
-           与下面的插件列表是同一份数据，不需要单开一个分区。 -->
-      <RuntimeDepsPanel :plugins="plugins" />
+      <!-- 运行时状态不再单开一块（2026-11-27）：drpy / pyrt 就在下面的插件列表里，
+           状态胶囊右侧直接标 JS / PY，用户看一行就知道谁跑哪种源。 -->
 
       <!-- 插件源管理 -->
       <div class="mb-2 rounded-lg bg-white/[0.04] px-3 py-2" data-plugin-source>
@@ -6171,7 +6202,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div
-        v-for="p in plugins"
+        v-for="p in sortedPlugins"
         :key="p.id"
         class="flex flex-wrap items-center gap-2 border-b border-line py-1.5 last:border-0"
       >
@@ -6196,7 +6227,7 @@ onBeforeUnmount(() => {
           />
         </button>
 
-        <span class="w-20 shrink-0 text-xs">{{ p.name }}</span>
+        <span class="w-20 shrink-0 text-xs">{{ pluginLabel(p) }}</span>
         <span
           v-if="p.tool"
           class="rounded-full bg-card px-2 py-0.5 text-[11px] text-ink-3"
@@ -6206,6 +6237,20 @@ onBeforeUnmount(() => {
         </span>
         <span v-else class="rounded-full px-2 py-0.5 text-[11px]" :class="phaseClass(p.phase)">
           {{ phaseText(p.phase) }}
+        </span>
+        <!-- 运行时职责标识（2026-11-27）：drpy 跑 .js、pyrt 跑 .py 并转发 .js。
+             以前这块信息在列表上方另开一段显示，现在贴在状态胶囊右侧，一行看完。 -->
+        <span
+          v-if="runtimeBadge(p.id)"
+          class="rounded px-1.5 py-0.5 text-[10px] font-medium"
+          :class="p.phase === 'ready' || p.tool ? 'bg-ok/15 text-ok' : 'bg-card text-ink-3'"
+          :title="
+            runtimeBadge(p.id) === 'JS'
+              ? '执行 .js（drpy 方言）源'
+              : '执行 .py 源，并把 .js 转发给 drpy'
+          "
+        >
+          {{ runtimeBadge(p.id) }}
         </span>
         <span class="font-mono text-[11px] text-ink-3">
           {{ p.phase === 'ready' && p.port ? `127.0.0.1:${p.port}` : '—' }}
@@ -8473,16 +8518,18 @@ onBeforeUnmount(() => {
       <UpdateCenter @goto="gotoSelector" />
 
       <!-- ── 应用更新 ──
-        只在能装包的平台显示（PC / TV）。Web 端没有"安装包"这个概念，
-        显示一个永远灰着的按钮只会让用户困惑。
-        ★ 判据与导航项的 nativeOnly 必须同源，否则会出现"导航里有、点了没东西"
-        或者相反（门禁 tests/settings-nav-sync.test.ts 会拦住这种不一致）。
+        只在有"安装包"概念的平台显示（PC / TV / iOS 侧载 IPA）。
+        统一用平台身份判据 updPlatform !== 'web'：iOS 在 appUpdate.ts 的
+        currentPlatform() 里是独立 'ios' 身份（与 compat/shell.ts 对齐），
+        不再散落 `|| ios` 特例。Web 端没有安装包概念，显示灰按钮只会困惑。
+        ★ 判据与导航项的 nativeOnly 必须同源，否则会出现"导航里有、点了没东西"。
       -->
-      <template v-if="desktop || tvMode">
+      <template v-if="updPlatform !== 'web'">
       <div class="set-sub mt-3 border-t border-line pt-3">
         <span class="font-medium text-ink-2">应用更新源与高级设置</span>
         <span class="text-[11px] text-ink-3">
-          当前 v{{ appVersion }} · 清单里 {{ updPlatform === 'windows-x64' ? 'meow-pc' : 'meow-tv' }} 有更高版本时才提示
+          <template v-if="ios">当前 v{{ currentAppVersion() }} · 检测侧载商店源里的新版本（iOS 只提示，需到 LiveContainer / SideStore 更新）</template>
+          <template v-else>当前 v{{ appVersion }} · 清单里 {{ updPlatform === 'windows-x64' ? 'meow-pc' : 'meow-tv' }} 有更高版本时才提示</template>
         </span>
         <span class="flex-1" />
         <button
@@ -8521,10 +8568,15 @@ onBeforeUnmount(() => {
             </li>
           </ul>
           <div class="mt-2 flex items-center gap-2">
+            <!--
+              iOS 侧载：与应用更新弹框一致，点「更新」先弹通用的"发现新版本"，
+              再在弹框内点「更新」叠出 iOS 升级指引（两条可复制链接）。
+              所以这里 iOS 也走 openUpdDialog，而不是直接下载安装。
+            -->
             <button
               class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-dim disabled:opacity-60"
               :disabled="updBusy"
-              @click="downloadAndInstall()"
+              @click="ios ? openUpdDialog() : downloadAndInstall()"
             >
               更新
             </button>
@@ -8558,8 +8610,9 @@ onBeforeUnmount(() => {
         <!--
           更新源：TV/Web 读不到插件源（那是 Tauri 命令），必须能在这里手填。
           留空 = 内置 GitHub Release 源；备用源只在主源失败时才试。
+          ★ iOS 侧载走固定源（altstore-source.json），不提供手填。
         -->
-        <div class="mt-3 flex items-center gap-2">
+        <div v-if="!ios" class="mt-3 flex items-center gap-2">
           <span class="shrink-0 text-xs text-ink-3">更新源</span>
           <input
             v-model="updSourceInput"
@@ -8578,7 +8631,7 @@ onBeforeUnmount(() => {
             清除
           </button>
         </div>
-        <div class="mt-1 flex items-center gap-2">
+        <div v-if="!ios" class="mt-1 flex items-center gap-2">
           <span class="shrink-0 text-xs text-ink-3">备用源</span>
           <input
             v-model="updBackupInput"
@@ -8590,13 +8643,16 @@ onBeforeUnmount(() => {
             @change="saveUpdateSource()"
           />
         </div>
-        <p class="mt-1 text-[11px] text-ink-3">
+        <p v-if="!ios" class="mt-1 text-[11px] text-ink-3">
           令牌与 GitHub 加速在「网络与加速 → GitHub 加速」统一设置。自定义源失败时只试这里的备用源，
           不回落官方源。
         </p>
-        <p class="mt-1 text-[11px] text-ink-3">
+        <p v-if="!ios" class="mt-1 text-[11px] text-ink-3">
           清单地址取其中 <span class="font-mono">{{ updPlatform === 'windows-x64' ? 'packages.meow-pc' : 'packages.meow-tv' }}</span>
           一条，需允许跨域读取。
+        </p>
+        <p v-if="ios" class="mt-1 text-[11px] text-ink-3">
+          iOS 从固定的侧载商店源读取最新版本，检测到新版后给出 IPA 直链与源地址，复制后到 LiveContainer / SideStore 刷新即可。
         </p>
         <!--
           下载缓存：装完成后**不自动删**（安装器是异步读文件的，秒删可能让它读不到）。

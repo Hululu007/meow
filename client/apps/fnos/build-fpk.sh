@@ -131,14 +131,28 @@ install -m 0755 "$OUT/meowd" "$PKG/app/bin/meowd"
 # ★ 只声明 install_dep_apps 是不够的：那给的是**运行时**（node/python 可执行文件），
 #   而加载器代码本身（host.js / worker.js / pyrt.py + node_modules / vendor）
 #   必须打进 app/plugins/。缺了它们的表现是"依赖齐全、deps 显示 ok、
-#   但所有 .js/.py 源一律搜不到"——实测 1.2.22 的 plugins/ 里只有 danmu-api，
-#   所以那一版 fpk 的 JS/PY 源全是死的。
+#   但所有 .js/.py 源一律搜不到"——实测 1.2.22 / 1.2.24 的 plugins/ 里都只有
+#   danmu-api，所以那两版的 JS/PY 源全是死的。
 #
-# 载荷由 server/build-plugin-{drpy,pyrt}.ps1 产出到 server/build/plugins/<id>/。
-# CI 的 fpk.yml 必须在那之前先跑这两个脚本（本地 release.ps1 已包含）。
+# 载荷来源（2026-11-27 统一）：
+#   · drpy     ← server/build/plugins/drpy（build-plugin-drpy.ps1，纯 JS 跨平台）
+#   · pyrt     ← server/build/plugins/pyrt-<arch>（build-plugin-pyrt-linux.sh）
+#                pyrt 必须按目标架构打（vendor 里的 pycryptodome 是 .so），
+#                所以优先找带架构后缀的目录，找不到才退回不带后缀的（PC 版，
+#                带 Windows embeddable Python，在 linux 上跑不起来 → 告警）。
+case "${PLATFORM:-x86}" in
+    arm|aarch64) FPK_ARCH=aarch64 ;;
+    *)           FPK_ARCH=x86_64 ;;
+esac
 for _p in drpy pyrt; do
     _src="$SRC/server/build/plugins/$_p"
+    if [ "$_p" = pyrt ] && [ -d "$SRC/server/build/plugins/pyrt-$FPK_ARCH" ]; then
+        _src="$SRC/server/build/plugins/pyrt-$FPK_ARCH"
+    fi
     if [ -d "$_src" ]; then
+        if [ "$_p" = pyrt ] && [ "$_src" = "$SRC/server/build/plugins/pyrt" ]; then
+            echo "  ::warning::pyrt 载荷没有架构后缀（$FPK_ARCH）——用的是 PC 版（含 Windows python，linux 上跑不了）" >&2
+        fi
         cp -a "$_src" "$PKG/app/plugins/$_p"
         echo "  plugins/$_p: $(du -sh "$PKG/app/plugins/$_p" | cut -f1)"
     else

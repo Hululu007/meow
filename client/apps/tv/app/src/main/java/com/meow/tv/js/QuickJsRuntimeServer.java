@@ -51,15 +51,34 @@ public final class QuickJsRuntimeServer {
     private static volatile int port;
     private static ExecutorService pool;
 
+    /*
+     * 端内脚本运行时段位（19xxx，四端统一）：
+     *   19341         tv-node 模块（弹幕聚合）
+     *   19351..19370  tv-python 模块（pyrt，宿主从 19351 起探 20 个）
+     *   19381..19389  内置 QuickJS（本类）
+     *
+     * ★ 以前这里是 `new ServerSocket(0)` → 系统随机高位端口（Android 32768+），
+     *   每台设备都不同：日志对不上、排障要现查、policy 里也没法用固定地址描述。
+     *   改成"固定首选 + 顺延"，与 PC/fpk 的插件端口协商同一套路。
+     */
+    private static final int PORT_MIN = 19381;
+    private static final int PORT_TRIES = 9;
+
     private QuickJsRuntimeServer() {
     }
 
     /** 幂等启动。返回实际端口；已在跑就直接返回旧端口。失败返回 0。 */
     public static synchronized int start() {
         if (server != null && !server.isClosed()) return port;
-        try {
-            ServerSocket ss = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
-            port = ss.getLocalPort();
+        for (int i = 0; i < PORT_TRIES; i++) {
+            int p = PORT_MIN + i;
+            ServerSocket ss;
+            try {
+                ss = new ServerSocket(p, 50, InetAddress.getByName("127.0.0.1"));
+            } catch (Throwable busy) {
+                continue;
+            }
+            port = p;
             server = ss;
             pool = Executors.newFixedThreadPool(4, r -> {
                 Thread t = new Thread(r, "meow-jsrt");
@@ -71,11 +90,10 @@ public final class QuickJsRuntimeServer {
             accept.start();
             Log.i(TAG, "quickjs runtime listening 127.0.0.1:" + port);
             return port;
-        } catch (Throwable t) {
-            Log.w(TAG, "start failed: " + t);
-            port = 0;
-            return 0;
         }
+        Log.w(TAG, "start failed: " + PORT_MIN + ".." + (PORT_MIN + PORT_TRIES - 1) + " 全被占用");
+        port = 0;
+        return 0;
     }
 
     public static int port() {

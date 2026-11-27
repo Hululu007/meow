@@ -249,12 +249,40 @@ function isLoopback(req) {
 }
 
 /**
+ * 请求方是不是同一个私有网络里（Docker 网桥 / 内网）。
+ *
+ * <p>只在 {@code DRPY_TRUST_PRIVATE=1} 时启用，给容器部署用：pyrt 与 drpy
+ * 是两个容器，pyrt 的源地址是 172.x（docker 网桥），永远不是回环 —— 只放行
+ * 回环会让 pyrt 转发 .js 一律 403（实测 2026-11-27：升级镜像后 `.js` 源全报
+ * `drpy forward: HTTP Error 403`）。
+ *
+ * <p>★ 安全性前提：此时**必须**把宿主机端口绑到 127.0.0.1（compose 里已是
+ * `127.0.0.1:${DRPY_PORT}:9330`）。否则 Docker 的 DNAT 会让来自局域网的请求
+ * 也显示成网桥网关地址（172.x.0.1），私有网段判定就成了"谁都能执行脚本"。
+ */
+function isPrivatePeer(req) {
+  const a = (req.socket && req.socket.remoteAddress) || ''
+  if (a.startsWith('::ffff:')) return isPrivatePeer({ socket: { remoteAddress: a.slice(7) } })
+  if (a.startsWith('10.')) return true
+  if (a.startsWith('192.168.')) return true
+  const m = /^172\.(\d+)\./.exec(a)
+  if (m) {
+    const n = parseInt(m[1], 10)
+    return n >= 16 && n <= 31
+  }
+  return false
+}
+
+const TRUST_PRIVATE = (process.env.DRPY_TRUST_PRIVATE || '').trim() === '1'
+
+/**
  * 这个请求能不能执行脚本。
  *
- * <p>两种放行方式，任一即可：
+ * <p>三种放行方式，任一即可：
  * <ol>
  *   <li>带了正确的 {@code X-DRPY-Token}（跨机部署靠它）</li>
  *   <li>没配 token，且请求来自本机回环（本机浏览器/同机进程）</li>
+ *   <li>没配 token，{@code DRPY_TRUST_PRIVATE=1} 且请求来自私有网段（容器间）</li>
  * </ol>
  *
  * <p>为什么不再"无条件放行"：这个端点的请求头里能塞任意 JS 源码，
@@ -265,7 +293,8 @@ function authorized(req) {
     const got = (req.headers['x-drpy-token'] || '').trim()
     return got === DRPY_TOKEN
   }
-  return isLoopback(req)
+  if (isLoopback(req)) return true
+  return TRUST_PRIVATE && isPrivatePeer(req)
 }
 
 const server = http.createServer(async (req, res) => {

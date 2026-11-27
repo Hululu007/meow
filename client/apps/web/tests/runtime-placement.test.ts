@@ -61,8 +61,11 @@ describe('运行时状态放在哪', () => {
     expect(settings).toContain("{ id: 'runtime', label: '运行时' }")
     // 分区标题必须与导航 label 一致（settings-nav-sync 的判据）
     expect(settings).toContain('<h2 class="set-title">运行时</h2>')
-    // PC：插件区里显示 drpy/pyrt
-    expect(settings).toContain('<RuntimeDepsPanel :plugins="plugins" />')
+    // PC：运行时状态并入插件列表（状态胶囊右侧标 JS / PY），不再单开一块
+    // （2026-11-27 用户口径：去掉「脚本运行时」独立显示）
+    expect(settings).not.toContain('<RuntimeDepsPanel :plugins="plugins" />')
+    expect(settings).toContain('runtimeBadge')
+    expect(settings).toContain("drpy: 'JS', pyrt: 'PY'")
     // iOS 面板的「去配置」要能跳到 JS 运行时输入框
     expect(settings).toContain('data-jsruntime')
     expect(settings).toContain('@goto="gotoSelector"')
