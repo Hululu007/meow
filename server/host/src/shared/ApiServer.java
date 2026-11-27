@@ -7492,6 +7492,27 @@ public class ApiServer {
      */
     private static final TtlCache DANMAKU_SEARCH_CACHE = new TtlCache(32, 4_000_000L);
 
+    /**
+     * 弹弹play 三段式的**前两段**缓存（2026-11-27）。
+     *
+     * <p>为什么必须缓存：danmu_api 自带限流 {@code RATE_LIMIT_MAX_REQUESTS=3}
+     * （默认 1 分钟最多 3 次请求）。而我们取一集弹幕正好要打三次：
+     * <pre>
+     *   /api/v2/search/anime?keyword=…   → animeId
+     *   /api/v2/bangumi/{animeId}        → episodeId
+     *   /api/v2/comment/{episodeId}      → XML
+     * </pre>
+     * 也就是说**一集就把额度用光**，用户切到第二集立刻被限流 → 聚合源返回空 →
+     * 首屏只能退回 iqiyi 的几十条，12 秒后的复查也拿不到全量。
+     * 实测（.34）：三体 ep1 拿到 43,507 条，紧接着 ep2 只有 24 条。
+     *
+     * <p>前两段的结果对同一部剧是稳定的（animeId 不变、episodes 列表不变），
+     * 缓存后每集只剩 1 次 comment 请求，连续切集才不会被自己打限流。
+     * 30 分钟与弹幕缓存同寿命足够：追剧期间不会跨集变 animeId。
+     */
+    private static final TtlCache DM_ANIME_CACHE = new TtlCache(64, 2_000_000L);
+    private static final TtlCache DM_BANGUMI_CACHE = new TtlCache(64, 2_000_000L);
+
     private static void handleDanmakuSearch(HttpExchange ex) throws Exception {
         Map<String, String> q = query(ex);
         String name = q.getOrDefault("name", "").trim();
@@ -8474,26 +8495,28 @@ public class ApiServer {
      * 多源降级。
      */
     private static final String[] DANMAKU_HOSTS = {
-            // 弹弹play 官方（肥猫 m.j() 的协议端点；需要 AppId 签名时会 403）
-            "https://api.dandanplay.net",
             /*
-             * ★ 2026-11-27 清掉四个确认死掉的（每个都在 .34 上用 DoH 实测过）：
-             *   vercel.junce.dpdns.org → 402 DEPLOYMENT_DISABLED（Vercel 部署被停用）
-             *   danmu.junce.dpdns.org  → DNS 无记录
-             *   api.danmu.icu          → DNS 无记录
-             *   fc.lyz05.cn            → 403 Cloudflare 人机挑战，脚本过不去
+             * ★ 2026-11-27 二次清理（每个都在 .34 上直连实测过）：
+             *   vercel.junce.dpdns.org  → 402 DEPLOYMENT_DISABLED（Vercel 部署被停用）
+             *   danmu.junce.dpdns.org   → DNS 无记录
+             *   api.danmu.icu           → DNS 无记录
+             *   fc.lyz05.cn             → 403 Cloudflare 人机挑战，脚本过不去
+             *   api.dandanplay.net      → 403（带 UA/Referer 仍 403，要 AppId 签名）
+             *   dmku.hls.one            → /api/v2/search/anime 等三种路径全 404
+             *                             （只剩 nginx 默认页，服务已下线）
              *
-             * 留着它们只会：占 POOL 的线程槽（死 host 每次搜索都提交一个 future）、
-             * 每次把片名发给已经死掉的第三方服务器、日志刷一堆
-             * UnknownHostException 掩盖真问题。真正可用的聚合源是用户自建的
-             * danmu_api（`127.0.0.1:9321`），内置池只是兜底。
+             * 留着它们只会：占 POOL 的线程槽、每次搜索把片名发给死服务器、
+             * 日志刷一堆超时掩盖真问题。真正可用的聚合源是用户自建的
+             * danmu_api（`127.0.0.1:9321` / docker 的 danmu_api 服务），
+             * 内置池只是"没自建时"的兜底。
              */
-            // startling-pothos：503 usage_exceeded 是 Netlify 额度超限，
-            // 下个计费周期可能自愈，留作观察。
+            /*
+             * startling-pothos：503 usage_exceeded 是 Netlify **额度**超限，
+             * 下个计费周期会自愈 —— 它是唯一有恢复可能的兜底，保留。
+             * 额度耗尽期间靠 markDanmakuHost 的 60 分钟长冷却压住重试成本
+             * （见 markDanmakuHost：内置 host 与自建 host 用不同冷却）。
+             */
             "https://startling-pothos-0ee7cd.netlify.app",
-            // dmku.hls.one：根路径 200，但 `/api/v2/search/episodes` 404
-            // —— 走的不是弹弹play v2 协议，命中率待观察，留着成本很低。
-            "https://dmku.hls.one",
     };
 
     /**
@@ -8591,7 +8614,17 @@ public class ApiServer {
      * 永久拉黑会让用户重启后才恢复。冷却到期自然重试一次。
      */
     private static final Map<String, Long> DANMAKU_HOST_DOWN = new ConcurrentHashMap<>();
+    /** 自建/本机 host：网络抖一下很常见，5 分钟后就该再试。 */
     private static final long DANMAKU_HOST_COOLDOWN_MS = 5 * 60_000L;
+    /**
+     * 内置公共镜像的冷却（2026-11-27）。
+     *
+     * <p>内置池只剩 netlify 一个，而它挂的方式是**额度耗尽**（503 usage_exceeded），
+     * 恢复时间以"月"计、不是以"分钟"计。按 5 分钟冷却会每一集都去撞一次，
+     * 白白把首屏预算耗在一个确定不会好的地址上。
+     * 1 小时冷却的意义：额度真恢复了，最多一小时自动生效，不用等发版。
+     */
+    private static final long DANMAKU_HOST_COOLDOWN_BUILTIN_MS = 60 * 60_000L;
 
     /** 该 host 是否在冷却期（刚失败过，别再等它的超时） */
     private static boolean danmakuHostDown(String host) {
@@ -8608,10 +8641,18 @@ public class ApiServer {
     private static void markDanmakuHost(String host, boolean ok) {
         if (host == null || host.isEmpty()) return;
         // 本机服务（node 模块）冷启动时端口还没听，失败是暂时的，
-        // 进 5 分钟冷却会让"开机先播一集"永远拿不到弹幕
+        // 进冷却会让"开机先播一集"永远拿不到弹幕
         if (isLoopbackHost(host)) return;
-        if (ok) DANMAKU_HOST_DOWN.remove(host);
-        else DANMAKU_HOST_DOWN.put(host, System.currentTimeMillis() + DANMAKU_HOST_COOLDOWN_MS);
+        if (ok) {
+            DANMAKU_HOST_DOWN.remove(host);
+            return;
+        }
+        // 内置镜像多为"额度耗尽/部署停用"这类持续性故障，用长冷却；
+        // 自建地址是网络抖动，短冷却（见两个常量的注释）。
+        long ms = isCustomDanmakuHost(host)
+                ? DANMAKU_HOST_COOLDOWN_MS
+                : DANMAKU_HOST_COOLDOWN_BUILTIN_MS;
+        DANMAKU_HOST_DOWN.put(host, System.currentTimeMillis() + ms);
     }
 
     /**
@@ -11818,15 +11859,31 @@ public class ApiServer {
     private static String fetchDanmakuByProtocol(String host, String name, int episode) {
         try {
             // 1) 搜动画，关键词做几种归一化后逐个试（去括号年份 / 去第N季 / 去括号内容）
+            //    命中结果缓存 30 分钟：同一部剧切集时省掉这次请求（见 DM_ANIME_CACHE 注释）
+            String aKey = "an|" + host + "|" + name;
             JSONArray animes = null;
-            for (String kw : keywordVariants(name)) {
-                String u = host + "/api/v2/search/anime?keyword=" + URLEncoder.encode(kw, "UTF-8");
-                String find = fetchText(u, 12_000, DANMAKU_REFERER);
-                if (find == null || !find.trim().startsWith("{")) continue;
-                JSONArray a = new JSONObject(find).optJSONArray("animes");
-                if (a == null || a.length() == 0) continue;
-                animes = a;
-                break;
+            String aCached = DM_ANIME_CACHE.get(aKey);
+            if (aCached != null) {
+                try {
+                    animes = new JSONArray(aCached);
+                } catch (Exception ignored) {
+                    animes = null;
+                }
+            }
+            if (animes == null || animes.length() == 0) {
+                animes = null;
+                for (String kw : keywordVariants(name)) {
+                    String u = host + "/api/v2/search/anime?keyword=" + URLEncoder.encode(kw, "UTF-8");
+                    String find = fetchText(u, 12_000, DANMAKU_REFERER);
+                    if (find == null || !find.trim().startsWith("{")) continue;
+                    JSONArray a = new JSONObject(find).optJSONArray("animes");
+                    if (a == null || a.length() == 0) continue;
+                    animes = a;
+                    break;
+                }
+                if (animes != null && animes.length() > 0) {
+                    DM_ANIME_CACHE.put(aKey, animes.toString(), 30 * 60_000L);
+                }
             }
             if (animes == null) return null;
 
@@ -11839,7 +11896,23 @@ public class ApiServer {
              *   0 = 以片名开头，1 = 包含片名，2 = 不沾；同分取短名。
              * 先试最高分，失败再依次试最多 2 个备选（不把预算耗尽）。
              */
-            int[] order = pickAnimeOrder(animes, name);
+            int[] order = pickAnimeOrder(animes, name, episode);
+            /*
+             * 记下最终排序的前三名（片名 + 分 + 集数）。没有这行日志时，
+             * "为什么选了错的版本"只能靠弹幕条数反推 —— 2026-11-27 排查
+             * 「三体」拿到 24 条时就是靠人工猜的。一行日志省掉那次往返。
+             */
+            StringBuilder picks = new StringBuilder();
+            for (int k = 0; k < order.length; k++) {
+                JSONObject o = animes.optJSONObject(order[k]);
+                if (o == null) continue;
+                if (picks.length() > 0) picks.append(" | ");
+                picks.append(animeTitleOf(o)).append(" score=")
+                        .append(danmakuCandidateScore(name, o, episode))
+                        .append(" eps=").append(o.optInt("episodeCount", 0));
+            }
+            System.err.println("[danmaku] aggregator pick for [" + name + "] ep" + episode
+                    + ": " + picks);
             for (int idx : order) {
                 JSONObject o = animes.optJSONObject(idx);
                 if (o == null) continue;
@@ -11857,14 +11930,34 @@ public class ApiServer {
     /** 取某部番的某一集弹幕（弹弹play 三段的后两段）。 */
     private static String fetchDanmakuForAnime(String host, String animeId, int episode) {
         try {
-            String bg = fetchText(host + "/api/v2/bangumi/" + URLEncoder.encode(animeId, "UTF-8"),
-                    12_000, DANMAKU_REFERER);
-            if (bg == null) return null;
+            // bangumi（episodes 列表）同样缓存：它对同一 animeId 是稳定的，
+            // 缓存后切集只需打 comment 一次，避免撞 danmu_api 的 3 次/分钟限流。
+            String bKey = "bg|" + host + "|" + animeId;
+            String bg = DM_BANGUMI_CACHE.get(bKey);
+            if (bg == null) {
+                bg = fetchText(host + "/api/v2/bangumi/" + URLEncoder.encode(animeId, "UTF-8"),
+                        12_000, DANMAKU_REFERER);
+                if (bg == null) return null;
+                DM_BANGUMI_CACHE.put(bKey, bg, 30 * 60_000L);
+            }
             JSONObject bo = new JSONObject(bg).optJSONObject("bangumi");
             if (bo == null) return null;
             JSONArray eps = bo.optJSONArray("episodes");
             if (eps == null || eps.length() == 0) return null;
-            int idx = Math.max(0, Math.min(episode - 1, eps.length() - 1));
+            /*
+             * ★ 不能把越界集号夹到最后一集（2026-11-27 修）。
+             *
+             * 旧代码 `min(episode-1, len-1)`：用户看第 20 集、候选只有 15 集时
+             * 静默返回**第 15 集**的弹幕 —— 表现为"弹幕有，但一条都对不上画面"，
+             * 比"没有弹幕"更难排查（用户以为是我们时间轴错）。
+             * 现在越界直接失败，让上层换下一个候选（下一个候选可能是集数够的正片）。
+             */
+            if (episode < 1 || episode > eps.length()) {
+                System.err.println("[danmaku] anime " + animeId + " has " + eps.length()
+                        + " eps, want " + episode + " → skip candidate");
+                return null;
+            }
+            int idx = episode - 1;
             int epId = eps.optJSONObject(idx).optInt("episodeId", -1);
             if (epId < 0) return null;
             String xml = fetchText(host + "/api/v2/comment/" + epId
@@ -11880,26 +11973,192 @@ public class ApiServer {
     /**
      * 对搜索结果按片名打分，返回最多 3 个候选下标（优先正片）。
      *
-     * <p>打分规则与 {@link #fetchDanmakuByTemplate} 的候选打分保持一致，
-     * 避免同一部片在两条聚合路径上选出不同结果。
+     * <p><b>为什么不再只用「前缀/包含/短名」三档</b>（2026-11-27 实测）：
+     * danmu_api 的 `/api/v2/search/anime` 对「三体」会同时给出
+     * <pre>
+     *   三体(2023)【电视剧】 30 集   ← 用户要的
+     *   三体(2022)【动漫】   15 集   ← 名字一样长、同样"以片名开头"，旧排序随机胜出
+     *   我的三体 第四季(2024) 9 集   ← 另一部片子
+     *   三体(2016)【电影】   1 集
+     * </pre>
+     * 旧逻辑下前三者分数完全相同，靠"名字更短"选到动漫 → 弹幕只有 24 条且时间轴对不上。
+     * 现在把候选自带的 {@code type / episodeCount / startDate} 和片名里的
+     * 【类型】、from 来源一起纳入打分，见 {@link #danmakuCandidateScore}。
      */
-    private static int[] pickAnimeOrder(JSONArray animes, String name) {
-        String want = name.replace(" ", "").trim();
+    private static int[] pickAnimeOrder(JSONArray animes, String name, int wantEp) {
         int n = Math.min(animes.length(), 8);
         Integer[] idx = new Integer[n];
         for (int i = 0; i < n; i++) idx[i] = i;
         java.util.Arrays.sort(idx, (a, b) -> {
-            String na = animeTitleOf(animes.optJSONObject(a)).replace(" ", "").trim();
-            String nb = animeTitleOf(animes.optJSONObject(b)).replace(" ", "").trim();
-            int sa = animeTitleScore(na, want);
-            int sb = animeTitleScore(nb, want);
-            if (sa != sb) return Integer.compare(sa, sb);
-            return Integer.compare(na.length(), nb.length());
+            JSONObject oa = animes.optJSONObject(a);
+            JSONObject ob = animes.optJSONObject(b);
+            int sa = danmakuCandidateScore(name, oa, wantEp);
+            int sb = danmakuCandidateScore(name, ob, wantEp);
+            if (sa != sb) return Integer.compare(sb, sa);   // 分高在前
+            // 同分：名字短的在前面（剧名后面挂的字越少越可能是正片）
+            int la = candidateNameKey(animeTitleOf(oa)).length();
+            int lb = candidateNameKey(animeTitleOf(ob)).length();
+            if (la != lb) return Integer.compare(la, lb);
+            // 再同分：集数多的更可能是正片
+            return Integer.compare(ob == null ? 0 : ob.optInt("episodeCount", 0),
+                    oa == null ? 0 : oa.optInt("episodeCount", 0));
         });
         int m = Math.min(3, n);
         int[] out = new int[m];
         for (int i = 0; i < m; i++) out[i] = idx[i];
         return out;
+    }
+
+    /**
+     * 单个候选的匹配分（越大越好）。出局返回 {@code -1000}。
+     *
+     * <p>维度与权重（每条都对应一次实测误判）：
+     * <ul>
+     *   <li><b>片名档位</b>：相等 120 / 前缀 90 / 包含 55 / 反向包含 30。
+     *       「后宫甄嬛传」是反向包含（我们传的是「甄嬛传」），不能和相等同分。</li>
+     *   <li><b>非正片</b>（解说/预告/花絮/揭秘/规则怪谈/晚会…）−260：这些站会给同名的综艺、
+     *       切片、解说，集数少且时间轴完全不对。</li>
+     *   <li><b>版本变体</b>（美版/日版/韩版/翻拍/新版）−80：它们是**另一个剪辑**，
+     *       留着会让「甄嬛传（美版）」凭"相等"压过真正的「后宫甄嬛传」。</li>
+     *   <li><b>集数覆盖</b>：候选集数 &lt; 请求集号 → −320（拿不到这一集，别当首选）；
+     *       覆盖得上 +45。这条同时修掉"用户看第 20 集、候选只有 15 集"被静默夹到最后一集的问题。</li>
+     *   <li><b>类型先验</b>：电视剧 +60 / 动漫 +20 / 电影 −60 / 综艺 −120。
+     *       取舍说明：真人剧占绝大多数，所以电视剧优先；看动漫的用户若被剧版抢走，
+     *       靠"集数覆盖"（动漫往往几百集、真人剧几十集）或手动搜索纠正。</li>
+     *   <li><b>startDate 不作为主判据</b>：三体的正片是 2023 剧版而不是 2016 电影，
+     *       「最早即正片」在跨形态同名作品上不成立；只有类型、集数都打平时才用于稳定排序。</li>
+     * </ul>
+     */
+    private static int danmakuCandidateScore(String clean, JSONObject anime, int wantEp) {
+        if (anime == null) return -1000;
+        String rawTitle = animeTitleOf(anime);
+        String a = candidateNameKey(clean);
+        String b = candidateNameKey(rawTitle);
+        if (a.isEmpty() || b.isEmpty()) return -1000;
+
+        int score;
+        if (a.equals(b)) score = 120;
+        else if (b.startsWith(a)) {
+            /*
+             * 「我们的名字」是候选的前缀，但要区分两种：
+             *   三体·周年纪念版   → 同剧精编，留在 90 档
+             *   甄嬛传之鸾凤还巢 → **衍生剧**（另一个故事、另一个时间轴）
+             * 实测（2026-11-27）：不区分时「甄嬛传之鸾凤还巢」(12 集) 以 195 分
+             * 压过正片「后宫甄嬛传」(76 集, 160 分) —— 用户拿到的是衍生剧的弹幕。
+             */
+            score = isDerivativeRest(b.substring(a.length())) ? 55 : 90;
+        } else if (b.contains(a)) score = 55;
+        else if (a.contains(b) && b.length() >= 2) {
+            /*
+             * 反向包含：「后宫甄嬛传」这种**多了前缀**的命名，与"包含"同档 55。
+             * 原来给 30，会让它输给任何带前缀的衍生剧；同档后靠
+             * 「名字更短 + 集数更多」两条 tiebreak 决出正片。
+             */
+            score = 55;
+        } else {
+            // 别名/翻译名差异不做硬杀，但完全不沾的不该进前三
+            int common = longestCommonLen(a, b);
+            if (common < Math.max(2, Math.min(4, a.length()))) return -1000;
+            score = common * 6;
+        }
+
+        if (isSpinoffAnime(rawTitle)) score -= 260;
+        if (isVariantAnime(rawTitle)) score -= 80;
+
+        int cnt = anime.optInt("episodeCount", 0);
+        if (cnt > 0) score += cnt < wantEp ? -320 : 45;
+
+        String type = anime.optString("type", "");
+        if (type.isEmpty()) type = animeTypeFromTitle(rawTitle);
+        if ("电视剧".equals(type)) score += 60;
+        else if ("动漫".equals(type)) score += 20;
+        else if ("电影".equals(type)) score -= 60;
+        else if ("综艺".equals(type)) score -= 120;
+        return score;
+    }
+
+    /** 候选名去掉 `【类型】`、`from 平台` 这类元信息，保留年份供比较键处理。 */
+    private static String stripAnimeMeta(String raw) {
+        if (raw == null) return "";
+        String t = raw;
+        int i = t.indexOf("【");
+        if (i > 0) t = t.substring(0, i);
+        int j = t.indexOf(" from ");
+        if (j > 0) t = t.substring(0, j);
+        return t.trim();
+    }
+
+    /**
+     * 候选名的比较键。
+     *
+     * <p>**不能直接复用 {@link #normTitleKey}**：它会把任意括号内容一起删掉，
+     * 「甄嬛传（美版）(2018)」于是变成「甄嬛传」，与目标串**完全相等**，
+     * 反而压过真正的「后宫甄嬛传」。这里只删**年份括号**和季数，
+     * 版本标记（美版/粤语版）留在键里，让包含关系和变体惩罚都能生效。
+     */
+    private static String candidateNameKey(String title) {
+        if (title == null) return "";
+        String t = stripAnimeMeta(title);
+        t = t.replaceAll("[\\(（]\\s*(?:19|20)\\d{2}\\s*[\\)）]", "");
+        t = t.replaceAll("第\\s*[一二三四五六七八九十\\d]+\\s*[季部]", "");
+        t = t.replaceAll("(?i)\\bseason\\s*\\d+\\b", "");
+        t = t.replaceAll("[《》\\[\\]【】:：·,，.。!！?？\\-—_/\\\\|\\s]", "");
+        return t.trim();
+    }
+
+    /** 标题里的【类型】（danmu_api 的 animeTitle 带这个标记）。 */
+    private static String animeTypeFromTitle(String raw) {
+        if (raw == null) return "";
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("【([^】]{1,6})】").matcher(raw);
+        return m.find() ? m.group(1) : "";
+    }
+
+    /**
+     * 明显不是正片：解说/预告/花絮/切片/盘点这类。
+     * 只用于**降权**，不硬杀（片名本身可能真含这些词，极少）。
+     */
+    private static boolean isSpinoffAnime(String raw) {
+        if (raw == null) return false;
+        String[] bad = {"解说", "预告", "花絮", "特辑", "揭秘", "规则怪谈", "学者",
+                "晚会", "混剪", "盘点", "速看", "合集", "片段", "彩蛋", "吐槽",
+                "影评", "反应", "reaction", "幕后", "采访", "发布会"};
+        for (String b : bad) if (raw.contains(b)) return true;
+        return false;
+    }
+
+    /** 同名但不同剪辑的版本（美版/日版/翻拍…）：时间轴大概率对不上。 */
+    private static boolean isVariantAnime(String raw) {
+        if (raw == null) return false;
+        String[] v = {"美版", "日版", "韩版", "泰版", "港版", "台版", "翻拍", "新版", "重制版"};
+        for (String s : v) if (raw.contains(s)) return true;
+        return false;
+    }
+
+    /**
+     * 「我们的片名」之后剩余的那段是不是**衍生剧**标记（另一个故事，不是同一部片）。
+     *
+     * <p>只看"之/番外/外传/续集/前传"这类强标记；「·周年纪念版」这类同剧精编不在此列，
+     * 它留在高分组是正确的（集数接近、内容同一部）。
+     */
+    private static boolean isDerivativeRest(String rest) {
+        if (rest == null || rest.isEmpty()) return false;
+        if (rest.startsWith("之")) return true;
+        String[] marks = {"番外", "外传", "续集", "前传", "特别篇", "衍生"};
+        for (String m : marks) if (rest.contains(m)) return true;
+        return false;
+    }
+
+    /** 最长公共子串长度（a/b 都是已归一的名字，长度通常 < 30，O(n²) 足够）。 */
+    private static int longestCommonLen(String a, String b) {
+        int best = 0;
+        for (int i = 0; i < a.length(); i++) {
+            for (int j = i + best + 1; j <= a.length(); j++) {
+                if (b.contains(a.substring(i, j))) best = j - i;
+                else break;
+            }
+        }
+        return best;
     }
 
     /** dandanplay 搜索结果的标题字段（不同镜像可能用 animeTitle / title / name）。 */
