@@ -4,7 +4,7 @@
   "capability": "runtime",
   "required": false,
   "fatal": false,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "exec": "node",
   "execFallback": ["../node/node.exe", "../node/node", "node.exe"],
   "args": ["server.js"],

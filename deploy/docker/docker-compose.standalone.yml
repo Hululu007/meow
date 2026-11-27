@@ -60,7 +60,7 @@ services:
 
   # drpy 运行时（.js 源）。独立版本线，别跟 MEOW_VERSION 走。
   drpy:
-    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.24}}
+    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.25}}
     container_name: meow-drpy
     ports:
       - "127.0.0.1:${DRPY_PORT:-30013}:9330"

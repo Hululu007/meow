@@ -113,7 +113,7 @@ services:
     #   实测远端只有 0.9.2x 与 latest，没有 0.1.x（那是插件 manifest 里的
     #   代码版本，两条线本来就不同，别再混用）。
     #   升级 drpy 时：改这里 + .env.example，再跑 build-push-docker.ps1。
-    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.24}}
+    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.25}}
     container_name: meow-drpy
     ports:
       - "127.0.0.1:${DRPY_PORT:-30013}:9330"

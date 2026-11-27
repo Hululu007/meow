@@ -4680,6 +4680,20 @@ public class ApiServer {
                     + " → " + (ok ? "脚本源恢复参与" : "本轮起跳过全部脚本源"));
             System.err.println("[search] jsRuntime probe " + (ok ? "UP" : "DOWN"));
         }
+        if (ok && scriptRuntimeFails.get() > 0) {
+            /*
+             * 探活通过就把熔断计数清零（2026-11-27）。
+             *
+             * 为什么不能只靠"成功调用"闭合：熔断期间超时被压到
+             * SCRIPT_RUNTIME_FAST_TIMEOUT_MS（3 秒），而冷启动 / 慢源在这个窗口里
+             * 几乎不可能成功 → 计数永远回不到 0，整个脚本运行时被永久按"快失败"
+             * 处理。实测 OECT 1.2.25：runtime py=yes、/health 正常，但所有
+             * .js/.py 源一律超时，只有 jar 源出结果。运行时活着就该立刻闭合。
+             */
+            scriptRuntimeFails.set(0);
+            scriptRuntimeOks.set(0);
+            core.LogBuffer.info("search", "jsRuntime 探活通过 → 熔断复位");
+        }
         rtHealthy = ok;
         return ok;
     }

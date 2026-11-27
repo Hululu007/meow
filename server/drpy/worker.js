@@ -14,7 +14,27 @@
 
 const { parentPort } = require('worker_threads')
 
+/*
+ * 启动即预热（2026-11-27）。
+ *
+ * 以前 host.js 是**第一单任务**才 require 的，于是那一单要同时做完
+ * 「编译 host.js + 解析 cheerio/sync-fetch/crypto-js + 抓源站」三件事，
+ * 全部挤在 server.js 的 TASK_TIMEOUT（默认 6s）里。x86 PC 上勉强够，
+ * **ARM NAS / 电视盒子上必然超时** → 任务被判超时并 retire(kill) 掉这个 worker
+ * → 换上新 worker 又是冷的 → 下一单再超时，形成死循环（实测 OECT 1.2.25
+ * 升级后所有 .js 源报 `drpy task timeout (worker killed)`，jar 源照常）。
+ *
+ * 所以 worker 一被创建就把 host 加载好：之后每个任务只剩"抓站"这一件事，
+ * 与 PC 上的耗时一致。
+ */
 let host = null
+try {
+  host = require('./host')
+} catch (e) {
+  // 预热失败不致命：真实任务会再 require 一次并返回带 stack 的错误
+  host = null
+}
+
 const cache = new Map()
 
 function getSpider(api, ext) {
