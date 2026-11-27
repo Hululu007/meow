@@ -366,6 +366,20 @@ function scheduleAutoUpdateCheck() {
         })
       }, AUTO_CHECK_DELAY_MS)
     }
+    /*
+     * iOS 侧载 IPA：同一套静默检查 + 待提示弹框（弹框特化成"给链接"）。
+     * 复用 autoCheckApp 开关；静默检查内部尊重"稍后"记过的版本 —— 用户点过
+     * 稍后就不会每次启动都弹（skip 记在 meow.update.skipVersion）。
+     */
+    if (cap === 'ios' && getPrefs().autoCheckApp) {
+      autoUpdateTimer = window.setTimeout(() => {
+        void runUpdateCheck({ silent: true }).then((up) => {
+          if (!up) return
+          promptPending.value = true
+          tryPromptUpdate()
+        })
+      }, AUTO_CHECK_DELAY_MS)
+    }
     // 模块 / 插件 / fpk 状态：24h 节流、只更新状态，不弹框、不自动下载。
     // 30 秒后再跑，避开首屏和上面那条检查。
     //

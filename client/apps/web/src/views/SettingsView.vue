@@ -147,7 +147,7 @@ import {
 } from '@/stores/updateCenter'
 // 片库的配置与增删改已挪到「片库」页本身（设置页只管应用行为，
 // 不管内容来源）；这里只剩离线缓存的列表与删除。
-import { controlCache, listCache } from '@/api/library'
+import { controlCache, invalidateTranscodeProbe, listCache } from '@/api/library'
 import { fetchHealthState, probeSites, resetHealth, setSitesDisabled } from '@/api/health'
 import type { Site } from '@/api/types'
 import { listFavorites } from '@/stores/favorites'
@@ -4724,6 +4724,12 @@ async function install(id: string) {
     await refreshDesktopBase()
     syncApiUrlFromRuntime()
     await store.boot()
+    /*
+     * 装的是 ffmpeg 插件时要让转码能力缓存立刻失效（2026-11-27）。
+     * 否则播放页在装插件前探到的 available=false 会被 30 秒 TTL 沿用，
+     * 用户装完回到播放页仍然看到"本端不支持转码"——明明已经装好了。
+     */
+    invalidateTranscodeProbe()
   } catch (e: any) {
     const msg = e?.message || String(e)
     // 取消不算错误

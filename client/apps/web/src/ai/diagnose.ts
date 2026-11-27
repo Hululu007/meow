@@ -22,7 +22,7 @@
 
 export type Confidence = 'high' | 'medium' | 'low'
 export type Severity = 'blocking' | 'degraded' | 'info'
-export type EvidenceKind = 'hls' | 'player' | 'network' | 'backend' | 'style'
+export type EvidenceKind = 'hls' | 'player' | 'network' | 'backend' | 'style' | 'search'
 
 /** 建议动作。**必须是前端真能执行的**，未知值一律降级成 none（§2.8）。 */
 export type SuggestAction =
@@ -111,9 +111,26 @@ export interface DiagSources {
   parse?: number | string
   /**
    * 「我们这一跳」失败的原因（转码/代理）。播放页把 hopError 传进来。
-   * 2026-11-27：PlayView 已按此传参，缺字段时 vue-tsc 报 TS2353，发版链红。
+   *
+   * ★ 2026-11-27：不加这个字段时，「iOS 端没有 ffmpeg」只能从"看门狗到期"
+   *   倒推成 NETWORK_TIMEOUT（置信度 high），把用户引向"换线路"——而片库
+   *   场景没有线路可换，换一百次也一样。
    */
   hopError?: string | null
+  /**
+   * 最近一次聚合搜索的规模（2026-11-27）。
+   *
+   * <p>只在"刚搜过"时有（`window.__meowSearchStats`，10 分钟内有效）。
+   * 用来区分「源全失败」与「确实没这部片」——两者对用户的建议完全相反。
+   */
+  search?: {
+    wd: string
+    groups: number
+    hits: number
+    total?: number
+    returned?: number
+    count?: number
+  } | null
 }
 
 /** 从浏览器全局读取证据。任何一项缺失都不报错——诊断要能降级工作。 */
@@ -121,11 +138,30 @@ export function collectSources(extra: Partial<DiagSources> = {}): DiagSources {
   const w = window as unknown as Record<string, any>
   const dbg = (w.__playerDebug || null) as PlayerDebug | null
   const diag = w.__meowDiag || null
+  /*
+   * 最近一次聚合搜索的规模（meow_search 写入，10 分钟内有效）。
+   * 过期的不带上：否则用户半小时后问"为什么播不了"，还会拿到一次旧搜索的结论。
+   */
+  const rawSearch = w.__meowSearchStats as
+    | { wd?: string; groups?: number; hits?: number; total?: number; returned?: number; count?: number; at?: number }
+    | undefined
+  const search =
+    rawSearch && Date.now() - Number(rawSearch.at || 0) < 10 * 60_000
+      ? {
+          wd: String(rawSearch.wd || ''),
+          groups: Number(rawSearch.groups || 0),
+          hits: Number(rawSearch.hits || 0),
+          total: rawSearch.total,
+          returned: rawSearch.returned,
+          count: rawSearch.count,
+        }
+      : null
   return {
     player: dbg,
     hlsError: (dbg?.lastError as string | null) ?? null,
     netFail: diag?.netFail ? diag.netFail() : [],
     errors: diag?.errors ? diag.errors() : [],
+    search,
     route: location.hash || '',
     ...extra,
   }
@@ -164,6 +200,38 @@ function hasText(hlsErr: string | null | undefined, ...needles: string[]): boole
 /** 后端日志里是否有匹配项 */
 function backendHas(s: DiagSources, re: RegExp): boolean {
   return (s.backendLogs || []).some((l) => re.test(l.text || ''))
+}
+
+/** 命中某个模式的后端日志条数（判"成批出现"用它，见 SOURCES_MOSTLY_BROKEN）。 */
+function countBackend(s: DiagSources, re: RegExp): number {
+  return (s.backendLogs || []).filter((l) => re.test(l.text || '')).length
+}
+
+/**
+ * 本端没有转码能力（iOS / 没装 ffmpeg 的端）。
+ *
+ * <p>判据两条，任一条成立即可（2026-11-27 补第二来源）：
+ *   · hopError：我们这一跳自己失败的原因，比从看门狗倒推可靠；
+ *   · 后端日志里转码任务留下的 `[no_ffmpeg]`：有些路径（片库预判、repair）
+ *     只走日志不走 hopError，只看前者会漏。
+ * 关键词沿用后端 502 原文与前端守卫文案，改文案时两边一起改。
+ */
+function isTranscodeMissing(s: DiagSources): boolean {
+  const h = s.hopError || ''
+  if (/找不到\s*ffmpeg|ffmpeg\s*不可用|ffmpeg.{0,12}(未配置|没有)/i.test(h)) return true
+  // 后端 noteFail 写的是 `[no_ffmpeg] 找不到 ffmpeg（policy/PATH/常见路径都没有）`
+  return backendHas(s, /\[no_ffmpeg\]|找不到\s*ffmpeg|ffmpeg NOT found/i)
+}
+
+/**
+ * 转码拉流失败（源站侧）：源超时 / 403 / 源文件坏。
+ *
+ * <p>这类失败**换线路有用、等没用**，但用户看到的是"转码失败"，
+ * 直觉是"设备不行/再等等"。后端现在会把 code 写进日志（`[source_timeout]` 等），
+ * 诊断据此给"换线路"而不是"换设备"。
+ */
+function isTranscodeSourceFail(s: DiagSources): boolean {
+  return backendHas(s, /\[(source_timeout|source_http|bad_source|short_output)\]/)
 }
 
 function firstBackend(s: DiagSources, re: RegExp): string {
@@ -224,6 +292,27 @@ const RULES: Rule[] = [
     }),
   },
   {
+    /*
+     * 本端没有转码能力（iOS / 桌面 Safari / 未装插件的 PC）。
+     *
+     * ★ 2026-11-27 用户实报：片库的扩展名预判与直连失败兜底会直接去起转码，
+     *   后端回 502「找不到 ffmpeg」；起播永远不成立 → 20 秒看门狗到期 →
+     *   被判成 NETWORK_TIMEOUT（high），诊断卡建议"换一条线路"。片库根本没有
+     *   线路可换，用户按建议点多少次都一样。
+     *   排在 NETWORK_TIMEOUT 之前，并让后者与它**互斥**（否则两条同时命中会
+     *   把置信度降档，而这里的事实是确定的）。
+     */
+    code: 'TRANSCODE_UNAVAILABLE',
+    severity: 'blocking',
+    confidence: 'high',
+    match: isTranscodeMissing,
+    detail: (s) => `本端没有转码能力：${(s.hopError || '').slice(0, 90)}`,
+    suggestion: () => ({
+      action: 'none',
+      text: '这个格式需要转码，而当前设备没有转码能力（iOS 不能起子进程；PC 需装 ffmpeg 插件）。换 MP4/HLS 源，或用装了 ffmpeg 的端播放。',
+    }),
+  },
+  {
     // 编码不支持：hls 没有网络错误，但 video.error.code = 4（MKV/HEVC 常见）
     code: 'CODEC_UNSUPPORTED',
     severity: 'blocking',
@@ -235,19 +324,45 @@ const RULES: Rule[] = [
       s.hlsError
         ? `${s.hlsError}：浏览器不支持这个编码`
         : '视频元素报告 MEDIA_ERR_SRC_NOT_SUPPORTED，且无网络错误',
-    suggestion: () => ({
-      action: 'transcode',
-      text: '当前浏览器解不了这个编码（多为 MKV / HEVC）。可以转码后再播——转码是分钟级任务，要等一会儿。',
-      confirm: true,
-    }),
+    suggestion: (s) =>
+      isTranscodeMissing(s)
+        ? {
+            // 没有 ffmpeg 时"转码"这个按钮点了必然失败，别再给（2026-11-27）
+            action: 'none',
+            text: '当前内核解不了这个编码，而本端没有转码能力。换 MP4/H.264 源，或用装了 ffmpeg 的端播放。',
+          }
+        : {
+            action: 'transcode',
+            text: '当前浏览器解不了这个编码（多为 MKV / HEVC）。可以转码后再播——转码是分钟级任务，要等一会儿。',
+            confirm: true,
+          },
+  },
+  {
+    /*
+     * 转码拉流失败（源站侧）。排在 NETWORK_TIMEOUT 之前：两者都会"起播超时"，
+     * 但"后端 ffmpeg 拉不到流"和"你的网络慢"的处置完全不同（前者换线路，
+     * 后者换网络/等一等）。
+     */
+    code: 'TRANSCODE_SOURCE_FAIL',
+    severity: 'blocking',
+    confidence: 'high',
+    match: (s) => !isTranscodeMissing(s) && isTranscodeSourceFail(s),
+    detail: (s) => {
+      const t = firstBackend(s, /\[(source_timeout|source_http|bad_source|short_output)\]/)
+      return `后端转码拉流失败：${t.slice(0, 110)}`
+    },
+    suggestion: (s) =>
+      lineSuggestion(s, '转码时后端拉不到源站（超时/403/源不完整），换一条线路，不要反复重试同一条。'),
   },
   {
     code: 'NETWORK_TIMEOUT',
     severity: 'blocking',
     confidence: 'high',
     match: (s) =>
-      hasText(s.hlsError, 'manifestLoadTimeOut', 'fragLoadTimeOut', 'levelLoadTimeOut') ||
-      (!!s.watchdogFired && (s.player?.readyState ?? 0) < 3),
+      !isTranscodeMissing(s) &&
+      !isTranscodeSourceFail(s) &&
+      (hasText(s.hlsError, 'manifestLoadTimeOut', 'fragLoadTimeOut', 'levelLoadTimeOut') ||
+        (!!s.watchdogFired && (s.player?.readyState ?? 0) < 3)),
     detail: (s) =>
       s.hlsError ? `${s.hlsError}：请求超时` : `起播看门狗到期，readyState=${s.player?.readyState ?? 0}`,
     suggestion: (s) => lineSuggestion(s, '这个源响应太慢，起播超时。换一条线路通常就好了。'),
@@ -298,6 +413,60 @@ const RULES: Rule[] = [
     suggestion: () => ({
       action: 'open_logs',
       text: '后端拦下了跨域请求。如果是自部署，检查 policy.json 的 corsOrigins。',
+    }),
+  },
+  {
+    /*
+     * 聚合搜索一条都没搜到（2026-11-27，AI 面板"为什么什么都搜不到"）。
+     *
+     * 判据要有"参与源数"才成立：只有真的跑了源、且 0 条结果才算。
+     * 光看"结果空"会把"关键词不对"也算进来，而这两种处置完全相反。
+     */
+    code: 'SEARCH_ALL_EMPTY',
+    severity: 'degraded',
+    confidence: 'medium',
+    match: (s) => !!s.search && s.search.groups === 0 && (s.search.total ?? 0) > 0,
+    detail: (s) => {
+      const x = s.search!
+      const ret = x.returned ?? 0
+      const tot = x.total ?? 0
+      return `搜索「${x.wd}」：参与 ${tot} 个源，返回 ${ret} 个，结果 0 条`
+    },
+    suggestion: (s) => {
+      const x = s.search!
+      const ret = x.returned ?? 0
+      const tot = x.total ?? 0
+      // 多数源没返回 → 是"源/运行时/网络"的问题；都返回了 → 是"片名"的问题
+      const mostlyMissing = tot > 0 && ret < Math.max(1, Math.floor(tot * 0.5))
+      return mostlyMissing
+        ? {
+            action: 'open_logs',
+            text: `大部分源没返回（${ret}/${tot}）。先看日志里有没有"源不可用/超时"，再试「设置 → 运行时」重启脚本运行时，或更新源包。`,
+          }
+        : {
+            action: 'none',
+            text: '源都正常返回了，但没有这部片。换个片名（去掉副标题/季数）或换个关键词再搜。',
+          }
+    },
+  },
+  {
+    /*
+     * 多个源在本机跑不起来（2026-11-27）。
+     *
+     * 判据是后端日志里成批出现的"源不可用/实例化失败"——典型原因是
+     * 源包与当前构建不匹配（dex2jar 的 VerifyError / 缺类）或脚本运行时没起来。
+     * 少量出现是正常的（真有站点坏了），≥5 条才判"整体不可用"。
+     */
+    code: 'SOURCES_MOSTLY_BROKEN',
+    severity: 'blocking',
+    confidence: 'medium',
+    match: (s) => countBackend(s, /源不可用|实例化失败|ClassNotFoundException|VerifyError/) >= 5,
+    detail: (s) =>
+      `${countBackend(s, /源不可用|实例化失败|ClassNotFoundException|VerifyError/)} 条"源不可用"记录：`
+      + firstBackend(s, /源不可用|实例化失败|ClassNotFoundException|VerifyError/).slice(0, 90),
+    suggestion: () => ({
+      action: 'open_logs',
+      text: '多个源在本机加载失败（多为源包与当前构建不匹配，或脚本运行时没起来）。到「设置 → 运行时」重启运行时，仍不行就换一份源包重新导入。',
     }),
   },
   {
@@ -356,6 +525,21 @@ export function diagnose(s: DiagSources): Diagnosis {
       evidence.push({ kind: 'backend', detail: `[${line.tag || line.level}] ${line.text}` })
     }
   }
+  // 「我们这一跳」的原因单独留证：它是 TRANSCODE_UNAVAILABLE 的唯一判据，
+  // 也是用户报 bug 时唯一能说明"不是网络问题"的一行
+  if (s.hopError) {
+    evidence.push({ kind: 'backend', detail: `本端失败原因：${s.hopError.slice(0, 120)}` })
+  }
+  if (s.search) {
+    evidence.push({
+      kind: 'search',
+      detail:
+        `搜索「${s.search.wd}」：命中 ${s.search.hits} 部 / ${s.search.groups} 组`
+        + (s.search.total != null
+          ? `，源返回 ${s.search.returned ?? '?'}/${s.search.total}`
+          : ''),
+    })
+  }
   if (s.errors?.length) {
     evidence.push({ kind: 'style', detail: `JS 错误 ${s.errors.length} 条：${s.errors[0]?.message?.slice(0, 80)}` })
   }
@@ -410,6 +594,7 @@ export const CAUSE_LABEL: Record<string, string> = {
   HLS_RELATIVE_404: '分片地址 404',
   CODEC_UNSUPPORTED: '编码不支持',
   NETWORK_TIMEOUT: '网络超时',
+  TRANSCODE_UNAVAILABLE: '本端无法转码',
   PARSE_REQUIRED: '需要解析器',
   SOURCE_EMPTY_LIST: '源已失效',
   DANMAKU_ONLY: '仅弹幕缺失',

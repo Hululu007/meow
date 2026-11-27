@@ -51,7 +51,12 @@ const TOOL_IMPL = {
       keyword: a.keyword ? String(a.keyword) : undefined,
       minutes: typeof a.minutes === 'number' ? a.minutes : undefined,
       limit: typeof a.limit === 'number' ? a.limit : undefined,
+      // source=file：读后端落盘文件（含重启前的记录），环形缓冲里没有那段时间
+      source: a.source === 'file' ? 'file' : undefined,
+      sinceId: typeof a.sinceId === 'number' ? a.sinceId : undefined,
     }),
+  // 转码任务清单：只读（不会起/停任务），外部 AI 查"为什么一直转不完"用
+  meow_transcode: () => tools.meowTranscode(),
   meow_diagnose: () => tools.meowDiagnose(),
   meow_search: (a: Record<string, unknown>) => tools.meowSearch(String(a.keyword ?? ''), {
     limit: typeof a.limit === 'number' ? a.limit : undefined,

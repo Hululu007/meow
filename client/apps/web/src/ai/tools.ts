@@ -85,7 +85,7 @@ export interface MeowState {
   degraded: Array<{ site: string; failures?: number; lastError?: string }>
   disabled: string[]
   /** 最近的 warn/error（最多 3 条）。全量日志用 meow_logs 按需取 */
-  logs: Array<{ level: string; tag?: string; text: string }>
+  logs: Array<{ level: string; tag?: string; text: string; count?: number }>
   /** 采样窗口内各级别条数（info/warn/error） */
   logCounts?: Record<string, number>
   /** 可用的日志模块标签 —— meow_logs 的 tag 参数就从这里选 */
@@ -93,10 +93,36 @@ export interface MeowState {
   /** 日志不可用的原因（旧后端无 /api/logs 时给出） */
   logHint?: string
   /**
+   * 被环形缓冲挤掉的历史条数（2026-11-27）。
+   *
+   * >0 时 AI **不能**说"日志里只有这些"——更早的已经丢了。
+   * 这一条是"诊断结论别过度自信"的硬约束，和 memory.availMB 同性质。
+   */
+  logDropped?: number
+  /** 当前日志级别（MEOW_LOG_LEVEL，默认 info；debug 时才有逐站打印） */
+  logLevel?: string
+  /** 落盘文件路径：重启后的现场在那边（AI 读不到文件，可以指给用户） */
+  logFile?: string
+  /**
    * 进程内存（iOS 壳的 /api/health 带 rssMB/memAvailMB 时才出现）。
    * availMB < 200 时优先怀疑内存压力导致的后台被杀，而不是运行时坏了。
    */
   memory?: { rssMB: number; availMB: number }
+  /**
+   * 线程池水位 + 上次搜索耗时（2026-11-27）。
+   *
+   * <p>「点什么都慢」最常见的原因是请求池被占满（实测 12 个并发搜索后
+   * /api/health 从 1ms 涨到 9.1s）。active 接近 max 或 queue>0 就是硬证据，
+   * AI 不用再猜"是不是后端卡了"。旧后端没有这些字段（整组缺失）。
+   */
+  pool?: {
+    active: number
+    queue: number
+    max: number
+    searchActive: number
+    searchQueue: number
+    lastSearchMs: number
+  }
   route: string
 }
 
@@ -131,6 +157,7 @@ export async function meowState(): Promise<ToolResult<MeowState>> {
             level: String(i.level || 'info'),
             tag: String(i.tag || ''),
             text: String(i.text || ''),
+            count: typeof i.count === 'number' && i.count > 1 ? i.count : undefined,
           }))
         : []
     const logCounts = allLogs.reduce<Record<string, number>>((a, e) => {
@@ -141,9 +168,19 @@ export async function meowState(): Promise<ToolResult<MeowState>> {
     const recentAbnormal = allLogs
       .filter((e) => e.level === 'error' || e.level === 'warn')
       .slice(-3)
-      .map((e) => ({ level: e.level, tag: e.tag, text: e.text.slice(0, 120) }))
+      .map((e) => ({ level: e.level, tag: e.tag, text: e.text.slice(0, 120), count: e.count }))
     // 可用模块标签：告诉模型 meow_logs 的 tag 能填什么
     const logTags = Array.from(new Set(allLogs.map((e) => e.tag).filter(Boolean))).slice(0, 12)
+    /*
+     * 缓冲自身的元信息（2026-11-27）：dropped 是"诊断别过度自信"的硬约束，
+     * file 是"重启后的现场去哪看"的指路牌。旧后端没有这两个字段，保持 undefined。
+     */
+    const logStats = (logs && logs.state === 'ok' && logs.data ? logs.data.stats : null) as
+      | { dropped?: number; level?: string; file?: string }
+      | null
+    const logDropped = Number(logStats?.dropped || 0) || undefined
+    const logLevel = logStats?.level ? String(logStats.level) : undefined
+    const logFile = logStats?.file ? String(logStats.file) : undefined
     // 同 meowSources：健康明细才是真源，顶层数组在冷启动时是空的
     const detail = (hs?.sites || {}) as Record<
       string,
@@ -168,6 +205,19 @@ export async function meowState(): Promise<ToolResult<MeowState>> {
       Number(health.rssMB) >= 0
         ? { rssMB: Number(health.rssMB), availMB: Number(health.memAvailMB ?? -1) }
         : undefined
+    // 线程池水位：旧后端没有这些字段 → 整组缺失（不要报 -1 让模型误读）
+    const poolMax = Number(health.poolMax ?? 0)
+    const pool =
+      poolMax > 0
+        ? {
+            active: Number(health.poolActive ?? 0),
+            queue: Number(health.poolQueue ?? 0),
+            max: poolMax,
+            searchActive: Number(health.searchActive ?? 0),
+            searchQueue: Number(health.searchQueue ?? 0),
+            lastSearchMs: Number(health.lastSearchMs ?? 0),
+          }
+        : undefined
     return ok(
       {
         version: String(health.version || ''),
@@ -180,11 +230,18 @@ export async function meowState(): Promise<ToolResult<MeowState>> {
         logCounts,
         logTags,
         logHint,
+        logDropped,
+        logLevel,
+        logFile,
         memory,
+        pool,
         route: location.hash || '',
       },
       `后端 ${health.version}，${health.sites} 源，${degradedList.length} 个降级`
-        + `；日志 ${allLogs.length} 条（warn ${logCounts.warn || 0} / error ${logCounts.error || 0}）`,
+        + `；日志 ${allLogs.length} 条（warn ${logCounts.warn || 0} / error ${logCounts.error || 0}）`
+        + (logDropped ? `；已丢弃 ${logDropped} 条（历史不全）` : '')
+        + (logLevel ? `；级别 ${logLevel}` : '')
+        + (pool ? `；请求池 ${pool.active}/${pool.max}${pool.queue ? ` 排队${pool.queue}` : ''}` : ''),
     )
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e))
@@ -211,12 +268,18 @@ export async function meowDiagnose(
   try {
     const src = collectSources(input)
     if (input.withBackendLogs !== false) {
-      const logs = await fetchServerLogs({ limit: 60 }).catch(() => null)
+      /*
+       * 取 200 条而不是 60（2026-11-27）：新规则要判"成批出现的源不可用"
+       * （≥5 条），60 条窗口在一次搜索刷了十几条 warn 之后就不够了。
+       * 环形缓冲已经把 req 噪音滤掉，200 条基本都是有用信息。
+       */
+      const logs = await fetchServerLogs({ limit: 200 }).catch(() => null)
       if (logs && logs.state === 'ok' && logs.data) {
         src.backendLogs = (logs.data.items || []).map((i: any) => ({
           level: i.level,
           tag: i.tag,
           text: i.text,
+          count: i.count,
         }))
       }
     }
@@ -295,6 +358,24 @@ export async function meowSearch(
       pic: g.vod_pic,
       sources: (g.sources || []).map((c) => ({ site: c.site, vod_id: c.vod_id })),
     }))
+    /*
+     * 记下本轮搜索的规模（2026-11-27）：meow_diagnose 用它区分
+     * 「源全失败（returned≪total）」和「源都正常但确实没这部片（count=0）」——
+     * 用户问"为什么什么都搜不到"时，这两种的处置完全相反。
+     */
+    try {
+      ;(window as unknown as { __meowSearchStats?: unknown }).__meowSearchStats = {
+        wd,
+        groups: r.groups?.length || 0,
+        hits: list.length,
+        total: r.total,
+        returned: r.returned,
+        count: r.count,
+        at: Date.now(),
+      }
+    } catch {
+      /* 记录失败不影响搜索 */
+    }
     return ok(list, `「${wd}」命中 ${list.length} 部（${r.groups?.length || 0} 组）`)
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e))
@@ -719,6 +800,22 @@ export interface LogsInput {
   minutes?: number
   /** 最多返回多少条（默认 50，上限 500）。取**最新的** limit 条 */
   limit?: number
+  /**
+   * 读哪一份日志：
+   *  · ring（默认）= 后端内存环形缓冲（本次运行内）；
+   *  · file = 后端落盘文件（**包含重启前**的那部分）。
+   *
+   * ★ 什么时候用 file：用户说"刚才/之前/重启以后就不对了"，而环形缓冲里没有
+   *   那段时间的记录 —— 落盘文件才有（2MB 轮转 ×2）。
+   */
+  source?: 'ring' | 'file'
+  /**
+   * 只看 id 比它大的（增量）。
+   *
+   * <p>上一轮结果里每条都有 id；"盯着看有没有新错误"时传上一轮最大的 id，
+   * 比用 minutes 更准（minutes 会把同一批旧日志重复给一遍）。
+   */
+  sinceId?: number
 }
 
 export interface LogEntry {
@@ -727,6 +824,13 @@ export interface LogEntry {
   level: string
   tag: string
   text: string
+  /**
+   * 同一文本在 5 秒内重复了几次（服务端合并）。
+   *
+   * ★ 必须带给模型（2026-11-27）：后端会把相邻重复合并成一条 `×N`，
+   *   模型只看到一行时容易低估"这个循环一直在刷"，从而判断错误优先级。
+   */
+  count?: number
 }
 
 const LEVEL_RANK: Record<string, number> = { info: 0, warn: 1, error: 2 }
@@ -779,11 +883,22 @@ export async function meowLogs(input: LogsInput = {}): Promise<ToolResult<{
   items: LogEntry[]
   matched: number
   scanned: number
+  /** 被环形缓冲挤掉的条数（>0 说明历史不全） */
+  dropped?: number
+  /** 后端日志落盘路径（重启后的现场在这里，AI 读不到但要告诉用户） */
+  file?: string
   availableTags?: string[]
 }>> {
   try {
     // 2000 = 后端环形缓冲容量，也是它单次能给的上限
-    const r = await fetchServerLogs({ limit: 2000 }).catch(() => null)
+    const fromFile = input.source === 'file'
+    const since = Math.max(0, Math.trunc(input.sinceId || 0))
+    const r = fromFile
+      ? await fetchServerLogs({ file: true, lines: Math.min(input.limit || 200, 1000) }).catch(() => null)
+      : since > 0
+        // 增量：只拉 id 更大的（上限给够，过滤仍在本地做）
+        ? await fetchServerLogs({ since, limit: 500 }).catch(() => null)
+        : await fetchServerLogs({ limit: 2000 }).catch(() => null)
     if (!r) return fail('后端不可达（/api/logs 无响应）')
     if (r.state === 'unsupported') {
       // 旧后端没有这个端点：明确区分"没有日志"与"读不到日志"
@@ -792,14 +907,27 @@ export async function meowLogs(input: LogsInput = {}): Promise<ToolResult<{
     if (r.state === 'unreachable') return fail(`连不上后端：${r.detail || ''}`)
     if (r.state !== 'ok' || !r.data) return fail(r.detail || '读取日志失败')
 
-    const all: LogEntry[] = (r.data.items || []).map((i: any) => ({
+    const raw = fromFile ? r.data.fileItems || [] : r.data.items || []
+    const all: LogEntry[] = raw.map((i: any) => ({
       id: typeof i.id === 'number' ? i.id : undefined,
       at: Number(i.at) || 0,
       level: String(i.level || 'info'),
       tag: String(i.tag || ''),
       text: String(i.text || ''),
+      count: typeof i.count === 'number' && i.count > 1 ? i.count : undefined,
     }))
     const { items, matched, scanned } = filterLogs(all, input)
+    /*
+     * 缓冲区自身的事实要一起交出去（2026-11-27）：
+     *   · dropped>0 = 更早的日志已被挤掉，**不能**据此断言"只有这些错误"；
+     *   · file      = 落盘文件，重启后的现场在那边（AI 读不到文件，但可以指路）。
+     */
+    const stats = r.data.stats || ({} as typeof r.data.stats)
+    const dropped = Number(stats.dropped || 0)
+    const file = String(stats.file || '')
+    const tailNote = dropped
+      ? `；另有 ${dropped} 条已被缓冲挤出（不是"只有这些"）`
+      : ''
 
     if (!items.length) {
       /*
@@ -808,8 +936,8 @@ export async function meowLogs(input: LogsInput = {}): Promise<ToolResult<{
        */
       const tags = Array.from(new Set(all.map((e) => e.tag).filter(Boolean))).slice(0, 12)
       return ok(
-        { items: [], matched: 0, scanned, availableTags: tags },
-        `没有匹配的日志（扫描 ${scanned} 条）。可用模块：${tags.join('、') || '无'}`,
+        { items: [], matched: 0, scanned, dropped, file, availableTags: tags },
+        `没有匹配的日志（扫描 ${scanned} 条${tailNote}）。可用模块：${tags.join('、') || '无'}`,
       )
     }
     const lv = items.reduce<Record<string, number>>((a, e) => {
@@ -817,10 +945,74 @@ export async function meowLogs(input: LogsInput = {}): Promise<ToolResult<{
       return a
     }, {})
     const lvText = Object.entries(lv).map(([k, v]) => `${k} ${v}`).join(' / ')
+    // 合并计数求和：让模型看到"实际发生了多少次"，而不是只数行数
+    const repeats = items.reduce((n, e) => n + ((e.count || 1) - 1), 0)
+    const repeatNote = repeats ? `，其中 ${repeats} 次是重复（×N 已合并）` : ''
     return ok(
-      { items, matched, scanned },
-      `${items.length} 条（${lvText}）；共匹配 ${matched} 条 / 扫描 ${scanned} 条`,
+      { items, matched, scanned, dropped, file },
+      `${items.length} 条（${lvText}${repeatNote}）；共匹配 ${matched} 条 / 扫描 ${scanned} 条${tailNote}`
+        + (fromFile ? '；来自后端落盘文件（含重启前的记录）' : '')
+        + (matched > items.length ? `；只回了最新 ${items.length} 条，需要更早的请加 minutes 或换 tag` : ''),
     )
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e))
+  }
+}
+
+// ---------------------------------------------------------------- 12. meow_transcode
+
+export interface TranscodeJob {
+  id: string
+  state: string
+  phase: string
+  code?: string
+  error?: string
+  segments: number
+  readySeconds: number
+  startedAt: number
+  ageMs: number
+  /** 多少秒没人看（>120 后端会回收）；-1 = 从没被访问过 */
+  idleSec: number
+  repair: boolean
+  source: string
+}
+
+/**
+ * 转码任务清单。
+ *
+ * <p><b>为什么需要</b>（2026-11-27）：原来只能按单个源查 status，
+ * 用户问"为什么一直转不完 / 为什么这么慢 / 谁在占 4K"，AI 与设置页都看不到
+ * 任务清单 —— 只能看到自己点的那一条。后端加了 {@code ?action=list}，
+ * 这里把它变成工具：在跑几个、转出多少秒、失败码是什么、空了多久。
+ */
+export async function meowTranscode(): Promise<ToolResult<{
+  available: boolean
+  count: number
+  jobs: TranscodeJob[]
+}>> {
+  try {
+    const [list, caps] = await Promise.all([
+      getJson<any>('/api/transcode?action=list'),
+      getJson<any>('/api/transcode').catch(() => null),
+    ])
+    if (!list) return fail('后端不可达（/api/transcode 无响应）')
+    const all = (list.jobs || []) as TranscodeJob[]
+    const jobs = all
+      .slice()
+      .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))
+      .slice(0, 20)
+    const available = caps ? !!caps.available : true
+    const run = jobs.filter((j) => j.state === 'running').length
+    const ready = jobs.filter((j) => j.state === 'ready').length
+    const failed = jobs.filter((j) => j.state === 'failed').length
+    const oldest = jobs.reduce((m, j) => Math.max(m, j.state === 'running' ? j.ageMs : 0), 0)
+    const head = jobs.find((j) => j.state === 'running' && j.code)
+    const summary =
+      `任务 ${jobs.length}（运行 ${run} / 就绪 ${ready} / 失败 ${failed}）`
+      + `；ffmpeg ${available ? '可用' : '缺失'}`
+      + (oldest ? `；最久已跑 ${Math.round(oldest / 1000)} 秒` : '')
+      + (head?.code ? `；当前失败码 ${head.code}` : '')
+    return ok({ available, count: jobs.length, jobs }, summary)
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e))
   }
@@ -836,7 +1028,8 @@ export async function meowLogs(input: LogsInput = {}): Promise<ToolResult<{
  */
 export const TOOL_DEFS = [
   { name: 'meow_state', desc: '建立上下文：版本、站点数、降级源、日志概况与可用日志模块。任何操作前先调。要看具体日志再调 meow_logs。', args: [] },
-  { name: 'meow_logs', desc: '查后端日志（2000 条环形缓冲）。用户问"刚才报什么错/为什么失败/后端怎么了"，或 meow_diagnose 的结论不够、需要按级别/模块/时间窗确认时用它。条件由你决定：拿不准就先不带条件取 50 条看全局，再按需收窄。', args: ['minLevel?', 'tag?', 'keyword?', 'minutes?', 'limit?'] },
+  { name: 'meow_logs', desc: '查后端日志（2000 条环形缓冲；source="file" 读落盘文件，含重启前的记录；sinceId 只看新增）。用户问"刚才报什么错/为什么失败/后端怎么了"，或 meow_diagnose 的结论不够、需要按级别/模块/时间窗确认时用它。条件由你决定：拿不准就先不带条件取 50 条看全局，再按需收窄。', args: ['minLevel?', 'tag?', 'keyword?', 'minutes?', 'limit?', 'source?', 'sinceId?'] },
+  { name: 'meow_transcode', desc: '转码任务清单：在跑几个、各转出多少秒、失败码、空了多久、ffmpeg 是否可用。用户问"为什么一直转不完/很慢/卡在转码"时用它。', args: [] },
   { name: 'meow_diagnose', desc: '解释"为什么播不了"：返回 cause/evidence/suggestion。', args: ['withBackendLogs'] },
   { name: 'meow_search', desc: '按片名搜片，跨源合并，返回可播来源列表。', args: ['keyword', 'limit'] },
   { name: 'meow_play', desc: '选线路+选集+拿可播地址，内部自动换线。', args: ['site', 'vod_id', 'line?', 'episode?'] },
@@ -851,6 +1044,7 @@ export const TOOL_DEFS = [
 export const TOOL_IMPL = {
   meow_state: meowState,
   meow_logs: meowLogs,
+  meow_transcode: meowTranscode,
   meow_diagnose: meowDiagnose,
   meow_search: meowSearch,
   meow_play: meowPlay,

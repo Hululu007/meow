@@ -27,7 +27,13 @@ describe('PlayView 错误兜底', () => {
   })
 
   it('错误页把"我们这一跳"的原因单独显示', () => {
-    expect(play).toContain('v-if="hopError"')
+    /*
+     * 2026-11-27 起这一行由 errorSubText 承载：命中"本端没有转码能力"时它换成
+     * 可执行的下一步，其余情况仍原样返回 hopError（变量还在，只是过了层判定）。
+     */
+    expect(play).toContain('v-if="errorSubText"')
+    expect(play).toMatch(/const errorSubText = computed/)
+    expect(play).toContain('return hopError.value')
   })
 })
 

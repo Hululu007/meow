@@ -59,7 +59,9 @@ describe('异步搜索后端', () => {
 
   it('同步接口保持可用（老客户端/自动化脚本）', () => {
     // 不带 async 时仍走 searchAll(body)，不能改成只支持异步
-    expect(a).toContain('sendJson(ex, 200, searchAll(body))')
+    expect(a).toContain('searchAll(body)')
+    // 2026-11-27：顺带记一次真实耗时（health 的 lastSearchMs 用它回答"为什么搜索这么慢"）
+    expect(a).toContain('LAST_SEARCH_MS')
   })
 })
 
@@ -172,8 +174,10 @@ describe('搜索链路的收尾问题', () => {
   })
 
   it('同步搜索路径保持可用', () => {
-    // 不带 async 时仍走 searchAll(body)：老客户端、自动化脚本都靠它
-    expect(API).toContain('sendJson(ex, 200, searchAll(body))')
+    // 不带 async 时仍走 searchAll(body)：老客户端、自动化脚本都靠它。
+    // 2026-11-27 外面包了一层计时（health 的 lastSearchMs），所以只断言调用本身。
+    expect(API).toContain('searchAll(body)')
+    expect(API).toContain('LAST_SEARCH_MS')
   })
 
   it('前端显示"已搜 N/M 个源"', () => {

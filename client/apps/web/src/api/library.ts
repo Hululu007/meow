@@ -1056,16 +1056,49 @@ export async function waitTranscode(
   )
 }
 
-/** 后端是否装了 ffmpeg（没装就别显示"转码播放"这种按钮）。 */
-export async function transcodeAvailable(): Promise<boolean> {
+/*
+ * 转码能力探测缓存（30 秒）。
+ *
+ * 为什么不是"一次定终身"：ffmpeg 在 PC 上是**插件装完才动态可用**的，
+ * 而 iOS / 桌面 Safari 则永远不可用。一次定终身会让"先探到 false、再装
+ * ffmpeg 插件"的本会话再也转不了码（2026-11-27 回归审查抓到的误伤路径）。
+ */
+let transcodeCapsCache: { at: number; value: boolean | null } | null = null
+const TRANSCODE_CAPS_TTL_MS = 30_000
+
+/** 让下一次 transcodeAvailable() 真的去问后端（ffmpeg 插件装完后调用）。 */
+export function invalidateTranscodeProbe(): void {
+  transcodeCapsCache = null
+}
+
+/**
+ * 后端是否装了 ffmpeg（没装就别显示"转码播放"这种按钮）。**三态**：
+ *
+ *   true  —— 后端明确回答可用
+ *   false —— 后端明确回答不可用（iOS / 没装插件）
+ *   null  —— **没问到**：网络失败、老后端不认识这个端点、响应缺字段
+ *
+ * ★ 调用方不能把 null 当 false（2026-11-27）：后端重启一次、Vite 代理连错
+ *   端口、老版本后端都会落到 null；判成"不可用"会把本来能转码的 PC/Docker
+ *   环境锁死，而"其实不能转"本来就由后端 502 兜得住。
+ */
+export async function transcodeAvailable(): Promise<boolean | null> {
+  const now = Date.now()
+  if (transcodeCapsCache && now - transcodeCapsCache.at < TRANSCODE_CAPS_TTL_MS) {
+    return transcodeCapsCache.value
+  }
+  let value: boolean | null = null
   try {
     const r = await fetch(`${apiBase()}/api/transcode`)
-    if (!r.ok) return false
-    const j = (await r.json()) as { available?: boolean }
-    return !!j.available
+    if (r.ok) {
+      const j = (await r.json()) as { available?: unknown }
+      if (typeof j.available === 'boolean') value = j.available
+    }
   } catch {
-    return false
+    value = null
   }
+  transcodeCapsCache = { at: now, value }
+  return value
 }
 
 // ---------------------------------------------------------------- 刮削

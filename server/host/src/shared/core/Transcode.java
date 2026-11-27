@@ -1,5 +1,6 @@
 package core;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -768,6 +769,7 @@ public final class Transcode {
             j.error = "找不到 ffmpeg。装一个（或在 policy.json 里配 ffmpegPath）才能播这个格式。";
             // 不打日志的话排障只剩前端的「起播超时」，真实原因永远看不到
             System.err.println("[transcode] job " + id + " ffmpeg missing -> failed");
+            noteFail(j, "no_ffmpeg", "找不到 ffmpeg（policy/PATH/常见路径都没有）");
             return j;
         }
 
@@ -803,6 +805,7 @@ public final class Transcode {
             j.code = "probe_failed";
             j.error = "片源探测失败（上游超时或限流），稍后会自动重试修复。";
             System.err.println("[transcode] job " + id + " repair probe failed");
+            noteFail(j, "probe_failed", "片源探测失败（上游超时或限流）");
             return j;
         }
         if (repair && repairEncoder(ff, probe == null ? "" : probe.vcodec, allowHevc) == null) {
@@ -817,6 +820,7 @@ public final class Transcode {
             j.error = "这台后端没有可用的硬件编码器（NVENC/QSV/AMF），"
                     + "无法在不降分辨率的前提下修复该片源。";
             System.err.println("[transcode] job " + id + " repair rejected: no hw encoder");
+            noteFail(j, "no_repair_encoder", "没有可用的硬件编码器，无法做原分辨率修复");
             return j;
         }
         /*
@@ -832,6 +836,7 @@ public final class Transcode {
             j.phase = "failed";
             j.error = SLOW_4K_MSG;
             System.err.println("[transcode] job " + id + " reject slow 4k (soft)");
+            noteFail(j, "slow_4k", "软件转 4K 远慢于播放，已拒绝");
             return j;
         }
         if (probe != null) {
@@ -977,6 +982,7 @@ public final class Transcode {
             j.error = "找不到 ffmpeg。装一个（或在 policy.json 里配 ffmpegPath）才能播这个格式。";
             // 不打日志的话排障只剩前端的「起播超时」，真实原因永远看不到
             System.err.println("[transcode] job " + id + " ffmpeg missing -> failed");
+            noteFail(j, "no_ffmpeg", "找不到 ffmpeg（policy/PATH/常见路径都没有）");
             return j;
         }
         /*
@@ -994,6 +1000,7 @@ public final class Transcode {
             j.code = "probe_failed";
             j.error = "片源探测失败（上游超时或限流），稍后会自动重试修复。";
             System.err.println("[transcode] job " + id + " repair probe failed");
+            noteFail(j, "probe_failed", "片源探测失败（上游超时或限流）");
             return j;
         }
         if (repair && repairEncoder(ff, probe == null ? "" : probe.vcodec, allowHevc) == null) {
@@ -1003,6 +1010,7 @@ public final class Transcode {
             j.error = "这台后端没有可用的硬件编码器（NVENC/QSV/AMF），"
                     + "或客户端解不了可用的输出编码，无法在不降分辨率的前提下修复该片源。";
             System.err.println("[transcode] job " + id + " repair rejected: no hw encoder");
+            noteFail(j, "no_repair_encoder", "没有可用的硬件编码器，无法做原分辨率修复");
             return j;
         }
         boolean hwCapable = probe != null && hwTranscode(ff, probe);
@@ -1012,6 +1020,7 @@ public final class Transcode {
             j.phase = "failed";
             j.error = SLOW_4K_MSG;
             System.err.println("[transcode] job " + id + " reject slow 4k (soft)");
+            noteFail(j, "slow_4k", "软件转 4K 远慢于播放，已拒绝");
             return j;
         }
         if (probe != null) {
@@ -2341,6 +2350,7 @@ public final class Transcode {
                     j.error = "转码 " + (HANG_NO_SEGMENT_MS / 1000)
                             + " 秒没有新分片（上游卡住或编码器无响应），已强制结束";
                     System.err.println("[transcode] job " + j.id + " stall -> killed");
+                    noteFail(j, "stalled", j.error);
                     return;
                 }
             }
@@ -2408,6 +2418,7 @@ public final class Transcode {
                 j.error = "转码中断：只产出 " + (int) gotDur + " 秒（源 " + (int) srcDur + " 秒）";
                 System.err.println("[transcode] job " + j.id + " short output "
                         + (int) gotDur + "s of " + (int) srcDur + "s -> failed");
+                noteFail(j, "short_output", j.error);
                 return;
             }
             composeMerged(j.id);
@@ -2477,6 +2488,28 @@ public final class Transcode {
             j.code = "ffmpeg_failed";
             j.error = tailText.isEmpty() ? ("ffmpeg 退出码 " + code)
                     : tailText.substring(Math.max(0, tailText.length() - 300));
+        }
+        // 失败原因进环形缓冲：用户报"转码失败"时，日志页要能直接看到是源站还是编码器
+        noteFail(j, j.code, j.error);
+    }
+
+    /**
+     * 转码失败写进环形缓冲（2026-11-27）。
+     *
+     * <p>原来所有失败只 {@code System.err}：用户报"转码失败"，网页日志面板里一条
+     * 都没有，只能 ssh 看 docker logs。转码恰恰是最容易失败的子系统（源站超时 /
+     * 没有 ffmpeg / 硬解通道被占），必须在面板可见，否则"日志页"对最常见的
+     * 故障就是摆设。
+     */
+    private static void noteFail(Job j, String code, String msg) {
+        try {
+            String src = j == null ? "" : j.source;
+            if (src != null && src.length() > 100) src = src.substring(0, 100) + "…";
+            core.LogBuffer.error("transcode", "[" + (code == null ? "failed" : code) + "] "
+                    + (msg == null ? "" : msg)
+                    + (src == null || src.isEmpty() ? "" : " | " + src));
+        } catch (Throwable ignored) {
+            // 日志失败不影响转码
         }
     }
 
@@ -2650,6 +2683,41 @@ public final class Transcode {
     /** 转码能力缓存（ffmpeg 不会中途换，10 分钟刷一次足够）。 */
     private static volatile JSONObject CAPS_CACHE = null;
     private static volatile long CAPS_AT = 0;
+
+    /**
+     * 列出当前所有转码任务（{@code GET /api/transcode?action=list}）。
+     *
+     * <p><b>为什么需要</b>（2026-11-27）：原来只能按 src 查单个任务，
+     * 用户问"为什么一直转不完/谁在占着 4K"时，前端和 AI 都看不到任务清单——
+     * 只能看到自己那一条的 status。这里把在跑/失败的都列出来（不含源地址明文
+     * 里的凭据：过一遍 scrub，并截断到 120 字）。
+     */
+    public static JSONObject listJson() throws org.json.JSONException {
+        JSONArray arr = new JSONArray();
+        long now = System.currentTimeMillis();
+        for (Job j : JOBS.values()) {
+            JSONObject o = new JSONObject();
+            o.put("id", j.id);
+            o.put("state", j.state == null ? "" : j.state);
+            o.put("phase", j.phase == null ? "" : j.phase);
+            if (j.code != null && !j.code.isEmpty()) o.put("code", j.code);
+            if (j.error != null && !j.error.isEmpty()) {
+                o.put("error", j.error.length() > 200 ? j.error.substring(0, 200) : j.error);
+            }
+            o.put("segments", j.segments);
+            o.put("readySeconds", j.readySeconds);
+            o.put("startedAt", j.startedAt);
+            o.put("ageMs", Math.max(0, now - j.startedAt));
+            // 空闲多久没人看：>120s 后端会回收，"谁在占着转码通道"看这个
+            o.put("idleSec", j.lastAccess > 0 ? Math.max(0, (now - j.lastAccess) / 1000) : -1);
+            o.put("repair", j.repair);
+            String s = j.source == null ? "" : j.source;
+            if (s.length() > 120) s = s.substring(0, 120) + "…";
+            o.put("source", core.LogBuffer.scrub(s));
+            arr.put(o);
+        }
+        return new JSONObject().put("ok", true).put("count", arr.length()).put("jobs", arr);
+    }
 
     /**
      * 后端转码能力（前端选路/提示用）：

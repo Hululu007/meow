@@ -184,6 +184,19 @@ public class ApiServer {
      * 依赖启动参数的一次性初始化，必须在 {@code main()} 里 MainArgs.set 之后调用。
      */
     private static void initAfterArgs() {
+        /*
+         * 日志落盘：data/logs/backend.log（2MB 轮转，只留两份）。
+         *
+         * 内存环形缓冲重启即清空，而"崩了/卡死之后重启来看日志"恰恰是最常见的
+         * 排查姿势——现场全丢了。落盘这一份就是给这种时候用的；网页面板**不**
+         * 回填它，免得把上次启动前的旧错误混进当前这次排查。
+         * 必须在参数解析之后：静态块早于 --data-dir（见上面的注释）。
+         */
+        try {
+            core.LogBuffer.attachFile(core.DataPaths.of("logs").resolve("backend.log").toString());
+        } catch (Throwable t) {
+            System.err.println("[log] 初始化落盘失败：" + t);
+        }
         // 类加载期不能读 policy.json（那时 --data-dir 还没解析），在这里补读。
         SearchCache.reloadTtl();
         // 基线必须在 loadMultiInstances 之前拍：它会把多实例塞进 SITES，
@@ -1377,6 +1390,7 @@ public class ApiServer {
                 || path.equals("/api/llm/relay")
                 || path.equals("/api/cast")
                 || path.equals("/api/logs")
+                || path.equals("/api/_clientlog")
                 || path.equals("/api/posters")
                 || path.equals("/api/scrape")
                 || path.equals("/api/search/cache");
@@ -1531,9 +1545,15 @@ public class ApiServer {
          * 「点底栏没反应」）只进 Safari 控制台，端上根本拿不到；真机只能靠
          * PC 远程读 /api/logs。页面把错误 POST 到这里，日志页就能看到 [web] 行。
          *
-         * <p>不写磁盘、不进访问日志；正文截断 600 字，坏 JSON 直接忽略。
+         * <p>不写 stdout、不进访问日志；正文截断 600 字，坏 JSON 直接忽略。
+         * 服务端限流 120 条/分钟（按 IP）：前端自己也限 20 条/分钟，但那只是
+         * 客户端自律——没限流时任何人都能拿它把 2000 条缓冲刷满。
          */
         if ("/api/_clientlog".equals(path)) {
+            if (rateLimited(clientIp(ex), "clientlog", 120, 60_000L)) {
+                sendJson(ex, 429, "{\"code\":-1,\"msg\":\"too many client logs\"}");
+                return;
+            }
             try {
                 String body = read(ex.getRequestBody());
                 JSONObject in = new JSONObject(body == null || body.trim().isEmpty() ? "{}" : body);
@@ -1557,10 +1577,12 @@ public class ApiServer {
         }
         // 访问日志：TV/PC 排查"配了地址但没反应"时，先看这里有没有请求进来。
         // 只打路径不打 query（弹幕/代理的 query 里有长 URL，会淹没日志）。
-        System.out.println("[req] " + method + " " + path);
-        // 同一份写进环形缓冲，供网页「日志」页签读取。
-        // health/日志自身这类高频轮询不记：它们几秒一次，会把有用的错误冲掉。
-        if (!routes.LogRoutes.isNoisyPath(path)) {
+        // ★ 2026-11-27：stdout 与环形缓冲用同一条判据——分片/健康检查/进度同步
+        //   这些高频请求不再打。原来每个分片都打一行，而 compose 的 json-file
+        //   没有轮转（没配 max-size），长片看几天就能把盘吃满。
+        boolean noisy = routes.LogRoutes.isNoisyPath(path);
+        if (!noisy) {
+            System.out.println("[req] " + method + " " + path);
             core.LogBuffer.info("req", method + " " + core.LogBuffer.scrub(path));
         }
         if ("OPTIONS".equalsIgnoreCase(method)) {
@@ -1606,6 +1628,7 @@ public class ApiServer {
             return;
         }
 
+        final long reqT0 = System.currentTimeMillis();
         try {
             if ("/api/health".equals(path)) {
                 sendJson(ex, 200, healthJson());
@@ -1790,7 +1813,13 @@ public class ApiServer {
                         return;
                     }
                 }
-                sendJson(ex, 200, searchAll(body));
+                // 同步聚合：记一次真实耗时（health 的 lastSearchMs）
+                {
+                    long t0 = System.currentTimeMillis();
+                    String out = searchAll(body);
+                    LAST_SEARCH_MS = System.currentTimeMillis() - t0;
+                    sendJson(ex, 200, out);
+                }
                 return;
             }
             // 停止搜索（用户点「停止搜索」）。
@@ -2172,19 +2201,41 @@ public class ApiServer {
             }
             sendJson(ex, 404, "{\"code\":-1,\"msg\":\"not found\"}");
         } catch (Throwable t) {
-            StringWriter sw = new StringWriter();
-            t.printStackTrace(new PrintWriter(sw));
+            /*
+             * ★ 2026-11-27：未捕获异常必须同时进环形缓冲。
+             *
+             * 踩过（日志审计实测）：GET /api/AppRJ/home 回 500，stderr 里有一整套
+             * 堆栈，而网页「日志」面板里只有一条 `info req GET /api/AppRJ/home` ——
+             * 用户看见"服务器错误"，日志里一个字都没有，只能 ssh 看 stdout。
+             * 现在：面板记 error（path + 剥壳后的原因 + 前 8 行堆栈），stdout 只留
+             * 一行摘要（完整堆栈的噪音不再刷 docker 日志）。
+             */
+            Throwable root = unwrap(t);
+            // 消息只取第一行：VerifyError 的 getMessage 带整段 "Exception Details:
+            // Location…"（实测 620B/条），直接拼会把一条错误撑成半屏
+            core.LogBuffer.error("api", path + " → " + root.getClass().getSimpleName()
+                    + (root.getMessage() == null ? "" : " — " + firstLine(root.getMessage())), t);
             System.err.println("[api] " + path + " failed: " + t);
-            System.err.println(sw);
             /*
              * 回给前端的必须是**剥掉反射包装之后**的那句原因。
              *
              * 踩过（2026-11-23 加密源）：详情接口只回 "java.lang.reflect.InvocationTargetException"，
              * 而日志里才有 "瓜子业务错误 code=300" —— 用户和客服都看不出是源站拒了。
              */
-            Throwable root = unwrap(t);
             String reason = friendlySourceError(root);
             sendJson(ex, 500, "{\"code\":-1,\"msg\":" + JSONObject.quote(reason) + "}");
+        } finally {
+            /*
+             * 慢请求留痕。
+             *
+             * 面板里拿不到状态码（响应已经写出去了），但"这次请求没在毫秒级返回"
+             * 本身就是排查线索：实测搜索打满线程池时 /api/health 从 1ms 涨到 9.1s，
+             * 用户看到的是"整个应用卡死"，而日志里什么都没有。
+             */
+            long cost = System.currentTimeMillis() - reqT0;
+            if (!noisy && cost >= 3000) {
+                core.LogBuffer.warn("req", method + " " + path + " " + cost + "ms（慢请求）");
+            }
         }
     }
 
@@ -2333,6 +2384,35 @@ public class ApiServer {
             }
             o.put("searchConcurrencyCapped", searchConcurrencyCapped);
             /*
+             * 线程池水位 + 上次搜索耗时（2026-11-27，AI/日志排障用）。
+             *
+             * <p>为什么需要："点什么都慢"最常见的原因就是**请求池被占满**
+             * （实测：12 个并发搜索之后 /api/health 从 1ms 涨到 9.1s，
+             * 用户看到的是"整个应用卡死"）。之前只有一条"慢请求 warn"间接证据，
+             * AI 无法回答"池子满没满"；这里直接给活跃/排队数。
+             *
+             * <p>为什么不在 health 里做重活：这几个 getter 都是读原子计数，
+             * 不影响 health 的毫秒级承诺。
+             */
+            try {
+                if (POOL instanceof java.util.concurrent.ThreadPoolExecutor) {
+                    java.util.concurrent.ThreadPoolExecutor p =
+                            (java.util.concurrent.ThreadPoolExecutor) POOL;
+                    o.put("poolActive", p.getActiveCount());
+                    o.put("poolQueue", p.getQueue().size());
+                    o.put("poolSize", p.getPoolSize());
+                    o.put("poolMax", p.getMaximumPoolSize());
+                }
+                java.util.concurrent.ThreadPoolExecutor sp = SEARCH_POOL;
+                o.put("searchActive", sp.getActiveCount());
+                o.put("searchQueue", sp.getQueue().size());
+                o.put("searchPoolMax", sp.getMaximumPoolSize());
+                o.put("fanoutActive", SITE_TIMEOUT_POOL.getActiveCount());
+                o.put("lastSearchMs", LAST_SEARCH_MS);
+            } catch (Throwable ignored) {
+                // 池子拿不到就少这几个字段，不让 health 失败
+            }
+            /*
              * 脚本运行时熔断状态。运维排查"为什么脚本源秒失败"时，
              * 这里能直接看到是熔断开了（容器挂了）还是源站本身没内容。
              */
@@ -2387,6 +2467,16 @@ public class ApiServer {
      * 而不是让用户以为设置没生效。
      */
     private static volatile boolean searchConcurrencyCapped = false;
+
+    /**
+     * 上一次聚合搜索的实际耗时（毫秒，0=还没搜过）。
+     *
+     * <p>给 {@code /api/health} 的 {@code lastSearchMs} 用：用户问"为什么点搜索
+     * 很久没反应"，AI 不必再猜——这是上一轮真实耗时。写在两处调用点上（同步/
+     * 异步）而不是塞进 searchAll 内部：那个方法返回点太多，用 try/finally 包一层
+     * 反而是更大的改动面。
+     */
+    private static volatile long LAST_SEARCH_MS = 0;
 
     /**
      * 当前进程是不是 32 位。
@@ -5262,8 +5352,10 @@ public class ApiServer {
             try {
                 String quick = str(method(spider, "searchContent", String.class, boolean.class)
                         .invoke(spider, wd, true));
-                System.out.println("[search] 2-arg(quick) len="
-                        + (quick == null ? -1 : quick.length()));
+                if (core.LogBuffer.debugEnabled()) {
+                    core.LogBuffer.debug("search", "2-arg(quick) " + site + " len="
+                            + (quick == null ? -1 : quick.length()));
+                }
                 if (quick != null && !quick.trim().isEmpty() && !isEmptyList(quick)) return quick;
             } catch (Throwable ignored) {
                 // 没有这个重载或执行异常：保持原来的空结果
@@ -5275,8 +5367,10 @@ public class ApiServer {
             try {
                 String q3 = str(method(spider, "searchContent", String.class, boolean.class, String.class)
                         .invoke(spider, wd, true, pg));
-                System.out.println("[search] 3-arg(quick) len="
-                        + (q3 == null ? -1 : q3.length()));
+                if (core.LogBuffer.debugEnabled()) {
+                    core.LogBuffer.debug("search", "3-arg(quick) " + site + " len="
+                            + (q3 == null ? -1 : q3.length()));
+                }
                 if (q3 != null && !q3.trim().isEmpty() && !isEmptyList(q3)) return q3;
             } catch (Throwable ignored) {
             }
@@ -5286,11 +5380,17 @@ public class ApiServer {
             //   真实原因（NoSuchMethod / NPE / 源站异常）全在 cause 里。踩过：TV 上几十条
             //   一模一样的 "2-arg failed: InvocationTargetException"，既不知道是哪个源，
             //   也不知道为什么 —— 等于没记。这里解包到最内层并带上站点名。
+            //
+            // ★ 2026-11-27 审计修正两处：
+            //   ① 级别 error → warn：这是**源包配置问题**（缺类/VerifyError），
+            //      不是后端故障。原来每次全新搜索都写 19 条 error（占缓冲 91% 字节），
+            //      面板的"错误数"因此永远在报警，真正的 500 反而没记。
+            //   ② 消息只留第一行：VerifyError 的 getMessage 带整段
+            //      "Exception Details: Location…"，实测 620B/条，把缓冲撑爆。
             Throwable root = unwrap(t);
             String detail = site + ": " + root.getClass().getSimpleName()
-                    + (root.getMessage() == null ? "" : " — " + root.getMessage());
-            System.out.println("[search] 2-arg failed " + detail);
-            core.LogBuffer.error("search", "2-arg failed " + detail);
+                    + (root.getMessage() == null ? "" : " — " + firstLine(root.getMessage()));
+            core.LogBuffer.warn("search", "源不可用 " + detail);
             return out == null ? "" : out;
         }
     }
@@ -6358,11 +6458,13 @@ public class ApiServer {
          * 真正的并发仍然由 FANOUT 承担，两者职责分开。
          */
         SEARCH_ORCH.execute(() -> {
+            long t0 = System.currentTimeMillis();
             try {
                 searchAll(payload, task);
             } catch (Throwable t) {
                 task.error = String.valueOf(t);
             } finally {
+                LAST_SEARCH_MS = System.currentTimeMillis() - t0;
                 // 无论正常结束还是抛异常都要置 done，否则前端永远轮询下去
                 task.done = true;
                 task.finishedAt = System.currentTimeMillis();
@@ -11565,10 +11667,12 @@ public class ApiServer {
      * GET https://dm.video.qq.com/barrage/base/{vid}
      *   → segment_index: { "0": {segment_name:"t/v1/0/30000"}, "30000": {...}, ... }
      * GET https://dm.video.qq.com/barrage/segment/{vid}/{segment_name}
-     *   → barrage_list: [{ content, time_offset(该片内毫秒), ... }]
+     *   → barrage_list: [{ content, time_offset, ... }]
      * </pre>
-     * 分片按 30 秒切，{@code time_offset} 是**片内**偏移，绝对时间 =
-     * 分片起点秒 + time_offset/1000。
+     * 分片按 30 秒切（一集 45 分钟 = 91 片，每片硬顶 600 条）。{@code time_offset}
+     * 实测是**整集绝对毫秒**（第 2 片就是 30000..59000），旧注释写的"片内偏移"
+     * 是错的 —— 照那个理解去 {@code startMs + off} 会把弹幕往后推一个片长，
+     * 时间轴出现 30 秒空窗交替（详见 {@code fetchTencentXml} 里的注释）。
      */
     private static final String TENCENT_SEG_BASE = "https://dm.video.qq.com/barrage/base/";
     private static final String TENCENT_SEG_PART = "https://dm.video.qq.com/barrage/segment/";
@@ -13839,6 +13943,14 @@ public class ApiServer {
         // 能力探测（前端选路用）：ffmpeg 可用性 / 硬编 / tonemap / 最大输出高度
         if ("caps".equals(q.get("action"))) {
             sendJson(ex, 200, core.Transcode.caps().toString());
+            return;
+        }
+        /*
+         * 任务清单（2026-11-27）：AI / 设置页回答"为什么一直转不完""谁在占 4K"。
+         * 必须排在 src 判空之前 —— 否则会被当成"探测 ffmpeg 是否可用"直接返回。
+         */
+        if ("list".equals(q.get("action"))) {
+            sendJson(ex, 200, core.Transcode.listJson().toString());
             return;
         }
         if (!"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method)) {

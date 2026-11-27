@@ -90,9 +90,21 @@ describe('搜索失败日志', () => {
 
   it('要带站点名和最内层 cause', () => {
     expect(s, '没有 unwrap').toContain('private static Throwable unwrap')
-    const i = s.indexOf('2-arg failed')
+    /*
+     * 2026-11-27 审计：文案从「2-arg failed」改成「源不可用」——
+     * 这是源包配置问题（缺类/VerifyError），不是后端故障，级别也降到 warn：
+     * 原来每次全新搜索写 19 条 error（占缓冲 91% 字节），面板的"错误数"
+     * 永远在报警，真正的 500 反而没记。判据仍是"带站点名 + 最内层 cause"。
+     */
+    const i = s.indexOf('LogBuffer.warn("search", "源不可用')
     expect(i).toBeGreaterThan(-1)
-    expect(s.slice(i, i + 300), '没带站点名').toContain('site')
+    const seg = s.slice(Math.max(0, i - 500), i + 120)
+    expect(seg, '没带站点名').toContain('site')
+    expect(seg, '没解包到最内层').toContain('unwrap(t)')
+    expect(seg, '级别必须是 warn（源包配置问题，不是后端故障）').toContain('LogBuffer.warn("search"')
+    // VerifyError 的 message 带整段 "Exception Details: Location…"（实测 620B/条），
+    // 只取第一行，避免把环形缓冲撑爆
+    expect(seg).toContain('firstLine(root.getMessage())')
   })
 
   it('unwrap 要能剥 InvocationTargetException', () => {

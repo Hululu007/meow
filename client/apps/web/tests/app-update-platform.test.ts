@@ -6,6 +6,17 @@ import {
   platformOfUrl,
 } from '@/api/appUpdate'
 
+/** iOS 是独立平台身份（与 compat/shell.ts 的 'ios' 对齐），不是 web 兜底 */
+describe('iOS 平台身份', () => {
+  it('.ipa 归 ios 家族，PC/TV 安装包在 iOS 上不匹配', () => {
+    expect(familyOf('ios')).toBe('ios')
+    expect(platformOfUrl('https://x/Meow-unsigned.ipa')).toBe('ios')
+    // iOS 不读 packages.json 清单，PC/TV 条目一律不匹配
+    expect(entryFitsPlatform('meow-pc', ['windows-x64'], 'ios')).toBe(false)
+    expect(entryFitsPlatform('meow-tv', ['android-arm64'], 'ios')).toBe(false)
+  })
+})
+
 /**
  * 平台校验（三层：id → platform 数组 → 扩展名）。
  *

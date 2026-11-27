@@ -195,9 +195,15 @@ export function reportClientLog(
     if (++clientLogWindow.n > 20) return
     const msg = String(text || '').slice(0, 600)
     if (!msg) return
+    // 写操作令牌：后端把 _clientlog 纳入了写鉴权（2026-11-27，防日志注入/刷缓冲），
+    // 没带就是 401 —— 而这条通道本身必须静默，所以只在有令牌时才带。
+    const token =
+      typeof localStorage !== 'undefined' ? localStorage.getItem('meow.authToken') : null
     void fetch(`${base()}/api/_clientlog`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: token
+        ? { 'Content-Type': 'application/json', 'X-Meow-Token': token }
+        : { 'Content-Type': 'application/json' },
       body: JSON.stringify({ level, tag, text: msg }),
       keepalive: true,
     }).catch(() => {
@@ -756,14 +762,29 @@ export async function fetchSearchAllWait(
   wd: string,
   threads = 8,
   timeoutMs = 45_000,
-): Promise<{ groups: SearchGroup[] }> {
+): Promise<{
+  groups: SearchGroup[]
+  /**
+   * 本轮聚合的规模（2026-11-27）。`total`=参与的源数，`returned`=已返回的源数，
+   * `count`=结果条数。AI 诊断"为什么搜不到"要靠这两个数区分
+   * 「源全失败（returned≪total）」和「源都正常但确实没这部片（count=0）」。
+   */
+  total?: number
+  returned?: number
+  count?: number
+}> {
   const task = await startSearch(wd, threads)
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const snap = await fetchSearchSnapshot(task.taskId)
     if (snap.done) {
       if (snap.error) throw new Error(snap.error)
-      return { groups: snap.groups || [] }
+      return {
+        groups: snap.groups || [],
+        total: snap.total,
+        returned: snap.returned,
+        count: snap.count,
+      }
     }
     await new Promise((r) => setTimeout(r, 400))
   }

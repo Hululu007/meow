@@ -216,7 +216,9 @@ describe('meow_logs 必须三端都能被调到的注册位置', () => {
     const schema = toolSchemas().find((s) => s.function.name === 'meow_logs')
     expect(schema).toBeTruthy()
     const props = Object.keys(schema!.function.parameters.properties)
-    expect(props).toEqual(['minLevel', 'tag', 'keyword', 'minutes', 'limit'])
+    // source=file（2026-11-27）：读后端落盘文件，含**重启前**的记录 ——
+    // 内存环形缓冲重启即清空，而"崩了之后重启再看日志"是最常见的排查姿势。
+    expect(props).toEqual(['minLevel', 'tag', 'keyword', 'minutes', 'limit', 'source', 'sinceId'])
     // 没有必填参数 —— 模型可以先不带条件看全局
     expect(schema!.function.parameters.required).toEqual([])
   })

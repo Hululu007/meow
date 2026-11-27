@@ -133,11 +133,13 @@ describe('设置页分区归属', () => {
     expect(blockOf('storage'), 'WebDAV 又混回存储区了').not.toContain('dav.url')
   })
 
-  it('应用更新在「更新」区，且仍受 desktop/tvMode 门控', () => {
+  it('应用更新在「更新」区，且仍受平台身份门控（Web 端不显示灰按钮）', () => {
     const b = blockOf('update')
     expect(b, '应用更新不在更新区').toContain('updFound')
+    // 统一用平台身份：PC/TV/iOS 侧载都是非 web 身份，普通浏览器不显示。
+    // 不写 `desktop || tvMode || ios` 这类散落特例（违反统一设备身份规则）。
     expect(b, '应用更新的平台门控丢了（Web 端会看到灰按钮）').toMatch(
-      /v-if="desktop \|\| tvMode"/,
+      /v-if="updPlatform !== 'web'"/,
     )
   })
 })

@@ -45,7 +45,7 @@
  * - token 只进原生的请求头，**不进 URL、不进日志**
  */
 
-import { isDesktopShell } from '@/compat/shell'
+import { isDesktopShell, iosShellInfo } from '@/compat/shell'
 import { getPrefs, savePrefs } from '../stores/prefs'
 import { getPluginSource } from '@/api'
 import {
@@ -75,8 +75,21 @@ export const APP_TV_ID = 'meow-tv'
 export const LEGACY_APP_IDS = ['app', 'app-pc', 'app-tv'] as const
 export const APP_PACKAGE_ID = 'app'
 
-/** 当前构建的版本号（Vite 注入，见 vite.config.ts 的 define） */
+/**
+ * 当前应用版本号。
+ *
+ * <p>PC / TV / Web 读 Vite 注入的 `__APP_VERSION__`（web 包版本）。
+ * ★ iOS IPA 是独立版本线（1.2.x，写进 Info.plist 的 CFBundleShortVersionString），
+ *   壳在启动时注入 `window.meowIos.version`（见 Bootstrap.swift）。这里必须优先读它，
+ *   否则 iOS 上会拿 web 包的 0.2.x 去比 1.2.x，永远判成"新版本可用"（踩过对齐问题）。
+ */
 export function currentVersion(): string {
+  try {
+    const ios = String(iosShellInfo()?.version || '').trim()
+    if (ios) return ios
+  } catch {
+    /* 非 iOS 壳 */
+  }
   try {
     return typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : ''
   } catch {
@@ -84,8 +97,36 @@ export function currentVersion(): string {
   }
 }
 
+/**
+ * 当前是不是 iOS IPA 壳。
+ *
+ * <p>单独导出给更新链用：更新能力探测要在 `currentPlatform()` 还是 `'web'`
+ * 的前提下单独识别 iOS（iOS 没有 PC/TV 那种原生更新桥，走的是侧载商店源）。
+ */
+export function isIosUpdateShell(): boolean {
+  try {
+    return !!iosShellInfo()?.platform
+  } catch {
+    return false
+  }
+}
+
+/** 侧载商店源（AltStore v2 格式）；raw 镜像实测 `Access-Control-Allow-Origin: *`，页面可直接读 */
+export const IOS_UPDATE_SOURCE =
+  'https://raw.githubusercontent.com/upchr/meow/updates/altstore-source.json'
+
+/** 本 App 在商店源里的 bundle id（与 Info.plist / gen-altstore-source.ps1 一致） */
+export const IOS_BUNDLE_ID = 'com.meow.player.ios'
+
+/** 安装说明页（用户要装新版得去 LiveContainer / SideStore 刷新源） */
+export const IOS_UPDATE_GUIDE_URL =
+  'https://github.com/upchr/meow/blob/main/site/docs/guide/ios.md'
+
+/** Release 下载页（正式 IPA 直链在 `AppUpdate.url`，这里是给人看的落地页） */
+export const IOS_RELEASE_URL = 'https://github.com/upchr/meow/releases/latest'
+
 /** 当前运行平台（决定用哪个保留 id / 挑清单里哪一条） */
-export type AppPlatform = 'windows-x64' | 'android-arm64' | 'android-armv7' | 'android-x86_64' | 'web'
+export type AppPlatform = 'windows-x64' | 'android-arm64' | 'android-armv7' | 'android-x86_64' | 'ios' | 'web'
 
 /**
  * 内置 GitHub 加速代理（按实测速度排序，失败自动换下一个）。
@@ -212,6 +253,10 @@ export function currentPlatform(): AppPlatform {
 
 function detectPlatform(): AppPlatform {
   if (isDesktopShell()) return 'windows-x64'
+  // iOS IPA 壳是独立平台身份（与 compat/shell.ts 的 'ios' 身份一致）：
+  // 不能让它落进 'web' —— 否则 UI 的 `updPlatform !== 'web'` 门控全把它当普通浏览器，
+  // 要在每个入口散落 `|| capability === 'ios'` 特例（踩过：违反统一设备身份规则）。
+  if (isIosUpdateShell()) return 'ios'
   try {
     const b = (window as unknown as { meowTv?: UpdaterBridge }).meowTv
     if (b && typeof b.appUpdaterPlatform === 'function') {
@@ -228,15 +273,18 @@ function detectPlatform(): AppPlatform {
 
 /** 平台 → 清单里的保留 id */
 export function packageIdFor(platform: AppPlatform): string {
-  return platform === 'windows-x64' ? APP_PC_ID : APP_TV_ID
+  if (platform === 'windows-x64') return APP_PC_ID
+  if (platform === 'ios') return IOS_BUNDLE_ID
+  return APP_TV_ID
 }
 
 /** 平台家族（决定"能不能装"的只有两个维度，架构细分在这里不重要） */
-export type PlatformFamily = 'windows' | 'android' | 'web'
+export type PlatformFamily = 'windows' | 'android' | 'ios' | 'web'
 
 /** 把具体平台归到家族 */
 export function familyOf(platform: AppPlatform): PlatformFamily {
   if (platform === 'windows-x64') return 'windows'
+  if (platform === 'ios') return 'ios'
   if (platform === 'web') return 'web'
   return 'android'
 }
@@ -285,6 +333,7 @@ export function platformOfUrl(url: string): PlatformFamily | null {
   if (!path) return null
   if (/\.(exe|msi)$/.test(path)) return 'windows'
   if (/\.apk$/.test(path)) return 'android'
+  if (/\.ipa$/.test(path)) return 'ios'
   return null
 }
 
@@ -369,11 +418,22 @@ export interface AppUpdate {
   /**
    * 这条更新来自哪条通道。
    *
-   * <p>`shell` = PC/TV 安装包（`packages.json`）；`fpk` = fnOS 应用（FnDepot 索引）。
+   * <p>`shell` = PC/TV 安装包（`packages.json`）；`fpk` = fnOS 应用（FnDepot 索引）；
+   * `ios` = iOS 侧载 IPA（AltStore 源 `altstore-source.json`，只提示+给链接，不能自装）。
    * 弹框的标题/文件名/安装动作按它分派，但**状态机只有一套** ——
-   * 「发现 → 待提示 → 按路由弹 → 稍后记住版本」两端语义完全一致。
+   * 「发现 → 待提示 → 按路由弹 → 稍后记住版本」各端语义完全一致。
    */
-  kind?: 'shell' | 'fpk'
+  kind?: 'shell' | 'fpk' | 'ios'
+  /**
+   * iOS 侧载专用：正式 IPA 的固定名直链（始终指向最新版）。
+   *
+   * <p>放这里而不是复用 `url`：`url` 在 iOS 通道存的是该版本的具名直链
+   * （`Meow-unsigned-<ver>.ipa`，来自 `versions[0].downloadURL`），
+   * 用户要"复制就能装"的固定地址另算一条，避免覆盖版本化链接。
+   */
+  fixedUrl?: string
+  /** iOS 侧载专用：侧载商店源地址（AltStore v2 格式，让用户刷新源升级） */
+  sourceUrl?: string
   /** 直接展示的文件名（fpk 由版本+架构拼，壳由清单 id 推） */
   fileName?: string
 }
@@ -1091,7 +1151,9 @@ export async function checkAppUpdate(sourceUrl?: string): Promise<AppUpdate | nu
   // 每次新检查都从"未取消"开始（用户点了取消后又点一次检查）
   resetCancel()
   const platform = currentPlatform()
-  if (platform === 'web') return null // 纯 Web 没有"安装包"这个概念
+  // 纯 Web 没有"安装包"概念；iOS 走自己的侧载源检查（checkIosAppUpdate），
+  // 不读 packages.json 清单（那是 PC/TV 的安装包）。
+  if (platform === 'web' || platform === 'ios') return null
 
   // 预热 DNS/TLS（每会话一次，只加 preconnect，不发请求）
   warmUpdateHosts(currentAccel())
@@ -1150,6 +1212,69 @@ export async function checkAppUpdate(sourceUrl?: string): Promise<AppUpdate | nu
     }
   }
   return null
+}
+
+/**
+ * iOS IPA 的更新检查（侧载商店源，**只提示不下载**）。
+ *
+ * <p>iOS 不允许 App 自装 IPA，所以这里没有"下载 → 校验 → 安装"那一段：
+ * 读到 AltStore 源的 `versions[0]`，比本地 `meowIos.version` 新就返回一条
+ * `kind:'ios'` 的 AppUpdate，弹框据此显示"去 LiveContainer / SideStore 刷新源"。
+ *
+ * <p>数据可靠性：源由 CI 发版后从全部 Release 重建，`versions[0]` 即最新正式版。
+ * raw 镜像实测带 `Access-Control-Allow-Origin: *`，WKWebView 里 fetch 可直接读；
+ * 失败时**不抛**（自动检查在启动 5s 后跑，网络抖动不该在界面留红字，
+ * 手动检查由 store 的 error 兜底），返回 null 当"没发现新版"。
+ */
+export async function checkIosAppUpdate(sourceUrl = IOS_UPDATE_SOURCE): Promise<AppUpdate | null> {
+  const cur = currentVersion()
+  // 拿不到本地版本就别猜（避免在非 iOS 壳里拿 web 的 0.2.x 误判）
+  if (!cur) return null
+  const text = await fetchTextWithTimeout(sourceUrl, 12_000)
+  let doc: any
+  try {
+    doc = JSON.parse(text)
+  } catch {
+    throw new Error('侧载商店源不是合法 JSON')
+  }
+  const apps = Array.isArray(doc?.apps) ? doc.apps : []
+  // 严格按 bundle id 命中：绝不能拿源里别的 App（9.9.9）的版本误报给用户
+  const app = apps.find((a: any) => String(a?.bundleIdentifier || '').toLowerCase() === IOS_BUNDLE_ID)
+  if (!app) return null
+  const versions = Array.isArray(app.versions) ? app.versions : []
+  // 源里 versions[] 按版本降序（CI 生成时排好），取第一条即可；仍做一次取 max 兜底乱序。
+  let latest: any = null
+  for (const v of versions) {
+    if (!v || typeof v.version !== 'string') continue
+    if (!latest || isNewer(v.version, latest.version)) latest = v
+  }
+  if (!latest || !isNewer(latest.version, cur)) return null
+  return {
+    kind: 'ios',
+    version: latest.version,
+    url: String(latest.downloadURL || ''),
+    fixedUrl: `${IOS_RELEASE_URL.replace(/\/releases\/latest$/, '')}/releases/latest/download/Meow-unsigned.ipa`,
+    sourceUrl: IOS_UPDATE_SOURCE,
+    sha256: String(latest.sha256 || '').toLowerCase(),
+    size: Number(latest.size) || 0,
+    notes: String(latest.localizedDescription || ''),
+    lasttime: String(latest.date || '').slice(0, 10),
+    packageId: IOS_BUNDLE_ID,
+    fileName: `Meow-unsigned-${latest.version}.ipa`,
+  }
+}
+
+/** 带超时的文本拉取（iOS 用全局 fetch；raw 镜像 CORS 已验证放行） */
+async function fetchTextWithTimeout(url: string, timeoutMs: number): Promise<string> {
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null
+  const timer = ctrl ? window.setTimeout(() => ctrl.abort(), timeoutMs) : undefined
+  try {
+    const res = await fetch(url, { signal: ctrl?.signal, cache: 'no-store' })
+    if (!res.ok) throw new Error(`拉取侧载源失败（HTTP ${res.status}）`)
+    return await res.text()
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer)
+  }
 }
 
 /** 原生下载进度（两端同构） */

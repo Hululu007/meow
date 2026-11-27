@@ -127,13 +127,15 @@ const fpkLabel = computed(() => {
  * 插件和 fpk 也该有状态，实际那两行根本不显示。
  */
 const scopeLabel = computed(() =>
-  tvModule
-    ? '壳 / 运行时模块 / 弹幕组件'
-    : desktop
-      ? '壳 / 本机插件'
-      : capability.value === 'none'
-        ? '更新'
-        : '壳 / fnOS 应用',
+  updPlatform.value === 'ios'
+    ? 'iOS 侧载版'
+    : tvModule
+      ? '壳 / 运行时模块 / 弹幕组件'
+      : desktop
+        ? '壳 / 本机插件'
+        : capability.value === 'none'
+          ? '更新'
+          : '壳 / fnOS 应用',
 )
 
 /**
@@ -146,7 +148,9 @@ const scopeLabel = computed(() =>
  */
 const lastParts = computed(() => {
   const parts: string[] = []
-  if (updPlatform.value !== 'web' && updChecked.value) parts.push(`壳 ${lastText('app')}`)
+  if (updPlatform.value !== 'web' && updChecked.value) {
+    parts.push(`${updPlatform.value === 'ios' ? 'iOS' : '壳'} ${lastText('app')}`)
+  }
   if (tvModule && moduleUpdateChecked.value) parts.push(`模块 ${lastText('module')}`)
   if (desktop && pluginChecked.value) parts.push(`插件 ${lastText('plugins')}`)
   if (!desktop && !tv && fpkVisible.value && fpkChecked.value) {
@@ -268,9 +272,9 @@ onMounted(() => {
       </button>
     </div>
 
-    <!-- 壳 -->
+    <!-- 壳（updPlatform 已包含 ios 独立身份，统一用 !== 'web' 门控，无平台特例） -->
     <div v-if="updPlatform !== 'web'" class="mt-2 flex flex-wrap items-center gap-2 border-t border-line pt-2" data-update-row="app">
-      <span class="w-24 shrink-0 text-[11px] text-ink-2">猫窝 {{ updPlatform === 'windows-x64' ? 'PC' : 'TV' }}</span>
+      <span class="w-24 shrink-0 text-[11px] text-ink-2">猫窝 {{ updPlatform === 'ios' ? 'iOS 侧载版' : (updPlatform === 'windows-x64' ? 'PC' : 'TV') }}</span>
       <span class="font-mono text-[11px] text-ink-3">{{ appVersion || '—' }}</span>
       <span class="text-[11px] text-ink-3">{{ appLabel }}</span>
       <span v-if="updFound" class="text-[11px] text-ink-3">{{ fmtSize(updFound.size) }}</span>
@@ -454,6 +458,11 @@ onMounted(() => {
       <label v-if="capability === 'shell'" class="flex items-center gap-1 text-ink-2">
         <input type="checkbox" :checked="auto.app" @change="toggleAuto('app', ($event.target as HTMLInputElement).checked)" />
         壳
+      </label>
+      <!-- iOS 侧载版：同样受 autoCheckApp 控制，但不占用"壳"那一条（保持门禁断言） -->
+      <label v-if="capability === 'ios'" class="flex items-center gap-1 text-ink-2">
+        <input type="checkbox" :checked="auto.app" @change="toggleAuto('app', ($event.target as HTMLInputElement).checked)" />
+        iOS 侧载版
       </label>
       <label v-if="tvModule" class="flex items-center gap-1 text-ink-2">
         <input type="checkbox" :checked="auto.module" @change="toggleAuto('module', ($event.target as HTMLInputElement).checked)" />

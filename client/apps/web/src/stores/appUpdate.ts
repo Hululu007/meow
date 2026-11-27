@@ -32,8 +32,10 @@ import { computed, ref } from 'vue'
 import { markShell } from '@/compat/deviceProfile'
 import {
   checkAppUpdate,
+  checkIosAppUpdate,
   currentPlatform,
   currentVersion,
+  isIosUpdateShell,
   isVersionSkipped,
   readProgress,
   skipVersion as skipVersionLs,
@@ -115,13 +117,13 @@ export const platform = computed(() => currentPlatform())
  *     → 通了就是 `fpk`；
  *   · 都不通（普通浏览器直连 30010）→ `none`。
  */
-export type UpdateCapability = 'shell' | 'fpk' | 'none'
+export type UpdateCapability = 'shell' | 'fpk' | 'ios' | 'none'
 export const capability = ref<UpdateCapability | null>(null)
 /** 当前这条更新属于哪条通道（决定标题/文件名/安装动作） */
-export const kind = ref<'shell' | 'fpk'>('shell')
-/** 本端能不能装更新（PC / TV / fnOS 托管页面可以） */
+export const kind = ref<'shell' | 'fpk' | 'ios'>('shell')
+/** 本端能不能拿到更新信息（PC / TV / fnOS / iOS 侧载 IPA 都可以；ios 只提示不下载） */
 export const canUpdate = computed(
-  () => capability.value === 'shell' || capability.value === 'fpk',
+  () => capability.value === 'ios' || capability.value === 'shell' || capability.value === 'fpk',
 )
 
 /** fpk 检查结果的缓存（安装时要用到 info/installed/latest 三件套） */
@@ -145,6 +147,13 @@ export function probeCapability(force = false): Promise<UpdateCapability> {
   if (force) capabilityPromise = null
   if (capabilityPromise) return capabilityPromise
   capabilityPromise = (async () => {
+    // iOS 先判：它的 currentPlatform() 仍是 'web'（没有 PC/TV 那种原生更新桥），
+    // 但走侧载商店源这条独立通道（只提示 + 给链接，不能自装 IPA）。
+    if (isIosUpdateShell()) {
+      capability.value = 'ios'
+      kind.value = 'ios'
+      return 'ios'
+    }
     if (currentPlatform() !== 'web') {
       capability.value = 'shell'
       kind.value = 'shell'
@@ -208,6 +217,7 @@ export async function runCheck(opts: { silent?: boolean } = {}): Promise<AppUpda
     await probeCapability()
   }
   if (!canUpdate.value) return null
+  if (kind.value === 'ios') return runCheckIos(opts)
   if (kind.value === 'fpk') return runCheckFpk(opts)
   if (checking.value) return found.value
   checking.value = true
@@ -229,6 +239,39 @@ export async function runCheck(opts: { silent?: boolean } = {}): Promise<AppUpda
     // 静默模式的失败只留在控制台：启动时用户没在等结果
     if (opts.silent) {
       console.warn('[update] 自动检查失败：', e?.message || e)
+      return null
+    }
+    error.value = e?.message || String(e)
+    return null
+  } finally {
+    checking.value = false
+  }
+}
+
+/**
+ * iOS 侧载通道的检查（AltStore 源 → 同一个 `AppUpdate`，只提示不下载）。
+ *
+ * <p>与 shell 通道共用「发现 → 稍后 → 再提示」语义；skip 复用 `meow.update.skipVersion`
+ * （同一条 iOS 版本线，不与 PC/TV 混），静默检查同样要尊重 skip。
+ */
+async function runCheckIos(opts: { silent?: boolean }): Promise<AppUpdate | null> {
+  if (checking.value) return found.value
+  checking.value = true
+  if (!opts.silent) resetCheckState()
+  else error.value = ''
+  try {
+    const up = await checkIosAppUpdate()
+    if (up && opts.silent && isVersionSkipped(up.version)) {
+      found.value = up
+      checked.value = true
+      return null
+    }
+    found.value = up
+    checked.value = true
+    return up
+  } catch (e: any) {
+    if (opts.silent) {
+      console.warn('[update] iOS 侧载源检查失败：', e?.message || e)
       return null
     }
     error.value = e?.message || String(e)

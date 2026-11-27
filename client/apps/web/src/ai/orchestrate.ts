@@ -16,11 +16,14 @@
  */
 
 import { chat, type ChatMessage } from './llm'
+import { logEvent } from '@/api/logs'
+import { reportClientLog } from '@/api'
 import { ORCH_SYSTEM_PROMPT } from './prompt'
 import { summarizeForModel } from './summarize'
 import {
   meowState,
   meowLogs,
+  meowTranscode,
   meowDiagnose,
   meowSearch,
   meowPlay,
@@ -112,6 +115,24 @@ interface ToolSpec {
   run: (args: Record<string, unknown>) => Promise<unknown>
 }
 
+/**
+ * AI 自身失败写进日志（2026-11-27）。
+ *
+ * <p>为什么必须记：模型超时/429/网络错原来只显示在面板气泡里，日志页与后端
+ * 环形缓冲都看不到 —— 用户问"AI 怎么没反应"时完全无从查起。两条通道：
+ * 面板的客户端事件（cli:ai）+ 宿主 `_clientlog`（真机上远程也能看到）。
+ * 上送本身是限流的（前端 20 条/分），不会因为 AI 抽风把宿主缓冲刷满。
+ */
+function noteAiFailure(msg: string): void {
+  try {
+    const text = `AI 调用失败：${msg}`.slice(0, 300)
+    logEvent('warn', 'ai', text)
+    reportClientLog('warn', text, 'ai')
+  } catch {
+    /* 日志失败不影响对话 */
+  }
+}
+
 const TOOLS: Record<string, ToolSpec> = {
   meow_state: {
     desc: '建立上下文：版本、站点数、降级源、日志概况（各级别条数、有哪些模块）。任何任务开始前先调它。要看具体日志正文再调 meow_logs。',
@@ -124,18 +145,24 @@ const TOOLS: Record<string, ToolSpec> = {
     //   （正常时全是 info req，真出事时 warn/error 才有信息），
     //   硬编码采样规则等于替模型做它更该做的判断。
     desc:
-      '查后端日志（2000 条环形缓冲）。' +
+      '查后端日志（2000 条环形缓冲；source="file" 时读落盘文件，含重启前的记录）。' +
       '用户问「刚才报什么错」「为什么失败」「后端怎么了」，或 meow_diagnose 的证据不够、' +
       '需要按级别 / 模块 / 时间窗确认时用它。' +
       '**筛选条件由你决定**：拿不准就先不带条件取 50 条看全局（先看 level 分布，' +
       '再决定是否只看 warn 以上）；已知模块就用 meow_state 的 logTags 里的 tag 精确过滤。' +
-      '返回 matched 与 scanned，命中很多时用 limit 取最新的那批，不要一次拉满。',
+      '返回 matched 与 scanned，命中很多时用 limit 取最新的那批，不要一次拉满。' +
+      '一条日志带 ×N 表示同一内容 5 秒内重复了 N 次（后端已合并），按 N 判断优先级。',
     params: {
       minLevel: { type: 'string', desc: '最低级别：info / warn / error，只看该级别及以上' },
       tag: { type: 'string', desc: '模块标签，精确匹配；可用值见 meow_state 的 logTags' },
       keyword: { type: 'string', desc: '关键词，匹配正文或标签，不区分大小写' },
       minutes: { type: 'number', desc: '只看最近多少分钟' },
       limit: { type: 'number', desc: '最多返回多少条（默认 50，上限 500），取最新的' },
+      source: {
+        type: 'string',
+        desc: 'ring（默认）读内存环形缓冲；file 读后端落盘文件（含**重启前**的记录）',
+      },
+      sinceId: { type: 'number', desc: '只看 id 比它大的（增量；用上一轮结果里最大的 id）' },
     },
     run: (a) =>
       meowLogs({
@@ -147,7 +174,16 @@ const TOOLS: Record<string, ToolSpec> = {
         keyword: a.keyword ? String(a.keyword) : undefined,
         minutes: typeof a.minutes === 'number' ? a.minutes : undefined,
         limit: typeof a.limit === 'number' ? a.limit : undefined,
+        source: a.source === 'file' ? 'file' : undefined,
+        sinceId: typeof a.sinceId === 'number' ? a.sinceId : undefined,
       }),
+  },
+  meow_transcode: {
+    desc:
+      '转码任务清单：在跑几个、各转出多少秒、失败码是什么、空了多久、ffmpeg 是否可用。' +
+      '用户问「为什么一直转不完 / 为什么这么慢 / 卡在转码」时用它——比只看日志更直接。',
+    params: {},
+    run: () => meowTranscode(),
   },
   meow_diagnose: {
     desc: '解释播放失败的原因（读取播放器状态、网络失败、后端日志）。用户问"为什么播不了/卡/黑屏/没画面"时用它。',
@@ -366,7 +402,8 @@ export async function orchestrate(
         '模型调用',
       )
     } catch (e) {
-      // 429 / 超时 → 静默降级（返回已有结论，不报错给用户）
+      // 429 / 超时 → 静默降级（返回已有结论，不报错给用户），但要留痕
+      noteAiFailure(e instanceof Error ? e.message : String(e))
       return {
         ok: true,
         answer: '',
@@ -491,7 +528,8 @@ export async function orchestrate(
     })
     const final = await withTimeout(chatWithTools(messages), ROUND_TIMEOUT_MS, '收尾')
     return { ok: true, answer: final.text, calls, stopReason: 'max_rounds', usage }
-  } catch {
+  } catch (e) {
+    noteAiFailure('收尾调用失败：' + (e instanceof Error ? e.message : String(e)))
     return { ok: true, answer: '', calls, stopReason: 'max_rounds', usage }
   }
 }

@@ -319,3 +319,57 @@ describe('AI 面板契约（docs/47 §三）', () => {
     expect(PANEL).toMatch(/slice\(0, 100\)/)
   })
 })
+
+/**
+ * 本端没有转码能力（2026-11-27 用户实报）。
+ *
+ * iOS / 桌面 Safari / 未装 ffmpeg 插件的 PC 上，片库的 MKV 会被预判成
+ * "需要转码" → 后端 502 → 起播永远不成立 → 20 秒看门狗到期。旧判据只能
+ * 看到"没起来"，于是判成 NETWORK_TIMEOUT(high) 并建议换线路——片库没有
+ * 线路可换，用户按建议点多少次都一样，还以为是网络问题。
+ */
+describe('诊断：本端没有转码能力', () => {
+  const FFMPEG_MSG = '找不到 ffmpeg（policy.json 或 PATH 均未配置），无法转码播放'
+
+  it('hopError 是 ffmpeg 缺失 → TRANSCODE_UNAVAILABLE，置信度 high', () => {
+    const d = diagnose(s({ hopError: FFMPEG_MSG }))
+    expect(d.cause?.code).toBe('TRANSCODE_UNAVAILABLE')
+    expect(d.cause?.confidence).toBe('high')
+    expect(d.cause?.severity).toBe('blocking')
+  })
+
+  it('看门狗到期 + ffmpeg 缺失 → 仍判转码缺失，不能判网络超时', () => {
+    const d = diagnose(
+      s({ hopError: FFMPEG_MSG, watchdogFired: true, player: { readyState: 0 } }),
+    )
+    expect(d.cause?.code).toBe('TRANSCODE_UNAVAILABLE')
+    // 与 NETWORK_TIMEOUT 互斥 → 只有一条命中，置信度不被降档
+    expect(d.cause?.confidence).toBe('high')
+  })
+
+  it('建议可执行且不是换线路（片库没有线路可换）', () => {
+    const d = diagnose(s({ hopError: FFMPEG_MSG, line: '线路1', lines: ['线路1', '线路2'] }))
+    expect(d.suggestion.action).toBe('none')
+    expect(d.suggestion.text).toContain('ffmpeg')
+  })
+
+  it('ffmpeg 缺失时编码不支持也不给「转码」按钮（点了必然失败）', () => {
+    const d = diagnose(s({ hlsError: 'bufferAddCodecError', hopError: FFMPEG_MSG }))
+    expect(d.cause?.code).toBe('TRANSCODE_UNAVAILABLE')
+    expect(d.suggestion.action).toBe('none')
+  })
+
+  it('hopError 是别的失败（HTTP 502）→ 不改判网络超时', () => {
+    const d = diagnose(s({ hopError: 'HTTP 502', watchdogFired: true, player: { readyState: 0 } }))
+    expect(d.cause?.code).toBe('NETWORK_TIMEOUT')
+  })
+
+  it('证据里带本端失败原因（用户报 bug 时唯一能说明"不是网络"的一行）', () => {
+    const d = diagnose(s({ hopError: FFMPEG_MSG }))
+    expect(d.evidence.some((e) => e.detail.includes('ffmpeg'))).toBe(true)
+  })
+
+  it('中文短名存在（UI 徽章不会漏成代码）', () => {
+    expect(CAUSE_LABEL.TRANSCODE_UNAVAILABLE).toBe('本端无法转码')
+  })
+})

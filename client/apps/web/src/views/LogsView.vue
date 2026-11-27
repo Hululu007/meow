@@ -27,7 +27,21 @@ import { uaText } from '@/compat/ua'
 
 const route = useRoute()
 const items = ref<LogItem[]>([])
-const serverStats = ref({ total: 0, errors: 0, warns: 0, capacity: 2000 })
+/**
+ * 服务端统计。
+ *
+ * {@code dropped} = 被环形挤掉的条数（必须显示：看不到它就会把"只剩这几条"
+ * 当成"一共只有这几条"）；{@code file} = 落盘路径（重启后的现场去那里看）。
+ */
+const serverStats = ref({
+  total: 0,
+  errors: 0,
+  warns: 0,
+  capacity: 2000,
+  dropped: 0,
+  level: '',
+  file: '',
+})
 const loading = ref(true)
 const error = ref('')
 /** 服务端日志的状态。区分「端点不存在」与「后端不可达」——两者的排查方向完全不同 */
@@ -44,7 +58,25 @@ const keyword = ref('')
 const tagFilter = ref('')
 /** 实时轮询开关（默认开，面板里可关掉方便看历史） */
 const live = ref(true)
+/**
+ * 暂停刷新。
+ *
+ * ★ 2026-11-27 正名：这个开关原来叫「暂停滚动」，但 poll() 里 `if (!live || paused) return`
+ *   —— 它实际暂停的是**轮询**，不是滚动（滚动已经有"贴底才跟随"的判据）。
+ *   文案与行为不一致会让用户以为"暂停了滚动"，结果新日志根本不来了。
+ */
 const paused = ref(false)
+
+/**
+ * 渲染上限。
+ *
+ * ★ 为什么不能一次渲染全部：日志单条最长 4000 字（带堆栈），2000 条 × 多行
+ *   在 4K/TV 上滚动会掉帧（实测见 tmp/2026-11-27-log-audit）。这里只渲染最近
+ *   400 条，"加载更早"每次再放 400 —— DOM 数量与滚动成本都有上界，而**数据**
+ *   仍然是全部（复制/导出/搜索都按 filtered 走，不受影响）。
+ */
+const ROWS_STEP = 400
+const rowCap = ref(ROWS_STEP)
 
 let timer: number | undefined
 
@@ -89,6 +121,23 @@ const filtered = computed(() => {
   })
 })
 
+/** 实际渲染的行（最近 rowCap 条）。数据仍是全部，只是 DOM 有上界。 */
+const shown = computed(() => {
+  const list = filtered.value
+  return list.length > rowCap.value ? list.slice(list.length - rowCap.value) : list
+})
+const hiddenCount = computed(() => Math.max(0, filtered.value.length - shown.value.length))
+
+function showMore() {
+  rowCap.value += ROWS_STEP
+}
+
+/** 展开的行 key：默认单行省略，点开看完整文本（堆栈） */
+const expandedKey = ref('')
+function toggleExpand(key: string) {
+  expandedKey.value = expandedKey.value === key ? '' : key
+}
+
 const counts = computed(() => {
   let err = 0
   let warn = 0
@@ -122,6 +171,9 @@ async function refresh(quiet = false) {
       errors: d.stats.errors,
       warns: d.stats.warns,
       capacity: d.stats.capacity,
+      dropped: d.stats.dropped || 0,
+      level: d.stats.level || '',
+      file: d.stats.file || '',
     }
     lastId.value = d.stats.lastId
     const server: LogItem[] = (d.items || []).map((x) => ({
@@ -131,6 +183,8 @@ async function refresh(quiet = false) {
       level: (x.level === 'error' || x.level === 'warn' ? x.level : 'info') as LogLevel,
       tag: x.tag,
       text: x.text,
+      count: x.count,
+      lastAt: x.lastAt,
     }))
     items.value = merge(server)
     error.value = ''
@@ -146,11 +200,11 @@ async function refresh(quiet = false) {
   schedule()
 }
 
-/** 增量：只拉 id 更大的服务端条目，避免 500 条全量重传 */
+/** 增量：只拉 id 更大的服务端条目，并顺带取队尾快照刷新重复计数 */
 async function poll() {
   if (!live.value || paused.value) return
   {
-    const resp = await fetchServerLogs({ since: lastId.value, limit: 200 })
+    const resp = await fetchServerLogs({ since: lastId.value, limit: 200, tail: 40 })
     serverState.value = resp.state
     if (resp.state !== 'ok' || !resp.data) {
       serverDetail.value = resp.detail || ''
@@ -159,23 +213,46 @@ async function poll() {
       return
     }
     const r = resp.data
+    const mapItem = (x: NonNullable<typeof r.items>[number]): LogItem => ({
+      key: `svc-${x.id}`,
+      origin: 'server' as const,
+      at: x.at,
+      level: (x.level === 'error' || x.level === 'warn' ? x.level : 'info') as LogLevel,
+      tag: x.tag,
+      text: x.text,
+      count: x.count,
+      lastAt: x.lastAt,
+    })
+    // 统计每次都刷新：dropped/total 变了但没新条目（相邻重复合并）时也要跟上
+    serverStats.value = {
+      total: r.stats.total,
+      errors: r.stats.errors,
+      warns: r.stats.warns,
+      capacity: r.stats.capacity,
+      dropped: r.stats.dropped || 0,
+      level: r.stats.level || '',
+      file: r.stats.file || '',
+    }
     if (r.stats.lastId > lastId.value) {
       lastId.value = r.stats.lastId
-      serverStats.value = {
-        total: r.stats.total,
-        errors: r.stats.errors,
-        warns: r.stats.warns,
-        capacity: r.stats.capacity,
-      }
-      const add: LogItem[] = (r.items || []).map((x) => ({
-        key: `svc-${x.id}`,
-        origin: 'server' as const,
-        at: x.at,
-        level: (x.level === 'error' || x.level === 'warn' ? x.level : 'info') as LogLevel,
-        tag: x.tag,
-        text: x.text,
-      }))
+      const add = (r.items || []).map(mapItem)
       if (add.length) items.value = merge([...items.value.filter((i) => i.origin === 'server'), ...add])
+    }
+    /*
+     * 队尾按 key 替换：合并只改 count/at、不推进 id，靠 since 永远收不到更新。
+     * 只替换已存在的行（新的会从 items 里来），避免同一行出现两次。
+     */
+    if (r.tail?.length) {
+      const byKey = new Map(r.tail.map((x) => [`svc-${x.id}`, mapItem(x)]))
+      let changed = false
+      const next = items.value.map((it) => {
+        const t = byKey.get(it.key)
+        if (!t) return it
+        if (t.at === it.at && t.count === it.count && t.text === it.text && t.lastAt === it.lastAt) return it
+        changed = true
+        return t
+      })
+      if (changed) items.value = next
     }
     // 客户端错误只有读快照时才更新
     const clientOnly = [...readClientLogs(), ...readEvents()]
@@ -210,7 +287,15 @@ async function doClear() {
   if (serverOk.value) await clearServerLogs().catch(() => false)
   items.value = []
   lastId.value = 0
-  serverStats.value = { total: 0, errors: 0, warns: 0, capacity: 2000 }
+  serverStats.value = {
+    total: 0,
+    errors: 0,
+    warns: 0,
+    capacity: 2000,
+    dropped: 0,
+    level: '',
+    file: '',
+  }
   logEvent('info', 'ui', '日志已清空')
 }
 
@@ -290,8 +375,15 @@ watch(
 watch(tab, async () => {
   // 换页签等于换内容：强制回到最新（哪怕之前用户翻到了中间）
   stickBottom = true
+  rowCap.value = ROWS_STEP
   await nextTick()
   scrollToLatest()
+})
+
+// 换筛选条件也要回到"只看最近 400 条"：否则上一次"加载更早"的展开会带到新结果里
+watch([keyword, tagFilter], () => {
+  rowCap.value = ROWS_STEP
+  stickBottom = true
 })
 
 onBeforeUnmount(() => {
@@ -308,6 +400,13 @@ onBeforeUnmount(() => {
         共 {{ counts.total }} 条
         <template v-if="counts.err"> · <span class="text-hot">{{ counts.err }} 错误</span></template>
         <template v-if="counts.warn"> · <span class="text-warn">{{ counts.warn }} 警告</span></template>
+        <!--
+          丢弃提示：环形缓冲写满会挤掉最旧的。不显示它，用户会把"面板里只有这些"
+          当成"一共只有这些"，排查时得出错误结论。
+        -->
+        <template v-if="serverOk && serverStats.dropped">
+          · <span class="text-warn" title="环形缓冲写满后挤掉的最旧条数">已丢弃 {{ serverStats.dropped }} 条</span>
+        </template>
       </span>
       <!-- 状态提示：不能说"后端不可达"就算完——404 是"后端活着但没这个端点"，
            排查方向完全不同（升级后端 vs 查网络） -->
@@ -391,9 +490,9 @@ onBeforeUnmount(() => {
         class="min-w-0 flex-1 rounded-md border border-line bg-field px-2 py-1 text-[11px] text-ink outline-none focus:border-accent"
         placeholder="搜索关键词（如 401、cache、失败）"
       />
-      <label class="flex items-center gap-1 text-[11px] text-ink-3">
+      <label class="flex items-center gap-1 text-[11px] text-ink-3" title="暂停轮询（不再拉新日志），滚动仍可自由使用">
         <input v-model="paused" type="checkbox" @change="schedule()" />
-        暂停滚动
+        暂停刷新
       </label>
     </div>
 
@@ -410,11 +509,15 @@ onBeforeUnmount(() => {
         <span class="h-2 w-2 rounded-full bg-ok/70" />
         <span class="ml-1">meow-console.log</span>
         <span class="ml-auto">
-          <template v-if="serverOk">服务端 {{ serverStats.total }}/{{ serverStats.capacity }}</template>
+          <template v-if="serverOk">
+            服务端 {{ serverStats.total }}/{{ serverStats.capacity }}
+            <template v-if="serverStats.level"> · 级别 {{ serverStats.level }}</template>
+            <template v-if="serverStats.dropped"> · 丢弃 {{ serverStats.dropped }}</template>
+          </template>
           <template v-else-if="serverState === 'unsupported'">服务端：旧版无日志端点</template>
           <template v-else-if="serverState === 'unreachable'">服务端不可达</template>
           <template v-else>服务端：{{ serverDetail || '读取失败' }}</template>
-          · 显示 {{ filtered.length }} 条
+          · 显示 {{ shown.length }}<template v-if="hiddenCount"> / {{ filtered.length }}</template> 条
         </span>
       </div>
 
@@ -439,14 +542,33 @@ onBeforeUnmount(() => {
         class="max-h-[60vh] overflow-auto outline-none"
         @scroll.passive="onListScroll"
       >
-        <table class="w-full border-collapse text-[11px]">
+        <table class="w-full table-fixed border-collapse text-[11px]">
           <tbody>
+            <!--
+              只渲染最近 rowCap 条。日志单条最长 4000 字（带堆栈），一次铺 2000 行
+              在 TV/4K 上滚动会掉帧；DOM 有上界，而复制/导出仍按全量 filtered 走。
+            -->
+            <tr v-if="hiddenCount" class="border-b border-white/5">
+              <td colspan="4" class="px-2 py-1.5 text-center">
+                <button
+                  class="rounded-md bg-white/8 px-3 py-1 text-[11px] text-ink-2 transition hover:bg-white/14 hover:text-ink"
+                  @click="showMore"
+                >
+                  加载更早的 {{ ROWS_STEP }} 条（还有 {{ hiddenCount }} 条未显示）
+                </button>
+              </td>
+            </tr>
             <tr
-              v-for="it in filtered"
+              v-for="it in shown"
               :key="it.key"
               class="border-b border-white/5 align-top hover:bg-white/[0.03]"
             >
-              <td class="w-[62px] shrink-0 whitespace-nowrap px-2 py-1 font-mono text-ink-3">
+              <!--
+                时间列宽 78px：8 个字符（12:44:42）在 11px 等宽下约 53px，
+                再加左右各 8px 内边距 = 69px。原来写 62px，真机（2560×1440）
+                上时间会压到 INFO 徽标上 —— 桌面端看不出，电视上很明显。
+              -->
+              <td class="w-[78px] shrink-0 whitespace-nowrap px-2 py-1 font-mono text-ink-3">
                 {{ clock(it.at) }}
               </td>
               <td class="w-[52px] px-1 py-1">
@@ -454,11 +576,28 @@ onBeforeUnmount(() => {
                   {{ LEVEL_LABEL[it.level] }}
                 </span>
               </td>
-              <td class="w-[70px] px-1 py-1 font-mono text-[10px] text-ink-3">
+              <td class="w-[70px] truncate px-1 py-1 font-mono text-[10px] text-ink-3" :title="`${it.origin === 'server' ? 'srv' : 'cli'}:${it.tag}`">
                 {{ it.origin === 'server' ? 'srv' : 'cli' }}:{{ it.tag }}
               </td>
-              <td class="whitespace-pre-wrap break-all px-2 py-1 font-mono" :class="levelClass(it.level)">
-                {{ it.text }}
+              <!--
+                默认单行省略（滚动成本与行高都稳定），点一下展开完整文本（堆栈）。
+                原来是无条件 `whitespace-pre-wrap`：一条 8 行堆栈就占 8 行高度，
+                2000 条里有几百条堆栈时，滚动高度上万像素、每帧都在重排文本。
+              -->
+              <td class="px-2 py-1 font-mono" :class="levelClass(it.level)">
+                <div class="flex items-start gap-2">
+                  <span
+                    class="min-w-0 flex-1 cursor-pointer"
+                    :class="expandedKey === it.key ? 'whitespace-pre-wrap break-all' : 'block truncate'"
+                    :title="expandedKey === it.key ? '' : it.text"
+                    @click="toggleExpand(it.key)"
+                  >{{ it.text }}</span>
+                  <span
+                    v-if="it.count && it.count > 1"
+                    class="shrink-0 rounded bg-white/10 px-1 text-[10px] text-ink-3"
+                    :title="`同一内容在 5 秒内重复 ${it.count} 次（已合并）`"
+                  >×{{ it.count }}</span>
+                </div>
               </td>
             </tr>
           </tbody>
@@ -467,9 +606,14 @@ onBeforeUnmount(() => {
     </div>
 
     <p class="mt-2 text-[11px] leading-relaxed text-ink-3">
-      显示最近 2000 条（服务端环形缓冲 + 客户端内存）。<code class="text-ink-2">srv</code>
-      是后端日志，<code class="text-ink-2">cli</code> 是浏览器侧的错误与网络记录。
-      健康检查、分片请求等高频调用不记录，避免把有用的错误冲掉。
+      数据保留最近 2000 条（服务端环形缓冲，含字节上限；挤满后显示「已丢弃」）；
+      列表只渲染最近 {{ ROWS_STEP }} 条，点「加载更早」再放一屏，复制/导出始终按筛选后的全量。
+      <code class="text-ink-2">srv</code> 是后端日志，<code class="text-ink-2">cli</code>
+      是浏览器侧的错误与网络记录。健康检查、分片请求、进度同步等高频调用不记录，避免把有用的错误冲掉。
+      <template v-if="serverStats.file">
+        后端日志同时写入 <code class="text-ink-2">{{ serverStats.file }}</code>（2MB 轮转），
+        重启后的现场去那里看。
+      </template>
     </p>
   </div>
 </template>

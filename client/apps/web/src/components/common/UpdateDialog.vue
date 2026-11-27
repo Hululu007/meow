@@ -31,6 +31,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fileNameFor, formatNoteLines } from '@/api/appUpdate'
 import { useReducedMotion } from '@/composables/useReducedMotion'
+import IosUpdateDialog from './IosUpdateDialog.vue'
 import {
   busy,
   closeDialog,
@@ -56,6 +57,17 @@ const secondary = ref<HTMLButtonElement>()
 const notesEl = ref<HTMLElement>()
 /** 日志是否被截断（决定初始焦点与「↑↓ 滚动」提示） */
 const notesOverflow = ref(false)
+
+/**
+ * iOS 侧载：点「更新」后叠出的二级指引弹框是否显示。
+ *
+ * <p>「发现新版本」弹框本组件照常显示（版本/日志/更新·稍后，与 PC/TV 一致）；
+ * 只是 iOS 不能自装，主按钮改为弹出 IosUpdateDialog（两条可复制链接），
+ * 关掉它后下面的"发现新版本"仍在，用户还能选稍后。
+ */
+const showIosGuide = ref(false)
+/** 当前更新是否 iOS 侧载（仅决定主按钮行为，不改弹框本体） */
+const isIos = computed(() => found.value?.kind === 'ios')
 
 /** 更新日志按行拆开：`desc` 里存的是多行文本，原样塞进一个 div 会丢掉换行 */
 const noteLines = computed(() => {
@@ -135,6 +147,11 @@ const secondaryDisabled = computed(
  */
 function onPrimary(): void {
   if (busy.value) return
+  // iOS 不能自装 IPA：主按钮叠出二级指引弹框（两条可复制链接），不走下载安装链
+  if (isIos.value) {
+    showIosGuide.value = true
+    return
+  }
   void runDownloadAndInstall()
 }
 
@@ -361,4 +378,13 @@ watch(phase, (v) => {
 
     </div>
   </div>
+
+  <!--
+    iOS 二级指引：点上面「更新」后叠出，盖在通用弹框(z-130)之上(z-140)。
+    关掉它只 emit close（收这一层），下面"发现新版本"弹框仍在。
+  -->
+  <IosUpdateDialog
+    v-if="isIos && showIosGuide"
+    @close="showIosGuide = false"
+  />
 </template>

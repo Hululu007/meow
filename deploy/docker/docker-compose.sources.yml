@@ -16,8 +16,18 @@
 
 name: meow-sources
 
+# 容器日志轮转：json-file 默认不轮转，长跑/高分片请求会把盘写满。
+# 10MB × 3 份：够排查，也不会无限增长。
+x-logging: &meow-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+
 services:
   sources:
+    logging: *meow-logging
     image: ${MEOW_SOURCES_IMAGE:-chrplus/meow-sources:latest}
     container_name: meow-sources
     ports:

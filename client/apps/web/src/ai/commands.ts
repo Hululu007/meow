@@ -82,6 +82,7 @@ export const COMMANDS: CommandSpec[] = [
 export const TOOL_LABEL: Record<string, string> = {
   meow_state: '建立上下文',
   meow_logs: '日志',
+  meow_transcode: '转码任务',
   meow_diagnose: '诊断',
   meow_search: '搜索',
   meow_play: '取播放地址',

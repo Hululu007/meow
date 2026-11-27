@@ -45,7 +45,7 @@ import { embedPlay, hasEmbedPlayer, hasNativePlayer, nativeCodecCaps, openNative
 import { meowDiagnose } from '@/ai/tools'
 import { explainDiagnosis } from '@/ai/llm'
 import { CAUSE_LABEL, type Diagnosis } from '@/ai/diagnose'
-import { isPlayErrorPayload, shouldTranscode, type PlayErrorPayload } from '@/components/player/playError'
+import { isPlayErrorPayload, shouldTranscode, type PlayErrorKind, type PlayErrorPayload } from '@/components/player/playError'
 import type { PlayResult } from '@/api/types'
 import { getPrefs, setPref } from '@/stores/prefs'
 import { getDmOffset } from '@/stores/dmOffset'
@@ -300,7 +300,10 @@ async function runDiagnosis() {
     const r = await meowDiagnose({
       line: flag.value,
       lines: lines.value.map((l) => l.name),
-      watchdogFired: !!error.value && errorSource.value === 'play',
+      watchdogFired:
+        !!error.value &&
+        errorSource.value === 'play' &&
+        (lastPlayKind.value === 'timeout' || lastPlayKind.value === 'stall'),
       parse: play.value?.parse,
       // 「我们这一跳」的原因：诊断靠它把"没有 ffmpeg"和"网络超时"分开
       hopError: hopError.value,
@@ -859,6 +862,7 @@ async function load() {
   error.value = ''
   playError.value = ''
   hopError.value = ''
+  lastPlayKind.value = ''
   errorSource.value = 'fetch'
   loadingText.value = '正在获取播放地址…'
   // 换线路/换集都是新的尝试，允许原生再兜一次
@@ -1266,6 +1270,15 @@ const autoRetryHint = ref('')
  */
 const playError = ref('')
 const hopError = ref('')
+/**
+ * 最近一次播放失败的类别（诊断用）。
+ *
+ * ★ 2026-11-27：`runDiagnosis` 原来把 `watchdogFired` 写成
+ *   `!!error && errorSource==='play'` —— 任何播放失败都被当成"起播看门狗到期"，
+ *   于是「后端没有 ffmpeg」也被判成 NETWORK_TIMEOUT（high），建议用户"换线路"。
+ *   只有播放器真的报 timeout / stall 才算看门狗到期。
+ */
+const lastPlayKind = ref<PlayErrorKind | ''>('')
 /** 后端有没有 ffmpeg；null = 还没探测过 */
 const transcodeOk = ref<boolean | null>(null)
 /** 高丢帧自愈要求的最小输出高度（0 = 不检查）；tryTranscode 读一次就清零 */
@@ -2347,6 +2360,8 @@ async function onPlayerError(payload: PlayErrorPayload | string) {
   //   （见 useNativePlayer），用户想试才点。换线路 / 转码兜底不变。
   const kind = isPlayErrorPayload(payload) ? payload.kind : 'unknown'
   const msg = isPlayErrorPayload(payload) ? payload.msg : String(payload)
+  // 诊断用：只有 timeout/stall 才算"起播看门狗到期"（见 lastPlayKind 注释）
+  lastPlayKind.value = kind
   /*
    * `.strm` 的地址通常是**时效链接**（网盘签名几十分钟就过期）。
    * 打不开时要说清"是直链过期了、不是播放器坏了"，否则用户只会一直重试。
@@ -3748,6 +3763,18 @@ watch(error, (v) => {
     diagnosis.value = null
     explainText.value = ''
   }
+})
+
+/**
+ * hopError 晚到时重跑诊断（2026-11-27）。
+ *
+ * <p>踩过：错误页的诊断卡说「网络超时 / 换一条线路」，主文案却写着
+ * 「当前后端没有 ffmpeg」——两个结论互相矛盾。根因是诊断在 error 落地的
+ * 那一刻就跑，而那时 hopError（"我们这一跳"失败的真实原因）还没写进去，
+ * 规则层只能按"看门狗到期"倒推。hopError 一到就重跑，结论才对得上。
+ */
+watch(hopError, (v) => {
+  if (v && error.value) void runDiagnosis()
 })
 
 watch(
