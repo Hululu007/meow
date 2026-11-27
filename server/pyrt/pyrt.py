@@ -397,8 +397,13 @@ def _resolve_drpy(force=False):
     """
     global DRPY_UPSTREAM, _drpy_ok, _drpy_at
     now = time.time()
+    # 先把候选列表与缓存状态取出来，**不要在网络探测期间持锁**。
+    #
+    # ★ 2026-11-27 实测（OECT，4 核 / 4GB）：旧实现把 _drpy_alive() 的网络探测
+    #   放在 `with _lock` 里面，一次失败重探要串行试 5 个端口 × 1.5s = 7.5 秒，
+    #   期间**所有** .py 请求都卡在 load_spider 的同一个锁上 → 宿主 8 秒超时
+    #   → 整批脚本源判死、熔断打开。pyrt 是单进程，锁必须只护内存状态。
     with _lock:
-        # 刚确认过且仍然活着：直接用，省一次探测
         if not force and _drpy_ok and (now - _drpy_at) < 60:
             return DRPY_UPSTREAM
         cands = []
@@ -408,16 +413,22 @@ def _resolve_drpy(force=False):
             u = "http://127.0.0.1:%d" % p
             if u not in cands:
                 cands.append(u)
-        for u in cands:
-            if _drpy_alive(u):
-                if u != DRPY_UPSTREAM:
-                    log("drpy upstream -> %s" % u)
-                DRPY_UPSTREAM = u
-                _drpy_ok = True
-                _drpy_at = now
-                return u
-        _drpy_ok = False
+
+    found = ""
+    for u in cands:
+        if _drpy_alive(u):
+            found = u
+            break
+
+    with _lock:
         _drpy_at = now
+        if found:
+            if found != DRPY_UPSTREAM:
+                log("drpy upstream -> %s" % found)
+            DRPY_UPSTREAM = found
+            _drpy_ok = True
+            return found
+        _drpy_ok = False
         log("drpy upstream 不可用（试过 %s）—— .js 源会报转发失败" % ",".join(cands))
         return DRPY_UPSTREAM
 

@@ -50,7 +50,7 @@ cat > "$OUT/manifest.json" <<'JSON'
   "capability": "runtime",
   "required": false,
   "fatal": false,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "exec": "python3",
   "execFallback": ["python"],
   "args": ["pyrt.py"],

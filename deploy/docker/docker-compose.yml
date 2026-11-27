@@ -26,8 +26,18 @@
 
 name: meow
 
+# 容器日志轮转：json-file 默认不轮转，长跑/高分片请求会把盘写满。
+# 10MB × 3 份：够排查，也不会无限增长。
+x-logging: &meow-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+
 services:
   apiserver:
+    logging: *meow-logging
     image: ${APISERVER_IMAGE:-chrplus/meow-apiserver:${MEOW_VERSION:-latest}}
     container_name: meow-apiserver
     ports:
@@ -73,6 +83,7 @@ services:
     networks: [meow]
 
   web:
+    logging: *meow-logging
     image: ${WEB_IMAGE:-chrplus/meow-web:${MEOW_VERSION:-latest}}
     container_name: meow-web
     ports:
@@ -86,6 +97,7 @@ services:
   # drpy 运行时（.js 源）：apiserver 通过 MEOW_JS_RUNTIME 指向它。
   # 没有它，配置里 200+ 个 drpy 站会被判"不可用"。
   drpy:
+    logging: *meow-logging
     # ★ drpy 是**独立版本线**，不能跟 MEOW_VERSION 走。
     #
     #   踩过的坑：原来写 `${MEOW_VERSION:-0.9.x}`，主版本一升
@@ -98,7 +110,7 @@ services:
     #   实测远端只有 0.9.2x 与 latest，没有 0.1.x（那是插件 manifest 里的
     #   代码版本，两条线本来就不同，别再混用）。
     #   升级 drpy 时：改这里 + .env.example，再跑 build-push-docker.ps1。
-    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.25}}
+    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.26}}
     container_name: meow-drpy
     ports:
       - "127.0.0.1:${DRPY_PORT:-30013}:9330"
@@ -113,6 +125,7 @@ services:
     networks: [meow]
 
   pyrt:
+    logging: *meow-logging
     # Python 源运行时：`.py` 本地执行，`.js` 转发给上面的 drpy。
     #
     # ★ 为什么 apiserver 的 jsRuntime 指向它而不是 drpy：pyrt 是"路由器"，
@@ -144,6 +157,7 @@ services:
     networks: [meow]
 
   danmu_api:
+    logging: *meow-logging
     # 官方镜像，不从本仓库构建（上游源码不在此仓库）。
     # 版本固定不用 latest，保证可复现。
     image: ${DANMU_API_IMAGE:-logvar/danmu-api:1.21.6}

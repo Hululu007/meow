@@ -22,8 +22,18 @@
 
 name: meow
 
+# 容器日志轮转：json-file 默认不轮转，长跑/高分片请求会把盘写满。
+# 10MB × 3 份：够排查，也不会无限增长。
+x-logging: &meow-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+
 services:
   apiserver:
+    logging: *meow-logging
     image: ${APISERVER_IMAGE:-chrplus/meow-apiserver:${MEOW_VERSION:-latest}}
     container_name: meow-apiserver
     ports:
@@ -49,6 +59,7 @@ services:
     networks: [meow]
 
   web:
+    logging: *meow-logging
     image: ${WEB_IMAGE:-chrplus/meow-web:${MEOW_VERSION:-latest}}
     container_name: meow-web
     ports:
@@ -60,7 +71,8 @@ services:
 
   # drpy 运行时（.js 源）。独立版本线，别跟 MEOW_VERSION 走。
   drpy:
-    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.25}}
+    logging: *meow-logging
+    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${DRPY_VERSION:-0.9.26}}
     container_name: meow-drpy
     ports:
       - "127.0.0.1:${DRPY_PORT:-30013}:9330"
@@ -76,6 +88,7 @@ services:
 
   # 弹幕聚合（官方镜像，可不启；不启用就把 MEOW_DANMAKU_API 置空）
   danmu_api:
+    logging: *meow-logging
     image: ${DANMU_API_IMAGE:-logvar/danmu-api:1.21.6}
     container_name: meow-danmu-api
     ports:

@@ -11,6 +11,7 @@
 'use strict'
 
 const http = require('http')
+const os = require('os')
 const path = require('path')
 const { Worker } = require('worker_threads')
 
@@ -18,13 +19,20 @@ const PORT = Number(process.env.DRPY_PORT || 9330)
 const STARTED_AT = Date.now()
 
 /**
- * worker 池大小。
+ * worker 池大小：按 CPU 核数自适应，默认 `min(24, max(4, 核数 × 2))`。
  *
- * 每个 worker 是一个独立的 JS 线程，`sync-fetch` 的阻塞只影响它自己。
- * 池大小 = 能被后端同时打进来的合理并发：后端默认 12 个并发槽，
- * 留一倍余量应对"上一轮残骸还没退出"。再多只会加剧目标站限流。
+ * 每个 worker 是独立 JS 线程，且各自把 host（cheerio/sync-fetch/crypto-js）
+ * 加载进内存 —— 实测每个约占 40–80MB。原来写死 24（预建 12），在 4 核 3.9GB
+ * 的 ARM NAS 上直接把可用内存吃到接近 0，任务在 GC/换页里全部超时：
+ * 实测 OECT 1.2.26 一轮搜索 js 源 0 成功、28 次 timedOut，后端探活也因
+ * 800ms 超时判"运行时不可用"→ 整批脚本源被跳过。
+ *
+ * 现在 4 核 → 池 4（预建 2，约 150-200MB），16 核 PC 是 16。实测 OECT 上
+ * 池 8 仍然并发超时（4 核被 Java+3 个 node 分掉，可用内存只剩几百 MB）。
+ * 需要更大/更小时用 DRPY_POOL 覆盖。
  */
-const POOL_SIZE = Number(process.env.DRPY_POOL || 24)
+const CPU = (os.cpus() || []).length || 4
+const POOL_SIZE = Number(process.env.DRPY_POOL || Math.max(2, Math.min(24, CPU)))
 /**
  * 单请求硬超时。
  *
@@ -394,6 +402,10 @@ server.listen(PORT, BIND, () => {
   if (BIND !== '127.0.0.1' && !DRPY_TOKEN) {
     console.warn('[drpy] ★ 监听在 ' + BIND + ' 但没有设 DRPY_TOKEN：任何能连上端口的人都能执行任意脚本')
   }
-  // 预建一半 worker，避免首轮搜索时现开线程拖慢
-  for (let i = 0; i < Math.max(2, Math.floor(POOL_SIZE / 2)); i++) idle.push(spawnWorker())
+  // 预建少量 worker（避免首轮搜索现开线程拖慢），其余按需长出来。
+  // ★ 不要预建一半：每个 worker 都占 40–80MB 内存，弱 NAS 上预建 12 个
+  //   会让第一轮搜索还没开始就把内存吃满（见 POOL_SIZE 注释）。
+  const prewarm = Math.min(4, Math.max(2, Math.floor(POOL_SIZE / 2)))
+  for (let i = 0; i < prewarm; i++) idle.push(spawnWorker())
+  console.log(`[drpy] prewarmed ${prewarm} worker(s), cpus=${CPU}`)
 })

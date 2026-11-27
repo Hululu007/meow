@@ -31,12 +31,22 @@
 
 name: meow
 
+# 容器日志轮转：json-file 默认不轮转，长跑/高分片请求会把盘写满。
+# 10MB × 3 份：够排查，也不会无限增长。
+x-logging: &meow-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+
 services:
   apiserver:
+    logging: *meow-logging
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.apiserver
-    image: ${APISERVER_IMAGE:-chrplus/meow-apiserver:${MEOW_VERSION:-1.2.26}}
+    image: ${APISERVER_IMAGE:-chrplus/meow-apiserver:${MEOW_VERSION:-1.2.27}}
     container_name: meow-apiserver
     ports:
       # 默认只绑本机。要给 TV/局域网直连，改 APISERVER_BIND=0.0.0.0。
@@ -68,10 +78,11 @@ services:
     networks: [meow]
 
   web:
+    logging: *meow-logging
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.web
-    image: ${WEB_IMAGE:-chrplus/meow-web:${MEOW_VERSION:-1.2.26}}
+    image: ${WEB_IMAGE:-chrplus/meow-web:${MEOW_VERSION:-1.2.27}}
     container_name: meow-web
     ports:
       - "${WEB_PORT:-30010}:8080"
@@ -84,10 +95,11 @@ services:
   # drpy 运行时（.js 源）：apiserver 通过 MEOW_JS_RUNTIME 指向它。
   # 没有它，配置里 200+ 个 drpy 站会被判"不可用"。
   drpy:
+    logging: *meow-logging
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.drpy
-    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${MEOW_VERSION:-1.2.26}}
+    image: ${DRPY_IMAGE:-chrplus/meow-drpy:${MEOW_VERSION:-1.2.27}}
     container_name: meow-drpy
     ports:
       - "127.0.0.1:${DRPY_PORT:-30013}:9330"
@@ -108,6 +120,7 @@ services:
   #   连服务定义都没有 —— 两条路都起不来 pyrt。表现是 apiserver 的 jsRuntime 指向
   #   一个不存在的容器，.py 与 .js 源全部报 Connection refused。
   pyrt:
+    logging: *meow-logging
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.pyrt
@@ -128,6 +141,7 @@ services:
     networks: [meow]
 
   danmu_api:
+    logging: *meow-logging
     # 官方镜像，不从本仓库构建（上游源码不在此仓库）。
     # 版本固定不用 latest，保证可复现。
     image: ${DANMU_API_IMAGE:-logvar/danmu-api:1.21.6}

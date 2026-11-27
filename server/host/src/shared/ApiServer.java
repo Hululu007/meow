@@ -4663,8 +4663,14 @@ public class ApiServer {
         try {
             java.net.HttpURLConnection c = (java.net.HttpURLConnection)
                     new java.net.URL(base.replaceAll("/$", "") + "/health").openConnection();
-            c.setConnectTimeout(800);
-            c.setReadTimeout(800);
+            /*
+             * 1500ms（2026-11-27 从 800ms 放宽）：探活是和"一轮 136 个源同时在跑"
+             * 抢 CPU 的。弱 NAS（4 核 / 4GB）上 800ms 会随机超时 → 判运行时不可用
+             * → 整批脚本源被跳过（实测 OECT：py:"unknown"、ok:false，而同一时刻
+             * 手动 curl /health 是毫秒级）。探活只每 15 秒一次，多等 700ms 不值一提。
+             */
+            c.setConnectTimeout(1500);
+            c.setReadTimeout(1500);
             c.setRequestMethod("GET");
             int code = c.getResponseCode();
             ok = code == 200;
@@ -4737,8 +4743,9 @@ public class ApiServer {
         try {
             java.net.HttpURLConnection c = (java.net.HttpURLConnection)
                     new java.net.URL(base.replaceAll("/$", "") + "/health").openConnection();
-            c.setConnectTimeout(800);
-            c.setReadTimeout(800);
+            // 与 scriptRuntimeUsable 同一口径：800ms 在弱 NAS 满载时会误判（见那里注释）
+            c.setConnectTimeout(1500);
+            c.setReadTimeout(1500);
             c.setRequestMethod("GET");
             if (c.getResponseCode() == 200) {
                 String body = read(c.getInputStream());
